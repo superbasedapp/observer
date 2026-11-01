@@ -1,0 +1,166 @@
+rules:
+  - id: python.tls-verify-off
+    languages: [python]
+    severity: ERROR
+    message: TLS certificate verification is turned off outside an opt-in flag or config condition, so anyone on the network path can read or change the traffic; keep verification on and trust a specific CA bundle if needed.
+    metadata:
+      category: code_vuln
+      cwe: CWE-295
+    patterns:
+      - pattern-either:
+          - patterns:
+              - pattern-either:
+                  - pattern: requests.$M(..., verify=False, ...)
+                  - pattern: requests.Session(...).$M(..., verify=False, ...)
+                  - pattern: httpx.$M(..., verify=False, ...)
+                  - pattern: $S.verify = False
+                  - pattern: ssl._create_unverified_context(...)
+                  - pattern: $CTX.verify_mode = ssl.CERT_NONE
+                  - pattern: ssl.wrap_socket(..., cert_reqs=ssl.CERT_NONE, ...)
+                  - pattern: $SESSION.$M(..., ssl=False, ...)
+              - pattern-inside: |
+                  def $FN(...):
+                      ...
+              - metavariable-regex:
+                  metavariable: $FN
+                  regex: '^([^t]|t[^e]|te[^s]|tes[^t]|t$|te$|tes$)'
+          - patterns:
+              - pattern-either:
+                  - pattern: requests.$M(..., verify=False, ...)
+                  - pattern: requests.Session(...).$M(..., verify=False, ...)
+                  - pattern: httpx.$M(..., verify=False, ...)
+                  - pattern: $S.verify = False
+                  - pattern: ssl._create_unverified_context(...)
+                  - pattern: $CTX.verify_mode = ssl.CERT_NONE
+                  - pattern: ssl.wrap_socket(..., cert_reqs=ssl.CERT_NONE, ...)
+                  - pattern: $SESSION.$M(..., ssl=False, ...)
+              - pattern-not-inside: |
+                  def $FN(...):
+                      ...
+      - pattern-either:
+          - patterns:
+              - pattern-either:
+                  - pattern: requests.$M(..., verify=False, ...)
+                  - pattern: requests.Session(...).$M(..., verify=False, ...)
+                  - pattern: httpx.$M(..., verify=False, ...)
+                  - pattern: $S.verify = False
+                  - pattern: ssl._create_unverified_context(...)
+                  - pattern: $CTX.verify_mode = ssl.CERT_NONE
+                  - pattern: ssl.wrap_socket(..., cert_reqs=ssl.CERT_NONE, ...)
+                  - pattern: $SESSION.$M(..., ssl=False, ...)
+              - pattern-either:
+                  - pattern-inside: |
+                      class $CL:
+                          ...
+                  - pattern-inside: |
+                      class $CL(...):
+                          ...
+              - metavariable-regex:
+                  metavariable: $CL
+                  regex: '^([^T]|T[^e]|Te[^s]|Tes[^t]|T$|Te$|Tes$)'
+          - patterns:
+              - pattern-either:
+                  - pattern: requests.$M(..., verify=False, ...)
+                  - pattern: requests.Session(...).$M(..., verify=False, ...)
+                  - pattern: httpx.$M(..., verify=False, ...)
+                  - pattern: $S.verify = False
+                  - pattern: ssl._create_unverified_context(...)
+                  - pattern: $CTX.verify_mode = ssl.CERT_NONE
+                  - pattern: ssl.wrap_socket(..., cert_reqs=ssl.CERT_NONE, ...)
+                  - pattern: $SESSION.$M(..., ssl=False, ...)
+              - pattern-not-inside: |
+                  class $CL:
+                      ...
+              - pattern-not-inside: |
+                  class $CL(...):
+                      ...
+      - pattern-not-inside: |
+          class $TC(unittest.TestCase):
+              ...
+      - pattern-not-inside: |
+          class $TC(TestCase):
+              ...
+      - pattern-not-inside: |
+          class $TC(SimpleTestCase):
+              ...
+      - pattern-not-inside: |
+          class $TC(TransactionTestCase):
+              ...
+      - pattern-not-inside: |
+          class $TC(LiveServerTestCase):
+              ...
+      - pattern-not-inside: |
+          @pytest.fixture(...)
+          def $FX(...):
+              ...
+      - pattern-not-inside: |
+          @pytest.fixture
+          def $FX(...):
+              ...
+      # Not under a flag- or config-named condition (an explicit opt-in).
+      # The second branch keeps a sink under any other condition (if
+      # __name__ == "__main__", an error or status-code branch): its
+      # condition text contains none of verify, insecure, skip, tls, ssl,
+      # debug, allow, config, opt, flag (any case), one generated
+      # lookahead-free regex per word (the pack validator compiles every
+      # regex as Go RE2).
+      - pattern-either:
+          - patterns:
+              - pattern-either:
+                  - pattern: requests.$M(..., verify=False, ...)
+                  - pattern: requests.Session(...).$M(..., verify=False, ...)
+                  - pattern: httpx.$M(..., verify=False, ...)
+                  - pattern: $S.verify = False
+                  - pattern: ssl._create_unverified_context(...)
+                  - pattern: $CTX.verify_mode = ssl.CERT_NONE
+                  - pattern: ssl.wrap_socket(..., cert_reqs=ssl.CERT_NONE, ...)
+                  - pattern: $SESSION.$M(..., ssl=False, ...)
+              - pattern-not-inside: |
+                  if $COND:
+                      ...
+              - pattern-not-inside: $A if $COND else $B
+          - patterns:
+              - pattern-either:
+                  - pattern: requests.$M(..., verify=False, ...)
+                  - pattern: requests.Session(...).$M(..., verify=False, ...)
+                  - pattern: httpx.$M(..., verify=False, ...)
+                  - pattern: $S.verify = False
+                  - pattern: ssl._create_unverified_context(...)
+                  - pattern: $CTX.verify_mode = ssl.CERT_NONE
+                  - pattern: ssl.wrap_socket(..., cert_reqs=ssl.CERT_NONE, ...)
+                  - pattern: $SESSION.$M(..., ssl=False, ...)
+              - pattern-either:
+                  - pattern-inside: |
+                      if $COND:
+                          ...
+                  - pattern-inside: $A if $COND else $B
+              - metavariable-regex:
+                  metavariable: $COND
+                  regex: '^(?:(?:[^vV]|[vV](?:(?:[vV]|[eE](?:[vV]|[rR](?:[vV]|[iI](?:[vV]|[fF][vV])))))*(?:[^eEvV]|[eE](?:[^rRvV]|[rR](?:[^iIvV]|[iI](?:[^fFvV]|[fF][^vVyY]))))))*(?:|[vV](?:(?:[vV]|[eE](?:[vV]|[rR](?:[vV]|[iI](?:[vV]|[fF][vV])))))*(?:|[eE](?:|[rR](?:|[iI](?:|[fF])))))\z'
+              - metavariable-regex:
+                  metavariable: $COND
+                  regex: '^(?:(?:[^iI]|[iI](?:(?:[iI]|[nN](?:[iI]|[sS](?:[iI]|[eE](?:[iI]|[cC](?:[iI]|[uU](?:[iI]|[rR][iI])))))))*(?:[^iInN]|[nN](?:[^iIsS]|[sS](?:[^eEiI]|[eE](?:[^cCiI]|[cC](?:[^iIuU]|[uU](?:[^iIrR]|[rR][^eEiI]))))))))*(?:|[iI](?:(?:[iI]|[nN](?:[iI]|[sS](?:[iI]|[eE](?:[iI]|[cC](?:[iI]|[uU](?:[iI]|[rR][iI])))))))*(?:|[nN](?:|[sS](?:|[eE](?:|[cC](?:|[uU](?:|[rR])))))))\z'
+              - metavariable-regex:
+                  metavariable: $COND
+                  regex: '^(?:(?:[^sS]|[sS](?:(?:[sS]|[kK](?:[sS]|[iI][sS])))*(?:[^kKsS]|[kK](?:[^iIsS]|[iI][^pPsS]))))*(?:|[sS](?:(?:[sS]|[kK](?:[sS]|[iI][sS])))*(?:|[kK](?:|[iI])))\z'
+              - metavariable-regex:
+                  metavariable: $COND
+                  regex: '^(?:(?:[^tT]|[tT](?:(?:[tT]|[lL][tT]))*(?:[^lLtT]|[lL][^sStT])))*(?:|[tT](?:(?:[tT]|[lL][tT]))*(?:|[lL]))\z'
+              - metavariable-regex:
+                  metavariable: $COND
+                  regex: '^(?:(?:[^sS]|[sS](?:[^sS]|[sS](?:[sS])*[^lLsS])))*(?:|[sS](?:|[sS](?:[sS])*))\z'
+              - metavariable-regex:
+                  metavariable: $COND
+                  regex: '^(?:(?:[^dD]|[dD](?:(?:[dD]|[eE](?:[dD]|[bB](?:[dD]|[uU][dD]))))*(?:[^dDeE]|[eE](?:[^bBdD]|[bB](?:[^dDuU]|[uU][^dDgG])))))*(?:|[dD](?:(?:[dD]|[eE](?:[dD]|[bB](?:[dD]|[uU][dD]))))*(?:|[eE](?:|[bB](?:|[uU]))))\z'
+              - metavariable-regex:
+                  metavariable: $COND
+                  regex: '^(?:(?:[^aA]|[aA](?:(?:[aA]|[lL](?:[aA]|[lL](?:[aA]|[oO][aA]))))*(?:[^aAlL]|[lL](?:[^aAlL]|[lL](?:[^aAoO]|[oO][^aAwW])))))*(?:|[aA](?:(?:[aA]|[lL](?:[aA]|[lL](?:[aA]|[oO][aA]))))*(?:|[lL](?:|[lL](?:|[oO]))))\z'
+              - metavariable-regex:
+                  metavariable: $COND
+                  regex: '^(?:(?:[^cC]|[cC](?:(?:[cC]|[oO](?:[cC]|[nN](?:[cC]|[fF](?:[cC]|[iI][cC])))))*(?:[^cCoO]|[oO](?:[^cCnN]|[nN](?:[^cCfF]|[fF](?:[^cCiI]|[iI][^cCgG]))))))*(?:|[cC](?:(?:[cC]|[oO](?:[cC]|[nN](?:[cC]|[fF](?:[cC]|[iI][cC])))))*(?:|[oO](?:|[nN](?:|[fF](?:|[iI])))))\z'
+              - metavariable-regex:
+                  metavariable: $COND
+                  regex: '^(?:(?:[^oO]|[oO](?:(?:[oO]|[pP][oO]))*(?:[^oOpP]|[pP][^oOtT])))*(?:|[oO](?:(?:[oO]|[pP][oO]))*(?:|[pP]))\z'
+              - metavariable-regex:
+                  metavariable: $COND
+                  regex: '^(?:(?:[^fF]|[fF](?:(?:[fF]|[lL](?:[fF]|[aA][fF])))*(?:[^fFlL]|[lL](?:[^aAfF]|[aA][^fFgG]))))*(?:|[fF](?:(?:[fF]|[lL](?:[fF]|[aA][fF])))*(?:|[lL](?:|[aA])))\z'

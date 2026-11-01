@@ -1,0 +1,1 @@
+{"command": {"id": "cmd_abc123", "name": "observer", "args": ["sandbox-guest"], "cwd": "/vercel/sandbox", "sessionId": "sbx_abc123", "exitCode": null, "startedAt": 1792800002000}}

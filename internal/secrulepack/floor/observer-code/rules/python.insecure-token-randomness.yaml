@@ -1,0 +1,77 @@
+rules:
+  - id: python.insecure-token-randomness
+    languages: [python]
+    severity: WARNING
+    message: A secret value (a password, key, one-time code or reset code) is drawn from the predictable random module; use the secrets module instead.
+    metadata:
+      category: code_vuln
+      cwe: CWE-338
+    patterns:
+      - pattern-either:
+          - patterns:
+              - pattern-either:
+                  - pattern: $TOK = <... random.$F(...) ...>
+              - pattern-inside: |
+                  def $FN(...):
+                      ...
+              - metavariable-regex:
+                  metavariable: $FN
+                  regex: '^([^t]|t[^e]|te[^s]|tes[^t]|t$|te$|tes$)'
+          - patterns:
+              - pattern-either:
+                  - pattern: $TOK = <... random.$F(...) ...>
+              - pattern-not-inside: |
+                  def $FN(...):
+                      ...
+      - pattern-either:
+          - patterns:
+              - pattern-either:
+                  - pattern: $TOK = <... random.$F(...) ...>
+              - pattern-either:
+                  - pattern-inside: |
+                      class $CL:
+                          ...
+                  - pattern-inside: |
+                      class $CL(...):
+                          ...
+              - metavariable-regex:
+                  metavariable: $CL
+                  regex: '^([^T]|T[^e]|Te[^s]|Tes[^t]|T$|Te$|Tes$)'
+          - patterns:
+              - pattern-either:
+                  - pattern: $TOK = <... random.$F(...) ...>
+              - pattern-not-inside: |
+                  class $CL:
+                      ...
+              - pattern-not-inside: |
+                  class $CL(...):
+                      ...
+      - pattern-not-inside: |
+          class $TC(unittest.TestCase):
+              ...
+      - pattern-not-inside: |
+          class $TC(TestCase):
+              ...
+      - pattern-not-inside: |
+          class $TC(SimpleTestCase):
+              ...
+      - pattern-not-inside: |
+          class $TC(TransactionTestCase):
+              ...
+      - pattern-not-inside: |
+          class $TC(LiveServerTestCase):
+              ...
+      - pattern-not-inside: |
+          @pytest.fixture(...)
+          def $FX(...):
+              ...
+      - pattern-not-inside: |
+          @pytest.fixture
+          def $FX(...):
+              ...
+      - metavariable-regex:
+          metavariable: $TOK
+          regex: (?i).*(secret|password|passwd|api_?key|private_?key|otp|reset_?code|reset_?token)
+      - metavariable-regex:
+          metavariable: $F
+          regex: ^(random|randint|randrange|choice|choices|getrandbits|sample|uniform)$

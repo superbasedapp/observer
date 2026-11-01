@@ -183,6 +183,20 @@ func Read(path string, now time.Time) (*File, string) {
 	if err != nil {
 		return nil, ReasonUnreadable
 	}
+	return ReadBytes(raw, now)
+}
+
+// ReadBytes applies Read's failure table to sidecar bytes the caller already
+// holds: the daemon's last verified copy (the MAC'd org lock, T-845), which a
+// reader uses instead of an on-disk file that no longer matches it. Empty
+// bytes are ReasonAbsent.
+func ReadBytes(raw []byte, now time.Time) (*File, string) {
+	if len(raw) == 0 {
+		return nil, ReasonAbsent
+	}
+	if len(raw) > MaxBytes {
+		return nil, ReasonOversize
+	}
 	f, err := Decode(raw)
 	if err != nil {
 		return nil, ReasonMalformed

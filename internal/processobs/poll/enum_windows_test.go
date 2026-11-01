@@ -211,3 +211,19 @@ func TestPlatformBootIDWindows(t *testing.T) {
 		t.Errorf("boot id not stable: %q vs %q", id, id2)
 	}
 }
+
+// TestPlatformEnumerateSkipsTheIdlePseudoProcess: ToolHelp's PID 0 entry
+// ("[System Process]", the idle process) is not a process and never leaves
+// the enumerator; it crossed the process bridge as a malformed event
+// (Windows 11 Pro rerun 2026-10-25, D5 group 8).
+func TestPlatformEnumerateSkipsTheIdlePseudoProcess(t *testing.T) {
+	procs, err := platformEnumerate()
+	if err != nil {
+		t.Fatalf("platformEnumerate: %v", err)
+	}
+	for _, p := range procs {
+		if p.PID == 0 {
+			t.Fatalf("PID 0 left the enumerator: %+v", p)
+		}
+	}
+}

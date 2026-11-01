@@ -14,7 +14,11 @@
 # build is itself proof the portal was embedded.
 
 # ---- build stage ----------------------------------------------------------
-FROM golang:1.26 AS build
+# Multi-arch (linux/amd64 + linux/arm64): the build stage runs on the BUILD
+# platform and cross-compiles for the TARGET one (CGO is off, so GOARCH is
+# all it takes); no emulation is needed for the Go compile.
+FROM --platform=$BUILDPLATFORM golang:1.27.3@sha256:2920bb124f1a2e12a1d39f0cab756ae0068441ee1da7655dec7f5e374944095b AS build
+ARG TARGETOS TARGETARCH
 
 WORKDIR /src
 
@@ -28,12 +32,12 @@ ARG VERSION=dev
 # CGO disabled: the hosted service uses pgx (pure-Go Postgres) and does not
 # compile in the agent's SQLite driver, so the binary is fully static and runs
 # on distroless/static.
-RUN CGO_ENABLED=0 GOOS=linux go build \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build \
         -ldflags="-s -w -X main.version=${VERSION}" \
         -o /out/observer-cloud ./cmd/observer-cloud
 
 # ---- runtime stage --------------------------------------------------------
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 
 COPY --from=build /out/observer-cloud /usr/local/bin/observer-cloud
 

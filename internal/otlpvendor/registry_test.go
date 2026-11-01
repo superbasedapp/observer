@@ -1,6 +1,7 @@
 package otlpvendor
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/integration"
@@ -72,6 +73,52 @@ func TestServiceNamesAreUnique(t *testing.T) {
 				t.Errorf("service.name %q claimed by %s and %s", n, prev, v.Tool)
 			}
 			owner[n] = v.Tool
+		}
+	}
+	// A prefix claim must not also cover another row's exact name or
+	// another row's prefix (the claim would then depend on table order).
+	for _, v := range Vendors() {
+		for _, p := range v.ServiceNamePrefixes {
+			if p == "" {
+				t.Errorf("%s: empty service.name prefix claims every resource", v.Tool)
+			}
+			for n, tool := range owner {
+				if tool != v.Tool && strings.HasPrefix(n, p) {
+					t.Errorf("%s prefix %q also covers %s's service.name %q", v.Tool, p, tool, n)
+				}
+			}
+			for _, w := range Vendors() {
+				for _, q := range w.ServiceNamePrefixes {
+					if w.Tool != v.Tool && (strings.HasPrefix(q, p) || strings.HasPrefix(p, q)) {
+						t.Errorf("prefixes %q (%s) and %q (%s) overlap", p, v.Tool, q, w.Tool)
+					}
+				}
+			}
+		}
+	}
+}
+
+// TestPrefixClaim: a versioned service.name is claimed by its row's prefix,
+// an exact name still claims exactly, and an unrelated name stays unclaimed.
+func TestPrefixClaim(t *testing.T) {
+	for _, tc := range []struct {
+		svc, want string
+	}{
+		{"CodeBuddy-CLI-2.171.0", "codebuddy"},
+		{"CodeBuddy-CLI-9.0.0-beta", "codebuddy"},
+		{"bob-shell", "ibm-bob"},
+		{"kimchi", "kimchi"},
+		{"CodeBuddy", ""},
+		{"langsmith", ""},
+		{"dirac", ""},
+	} {
+		v, ok := claim(tc.svc)
+		got := ""
+		if ok {
+			got = v.Tool
+		}
+		if got != tc.want {
+			t.Errorf("claim(%q) = %q, want %q", tc.svc, got, tc.want)
 		}
 	}
 }

@@ -108,7 +108,7 @@ func (g *Guard) applyApprovals(v policy.Verdict, ev *policy.Event, lane string) 
 	// current snapshot here is stable in practice; the cost is one
 	// atomic pointer load on the already-rare blocking path.
 	es := g.set.Load()
-	locked := orgLockedVerdict(v, g.orgLocksVerdictRule(es, v.RuleID))
+	locked := orgLockedVerdict(v, g.orgLocksVerdictRule(es, v.RuleID, eventProjectRoot(ev)))
 	localApproved := func() bool {
 		return g.approvals != nil && g.approvals(v.RuleID, ev.SessionID, g.approvalProjectRootHash(ev))
 	}
@@ -127,6 +127,27 @@ func (g *Guard) applyApprovals(v policy.Verdict, ev *policy.Event, lane string) 
 	v.Decision = policy.DecisionFlag
 	v.Reason += " [approved: an operator grant covers this rule for this scope]"
 	return v, approvalOutcome{degradedFrom: "approved"}
+}
+
+// eventProjectRoot is the root ev's project layer is looked up under (the
+// org lock's per-project blast radius reads it), "" for a nil event.
+func eventProjectRoot(ev *policy.Event) string {
+	return projectLookupRoot(ev)
+}
+
+// projectLookupRoot is the root the project layer (engineFor), the per-project
+// org lock and the project_unknown floor use for ev: the boundary's derived
+// ProjectLookupRoot when it set one (a pre-tool hook whose payload carries
+// only cwd), else ProjectRoot. "" for a nil event. Nothing else reads the
+// derived root: the rules and the persisted row keep ProjectRoot.
+func projectLookupRoot(ev *policy.Event) string {
+	if ev == nil {
+		return ""
+	}
+	if ev.ProjectLookupRoot != "" {
+		return ev.ProjectLookupRoot
+	}
+	return ev.ProjectRoot
 }
 
 // HashProjectRoot returns the sha256 hex of a project root — the

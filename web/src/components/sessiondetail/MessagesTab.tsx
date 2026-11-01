@@ -10,6 +10,7 @@ import type { SessionGuardEvent, SessionGuardEventsResponse, SessionMessages, Se
 import { guardBannersWithContext } from "@shared/lib/guardMessages";
 import { decisionTone } from "@shared/lib/guardCatalog";
 import { VocabPill } from "@shared/lib/vocabPill";
+import { accountEvidenceLabel } from "@shared/lib/toolAccounts";
 import {
   MESSAGES_LIMIT,
   MESSAGE_PRESETS,
@@ -219,7 +220,7 @@ export function MessagesTab({
       {messages.data?.account_summary && (
         <div className="rounded-2 border border-line-2 px-3 py-2 text-small text-fg-3" aria-label="Session account coverage">
           <span className="font-medium text-fg-2">Observed accounts: </span>
-          {messages.data.account_summary.accounts.map(a => a.email || a.name || a.account_id).join(", ") || "None captured"}
+          {messages.data.account_summary.accounts.map(accountEvidenceLabel).join(", ") || "None captured"}
           <span className="block mt-1">{messages.data.account_summary.observed} messages with login evidence · {messages.data.account_summary.unknown} unknown · {messages.data.account_summary.conflicts} conflicting. Login snapshots do not confirm billing identity.</span>
         </div>
       )}

@@ -1,0 +1,45 @@
+[
+  {
+    "status": "running",
+    "configuration": {
+      "id": "observer-a1b2c3d4e5f60718-1111111111111111",
+      "image": {"reference": "ghcr.io/example/agent@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "descriptor": {"digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}},
+      "labels": {"observer.run": "RunLive_0123456789abcd", "observer.install": "a1b2c3d4e5f60718"},
+      "resources": {"cpus": 4, "memoryInBytes": 4294967296},
+      "mounts": [],
+      "networks": []
+    },
+    "networks": []
+  },
+  {
+    "status": "running",
+    "configuration": {
+      "id": "observer-a1b2c3d4e5f60718-2222222222222222",
+      "image": {"reference": "ghcr.io/example/agent@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
+      "labels": {"observer.run": "RunGone_0123456789abc", "observer.install": "a1b2c3d4e5f60718"},
+      "resources": {"cpus": 4, "memoryInBytes": 4294967296}
+    },
+    "networks": []
+  },
+  {
+    "status": "stopped",
+    "configuration": {
+      "id": "observer-ffffffffffffffff-3333333333333333",
+      "image": {"reference": "ghcr.io/example/agent@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
+      "labels": {"observer.run": "OtherInstallRun_01234", "observer.install": "ffffffffffffffff"},
+      "resources": {"cpus": 2, "memoryInBytes": 2147483648}
+    },
+    "networks": []
+  },
+  {
+    "status": "running",
+    "configuration": {
+      "id": "my-web-server",
+      "image": {"reference": "docker.io/library/nginx:latest"},
+      "labels": {},
+      "resources": {"cpus": 4, "memoryInBytes": 1073741824},
+      "unknownField": {"kept": "ignored"}
+    },
+    "networks": [{"network": "default", "address": "192.168.64.3/24", "gateway": "192.168.64.1", "hostname": "my-web-server"}]
+  }
+]

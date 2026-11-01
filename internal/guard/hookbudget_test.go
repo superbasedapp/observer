@@ -213,11 +213,12 @@ func TestT519HookBudgetMessage(t *testing.T) {
 	}{
 		{
 			name: "usd cap with a dashboard", rule: "B-602", base: "http://127.0.0.1:8081",
+			// WINNODE2 16d: no URL in band, even with a dashboard origin; the
+			// desktop notification carries it (RequestAccessLink).
 			want: []string{
-				"Organization budget B-602", "until the period resets", BudgetIncreaseRequestLabel,
-				"http://127.0.0.1:8081" + BudgetIncreaseRequestPath, "--usd <amount>",
+				"Organization budget B-602", "until the period resets", BudgetIncreaseRequestLabel, "--usd <amount>",
 			},
-			notWant: []string{"--tokens"},
+			notWant: []string{"--tokens", "http://", BudgetIncreaseRequestPath},
 		},
 		{
 			name: "token cap without a dashboard", rule: "B-623",
@@ -327,8 +328,15 @@ func TestT529DenyLinkOpensTheBudgetRequest(t *testing.T) {
 	if q.Has("budget") {
 		t.Errorf("%q names a budget the hook-path stop does not know", BudgetIncreaseRequestPath)
 	}
-	msg := HookBudgetMessage(HookBudgetStop{RuleID: "B-602", Reason: "spent"}, "http://127.0.0.1:8081")
-	if !strings.Contains(msg, "(http://127.0.0.1:8081/requests?new=budget)") {
-		t.Errorf("deny line %q does not carry the budget deep link", msg)
+	// The link rides the human surfaces only (WINNODE2 16d): the desktop
+	// notification of a budget stop carries it, the in-band line does not.
+	link := RequestAccessLink(ActionVerdict{
+		RequestBase: "http://127.0.0.1:8081", Category: string(policy.CategoryBudget), Verdict: policy.Verdict{RuleID: "B-602"},
+	})
+	if link != "http://127.0.0.1:8081/requests?new=budget" {
+		t.Errorf("budget request link = %q, want the budget deep link", link)
+	}
+	if msg := HookBudgetMessage(HookBudgetStop{RuleID: "B-602", Reason: "spent"}, "http://127.0.0.1:8081"); strings.Contains(msg, "http") {
+		t.Errorf("deny line %q carries a URL", msg)
 	}
 }

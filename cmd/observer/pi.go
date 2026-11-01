@@ -246,10 +246,13 @@ const piModelsDisplay = "~/.pi/agent/models.json"
 // The model list is piObserverModelEntries (pi_route.go), the same list the
 // routing decision table picks a model from, default first.
 func preparePiObserverProvider(baseURL string, hasCredential bool) (observerModelsRoute, error) {
-	dir := piAgentDir()
-	if dir == "" {
-		return observerModelsRoute{}, newVisibleLauncherError(errors.New("cannot resolve the home directory"),
-			"observer pi: cannot locate your home directory to configure pi's provider")
+	dir, derr := piAgentDirErr()
+	if derr != nil || dir == "" {
+		if derr == nil {
+			derr = errors.New("cannot resolve the home directory")
+		}
+		return observerModelsRoute{}, newVisibleLauncherError(derr,
+			"observer pi: cannot locate pi's agent directory to configure its provider ("+derr.Error()+")")
 	}
 	return prepareObserverModelsProvider(observerModelsProviderSpec{
 		tool:          "pi",

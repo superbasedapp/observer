@@ -121,7 +121,7 @@ func RunDigestSchedulerOnce(ctx context.Context, s *store.Store, now time.Time, 
 		cfg.Logger.Warn("cloudserver/jobs: digest scheduler has no credential source or attestor wired (fail closed) - nothing submitted")
 		return 0, nil
 	}
-	if _, ok, cerr := cfg.Credentials.ProviderKey(ctx, route.RouteID); cerr != nil || !ok {
+	if _, ok, cerr := cfg.Credentials.ProviderKey(ctx, route); cerr != nil || !ok {
 		cfg.Logger.Info("cloudserver/jobs: digest scheduler: provider credential absent for the digest route - nothing submitted this tick (jobs are not parked)")
 		return 0, nil
 	}
@@ -198,7 +198,7 @@ func buildDigestEvidence(cloudProjectID string, periodStart, periodEnd time.Time
 			Description:    f.Description,
 			TaxonomyTags:   f.TaxonomyTags,
 			Limitations:    f.Limitations,
-			Metrics:        f.Metrics,
+			Metrics:        usageHonestMetrics(f.Metrics),
 		})
 	}
 	return cloudcontract.DigestEvidence{
@@ -208,4 +208,48 @@ func buildDigestEvidence(cloudProjectID string, periodStart, periodEnd time.Time
 		PeriodEnd:        periodEnd.Format("2006-01-02"),
 		Sessions:         sessions,
 	}
+}
+
+// snapshotUsageKeys are the cloud_sessions.metrics keys that carry token and
+// cost figures (the names api.sessionMetricsJSON writes).
+var snapshotUsageKeys = []string{"tokens_in", "tokens_out", "cache_read", "cost_usd"}
+
+// usageHonestMetrics returns a COPY of one session's metrics snapshot that a
+// digest model can read without mistaking "not captured" for "free" (D-866).
+// It stamps usage_status with cloudcontract.MetricsBlock.ResolvedUsage (the one
+// reading every consumer uses) and, for a session whose usage was not
+// measured, drops the token and cost keys. That covers snapshots stored before
+// the field existed: an older node's all-zero figures resolve to not_measured.
+// A nil snapshot stays nil.
+func usageHonestMetrics(in map[string]any) map[string]any {
+	if in == nil {
+		return nil
+	}
+	num := func(k string) float64 {
+		f, _ := in[k].(float64)
+		return f
+	}
+	status, _ := in["usage_status"].(string)
+	block := cloudcontract.MetricsBlock{
+		TokensIn:        int(num("tokens_in")),
+		TokensOut:       int(num("tokens_out")),
+		CacheReadTokens: int(num("cache_read")),
+		CostUSD:         num("cost_usd"),
+		UsageStatus:     cloudcontract.UsageStatus(status),
+	}
+	if !block.UsageStatus.Valid() {
+		block.UsageStatus = ""
+	}
+	usage := block.ResolvedUsage()
+	out := make(map[string]any, len(in)+1)
+	for k, v := range in {
+		out[k] = v
+	}
+	out["usage_status"] = string(usage)
+	if usage == cloudcontract.UsageNotMeasured {
+		for _, k := range snapshotUsageKeys {
+			delete(out, k)
+		}
+	}
+	return out
 }

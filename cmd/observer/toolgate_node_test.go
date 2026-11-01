@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -87,12 +88,20 @@ func TestLaunchAutoSandboxFollowsNodeToolGate(t *testing.T) {
 	}
 }
 
-// TestNodeToolGateLegacyClineScript: the script an earlier Observer wrote
-// under ~/.cline/hooks (`observer hook cline PreToolUse`) no longer gates the
-// Cline CLI, so it never counts as a current hook. The cline-cli binding is
-// doc-grounded on this branch, so the test grounds a copy of the row live,
-// which is the state the live-grounding branch brings.
+// TestNodeToolGateLegacyClineScript: the Cline CLI guard is the plugin
+// (guard-fix lane B). A plugin rendered for another hook token (the stale
+// state a script written for `observer hook cline` stood for) is not the
+// plugin Observer renders today, so it never counts as a current hook. The
+// test grounds a copy of the row live so the result does not depend on the
+// row's grounding.
 func TestNodeToolGateLegacyClineScript(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// registerCline skips Windows by design (internal/hook
+		// clineHooksUnsupportedOS: the SDK's .ps1 hooks are broken and the
+		// plugin sandbox is untested there), so no plugin is written to
+		// age into a legacy one.
+		t.Skip("the Cline CLI guard plugin is registered on macOS and Linux only")
+	}
 	c, ok := integration.For(models.ToolClineCLI)
 	if !ok {
 		t.Fatal("no cline-cli row")
@@ -113,12 +122,12 @@ func TestNodeToolGateLegacyClineScript(t *testing.T) {
 	if st := nodeToolGateFor(c, binary, cfgPath); !st.Current {
 		t.Fatalf("freshly registered cline-cli hook = %+v, want current", st)
 	}
-	script := filepath.Join(home, ".cline", "hooks", "PreToolUse")
+	script := filepath.Join(home, ".cline", "plugins", "superbased-observer-guard.js")
 	body, err := os.ReadFile(script)
 	if err != nil {
 		t.Fatal(err)
 	}
-	legacy := strings.ReplaceAll(string(body), " hook cline-cli ", " hook cline ")
+	legacy := strings.ReplaceAll(string(body), `"tool":"cline-cli"`, `"tool":"cline"`)
 	if legacy == string(body) {
 		t.Fatalf("script does not name the cline-cli hook:\n%s", body)
 	}
@@ -148,7 +157,7 @@ func TestToolGateEnforcementDoctorLines(t *testing.T) {
 		tools[1]: {Tool: tools[1], Installed: true, Reason: "its PreToolUse hook is missing or stale"},
 		tools[2]: {Tool: tools[2], Reason: "not installed on this machine"},
 	}
-	checks := toolGateEnforcementChecks(func(tool string) nodeToolGateState {
+	checks := toolGateEnforcementChecks(true, func(tool string) nodeToolGateState {
 		if st, ok := states[tool]; ok {
 			return st
 		}
@@ -211,5 +220,30 @@ func setJSONKey(t *testing.T, path, key string, v any) {
 	}
 	if err := os.WriteFile(path, out, 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestToolGateEnforcementDoctorFollowsSandboxAvailability (live check macOS
+// 2026-10-22, D2): with no sandbox on the node, a tool whose hook does not
+// hold falls back to recorded acceptance, never "sandbox_enforce on this
+// node".
+func TestToolGateEnforcementDoctorFollowsSandboxAvailability(t *testing.T) {
+	tools := hookBlockTools()
+	if len(tools) == 0 {
+		t.Skip("no hook_block tools")
+	}
+	gate := func(tool string) nodeToolGateState {
+		return nodeToolGateState{Tool: tool, Installed: true, Reason: "its PreToolUse hook is missing or stale"}
+	}
+	c, _ := integration.For(tools[0])
+	for _, available := range []bool{false, true} {
+		checks := toolGateEnforcementChecks(available, gate)
+		want := string(c.NodeEnforcement(false, available))
+		if !strings.Contains(checks[0].Message, want+" on this node") {
+			t.Fatalf("available=%v: %q, want %s", available, checks[0].Message, want)
+		}
+		if !available && strings.Contains(checks[0].Message, string(integration.EnforceSandbox)+" on this node") {
+			t.Fatalf("no sandbox, yet the line says sandbox_enforce: %q", checks[0].Message)
+		}
 	}
 }

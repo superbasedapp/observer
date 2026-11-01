@@ -114,9 +114,19 @@ func swapBinary(fs swapFS, goos, staged, exePath, prevCopy, oldVersion string) (
 		return swapResult{}, fmt.Errorf("observer update: rollback binary %s is missing, refusing to swap: %w", prevCopy, err)
 	}
 
+	// The companion files the archive carries beside the binary (the
+	// Windows sandbox driver's mxc\ set, update_bundle.go) go first, so a
+	// set that cannot be replaced stops the apply before the binary moves;
+	// a failed binary swap below puts the old set back.
+	bundleSteps, err := swapBundles(fs, staged, exePath, oldVersion)
+	if err != nil {
+		return swapResult{}, err
+	}
+
 	strategy := strategyForOS(goos)
 	if strategy == swapInPlace {
 		if err := fs.Rename(staged, exePath); err != nil {
+			undoBundleSteps(fs, bundleSteps)
 			return swapResult{}, fmt.Errorf("observer update: swap: %w", err)
 		}
 		return swapResult{Strategy: swapInPlace}, nil
@@ -126,17 +136,20 @@ func swapBinary(fs swapFS, goos, staged, exePath, prevCopy, oldVersion string) (
 	// A leftover aside file from an abandoned apply would make the first
 	// rename fail; clear it deliberately rather than inheriting it.
 	if err := fs.Remove(aside); err != nil && !os.IsNotExist(err) {
+		undoBundleSteps(fs, bundleSteps)
 		return swapResult{}, fmt.Errorf("observer update: clearing %s: %w", aside, err)
 	}
 	if err := fs.Rename(exePath, aside); err != nil {
 		// Nothing has moved. This is the ERROR_ACCESS_DENIED case (an AV
 		// scanner, a second instance): abort with the original in place.
+		undoBundleSteps(fs, bundleSteps)
 		return swapResult{}, fmt.Errorf("observer update: swap (rename aside): %w", err)
 	}
 	if err := fs.Rename(staged, exePath); err != nil {
 		// The window the two-rename dance opens. Put the original back
 		// immediately; if even that fails, say so loudly — the aside file
 		// is the recovery, and the next start detects it.
+		undoBundleSteps(fs, bundleSteps)
 		if back := fs.Rename(aside, exePath); back != nil {
 			return swapResult{Strategy: swapRenameAside, AsideName: aside},
 				fmt.Errorf("observer update: swap failed AND the previous executable could not be restored; it is at %s: %w", aside, err)
@@ -153,13 +166,20 @@ func swapBinary(fs swapFS, goos, staged, exePath, prevCopy, oldVersion string) (
 // the child, and although the parent has killed it by now, an antivirus
 // handle can still hold it briefly. Renaming aside always works where
 // replacing does not.
-func restoreBinary(fs swapFS, goos, prevCopy, exePath, oldVersion string) error {
+func restoreBinary(fs swapFS, goos, prevCopy, exePath, oldVersion string) (retErr error) {
 	if strings.TrimSpace(prevCopy) == "" {
 		return errors.New("observer update: no previous binary recorded; nothing to restore")
 	}
 	if _, err := fs.Stat(prevCopy); err != nil {
 		return fmt.Errorf("observer update: previous binary %s: %w", prevCopy, err)
 	}
+	// The companion files go back with the binary (update_bundle.go); a
+	// failure there is reported after the binary is restored.
+	defer func() {
+		if berr := restoreBundles(fs, exePath, oldVersion); berr != nil && retErr == nil {
+			retErr = berr
+		}
+	}()
 	if strategyForOS(goos) == swapInPlace {
 		if err := fs.Rename(prevCopy, exePath); err != nil {
 			return fmt.Errorf("observer update: restore: %w", err)
@@ -191,6 +211,11 @@ func restoreBinary(fs swapFS, goos, prevCopy, exePath, oldVersion string) error 
 // Putting the aside file back is the only correct move — and it is why the
 // aside name is deterministic rather than a temp name nobody could find.
 func recoverInterruptedSwap(fs swapFS, exePath, oldVersion string) (bool, error) {
+	// A companion file interrupted between its renames comes back first
+	// (update_bundle.go); it never decides whether the binary needs it.
+	if err := recoverInterruptedBundles(fs, exePath, oldVersion); err != nil {
+		return false, err
+	}
 	aside := asidePath(exePath, oldVersion)
 	if _, err := fs.Stat(aside); err != nil {
 		return false, nil

@@ -175,7 +175,9 @@ func TestAssembly_OrgRateReachesTheProxiedTurnCost(t *testing.T) {
 	}))
 	t.Cleanup(up.Close)
 
-	dbPath := filepath.Join(t.TempDir(), "observer.db")
+	// The shared price engine keeps this database open for the process's
+	// life by design; Windows cannot delete an open file.
+	dbPath := filepath.Join(processLifetimeDBDir(t), "observer.db")
 	configPath := writeAssemblyConfig(t, dbPath, up.URL)
 	seedOrgPricingDocument(t, ctx, dbPath)
 
@@ -253,7 +255,9 @@ func TestAssembly_OrgRateReachesTheProxiedTurnCost(t *testing.T) {
 func TestAssembly_OrgRateReachesTheOrgPushWire(t *testing.T) {
 	ctx := context.Background()
 
-	dbPath := filepath.Join(t.TempDir(), "observer.db")
+	// The shared price engine keeps this database open for the process's
+	// life by design; Windows cannot delete an open file.
+	dbPath := filepath.Join(processLifetimeDBDir(t), "observer.db")
 	configPath := writeAssemblyConfig(t, dbPath, "http://127.0.0.1:1")
 	seedOrgPricingDocument(t, ctx, dbPath)
 
@@ -320,7 +324,9 @@ VALUES('assembly-s1', ?, 'claude-code', ?, ?, ?, 0, 0, 0, 0, 0, 0, 0, 'jsonl', '
 // and would then start disagreeing the moment one of them was Reloaded.
 func TestAssembly_ProxyAndPushPricerShareOneEngine(t *testing.T) {
 	ctx := context.Background()
-	dbPath := filepath.Join(t.TempDir(), "observer.db")
+	// The shared price engine keeps this database open for the process's
+	// life by design; Windows cannot delete an open file.
+	dbPath := filepath.Join(processLifetimeDBDir(t), "observer.db")
 	configPath := writeAssemblyConfig(t, dbPath, "http://127.0.0.1:1")
 	seedOrgPricingDocument(t, ctx, dbPath)
 

@@ -217,16 +217,25 @@ export type ToolCallRowLike = {
 // types). Kept structurally compatible so the node's richer types assign to
 // these; the org omits `account` entirely (optional on MessageRowLike).
 export type MessageAccountEvidenceLike = {
+  key?: string;
   email?: string;
   name?: string;
   account_id?: string;
   source: string;
+  // "account" / "account:<detail>" marks an ACCOUNT-LEVEL observation (a device
+  // / org / install account id), never a person: see lib/toolAccounts.ts.
+  scope?: string;
   stage: string;
   observed_at: string;
 };
 export type MessageAccountLike = {
   status: "observed" | "unknown" | "conflict";
+  // The PERSON-level login; for a message with only account-level evidence it
+  // is the noun-qualified account label ("device account dev-9"), never a bare id.
   label: string;
+  // The account-level (device / org) label when any such evidence exists,
+  // shown beside the person, never as the person.
+  account_label?: string;
   evidence: MessageAccountEvidenceLike[];
 };
 
@@ -433,6 +442,10 @@ export type ProcessNodeLike = {
   exit_signal?: number;
   duration_ms: number;
   started_at?: string;
+  // last_seen_at: the last time the capture saw the process alive (RFC3339).
+  // A never-exited process not seen for a while had its exit missed; the Call
+  // stack view ends its bar here and labels it "exit not seen". Node only.
+  last_seen_at?: string;
   is_boundary?: boolean;
   action_id?: number;
   turn_index?: number;

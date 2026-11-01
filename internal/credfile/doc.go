@@ -9,11 +9,14 @@
 //
 //   - Only a registry row that declares the file may write it
 //     (integration.HookSpec.HooksShareCredentialFile for a hook writer,
-//     integration.MCPTarget.SharesCredentialFile for an MCP writer).
+//     integration.MCPTarget.SharesCredentialFile for an MCP writer,
+//     integration.ProxyRoute.SharesCredentialFile for a route writer).
 //   - Only the span Observer owns is edited: every other member keeps its
 //     bytes and its position (JSON is spliced member by member, TOML is
-//     edited line by line), and the result is decoded and compared value for
-//     value against the intended document before anything is written.
+//     edited line by line, and SetMember / SetYAMLMember edit one member of
+//     a YAML, JSON or TOML file through the order-preserving cfgfmt engine),
+//     and the result is decoded and compared value for value against the
+//     intended document before anything is written.
 //   - The file's permission bits are kept.
 //   - No whole-file hash and no value read from the file is stored or
 //     surfaced: an error a decoder produced is withheld (decoders quote the

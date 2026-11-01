@@ -1,6 +1,7 @@
 package hook
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -98,6 +99,10 @@ func (r *Registry) detectWindowsCommandCodeHome() string {
 	return r.detectWindowsHome(r.opts.WindowsCommandCodeHome, ".commandcode")
 }
 
+func (r *Registry) detectWindowsCopilotHome() string {
+	return r.detectWindowsHome(r.opts.WindowsCopilotHome, ".copilot")
+}
+
 // detectWindowsHome resolves the Windows-side <subdir> directory for a
 // cross-OS registration target. Ownership discipline mirrors the proxy-route
 // writer's resolveWindowsHome (security finding R1/F1): a WSL daemon must NOT
@@ -181,69 +186,51 @@ func (r *Registry) sandboxSkipResult(res *RegistrationResult, subdir, optionName
 // registerClaudeCodeWindows installs Claude Code hooks into a Windows-
 // side `.claude/settings.json` (typically
 // `/mnt/c/Users/<u>/.claude/settings.json`) with each command wrapped
-// in
+// in the portable bridge form (portableBridgeCommand):
 //
-//	MSYS_NO_PATHCONV=1 wsl.exe -d <distro> -- <linux-bin> hook
-//	claude-code <event> [--config <wsl-path>]
+//	wsl.exe -d <distro> -- //<linux-bin> hook claude-code <event>
+//	[--config '//<wsl-path>']; exit $LASTEXITCODE
 //
-// so the Windows Claude Desktop process can fire it from Git Bash (the
-// shell Claude Code uses on Windows per code.claude.com/docs/en/hooks:
-// "Git Bash on Windows"). The MSYS_NO_PATHCONV=1 prefix is load-
-// bearing — without it, Git Bash's MSYS layer auto-translates the
-// Linux `/home/...` path arguments into `C:/Program Files/Git/home/...`
-// before they reach wsl.exe, the inner binary can't be found, and
-// every hook fires exit-127. Symptom in the JSONL:
+// One settings.json is read by several hosts that run its hook commands
+// through different shells, and this one string has to work in all of
+// them (AP-119):
 //
-//	{"type":"hook_non_blocking_error","exitCode":127,
-//	 "stderr":"/bin/bash: C:/Program Files/Git/home/.../observer:
-//	 No such file or directory"}
+//   - Claude Code on Windows runs a hook through Git Bash (`bash -c`, or
+//     `sh -c` when CLAUDE_CODE_GIT_BASH_PATH names sh.exe), and through
+//     `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass
+//     -Command` for a hook entry that sets "shell": "powershell" (read
+//     from the 2.1.288 binary, 2026-10-22).
+//   - Snowflake Cortex Code merges ~/.claude/settings.json and runs every
+//     hook through `powershell.exe -NoProfile -Command`.
 //
-// confirmed on Claude Desktop v2.1.138 (2026-05-20).
+// Git Bash's MSYS layer rewrites a bare `/home/...` argument into
+// `C:/Program Files/Git/home/...` before it reaches wsl.exe (the inner
+// binary is then not found and every hook exits 127 — confirmed on Claude
+// Desktop v2.1.138, 2026-05-20). The old fix was a `MSYS_NO_PATHCONV=1`
+// env prefix, but PowerShell (and cmd.exe) cannot parse a `VAR=value cmd`
+// prefix at all, so under Cortex every hook failed. A leading `//` is the
+// other MSYS escape: MSYS passes the argument through untouched, and Linux
+// resolves `//home/...` exactly like `/home/...`. PowerShell also turns a
+// native exit code 2 (how a gate blocks) into 1 unless the command ends
+// with `exit $LASTEXITCODE`; in bash that variable is unset, so `exit`
+// returns the last command's status. Verified 2026-10-22 under Git Bash,
+// Git sh, PowerShell 5.1 (both host spawn shapes) and cmd.exe: exit 0/1/2,
+// stdin and stderr pass through unchanged.
 //
-// MSYS_NO_PATHCONV is bash-only (silently ignored by macOS/Linux `sh -c`
-// and by cmd.exe), so the prefix is safe to set unconditionally on
-// the Windows registrar without runtime branching.
+// The old MSYS-prefixed form stays recognised as Observer-owned
+// (isObserverWindowsClaudeEntry), so re-registration replaces it and
+// uninstall removes it; the equivalence table's bridge-form row forces
+// the rewrite even under KeepEquivalentHooks.
 //
 // Distro lookup: Options.WSLDistro → $WSL_DISTRO_NAME. Empty distro
 // is an error; the command would be ambiguous on a host with multiple
 // distros. Same contract as registerCursorWindows.
 func (r *Registry) registerClaudeCodeWindows() RegistrationResult {
 	res := RegistrationResult{Tool: "claude-code-windows", DryRun: r.opts.DryRun}
-
-	claudeDir := r.detectWindowsClaudeHome()
-	if claudeDir == "" {
-		if r.foreignAutoDetectSuppressed(r.opts.WindowsClaudeHome) {
-			r.sandboxSkipResult(&res, ".claude", "WindowsClaudeHome", r.opts.WindowsClaudeHome)
-			return res
-		}
-		res.Error = errors.New("hook.registerClaudeCodeWindows: no Windows-side .claude/ detected (set WindowsClaudeHome explicitly or run on a host where crossmount sees /mnt/c/Users/<u>/.claude/)")
+	claudeDir, distro, ok := r.claudeCodeWindowsTarget(&res)
+	if !ok {
 		return res
 	}
-	res.ConfigPath = filepath.Join(claudeDir, "settings.json")
-
-	// Same double-wiring guard as the native registrar, applied to the
-	// Windows-side .claude the cross-OS bridge writes into: that install
-	// keeps its own plugin state there. Same fail-open-to-wiring rule.
-	pdWin := claudeplugin.DetectInClaudeDir(claudeDir)
-	if pdWin.Active && !r.opts.Force {
-		res.Skipped = true
-		res.SkipKind = SkipCovered
-		res.SkipReason = pdWin.Reason()
-		return res
-	}
-	res.ProbeWarning = pdWin.Warning()
-
-	distro := r.opts.WSLDistro
-	if distro == "" {
-		distro = os.Getenv("WSL_DISTRO_NAME")
-	}
-	if distro == "" {
-		res.Error = safeErrorf("hook.registerClaudeCodeWindows: WSL distro unknown: set Options.WSLDistro or run inside WSL (so $WSL_DISTRO_NAME is set)")
-		return res
-	}
-	// MSYS_NO_PATHCONV=1 inline-env prefix — see registerClaudeCodeWindows
-	// docstring for the Git Bash path-translation rationale.
-	wrapperPrefix := fmt.Sprintf("MSYS_NO_PATHCONV=1 wsl.exe -d %s -- ", shellQuoteIfNeeded(distro))
 
 	unlock, err := r.lockSettings(res.ConfigPath)
 	if err != nil {
@@ -278,11 +265,20 @@ func (r *Registry) registerClaudeCodeWindows() RegistrationResult {
 	if hooks == nil {
 		hooks = map[string][]claudeHookGroup{}
 	}
+	// FU-192: an entry in Observer's shape running another binary is kept.
+	if r.refusesForeignBinary(&res, "hook.registerClaudeCodeWindows", res.ConfigPath, identityContent, shapedHooksInText(settings["hooks"], "claude-code")) {
+		return res
+	}
+	shapeDrift := shapeDriftEvents(settings["hooks"], claudeShapedGroups(isObserverWindowsClaudeEntry))
 
 	for _, event := range claudeCodeEvents {
-		cmd := wrapperPrefix + shellQuoteIfNeeded(r.opts.BinaryPath) + " hook claude-code " + hookEventArg(event) + r.configFlagSuffix()
+		cmd := r.gateBridgeCommand("claude-code", filepath.Dir(claudeDir), distro, event, hookEventArg(event),
+			portableBridgeCommand(distro, r.opts.BinaryPath, "claude-code", hookEventArg(event), r.opts.ConfigPath))
 		groups := hooks[event]
-		idx := findClaudeGroupWithObserverWindows(groups)
+		// T-847: a narrowed matcher or an extra entry field is not "already
+		// set" (see registerClaudeCode and hook_shape.go).
+		groups, idx := dropShapeDriftedTyped(&res, event, cmd, groups, shapeDrift[event],
+			findClaudeGroupWithObserverWindows, isObserverWindowsClaudeEntry)
 		if idx >= 0 {
 			if observerCmdMatches(groups[idx], cmd) {
 				res.AlreadySet = append(res.AlreadySet, event)
@@ -300,7 +296,7 @@ func (r *Registry) registerClaudeCodeWindows() RegistrationResult {
 			}
 			groups = append(groups[:idx], groups[idx+1:]...)
 		}
-		if !r.opts.Force && hasConflictingClaudeHookWindows(groups) {
+		if r.refuses(res.ConfigPath, identityContent) && hasConflictingClaudeHookWindows(groups) {
 			res.Error = hookConflictError("hook.registerClaudeCodeWindows", event)
 			return res
 		}
@@ -347,14 +343,60 @@ func (r *Registry) registerClaudeCodeWindows() RegistrationResult {
 	return res
 }
 
+// claudeCodeWindowsTarget resolves the Windows-side .claude directory and
+// the WSL distro registerClaudeCodeWindows writes the bridge for, filling
+// res (config path, skip, error) on the way. ok is false when res is final.
+func (r *Registry) claudeCodeWindowsTarget(res *RegistrationResult) (claudeDir, distro string, ok bool) {
+	claudeDir = r.detectWindowsClaudeHome()
+	if claudeDir == "" {
+		if r.foreignAutoDetectSuppressed(r.opts.WindowsClaudeHome) {
+			r.sandboxSkipResult(res, ".claude", "WindowsClaudeHome", r.opts.WindowsClaudeHome)
+			return "", "", false
+		}
+		res.Error = errors.New("hook.registerClaudeCodeWindows: no Windows-side .claude/ detected (set WindowsClaudeHome explicitly or run on a host where crossmount sees /mnt/c/Users/<u>/.claude/)")
+		return "", "", false
+	}
+	res.ConfigPath = filepath.Join(claudeDir, "settings.json")
+
+	// Same double-wiring guard as the native registrar, applied to the
+	// Windows-side .claude the cross-OS bridge writes into: that install
+	// keeps its own plugin state there. Same fail-open-to-wiring rule.
+	pdWin := claudeplugin.DetectInClaudeDir(claudeDir)
+	if pdWin.Active && !r.opts.Force {
+		res.Skipped = true
+		res.SkipKind = SkipCovered
+		res.SkipReason = pdWin.Reason()
+		return "", "", false
+	}
+	res.ProbeWarning = pdWin.Warning()
+
+	distro = r.opts.WSLDistro
+	if distro == "" {
+		distro = os.Getenv("WSL_DISTRO_NAME")
+	}
+	if distro == "" {
+		res.Error = safeErrorf("hook.registerClaudeCodeWindows: WSL distro unknown: set Options.WSLDistro or run inside WSL (so $WSL_DISTRO_NAME is set)")
+		return "", "", false
+	}
+	// The portable bridge form (AP-119): see the docstring for why it
+	// replaced the MSYS_NO_PATHCONV=1 prefix.
+	if err := portableBridgePathError("hook.registerClaudeCodeWindows", r.opts.BinaryPath, r.opts.ConfigPath); err != nil {
+		res.Error = err
+		return "", "", false
+	}
+
+	return claudeDir, distro, true
+}
+
 // isObserverWindowsClaudeEntry recognises a hook command in the
 // Windows-side settings.json as observer-owned, in EITHER shape:
 //
 //   - the cross-OS bridge this registrar writes — a `wsl.exe `
-//     invocation (with or without the legacy MSYS_NO_PATHCONV=1 env
-//     prefix) that ultimately calls `<bin> hook claude-code <event>`.
-//     The MSYS prefix shipped in v1.6.22+; matching either lets
-//     refresh-on-drift rewrite older prefix-free entries;
+//     invocation (the current portable form, the legacy
+//     MSYS_NO_PATHCONV=1-prefixed form of v1.6.22 to AP-119, or the
+//     prefix-free form before it) that ultimately calls
+//     `<bin> hook claude-code <event>`. Matching every generation lets
+//     refresh-on-drift rewrite an older entry and uninstall remove it;
 //   - a NATIVE `<...>\observer.exe hook claude-code <event>` entry
 //     written by an earlier Windows-native npm `observer init`
 //     (isObserverAnyHookEntry — class C2 / audit IDE-11).
@@ -370,6 +412,9 @@ func (r *Registry) registerClaudeCodeWindows() RegistrationResult {
 // only the Windows target is allowed to convert one shape into the
 // other (native → bridge, never the reverse).
 func isObserverWindowsClaudeEntry(cmd string) bool {
+	if isHookBridgeEntry(cmd, "claude-code") {
+		return true
+	}
 	if strings.Contains(cmd, " hook claude-code ") {
 		if strings.HasPrefix(cmd, "wsl.exe ") {
 			return true
@@ -501,11 +546,23 @@ func (r *Registry) registerCursorWindows() RegistrationResult {
 	// Cursor that ran hooks through /bin/bash (Git Bash); the current
 	// surface is PowerShell. isObserverWindowsCursorEntry still recognises
 	// the legacy MSYS-prefixed shape, so refresh-on-drift replaces it.
-	// (claude-code's Windows bridge may share this once its hook shell is
-	// confirmed — tracked separately.)
+	// (claude-code's Windows bridge cannot drop the MSYS protection: its
+	// settings.json is run by Git Bash AND by PowerShell hosts, so it uses
+	// portableBridgeCommand's `//` paths instead — AP-119.)
 	wrapperPrefix := fmt.Sprintf("wsl.exe -d %s -- ", shellQuoteIfNeeded(distro))
+	// FU-192: an entry in Observer's shape running another binary is kept.
+	if r.refusesForeignBinary(&res, "hook.registerCursorWindows", res.ConfigPath, identityContent, shapedHooksInText(settings["hooks"], "cursor")) {
+		return res
+	}
+	shapeDrift := shapeDriftEvents(settings["hooks"], flatCommandEntries(isObserverWindowsCursorEntry))
 	for _, event := range cursorEvents {
 		cmd := wrapperPrefix + shellQuoteIfNeeded(r.opts.BinaryPath) + " hook cursor " + event + r.configFlagSuffix()
+		if shapeDrift[event] {
+			// T-847: an Observer entry with a field Observer never writes
+			// is rewritten (the typed decode below would drop it silently).
+			shapeRewrite(&res, event, cmd, cmd)
+			hooks[event] = dropCursorEntries(hooks[event], isObserverWindowsCursorEntry)
+		}
 		if slicesContainsCommand(hooks[event], cmd) {
 			res.AlreadySet = append(res.AlreadySet, event)
 			continue
@@ -521,7 +578,7 @@ func (r *Registry) registerCursorWindows() RegistrationResult {
 		// isDanglingObserverWindowsCursorShim) that never carried the
 		// canonical " hook cursor " signature.
 		hooks[event] = filterStaleObserverWindowsCursorEntries(hooks[event], cmd, event, r.opts.ConfigPath)
-		if !r.opts.Force && hasNonObserverWindowsCursorEntry(hooks[event]) {
+		if r.refuses(res.ConfigPath, identityContent) && hasNonObserverWindowsCursorEntry(hooks[event]) {
 			res.Error = fmt.Errorf("hook.registerCursorWindows: event %s already has a non-observer hook; pass --force to overwrite", event)
 			return res
 		}
@@ -544,7 +601,7 @@ func (r *Registry) registerCursorWindows() RegistrationResult {
 		res.Error = err
 		return res
 	}
-	if err := r.recordChecksum(res.ConfigPath); err != nil {
+	if err := r.recordChecksum(res.Tool, res.ConfigPath); err != nil {
 		res.Error = err
 		return res
 	}
@@ -794,7 +851,11 @@ func (r *Registry) unregisterClaudeCodeWindows() UnregistrationResult {
 	}
 
 	for event, groups := range hooks {
-		newGroups, removed, kept := filterClaudeGroupsWindows(groups)
+		foreign := false
+		newGroups, removed, kept := filterClaudeGroupsWindows(groups, r.removableEntry("claude-code", isObserverWindowsClaudeEntry, &foreign))
+		if foreign {
+			noteKeptForeign(&res, event)
+		}
 		if removed > 0 {
 			res.HooksRemoved = append(res.HooksRemoved, event)
 		}
@@ -868,11 +929,14 @@ func (r *Registry) unregisterClaudeCodeWindows() UnregistrationResult {
 // uninstall` must not leave behind the very entry that was writing the
 // stranded Windows DB. Returns the survivors plus removed / kept counts
 // so the caller can decide whether to touch the file at all.
-func filterClaudeGroupsWindows(groups []claudeHookGroup) (out []claudeHookGroup, removed, kept int) {
+//
+// mine is the uninstall's recogniser (isObserverWindowsClaudeEntry under the
+// FU-203 judgement, removableEntry).
+func filterClaudeGroupsWindows(groups []claudeHookGroup, mine func(string) bool) (out []claudeHookGroup, removed, kept int) {
 	for _, g := range groups {
 		var survivors []claudeHookCommand
 		for _, h := range g.Hooks {
-			if h.Type == "command" && isObserverWindowsClaudeEntry(h.Command) {
+			if h.Type == "command" && mine(h.Command) {
 				removed++
 				continue
 			}
@@ -943,6 +1007,8 @@ func (r *Registry) unregisterCursorWindows() UnregistrationResult {
 	for event, entries := range hooks {
 		var survivors []cursorHookEntry
 		removed := 0
+		foreign := false
+		mine := r.removableEntry("cursor", isObserverWindowsCursorEntry, &foreign)
 		for _, e := range entries {
 			// isObserverWindowsCursorEntry recognises BOTH the wsl.exe
 			// cross-OS bridge shape this registrar writes AND a native
@@ -950,11 +1016,14 @@ func (r *Registry) unregisterCursorWindows() UnregistrationResult {
 			// — mirrors filterClaudeGroupsWindows's own native+bridge
 			// removal so `observer uninstall` never leaves behind the
 			// entry that was writing the stranded Windows DB.
-			if isObserverWindowsCursorEntry(e.Command) {
+			if mine(e.Command) {
 				removed++
 				continue
 			}
 			survivors = append(survivors, e)
+		}
+		if foreign {
+			noteKeptForeign(&res, event)
 		}
 		if removed > 0 {
 			res.HooksRemoved = append(res.HooksRemoved, event)
@@ -1084,6 +1153,11 @@ func (r *Registry) registerCodexWindows() RegistrationResult {
 		return res
 	}
 
+	if err := codexWindowsBridgePathError("hook.registerCodexWindows", distro, r.opts.BinaryPath, r.opts.ConfigPath); err != nil {
+		res.Error = err
+		return res
+	}
+
 	return r.registerCodexAt(codexHookTarget{
 		tool:      "codex-windows",
 		dir:       codexDir,
@@ -1091,7 +1165,34 @@ func (r *Registry) registerCodexWindows() RegistrationResult {
 		quote:     cmdQuoteIfNeeded,
 		errPrefix: "hook.registerCodexWindows",
 		matchMine: isObserverCodexEntry,
+		trustKey:  crossmount.WindowsPathFromMount,
+		commandFor: func(event, legacy string) string {
+			return r.gateBridgeCommand("codex", filepath.Dir(codexDir), distro, event, event, legacy)
+		},
 	})
+}
+
+// codexWindowsBridgeUnsafe are the characters a codex-windows bridge command
+// cannot carry in its distro, binary or config path (FU-162). Codex on
+// Windows runs the command through `powershell.exe -NoProfile -Command`, and
+// wsl.exe hands everything after `--` to the distro's shell, so $, a
+// backtick, a quote, ;, &, |, <, >, ( and ) are re-read by PowerShell or by
+// that shell whatever quoting the entry carries: probed live on Windows
+// PowerShell 5.1 and wsl.exe (2026-10-29), each of $, a backtick, ', ;, &
+// and ( broke the call. A space and % pass: the double quotes
+// cmdQuoteIfNeeded writes reach the Linux shell.
+const codexWindowsBridgeUnsafe = "$`'\";&|<>()\r\n"
+
+// codexWindowsBridgePathError refuses a codex-windows distro, binary or
+// config path that holds a codexWindowsBridgeUnsafe character: such an entry
+// would fail on every call, and Codex reads a failed hook as non-blocking.
+func codexWindowsBridgePathError(errPrefix string, fields ...string) error {
+	for _, f := range fields {
+		if i := strings.IndexAny(f, codexWindowsBridgeUnsafe); i >= 0 {
+			return safeErrorf("%s: %q holds %q, which Codex's PowerShell wrapper or the Linux shell behind wsl.exe would re-read; install observer under a path without it", errPrefix, f, f[i:i+1])
+		}
+	}
+	return nil
 }
 
 // unregisterCodexWindows removes the hook entries the codex-windows
@@ -1106,7 +1207,7 @@ func (r *Registry) unregisterCodexWindows() UnregistrationResult {
 	if codexDir == "" {
 		return UnregistrationResult{Tool: "codex-windows", DryRun: r.opts.DryRun, Skipped: true}
 	}
-	return r.unregisterCodexAt("codex-windows", codexDir, "hook.unregisterCodexWindows")
+	return r.unregisterCodexAt("codex-windows", codexDir, "hook.unregisterCodexWindows", crossmount.WindowsPathFromMount)
 }
 
 // --- Part B item 1/2 cross-OS bridges -----------------------------------
@@ -1115,10 +1216,9 @@ func (r *Registry) unregisterCodexWindows() UnregistrationResult {
 // a WSL daemon writing a wsl.exe-bridged hook command into a Windows-side
 // config file, mirroring registerClaudeCodeWindows / registerCursorWindows
 // / registerCodexWindows (see CLAUDE.md's "Don't try to bridge cross-OS
-// hook capture at the storage layer"). Windsurf/Devin Desktop Cascade
-// deliberately has NO row here — its only grounded install channel is the
-// macOS Homebrew cask (internal/integration's devin row), so there is no
-// Windows-native install to bridge to.
+// hook capture at the storage layer"). Devin Desktop's bridge,
+// devin-windows, lives with the other Wave 7 IDE targets in
+// register_crossos_ide.go (surface-gap IDE-6).
 
 // resolveWSLDistro returns the WSL distribution the cross-OS bridge
 // registrars invoke via `wsl.exe -d <distro>`, honoring Options.WSLDistro
@@ -1147,6 +1247,74 @@ func (r *Registry) resolveWSLDistro(errPrefix string) (string, error) {
 // rationale), NOT codex's cmd.exe convention.
 func gitBashWrapper(distro string) string {
 	return "MSYS_NO_PATHCONV=1 wsl.exe -d " + shellQuoteIfNeeded(distro) + " -- "
+}
+
+// bridgeExitTrailer ends every portable bridge command. PowerShell
+// reports a native command's exit 2 as 1 unless the script exits with
+// $LASTEXITCODE; Git Bash leaves the variable unset, so `exit` alone
+// returns the last command's status there (AP-119).
+const bridgeExitTrailer = "; exit $LASTEXITCODE"
+
+// msysLiteralPath doubles the leading slash of an absolute POSIX path so
+// Git Bash's MSYS argument conversion leaves it alone; Linux resolves
+// `//home/...` exactly like `/home/...`. Any other value is returned as
+// is. unMSYSLiteralPath is its inverse.
+func msysLiteralPath(p string) string {
+	if strings.HasPrefix(p, "/") && !strings.HasPrefix(p, "//") {
+		return "/" + p
+	}
+	return p
+}
+
+// unMSYSLiteralPath undoes msysLiteralPath: `//x` becomes `/x`; `/x`,
+// `///x` and every other value is returned as is.
+func unMSYSLiteralPath(p string) string {
+	if strings.HasPrefix(p, "//") && !strings.HasPrefix(p, "///") {
+		return p[1:]
+	}
+	return p
+}
+
+// portableBridgeCommand builds the wsl.exe bridge command that runs the
+// same way under Git Bash (and Git's sh), PowerShell 5.1 and cmd.exe
+// (AP-119; see registerClaudeCodeWindows for the per-shell findings):
+//
+//	wsl.exe -d <distro> -- //<bin> hook <tool> <event> [--config '//<cfg>']; exit $LASTEXITCODE
+//
+// Only POSIX single quotes are used, which mean the same literal in bash
+// and PowerShell; portableBridgePathError refuses the one character they
+// escape differently.
+func portableBridgeCommand(distro, binary, tool, event, configPath string) string {
+	cmd := "wsl.exe -d " + shellQuoteIfNeeded(distro) + " -- " +
+		shellQuoteIfNeeded(msysLiteralPath(binary)) + " hook " + tool + " " + event
+	if configPath != "" {
+		cmd += " --config " + shellQuote(msysLiteralPath(configPath))
+	}
+	return cmd + bridgeExitTrailer
+}
+
+// portableBridgePathError refuses a binary or config path that no
+// portable bridge command can quote: inside single quotes bash escapes a
+// quote as quote-backslash-quote-quote and PowerShell as a doubled quote,
+// so no one spelling works in both.
+func portableBridgePathError(errPrefix string, paths ...string) error {
+	for _, p := range paths {
+		if strings.Contains(p, "'") {
+			return safeErrorf("%s: path %q contains a single quote, which cannot be quoted for both Git Bash and PowerShell; install observer under a path without one", errPrefix, p)
+		}
+	}
+	return nil
+}
+
+// trimBridgeExitTrailer removes the portable bridge's trailing
+// `; exit $LASTEXITCODE` so the tokenizers see only the observer
+// invocation. ok reports whether the trailer was present.
+func trimBridgeExitTrailer(cmd string) (body string, ok bool) {
+	trimmed := strings.TrimRight(cmd, " \t")
+	if body, found := strings.CutSuffix(trimmed, bridgeExitTrailer); found {
+		return strings.TrimRight(body, " \t"), true
+	}
+	return cmd, false
 }
 
 // registerGeminiCLIWindows installs the prompt-submit hook into a
@@ -1384,25 +1552,59 @@ func (r *Registry) registerCommandCodeWindows() RegistrationResult {
 	path := filepath.Join(dir, commandcodemod.ModFileName)
 	res.ConfigPath = path
 
-	alreadyInstalled := commandcodemod.Installed(dir)
 	events := commandcodemod.EventsExcept(func(e string) bool { return r.skipEvent("command-code-windows", e) })
 	names := commandcodemod.NamesOf(events)
+	// Byte-exact currency, as registerCommandCode (T-847).
+	want, err := commandcodemod.RenderPluginBridgeEvents(r.opts.BinaryPath, distro, r.opts.ConfigPath, events)
+	if err != nil {
+		res.Error = fmt.Errorf("hook.registerCommandCodeWindows: %w", err)
+		return res
+	}
+	existing, readErr := os.ReadFile(path)
+	// The same guard as registerCommandCode (FU-207): a file that does not
+	// read as Observer's mod is refused without --force, a neutralised mod
+	// on a managed repair pass is rewritten (T-872), and a mod whose PROFILE
+	// runs a binary that is not judged an Observer binary is kept (FU-192).
+	var foreign, repair bool
+	if readErr == nil {
+		foreign, repair, err = r.occupiedOwnedFile("hook.registerCommandCodeWindows", path, commandcodemod.LooksLikeObserverPlugin(existing), shapedHooksInPluginProfile(existing))
+		if err != nil {
+			res.Error = err
+			return res
+		}
+	}
+	current := readErr == nil && !foreign && bytes.Equal(existing, want)
 	if r.opts.DryRun {
-		if !alreadyInstalled {
-			res.HooksAdded = names
-		} else {
+		if current {
 			res.AlreadySet = names
+		} else {
+			res.HooksAdded = names
 		}
 		return res
+	}
+	if foreign {
+		if err := keepReplacedBytes(&res, path, existing, repair); err != nil {
+			res.Error = fmt.Errorf("hook.registerCommandCodeWindows: %w", err)
+			return res
+		}
 	}
 	if err := commandcodemod.WritePluginBridgeEvents(dir, r.opts.BinaryPath, distro, r.opts.ConfigPath, events); err != nil {
 		res.Error = fmt.Errorf("hook.registerCommandCodeWindows: %w", err)
 		return res
 	}
-	if alreadyInstalled {
+	// The checksum the native writer records, so the managed-integrity
+	// probe can tell this file's tamper from a clean install (T-847).
+	if err := r.recordChecksum(res.Tool, path); err != nil {
+		res.Error = fmt.Errorf("hook.registerCommandCodeWindows: %w", err)
+		return res
+	}
+	if current {
 		res.AlreadySet = names
 	} else {
 		res.HooksAdded = names
+	}
+	if repair {
+		noteOwnedRepair(&res, path, names)
 	}
 	return res
 }
@@ -1421,14 +1623,31 @@ func (r *Registry) unregisterCommandCodeWindows() UnregistrationResult {
 		DryRun:     r.opts.DryRun,
 		ConfigPath: filepath.Join(dir, commandcodemod.ModFileName),
 	}
-	if !commandcodemod.Installed(dir) {
+	raw, err := os.ReadFile(res.ConfigPath)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			res.Error = fmt.Errorf("hook.unregisterCommandCodeWindows: read: %w", err)
+		}
+		return res
+	}
+	// FU-203: a mod whose PROFILE runs a binary that is not judged an
+	// Observer binary is kept, with or without --force; so is a file that
+	// is not Observer's mod (FU-212, the native mod's and the plugin
+	// shim's rule), reported in FilesKeptForeign.
+	if r.keepsForeignBinary(shapedHooksInPluginProfile(raw)) {
+		res.HooksKept = commandcodemod.EventNames()
+		noteKeptForeign(&res, res.HooksKept...)
+		return res
+	}
+	if !commandcodemod.LooksLikeObserverPlugin(raw) {
+		noteKeptForeignFile(&res, res.ConfigPath)
 		return res
 	}
 	if r.opts.DryRun {
 		res.HooksRemoved = commandcodemod.EventNames()
 		return res
 	}
-	if err := commandcodemod.RemovePlugin(dir); err != nil {
+	if err := removeEmptyConfigFile(res.ConfigPath, raw); err != nil {
 		res.Error = fmt.Errorf("hook.unregisterCommandCodeWindows: %w", err)
 		return res
 	}

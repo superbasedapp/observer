@@ -55,7 +55,21 @@ var cursorFiles = []FileRow{
 			Windows: `C:\ProgramData\Cursor\hooks.json`,
 		},
 		Format: FormatJSON, Precedence: 100, WriteNeeds: PrivAdminRoot, Grounding: doc(cursorHooksRef),
-		Note: "Enterprise (MDM-deployed) hooks, the highest layer. Team hooks from the cloud dashboard sit between project and enterprise and have no local file.",
+		Note: "Enterprise (MDM-deployed) hooks, the highest layer. Team hooks from the cloud dashboard sit between project and enterprise; cursor-agent caches them in cursor/team-hooks.",
+	},
+	{
+		// FU-108 (MAC-4): the cursor-agent bundle's hook loader joins this
+		// file beside the enterprise, user and project ones. It is the
+		// server's team hooks as cursor-agent last fetched them, so it is
+		// read-only evidence, never an edit target. A layer evaluator would
+		// pick it up through its shape; no Cursor hooks family exists yet,
+		// and nothing in it can remove Observer's user-level entries (the
+		// layers merge), so no Observer reader consumes it.
+		ID: "cursor/team-hooks", Tool: "cursor", Shape: "cursor/hooks", Kind: KindHooks, Scope: ScopeUser,
+		Paths: samePath("~/.cursor/managed/active-team-hooks/hooks.json"), Format: FormatJSON, Precedence: 50, WriteNeeds: PrivNever,
+		Grounding: mac4Source("cursor-agent 2026.10.22-27dcf5f bundle: the hooks loader that joins the enterprise /Library/Application Support/Cursor/hooks.json also reads ~/.cursor/managed/active-team-hooks/hooks.json"),
+		Note: "Team hooks from the cloud dashboard, cached by cursor-agent (server-managed state): shown read-only, never written. Sits between project and enterprise. " +
+			"Read from the macOS bundle; the same home-relative join is assumed on Linux and Windows (not live-checked), and whether CURSOR_CONFIG_DIR moves it is unverified, so it carries no relocation rule.",
 	},
 	{
 		ID: "cursor/user-mcp", Tool: "cursor", Shape: "cursor/mcp", Kind: KindMCP, Scope: ScopeUser,

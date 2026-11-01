@@ -1,10 +1,13 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/marmutapp/superbased-observer/internal/hook"
 )
 
 // TestRegistrationCommandNPMLayout is U1's red/green through the real I/O
@@ -29,7 +32,7 @@ func TestRegistrationCommandNPMLayout(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(launcher), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink("../lib/node_modules/@superbased/observer/bin/observer.js", launcher); err != nil {
+	if err := testSymlink(t, "../lib/node_modules/@superbased/observer/bin/observer.js", launcher); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", filepath.Dir(launcher))
@@ -69,7 +72,7 @@ func TestCodexTrustLineCountsRegisteredHooks(t *testing.T) {
 	if strings.Contains(line, "all 6 ") {
 		t.Fatalf("stale count: %q", line)
 	}
-	if !strings.Contains(line, "Observer entries trusted") {
-		t.Fatalf("line = %q", line)
+	if want := fmt.Sprintf("its own %d hook entries", len(hook.CodexHookEvents())); !strings.Contains(line, want) {
+		t.Fatalf("line = %q, want it to name %q", line, want)
 	}
 }

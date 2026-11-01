@@ -5,8 +5,8 @@
 #
 # Tagged-release builds are handled by npm-release.yml; this file is
 # the pre-merge / pre-tag safety net. scripts/release.sh refuses to tag
-# a commit unless a FULL run of this workflow (the nightly or a
-# workflow_dispatch) and ci-private completed green for that exact sha
+# a commit unless a FULL run of this workflow (a workflow_dispatch) and
+# ci-private completed green for that exact sha
 # (D-602, D-609; docs/release-runbook.md "Green before tag").
 #
 # What runs when (D-602, D-609). The `plan` job decides; every other job
@@ -15,15 +15,19 @@
 #       every job, but the go test shards test only the packages the
 #       change can affect (scripts/ci/cipkgs affected: changed packages
 #       plus their reverse test dependencies; a shared input such as
-#       go.mod, ci.yml, scripts/ci, top-level testdata or a migrations
-#       directory tests everything), and only the packages that use
-#       concurrency (scripts/ci/cipkgs race) run with -race. omit-tags
-#       runs the distro sets and no_obs in one job.
-#   schedule (nightly, 03:17 UTC) and workflow_dispatch (a FULL run):
-#       every job, every test package, all with -race, and the full
-#       omit-tag list in batches. The nightly skips itself when main has
-#       not moved since the last successful nightly. A FULL run is what
-#       the release gate accepts.
+#       go.mod, ci.yml, scripts/ci, top-level testdata or the
+#       Makefiles tests everything; a migration file is an input of its
+#       own migrations package), only the packages that use concurrency
+#       (scripts/ci/cipkgs race) run with -race, and a package not on
+#       the fresh list (cipkgs fresh) may replay a cached test result.
+#       omit-tags runs the distro sets and no_obs in one job.
+#   workflow_dispatch (a FULL run): every job, every test package with
+#       -count=1, -race on the same concurrent list as a push (every
+#       package when go.mod or go.sum changed since the previous
+#       release), and the full omit-tag list in batches (vet every set,
+#       full tests for the four editions). A FULL run is what the release
+#       gate accepts. No schedule: removed 2026-10-20 by
+#       operator ruling (no scheduled Actions).
 #   v* tag push: only the full omit-tag list, against the tagged commit
 #       (path filters never apply to tag pushes).
 #   paths-ignore: a push or PR that touches ONLY the paths below skips
@@ -105,16 +109,14 @@ on:
       - 'CHANGELOG.md'
       - 'kickstart-prompt.md'
       - 'superbased-final-spec-v2.md'
-  schedule:
-    # Nightly FULL run (every job, full -race suite, full omit-tag list),
-    # 03:17 UTC; skipped when main has not moved.
-    - cron: '17 3 * * *'
+  # The nightly schedule was removed 2026-10-20 by operator ruling (no
+  # scheduled Actions); a FULL run is dispatched by hand before a release.
   workflow_dispatch: {}
 
 # A newer push to the same ref cancels the run it replaces (main included:
 # its successor contains the superseded commit and is tested in full).
-# event_name is in the group so a main push and the nightly never cancel
-# each other. Tag runs are never cancelled.
+# event_name is in the group so a main push and a dispatched full run
+# never cancel each other. Tag runs are never cancelled.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
@@ -125,23 +127,24 @@ permissions:
 jobs:
   # ----------------------------------------------------------------
   # plan (D-609): decides what this run tests, once, for every job.
-  #   run   false only for a nightly on a main commit the last successful
-  #         nightly already covered (every job then skips).
-  #   full  true on schedule / workflow_dispatch / v* tag: every test
-  #         package, all with -race, full omit-tag list.
+  #   run   always true now that the nightly (which could skip itself) is
+  #         gone; every job still gates on it.
+  #   full  true on workflow_dispatch / v* tag: every test
+  #         package with -count=1, -race on the concurrent list (every
+  #         package after a go.mod / go.sum change since the previous
+  #         release), full omit-tag list.
   #   shards / shard_count  the go test matrix, sized from the weight
   #         table for the packages this run tests (1 to 12 shards).
   #   omit  the omit-tag matrix: one distro job, or the full list in
   #         batches that share one warm build cache.
-  # The package lists (affected.txt, race.txt) travel to the shards as
-  # an artifact, so every shard tests from the same plan.
+  # The package lists (affected.txt, race.txt, fresh.txt) travel to the
+  # shards as an artifact, so every shard tests from the same plan.
   # ----------------------------------------------------------------
   plan:
     name: plan
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      actions: read # the nightly reads its own run history
     outputs:
       run: ${{ steps.plan.outputs.run }}
       full: ${{ steps.plan.outputs.full }}
@@ -157,7 +160,6 @@ jobs:
           family: go
       - id: plan
         env:
-          GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
           REF: ${{ github.ref }}
           PUSH_BEFORE: ${{ github.event.before }}
@@ -166,23 +168,25 @@ jobs:
           set -euo pipefail
           mkdir -p plan
           case "$EVENT:$REF" in
-            schedule:*|workflow_dispatch:*|push:refs/tags/*) full=true ;;
+            workflow_dispatch:*|push:refs/tags/*) full=true ;;
             *) full=false ;;
           esac
-          if [ "$EVENT" = schedule ]; then
-            last=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?event=schedule&status=success&branch=main&per_page=1" \
-              --jq '.workflow_runs[0].head_sha // ""')
-            if [ "$last" = "$GITHUB_SHA" ]; then
-              echo "::notice::main is still at ${GITHUB_SHA}, which the last successful nightly already covered; skipping"
-              { echo "run=false"; echo "full=true"; echo "shards=[]"; echo "shard_count=0"; echo "omit=[]"; } >> "$GITHUB_OUTPUT"
-              echo ALL > plan/affected.txt
-              echo ALL > plan/race.txt
-              exit 0
-            fi
-          fi
           if [ "$full" = true ]; then
             echo ALL > plan/affected.txt
-            echo ALL > plan/race.txt
+            # Race scope (item 8 of the test-time plan): the same list a
+            # push uses, unless go.mod or go.sum changed since the previous
+            # release (a new toolchain or dependency), which races every
+            # package. No previous release found or fetched: race every
+            # package (cipkgs race --since with an empty base).
+            prev=$(git ls-remote --tags --refs origin 'refs/tags/v*' \
+              | sed 's#.*refs/tags/##' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+              | grep -vx "${GITHUB_REF_NAME}" | sort -V | tail -1 || true)
+            if [ -n "$prev" ] && ! git fetch --no-tags --depth=1 origin "refs/tags/$prev:refs/tags/$prev"; then
+              echo "::warning::could not fetch the previous release $prev; racing everything"
+              prev=""
+            fi
+            echo "race scope base: ${prev:-none}"
+            go run ./scripts/ci/cipkgs race --since "$prev" "$GITHUB_SHA" > plan/race.txt
           else
             base="${PR_BASE:-$PUSH_BEFORE}"
             if [ -n "$base" ] && [ -n "${base//0/}" ]; then
@@ -191,6 +195,9 @@ jobs:
             go run ./scripts/ci/cipkgs affected "$base" "$GITHUB_SHA" > plan/affected.txt
             go run ./scripts/ci/cipkgs race > plan/race.txt
           fi
+          # Packages that never replay a cached test result (item 17): the
+          # push tier lets the others replay; a full run replays nothing.
+          go run ./scripts/ci/cipkgs fresh > plan/fresh.txt
           export SHARD_FILTER=plan/affected.txt RACE_FILTER=plan/race.txt
           # About 45 shard-minutes of package-seconds per shard (1.9
           # package-s per shard-s on a 2-vCPU runner), at most 12 shards.
@@ -246,6 +253,14 @@ jobs:
           cd web
           npm run typecheck
 
+      - name: unit and component tests
+        # web/src/lib/*.test.ts under node's test runner, then the
+        # component tests (web/scripts/test-components.mjs). Before item 15
+        # of the test-time plan these ran only in lanes, never in CI.
+        run: |
+          cd web
+          npm test
+
       - name: ui copy lint
         # Ratchet on internal names in UI text (snake_case identifiers,
         # section-sign references, config paths and keys): the per-root
@@ -293,6 +308,28 @@ jobs:
     if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
+      - name: free runner disk (T-806)
+        # This job fills the runner's root disk: the restored build cache
+        # (about 2 GB compressed, several times that unpacked), then Linux
+        # and Windows vet, lint, the build, the toolchain tests and a
+        # Windows compile of every package, each adding its own objects to
+        # GOCACHE, and finally the Windows link of every main package. In
+        # October 2026 the Windows compile step began failing with "no space
+        # left on device". The image ships toolchains this job never
+        # uses (.NET, Android SDK, GHC, CodeQL, Swift, docker images);
+        # removing them returns well over 20 GB. The removals run in
+        # parallel so the step stays short.
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet &
+          sudo rm -rf /usr/local/lib/android &
+          sudo rm -rf /opt/ghc /usr/local/.ghcup &
+          sudo rm -rf /opt/hostedtoolcache/CodeQL &
+          sudo rm -rf /usr/share/swift &
+          sudo docker image prune --all --force > /dev/null &
+          wait
+          df -h /
+
       - uses: actions/checkout@v5
 
       - uses: ./.github/actions/go-cache
@@ -300,8 +337,15 @@ jobs:
         with:
           family: go
 
+      - name: disk after cache restore
+        run: |
+          df -h /
+          du -sh "$(go env GOCACHE)" "$(go env GOMODCACHE)" 2>/dev/null || true
+
       - name: vet
-        run: go vet ./...
+        run: |
+          go vet ./...
+          df -h / | tail -1
 
       - name: vet (windows)
         # `go vet` above type-checks only the Linux build; a
@@ -310,7 +354,9 @@ jobs:
         # 2026-09-02) compiles undetected until someone runs the suite on
         # a Windows host. Cross-vet the Windows build so that class is
         # red on CI, not on the operator's laptop.
-        run: GOOS=windows GOARCH=amd64 go vet ./...
+        run: |
+          GOOS=windows GOARCH=amd64 go vet ./...
+          df -h / | tail -1
 
       - name: lint
         # golangci-lint enforces the full .golangci.yml set — including
@@ -319,14 +365,23 @@ jobs:
         # pre-existing exclusions). Joined CI in v1.7; the tree is clean.
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          # v2.12.2 is the newest golangci-lint release whose prebuilt
-          # binary is compiled with Go 1.26 (go1.26.2), so it can lint this
-          # go.mod (go 1.26.0) without the "language version used to build
+          # v2.14.0 is the oldest golangci-lint that can lint this go.mod
+          # (go 1.27.0). Its prebuilt binary is compiled with Go 1.27
+          # (go1.27.0), so there is no "language version used to build
           # golangci-lint is lower than the targeted Go version" refusal
-          # that forced install-mode goinstall under v1.64.8 (built with
-          # go1.24). Moved with the Go 1.26 toolchain (T-696); .golangci.yml
-          # was migrated to the v2 schema at the same time.
-          version: v2.12.2
+          # (v2.12.2, built with go1.26.2, refuses it), and it bundles
+          # golang.org/x/tools v0.50.0, the first that reads Go 1.27 export
+          # data. v2.13.2 is also built with go1.27.0 but bundles x/tools
+          # v0.49.0, so every package fails type checking with "export
+          # data version 5 is greater than maximum supported version 4".
+          # The go1.27.3 patch move (lane RB1, GO-2026-6809) keeps v2.14.0.
+          # Moved with the Go 1.27 toolchain (lane GO127); the previous
+          # move was v2.12.2 with Go 1.26 (T-696), when .golangci.yml was
+          # migrated to the v2 schema.
+          version: v2.14.0
+
+      - name: disk after lint
+        run: df -h / | tail -1
 
       - name: copy lint
         # Spelling, no-dash copy, posture comment wording and the one
@@ -348,13 +403,24 @@ jobs:
           go build -trimpath -o bin/observer ./cmd/observer
           GOOS=windows GOARCH=amd64 go build -trimpath -o bin/antigravity-bridge.exe ./cmd/antigravity-bridge
           ls -l bin/
+          df -h / | tail -1
 
       - name: latency regressions (no race)
-        # internal/guard's two wall-clock latency ceilings skip under the
-        # race detector (it inflates CPU-bound work 2-10x, and the shared
-        # 2-core runner blew a 12x-widened ceiling on 2026-09-16), so they
-        # are gated HERE, without -race, on an otherwise idle runner.
-        run: go test -count=1 -timeout 10m -run LatencyRegression ./internal/guard/
+        # The wall-clock latency tests (scripts/ci/latency-tests.txt) skip
+        # in the test shards (SBO_SKIP_LATENCY_TESTS=1, a shard runs
+        # dozens of packages on two cores) and internal/guard's two also
+        # under the race detector (it inflates CPU-bound work 2-10x, and
+        # the shared 2-core runner blew a 12x-widened ceiling on
+        # 2026-09-16), so they are gated HERE, without -race, on an
+        # otherwise idle runner. Each calls latencygate.Gate, which fails
+        # a latency test missing from the list (item 20).
+        run: |
+          set -euo pipefail
+          list=$(grep -v '^#' scripts/ci/latency-tests.txt | grep .)
+          names=$(cut -f2 <<<"$list" | sort -u | paste -sd'|')
+          pkgs=$(cut -f1 <<<"$list" | sort -u | sed 's#^#./#')
+          # shellcheck disable=SC2086 # one word per package
+          go test -count=1 -timeout 10m -run "^(${names})\$" $pkgs
 
       - name: toolchain invariant tests (no race)
         # tests/invariant tests that exec the Go toolchain (go build / go
@@ -365,6 +431,7 @@ jobs:
           set -euo pipefail
           names=$(grep -v '^#' scripts/ci/toolchain-tests.txt | grep . | paste -sd'|')
           go test -count=1 -timeout 30m -run "^(${names})\$" ./tests/invariant/
+          df -h / | tail -1
 
       - name: windows cross-compile
         # `go test ./...` and the build step above never compile any
@@ -373,10 +440,20 @@ jobs:
         # internal/processobs (peb_windows.go, procmetrics_windows.go,
         # enum_windows.go, and the ETW backend to come) ships undetected.
         # Compile-only; these packages have no Linux-runnable tests.
-        run: GOOS=windows GOARCH=amd64 go build ./...
+        run: |
+          df -h / | tail -1
+          GOOS=windows GOARCH=amd64 go build ./...
+          df -h / | tail -1
+
+      - name: disk report
+        # Runs on failure too, so a disk shortfall names its consumer.
+        if: ${{ !cancelled() }}
+        run: |
+          df -h /
+          sudo du -sh "$(go env GOCACHE)" "$(go env GOMODCACHE)" "$HOME/.cache/golangci-lint" /tmp "$RUNNER_TEMP" 2>/dev/null || true
 
       - name: save go cache (full runs only, D-612)
-        if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && steps.go.outputs.cache-hit != 'true' }}
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && steps.go.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           path: |
@@ -418,14 +495,20 @@ jobs:
   # is red, never a silently unrun package.
   #
   # Scope (D-609): on a push or PR the universe is narrowed to the
-  # affected packages and only concurrent packages get -race
-  # (scripts/ci/go-test-run.sh); the nightly and workflow_dispatch run
-  # everything with -race, and the release gate requires such a run.
+  # affected packages; a workflow_dispatch runs every package, and the
+  # release gate requires such a run. Both run -race only on the
+  # concurrent packages (scripts/ci/cipkgs race), except that a full run
+  # whose go.mod or go.sum changed since the previous release races every
+  # package; tests/invariant never runs under -race (item 6 and item 8
+  # of the test-time plan).
   #
   # Cache (D-602, D-604): every shard restores one shared compile cache
   # (family go-test, saved by shard 0), so an unchanged package is not recompiled
-  # with -race on every push. -count=1 keeps Go from replaying cached
-  # test RESULTS: every test still runs every time.
+  # with -race on every push. A full run passes -count=1, so Go never
+  # replays a cached test RESULT there. A push sets GO_TEST_REPLAY=1:
+  # a package not on plan/fresh.txt may replay a result the restored
+  # cache holds (item 17); end-to-end, live-database and LIVE-switch
+  # packages keep -count=1.
   #
   # checkptr (D-604): -race also turns on -d=checkptr, the unsafe.Pointer
   # arithmetic checker, for every package. In modernc.org/sqlite and its
@@ -451,7 +534,10 @@ jobs:
       SHARDS: ${{ needs.plan.outputs.shard_count }}
       SHARD_FILTER: plan/affected.txt
       RACE_FILTER: plan/race.txt
+      FRESH_FILTER: plan/fresh.txt
+      GO_TEST_REPLAY: ${{ needs.plan.outputs.full == 'true' && '0' || '1' }}
       SBO_SKIP_TOOLCHAIN_TESTS: '1'
+      SBO_SKIP_LATENCY_TESTS: '1'
     steps:
       - uses: actions/checkout@v5
 
@@ -479,11 +565,11 @@ jobs:
       - name: test
         run: scripts/ci/go-test-run.sh ${{ matrix.shard }} "${SHARDS}"
 
-      # Saved from the nightly FULL run only (D-609): a push compiles just its
+      # Saved from a dispatched FULL run only (D-609): a push compiles just its
       # affected packages, so its cache would be a partial one, and the
       # newest entry is what every shard restores.
-      - name: save go cache (nightly, shard 0 only)
-        if: ${{ !cancelled() && matrix.shard == 0 && github.event_name == 'schedule' && github.ref == 'refs/heads/main' && steps.go.outputs.cache-hit != 'true' }}
+      - name: save go cache (full run, shard 0 only)
+        if: ${{ !cancelled() && matrix.shard == 0 && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && steps.go.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           path: |
@@ -545,7 +631,7 @@ jobs:
           scripts/distro-smoke.sh bin/distro/observer-${{ matrix.distro }}-linux-amd64
 
       - name: save go cache (full runs only, D-612)
-        if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && steps.go.outputs.cache-hit != 'true' }}
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && steps.go.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           path: |
@@ -589,6 +675,15 @@ jobs:
         if: runner.os == 'Linux'
         run: shellcheck scripts/install.sh scripts/test-install.sh
 
+      # The Windows sandbox driver's bundled files (lane SBX-P6, wired here
+      # by lane SBX-P3B): offline checks of scripts/mxc-files.sh (a file
+      # that does not match its pin, a missing file, owed pins and a failed
+      # signature check each refuse to bundle). No network, no Windows.
+      - name: mxc-files.sh
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash scripts/test-mxc-files.sh
+
       - name: install.sh
         if: runner.os != 'Windows'
         shell: bash
@@ -608,14 +703,19 @@ jobs:
   # ----------------------------------------------------------------
   # Omit-tag variants (plan 5.9, risk R1 "stub rot"): every sbo_omit_*
   # tag a build line names, the no_obs alias and each distro's tag set
-  # get `go vet ./...` and the tests of the packages that hold a tagged
-  # file. The set list comes from the tree (omit-tag-check.sh --list) and
-  # is filtered by the script itself, never restated here (D-602, D-609):
+  # get `go vet ./...` (which type-checks every test file) and the tests
+  # of the packages that hold a tagged file. The four editions run those
+  # tests in full; any other set runs the five heavy packages
+  # (cmd/observer, the two org packages, internal/store,
+  # internal/intelligence/dashboard) as a compile plus their tagged tests
+  # only (item 1 of the test-time plan). The set list comes from the tree
+  # (omit-tag-check.sh --list) and is filtered by the script itself, never
+  # restated here (D-602, D-609):
   #   PR / branch push: one job, --scope distro: the distro sets (the
   #     entries carrying a sbo_distro_* stamp, which are the editions
   #     npm-release builds and publishes) and no_obs. `full` has no omit
   #     tag; the distros job builds, proves and smokes it on every push.
-  #   schedule, workflow_dispatch, v* tag push: the whole list, i.e. also
+  #   workflow_dispatch, v* tag push: the whole list, i.e. also
   #     every single sbo_omit_* tag (custom-build.yml customer builds,
   #     which the release does not publish), in 6 batches (--batch i/6).
   # ----------------------------------------------------------------
@@ -642,10 +742,10 @@ jobs:
         # (D-609); each set is a log group and a failing set is named in an
         # ::error line, so a batch still reports per set.
         run: scripts/omit-tag-check.sh ${{ matrix.args }}
-      # Saved from the nightly FULL run only (D-609): its batches compile
+      # Saved from a dispatched FULL run only (D-609): its batches compile
       # every tag set, the per-push job only the distro sets.
-      - name: save go cache (nightly, batch 0 only)
-        if: ${{ !cancelled() && matrix.name == 'batch 0/6' && github.event_name == 'schedule' && github.ref == 'refs/heads/main' && steps.go.outputs.cache-hit != 'true' }}
+      - name: save go cache (full run, batch 0 only)
+        if: ${{ !cancelled() && matrix.name == 'batch 0/6' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && steps.go.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           path: |

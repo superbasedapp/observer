@@ -1,10 +1,12 @@
 import { useState } from "react";
 import { useApi } from "@/lib/useApi";
 import {
+  announcementApplies,
   parseAnnouncement,
   useReleaseAnnouncement,
   type ReleaseAnnouncement,
 } from "@/lib/version";
+import type { StatusSnapshot } from "@/lib/types";
 import { Icon, Tooltip } from "@/components/primitives";
 import { X } from "lucide-react";
 
@@ -120,9 +122,18 @@ export function AnnouncementBanner() {
   // fetch per mount is the right cost.
   const api = useApi<AnnouncementsResponse>("/api/announcements");
   const fromUpdateCheck = useReleaseAnnouncement();
+  // The running version (the shared /api/status read the header polls):
+  // an announcement fixed in a release this node is at or past is no news
+  // here (WINNODE2 16b). The daemon already filters its own list; this
+  // covers the update-check rail.
+  const status = useApi<StatusSnapshot, string | undefined>("/api/status", undefined, [], {
+    select: (s) => s.version,
+  });
   const [, bump] = useState(0);
 
-  const merged = mergeAnnouncements(api.data?.announcements, fromUpdateCheck);
+  const merged = mergeAnnouncements(api.data?.announcements, fromUpdateCheck).filter((a) =>
+    announcementApplies(a, status.data),
+  );
   const acked = acks();
   const showing = merged.find((a) => !acked[a.id]);
   if (!showing) return null;

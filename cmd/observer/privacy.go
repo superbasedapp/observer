@@ -4,10 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/marmutapp/superbased-observer/internal/components"
 	"github.com/marmutapp/superbased-observer/internal/config"
 )
 
@@ -251,14 +254,99 @@ func prewarmTargetsList(targets []string) string {
 	return strings.Join(targets, ", ")
 }
 
+// pricingFeedInBuild reports whether this binary carries the
+// egress.pricing-feed component (a -tags sbo_omit_egress_pricing_feed build
+// links no feed client and never fetches, see pricing_omit.go).
+func pricingFeedInBuild() bool {
+	return !slices.Contains(components.Omitted(), "egress.pricing-feed")
+}
+
+// pricingFeedHours is the effective auto-poll cadence, mirroring
+// runPricingAutoSync's own fallback (a non-positive value polls daily).
+func pricingFeedHours(fc config.PricingFeedConfig) int {
+	if fc.PollIntervalHours <= 0 {
+		return 24
+	}
+	return fc.PollIntervalHours
+}
+
+// urlHost renders the host of raw for a detail line, or raw itself when it
+// does not parse as an absolute URL.
+func urlHost(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return raw
+	}
+	return u.Host
+}
+
+// pricingFeedRow is the [pricing.feed] egress row (T-931): the default-on
+// background fetch of the signed public price table, which runs only on a
+// node that is not enrolled with an org server. Active reflects the config
+// flags and the build; enrolment is a DB fact this config-only report cannot
+// see, so the gate says so instead of guessing.
+func pricingFeedRow(cfg config.Config) privacyEgress {
+	fc := cfg.Pricing.Feed
+	hours := pricingFeedHours(fc)
+	feedURL := nonEmpty(fc.URL, config.DefaultPricingFeedURL)
+	detail := fmt.Sprintf("A GET to %s (%s) for the signed public model price table: once when the daemon starts, then every %d h. The request carries an Accept header and, after the first fetch, an If-None-Match of the last table's digest (a 304 when nothing changed); no account, no node id, nothing about your sessions or code. The table is verified offline against a key compiled into the binary before any price is used. Turn it off with [pricing.feed] enabled = false (no fetch at all), or set auto = false to fetch only when you run `observer pricing sync`.", urlHost(feedURL), feedURL, hours)
+	if !pricingFeedInBuild() {
+		detail = "Not in this build (the egress.pricing-feed component is compiled out): no feed is ever fetched. " + detail
+	}
+	if cfg.OrgClient.Enabled {
+		detail += " For this config: [org_client].enabled = true. If this node is enrolled, its prices come through the org rail and the feed poller refuses on every tick; run `observer org status` to check enrolment."
+	}
+	return privacyEgress{
+		Name:   "pricing feed",
+		Gate:   fmt.Sprintf("[pricing.feed].enabled = true AND [pricing.feed].auto = true (both on by default) AND this node is not enrolled with an org server (an enrolled node gets prices from the org rail; enrolment is not checked by this report). Fires automatically at daemon start and every [pricing.feed].poll_interval_hours (now %d), no operator action needed", hours),
+		Active: fc.Enabled && fc.Auto && pricingFeedInBuild(),
+		Detail: detail,
+	}
+}
+
+// prewarmRow is the TLS pre-warm egress row: the proxy's on-by-default
+// startup HEAD requests against [proxy].prewarm_targets. A build without
+// capture.proxy never starts the proxy, so it never fires.
+func prewarmRow(cfg config.Config) privacyEgress {
+	targets := cfg.Proxy.PrewarmTargets
+	hosts := make([]string, 0, len(targets))
+	for _, t := range targets {
+		hosts = append(hosts, urlHost(t))
+	}
+	hostList := "(none)"
+	if len(hosts) > 0 {
+		hostList = strings.Join(hosts, ", ")
+	}
+	detail := fmt.Sprintf("HEAD requests fired once each time the proxy starts, against: %s (hosts: %s) - to warm the TLS connection so the first real request through the proxy doesn't pay the handshake. No session data, no request body, no headers beyond the bare HEAD; not driven by anything you typed or ran. Turn it off with [proxy] prewarm_targets = [] (an explicitly empty list disables it).", prewarmTargetsList(targets), hostList)
+	if reason := proxyNotInBuildReason(); reason != "" {
+		detail = "Not fired: " + reason + ". " + detail
+	}
+	return privacyEgress{
+		Name:   "TLS pre-warm",
+		Gate:   "[proxy].prewarm_targets is non-empty (default: chatgpt.com + api.openai.com) - fires automatically once at each proxy startup, no operator action needed",
+		Active: len(targets) > 0 && !proxyNotInBuild(),
+		Detail: detail,
+	}
+}
+
+// routingProbeRow is the optional routing upstream prober: with routing and
+// its active probe both on, the proxy re-fires the pre-warm HEADs against the
+// configured Anthropic and OpenAI upstreams on a ticker (cmd/observer/proxy.go).
+func routingProbeRow(cfg config.Config) privacyEgress {
+	return privacyEgress{
+		Name:   "routing upstream probe",
+		Gate:   "[routing].enabled = true AND [routing.reliability.probe].enabled = true (off by default)",
+		Active: cfg.Routing.Enabled && cfg.Routing.Reliability.Probe.Enabled && !proxyNotInBuild(),
+		Detail: fmt.Sprintf("HEAD requests every %d s to the configured upstreams (%s, %s) so connectivity failures show in the daemon log and the connection pool stays warm. No session data, no request body. Turn it off with [routing.reliability.probe] enabled = false.", cfg.Routing.Reliability.Probe.IntervalSeconds, urlHost(cfg.Proxy.AnthropicUpstream), urlHost(cfg.Proxy.OpenAIUpstream)),
+	}
+}
+
 // buildPrivacyEgress lists every outbound-network capability compiled into
 // this binary. Each row states its gate in plain language and whether the
-// loaded config currently arms it. There is no row for telemetry,
-// analytics, crash reporting, or any other automatic phone-home — the one
-// narrow exception, and the reason the "no automatic phone-home" claim
-// below is qualified rather than absolute, is the TLS pre-warm row: an
-// on-by-default startup HEAD request against [proxy].prewarm_targets that
-// carries no session data (see the "TLS pre-warm" row).
+// loaded config currently arms it. Two rows run automatically on a default
+// install, and both carry no session data: the pricing feed fetch (standalone
+// nodes only) and the TLS pre-warm HEAD requests at proxy startup. Every
+// other row forwards your own AI tool's traffic or needs an explicit opt-in.
 func buildPrivacyEgress(cfg config.Config) []privacyEgress {
 	orgPushDetail := "Pushes rollup rows (hashed by default; raw content only under a local [org_client.share].full_content/admin_managed opt-in - the org admin can never flip this remotely) and polls the org policy bundle. The same poll also fetches the org's dashboard announcement, if any - a GET on the connection this cycle already opens, no extra request and nothing sent about you; it can only put dismissible text in your dashboard banner, there is no acknowledgment wire back, and [dashboard].org_announcements = false silences it locally. Stated plainly, because it is inherent to any fetch and not something a client-side switch can remove: the server can SEE the request - that your enrolled node polled, and when - exactly as it sees the push. There is no read receipt (whether a banner was shown or dismissed is never reported), but the poll itself is observable to the org you enrolled with. The same cycle also fetches this node's own signed BUDGET policy (GET /api/agent/budget) when [org_client] is on - one more conditional GET on the same already-open connection to the same already-enrolled host, sending nothing about you beyond the bearer that identifies the node. What comes BACK is your effective cap; what goes back UP is an enum-only posture row (enforcement point / guard mode / where the numbers came from / last fetch state / proxy-only coverage) carrying no cap value and no team label. Set [guard.budget].from_org = false and the org's numbers are never applied."
 	switch {
@@ -374,17 +462,14 @@ func buildPrivacyEgress(cfg config.Config) []privacyEgress {
 			Active: cfg.Remote.Notify.Enabled,
 			Detail: "Fires a webhook/ntfy call on a terminal session's lifecycle event (session_blocked, session_finished, ...) for every attach/resume/launch session - the OnExit wiring in cmd/observer/attach_standalone.go is shared, it isn't specific to remote-originated sessions. Off by default.",
 		},
-		{
-			// F1: internal/proxy.Prewarm fires HEAD requests against
-			// [proxy].prewarm_targets at proxy startup (default non-empty:
-			// chatgpt.com + api.openai.com — see internal/config's
-			// Default()). This is the one automatic, on-by-default
-			// outbound call in the binary; see the qualified closing line.
-			Name:   "TLS pre-warm",
-			Gate:   "[proxy].prewarm_targets is non-empty (default: chatgpt.com + api.openai.com) - fires automatically at proxy startup, no operator action needed",
-			Active: len(cfg.Proxy.PrewarmTargets) > 0,
-			Detail: fmt.Sprintf("HEAD requests fired at proxy startup against: %s - to warm the TLS connection so the first real request through the proxy doesn't pay the handshake. No session data, no request body, no headers beyond the bare HEAD; not driven by anything you typed or ran.", prewarmTargetsList(cfg.Proxy.PrewarmTargets)),
-		},
+		// F1: internal/proxy.Prewarm fires HEAD requests against
+		// [proxy].prewarm_targets at proxy startup (default non-empty:
+		// chatgpt.com + api.openai.com, see internal/config's Default()).
+		// One of the two automatic, on-by-default outbound calls; the
+		// other is the pricing feed row below (T-931).
+		prewarmRow(cfg),
+		pricingFeedRow(cfg),
+		routingProbeRow(cfg),
 		{
 			// F2: internal/guard/notify/egress.go is the single egress
 			// worker for every guard-cloud call; cmd/observer/start.go
@@ -461,12 +546,15 @@ This command makes no network calls itself and reads no external state
 beyond your config file - it's a report on what the binary CAN do given
 its current configuration, not a live traffic capture.
 
-There is no telemetry, no analytics, and no automatic phone-home in this
-binary, with one narrow exception: an on-by-default TLS pre-warm HEAD
-request the proxy fires at startup against [proxy].prewarm_targets (no
-session data carried - see the "TLS pre-warm" row below). Every other
+Your session content (prompts, code, responses, file contents) never leaves
+this machine on this product's behalf without your explicit consent. Two
+automatic background requests run on a default install, and neither carries
+any of your data: the pricing feed fetch of the public model price table
+(once at daemon start, then daily; standalone nodes only - see the "pricing
+feed" row) and the TLS pre-warm HEAD requests the proxy fires at startup
+against [proxy].prewarm_targets (see the "TLS pre-warm" row). Every other
 outbound row below is either forwarding a request your own AI tool already
-made, or something you explicitly configured or clicked.`,
+made, or something you explicitly configured, consented to, or clicked.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := deps.loadConfig()
@@ -516,8 +604,8 @@ func writePrivacyText(w io.Writer, report privacyReport) {
 	}
 
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "No telemetry, no analytics, no crash reporting - the one automatic call is")
-	fmt.Fprintln(w, "the TLS pre-warm HEAD request above (no session data carried); everything")
+	fmt.Fprintln(w, "Two automatic calls run by default, neither carrying session data: the")
+	fmt.Fprintln(w, "pricing feed fetch and the TLS pre-warm HEAD requests above. Everything")
 	fmt.Fprintln(w, "else needs an explicit opt-in or your own tool's request.")
 	fmt.Fprintf(w, "Full detail: %s\n", report.DocsURL)
 }

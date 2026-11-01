@@ -1,6 +1,7 @@
 package componentsvc
 
 import (
+	"runtime"
 	"sort"
 	"strings"
 
@@ -180,14 +181,54 @@ var teardownRules = []teardownRule{
 		},
 	},
 	{
+		name: "security-githooks", match: exact("security.githooks"),
+		steps: func(id string) []Step {
+			return []Step{{
+				Component: id, Kind: StepManual, Command: "observer security githooks uninstall --project <repository>",
+				What: "Removes Observer's block from the pre-commit and pre-push hooks of each repository you installed it in (byte-exact; a hook you wrote stays). While the component is off the block skips itself.",
+			}}
+		},
+	},
+	{
+		name: "security-provenance", match: exact("security.provenance"),
+		steps: func(id string) []Step {
+			return []Step{{
+				Component: id, Kind: StepManual, Command: "observer security provenance consent --withdraw-all",
+				What: "Withdraws your consent in every repository and removes the prepare-commit-msg trailer block byte-exactly; git notes already written stay. While the component is off the block adds nothing.",
+			}}
+		},
+	},
+	{
 		name: "service", match: exact("integration.service"),
 		steps: func(id string) []Step {
 			return []Step{{
 				Component: id, Kind: StepManual, Command: "observer service uninstall",
-				What: "Stops and removes the systemd unit.",
+				What: serviceTeardownWhat(teardownGOOS),
 			}}
 		},
 	},
+}
+
+// serviceTeardownWords is how the service step's text names what
+// `observer service uninstall` removes on each host's service manager
+// (N4, live Mac 2026-10-29: macOS read "the systemd unit"); a GOOS with no
+// row reads the generic line.
+var serviceTeardownWords = map[string]string{
+	"linux":   "Stops and removes the systemd unit.",
+	"darwin":  "Unloads and removes the LaunchAgent (~/Library/LaunchAgents/app.superbased.observer.plist).",
+	"windows": "Windows has no `observer service` unit to remove; the start at sign-in is removed with `observer setup autostart off`.",
+}
+
+// teardownGOOS is the host the teardown text is worded for (a var so a
+// test can word another OS).
+var teardownGOOS = runtime.GOOS
+
+// serviceTeardownWhat words the service step for goos.
+func serviceTeardownWhat(goos string) string {
+	if w, ok := serviceTeardownWords[goos]; ok {
+		return w
+	}
+	return "Stops and removes the service unit."
 }
 
 // TeardownFor returns the ordered teardown steps of one component (none

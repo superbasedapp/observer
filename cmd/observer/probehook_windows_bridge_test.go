@@ -29,7 +29,11 @@ import (
 //
 //	cursor:      wsl.exe -d Ubuntu -- <bin> hook cursor beforeSubmitPrompt
 //	codex:       wsl.exe -d Ubuntu -- <bin> hook codex UserPromptSubmit
-//	claude-code: MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu -- <bin> hook claude-code user-prompt-submit
+//	claude-code: wsl.exe -d Ubuntu -- /<bin> hook claude-code user-prompt-submit; exit $LASTEXITCODE
+//	             (the AP-119 portable form; <bin> is absolute, so the
+//	             command carries //<bin>. The legacy MSYS_NO_PATHCONV=1
+//	             form reads as not registered: the probe asks for the
+//	             exact command registration would write today.)
 //
 // hook.Registry's cross-OS auto-detection only ever succeeds from
 // INSIDE WSL (internal/platform/crossmount.WindowsUserName shells out
@@ -101,7 +105,8 @@ func TestCheckHookRegistrationHomes_RealBridgeFixtures(t *testing.T) {
 		{
 			tool: "claude-code", registryEvent: "UserPromptSubmit",
 			configDir: ".claude", fileName: "settings.json",
-			fixture: `{"hooks":{"UserPromptSubmit":[{"matcher":"*","hooks":[{"type":"command","command":"MSYS_NO_PATHCONV=1 wsl.exe -d ` + distro + ` -- ` + binary + ` hook claude-code user-prompt-submit"}]}]}}`,
+			// AP-119 portable bridge form (Git Bash and PowerShell hosts).
+			fixture: `{"hooks":{"UserPromptSubmit":[{"matcher":"*","hooks":[{"type":"command","command":"wsl.exe -d ` + distro + ` -- /` + binary + ` hook claude-code user-prompt-submit; exit $LASTEXITCODE"}]}]}}`,
 		},
 	}
 

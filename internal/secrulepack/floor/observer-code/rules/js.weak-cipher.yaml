@@ -1,0 +1,31 @@
+rules:
+  - id: js.weak-cipher
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: A broken or weak cipher (DES, 3DES, RC4, Blowfish), ECB mode or the deprecated key-derivation createCipher is used; use createCipheriv with AES-GCM.
+    metadata:
+      category: code_vuln
+      cwe: CWE-327
+    patterns:
+      - pattern-either:
+          - pattern: crypto.createCipher(...)
+          - pattern: crypto.createDecipher(...)
+          - patterns:
+              - pattern-either:
+                  - pattern: crypto.createCipheriv("$ALG", ...)
+                  - pattern: crypto.createDecipheriv("$ALG", ...)
+                  - pattern: createCipheriv("$ALG", ...)
+                  - pattern: createDecipheriv("$ALG", ...)
+              - metavariable-regex:
+                  metavariable: $ALG
+                  regex: (?i)^(des|des-.*|des3|des-ede.*|rc4.*|rc2.*|bf|bf-.*|blowfish.*|.*-ecb)$
+      - pattern-not-inside: describe(...)
+      - pattern-not-inside: it(...)
+      - pattern-not-inside: test(...)
+      - pattern-not-inside: $X.test(...)
+      - pattern-not-inside: beforeEach(...)
+      - pattern-not-inside: beforeAll(...)
+      - pattern-not-inside: afterEach(...)
+      - pattern-not-inside: afterAll(...)
+      - pattern-not-inside: before(...)
+      - pattern-not-inside: after(...)

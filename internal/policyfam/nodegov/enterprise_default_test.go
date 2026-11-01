@@ -20,7 +20,7 @@ func TestEnterpriseDefaultBodyCompilesThroughTheRealVocabulary(t *testing.T) {
 	_, raw, err := EnterpriseDefaultBody(EnterpriseDefaultInput{
 		GrantedAuthority: []string{
 			"extract.routing", "extract.policy_state", "extract.predictions",
-			"extract.tasks", "extract.tool_accounts",
+			"extract.tasks", "extract.tool_accounts", "extract.hook_activity",
 		},
 	})
 	if err != nil {
@@ -69,7 +69,7 @@ func TestEnterpriseDefaultBodyTable(t *testing.T) {
 			authority: []string{"extract.managed"},
 			wantShare: []string{
 				"routing_summary", "policy_state", "limit_gauge",
-				"task_detail", "tool_account_detail",
+				"task_detail", "tool_account_detail", "hook_activity",
 			},
 			// Even under the umbrella, a DEFAULT body never turns on content.
 			wantAbsent: []string{"full_content", "full_tool_bodies", "obs.content"},

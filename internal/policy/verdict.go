@@ -128,6 +128,10 @@ func ParseSeverity(s string) (Severity, error) {
 // §3.4); G1 only ever emits builtin.
 const SourceBuiltin = "builtin"
 
+// SourceOrg marks the organization's signed policy layer, the most
+// trusted override source (guard/merge.go applies it last and floors it).
+const SourceOrg = "org"
+
 // Verdict is the result of evaluating one Event against the effective
 // policy — the only type (besides Event and Capabilities) that crosses
 // the seam back to hot paths. Field semantics follow spec §3.4
@@ -167,4 +171,9 @@ type Verdict struct {
 	// uncapped). The prompt lanes read it so a capped rule warns and is
 	// never escalated to confirm or block by [guard.prompt].mode.
 	EnforceCappedBy string
+	// DecisionPinnedBy carries Rule.DecisionPinnedBy: the layer whose
+	// explicit `decision` or `enforce = true` override set this rule's
+	// stance ("" for catalog defaults). The prompt lanes read it so an
+	// org-pinned decision floors the local [guard.prompt] mode.
+	DecisionPinnedBy string
 }

@@ -154,3 +154,41 @@ func TestEnterpriseAuthoritySetContainsIntel(t *testing.T) {
 		}
 	}
 }
+
+// TestShareTierTable_HookActivityIsHeadline pins the hook_activity tier
+// (surface-gap DEC-5) to the headline posture, like routing_summary: its own
+// extract.hook_activity token or the umbrella raises it on a managed node,
+// nothing raises it on an individual node, and an unrelated tier's token
+// does not.
+func TestShareTierTable_HookActivityIsHeadline(t *testing.T) {
+	cases := []struct {
+		name string
+		eff  Effective
+		want bool
+	}{
+		{"own token, managed", Effective{Managed: true, Authority: []string{AuthorityExtractHookActivity}}, true},
+		{"umbrella, managed", Effective{Managed: true, Authority: []string{AuthorityExtractManaged}}, true},
+		{"own token, individual", Effective{Managed: false, Authority: []string{AuthorityExtractHookActivity}}, false},
+		{"umbrella, individual", Effective{Managed: false, Authority: []string{AuthorityExtractManaged}}, false},
+		{"unrelated tier, managed", Effective{Managed: true, Authority: []string{AuthorityExtractToolAccounts}}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ExtractionAuthorized(tc.eff, "hook_activity"); got != tc.want {
+				t.Errorf("ExtractionAuthorized(%+v, hook_activity) = %v, want %v", tc.eff, got, tc.want)
+			}
+		})
+	}
+	for _, check := range []struct {
+		name string
+		ok   bool
+	}{
+		{"KnownAuthority", KnownAuthority(AuthorityExtractHookActivity)},
+		{"ManagedAuthority", ManagedAuthority(AuthorityExtractHookActivity)},
+		{"ExtractionAuthority", ExtractionAuthority(AuthorityExtractHookActivity)},
+	} {
+		if !check.ok {
+			t.Errorf("%s(%q) = false, want true", check.name, AuthorityExtractHookActivity)
+		}
+	}
+}

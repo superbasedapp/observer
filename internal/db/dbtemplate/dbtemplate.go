@@ -11,6 +11,8 @@ import (
 	"sync"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/db/migrations"
+	"github.com/marmutapp/superbased-observer/internal/db/templatecache"
 )
 
 // DisableEnv names the opt-out switch. Setting it to "0" on the command line
@@ -87,43 +89,35 @@ var (
 	templateOnce  sync.Once
 	templateImage []byte
 	templateErr   error
-
-	// Resolved at package init, before any test can rewrite the environment
-	// variables os.MkdirTemp consults. Tests in several packages t.Setenv
-	// HOME/USERPROFILE/TMPDIR to a t.TempDir(); if one of those happened to
-	// trigger the build, the template file would land inside a directory
-	// `testing` deletes at that test's end.
-	baseTempDir = os.TempDir()
 )
 
-// Bytes returns the fully migrated template database as a byte image, built
+// Bytes returns the fully migrated template database as a byte image, read
 // once per process.
 //
-// The image is held in memory and the file it was built from is removed
-// immediately, so a run leaks no template files and no TestMain is required
-// of any caller. A failed build is remembered and returned to EVERY later
-// caller, so the failure is loud and uniform rather than a per-test flake.
+// The image comes from internal/db/templatecache, which keeps one template per
+// migration set in the OS temp directory and builds it at most once per
+// machine under a file lock, so a run of many test binaries pays the
+// migration chain once rather than once per binary. The image is then held in
+// memory, so no TestMain is required of any caller. A failed build is
+// remembered and returned to EVERY later caller, so the failure is loud and
+// uniform rather than a per-test flake.
 func Bytes() ([]byte, error) {
-	templateOnce.Do(buildTemplate)
+	templateOnce.Do(func() {
+		templateImage, templateErr = templatecache.Image(templatecache.SQLite("agent", migrations.Files), buildTemplate)
+		if templateErr != nil {
+			templateErr = fmt.Errorf("dbtemplate: %w", templateErr)
+		}
+	})
 	return templateImage, templateErr
 }
 
-func buildTemplate() {
-	dir, err := os.MkdirTemp(baseTempDir, "observer-db-template-")
-	if err != nil {
-		templateErr = fmt.Errorf("dbtemplate: mkdtemp: %w", err)
-		return
-	}
-	// The directory exists only for as long as it takes to read the image
-	// back out; from then on the template lives in memory.
-	defer func() { _ = os.RemoveAll(dir) }()
-	path := filepath.Join(dir, "template.db")
-
+// buildTemplate migrates a new database at path from scratch and closes it as
+// one self-contained file.
+func buildTemplate(path string) error {
 	ctx := context.Background()
 	database, err := db.Open(ctx, db.Options{Path: path})
 	if err != nil {
-		templateErr = fmt.Errorf("dbtemplate: build template: %w", err)
-		return
+		return fmt.Errorf("build template: %w", err)
 	}
 	// Fold the WAL back into the main file before closing: a copy of the main
 	// file alone is only a complete database if nothing is left in the
@@ -132,7 +126,7 @@ func buildTemplate() {
 	//
 	// The Exec is NOT the guarantee, and it would be easy to read it as one:
 	// a busy checkpoint reports itself in the RESULT ROW, which ExecContext
-	// discards. The guarantee is the post-close stat below — SQLite only
+	// discards. The guarantee is templatecache's post-close stat: SQLite only
 	// deletes the sidecars on last-connection close after a successful
 	// checkpoint, so "no non-empty -wal survives Close" does imply the main
 	// file is complete. Keep both: the Exec makes the common case cheap, the
@@ -140,27 +134,12 @@ func buildTemplate() {
 	_, ckptErr := database.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)")
 	closeErr := database.Close()
 	if ckptErr != nil {
-		templateErr = fmt.Errorf("dbtemplate: checkpoint template: %w", ckptErr)
-		return
+		return fmt.Errorf("checkpoint template: %w", ckptErr)
 	}
 	if closeErr != nil {
-		templateErr = fmt.Errorf("dbtemplate: close template: %w", closeErr)
-		return
+		return fmt.Errorf("close template: %w", closeErr)
 	}
-	if info, statErr := os.Stat(path + "-wal"); statErr == nil && info.Size() > 0 {
-		templateErr = errors.New("dbtemplate: template database left a non-empty -wal after close")
-		return
-	}
-	image, err := os.ReadFile(path)
-	if err != nil {
-		templateErr = fmt.Errorf("dbtemplate: read template: %w", err)
-		return
-	}
-	if len(image) == 0 {
-		templateErr = errors.New("dbtemplate: template database is empty")
-		return
-	}
-	templateImage = image
+	return nil
 }
 
 // isFreshPath reports whether nothing at all lives at path yet.

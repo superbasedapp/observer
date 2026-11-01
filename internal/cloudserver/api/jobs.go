@@ -165,7 +165,7 @@ func (s *Server) handleSubmitJob(w http.ResponseWriter, r *http.Request) {
 			"cloud intelligence is not accepting jobs yet")
 		return
 	}
-	if _, ok, cerr := s.credentials.ProviderKey(ctx, route.RouteID); cerr != nil || !ok {
+	if _, ok, cerr := s.credentials.ProviderKey(ctx, route); cerr != nil || !ok {
 		s.audit(ctx, p.AccountID, "job_rejected_admission_credential")
 		writeErr(w, http.StatusServiceUnavailable, "provider_policy_unverified",
 			"cloud intelligence is not accepting jobs for this route yet")
@@ -246,6 +246,12 @@ func writeJobSubmitError(w http.ResponseWriter, log *slog.Logger, err error) {
 		writeErr(w, http.StatusTooManyRequests, "monthly_limit", "monthly allowance exhausted")
 	case errors.Is(err, store.ErrConcurrency):
 		writeErr(w, http.StatusTooManyRequests, "concurrency_limit", "too many jobs in flight")
+	case errors.Is(err, store.ErrSpendCeiling):
+		// T-946: the shared Free pool's USD ceiling for today or this month.
+		// Same code as an exhausted pool (clients already handle it); the
+		// message says when it comes back.
+		writeErr(w, http.StatusServiceUnavailable, "budget_exhausted",
+			"the free tier's shared daily or monthly spend limit is reached; it resets at 00:00 UTC (daily) or on the 1st (monthly)")
 	case errors.Is(err, store.ErrGlobalBudget):
 		writeErr(w, http.StatusServiceUnavailable, "budget_exhausted", "free-tier budget exhausted")
 	case errors.Is(err, store.ErrNoEntitlement):
@@ -272,21 +278,31 @@ func writeJobSubmitError(w http.ResponseWriter, log *slog.Logger, err error) {
 // same "cheapest honest answer" ActivityMix already exists to give. A
 // marshal failure of this static, already-validated shape is unreachable, so
 // the error is discarded (mirrors buildLunaResultSchema's precedent).
+//
+// USAGE HONESTY (D-866). usage_status is always stamped with the resolved
+// reading (cloudcontract.MetricsBlock.ResolvedUsage). For a session whose usage
+// was not measured, the token and cost keys are OMITTED rather than stored as
+// zeros, so no later reader (the weekly digest's model input) can mistake
+// "not captured" for "free".
 func sessionMetricsJSON(env cloudcontract.Envelope) []byte {
 	actionsTotal := len(env.Actions)
 	if env.Overflow != nil {
 		actionsTotal += env.Overflow.ActionsOmitted
 	}
+	usage := env.Metrics.ResolvedUsage()
 	m := map[string]any{
 		"duration_seconds":  env.DurationSeconds,
 		"started_at_bucket": env.StartedAtBucket,
-		"tokens_in":         env.Metrics.TokensIn,
-		"tokens_out":        env.Metrics.TokensOut,
-		"cache_read":        env.Metrics.CacheReadTokens,
-		"cost_usd":          env.Metrics.CostUSD,
+		"usage_status":      usage,
 		"error_rate":        env.Metrics.ErrorRate,
 		"actions_total":     actionsTotal,
 		"outcomes":          env.Outcomes,
+	}
+	if usage == cloudcontract.UsageMeasured {
+		m["tokens_in"] = env.Metrics.TokensIn
+		m["tokens_out"] = env.Metrics.TokensOut
+		m["cache_read"] = env.Metrics.CacheReadTokens
+		m["cost_usd"] = env.Metrics.CostUSD
 	}
 	if len(env.ActivityMix) > 0 {
 		m["activity_mix"] = env.ActivityMix

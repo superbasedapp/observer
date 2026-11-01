@@ -159,7 +159,8 @@ func TestProcessHealthDir(t *testing.T) {
 	if got := ProcessHealthDir(""); got != "" {
 		t.Errorf("empty path: got %q, want %q", got, "")
 	}
-	if got := ProcessHealthDir("/var/lib/observer/observer.db"); got != "/var/lib/observer" {
+	// filepath.Dir answers in the host's separator.
+	if got := ProcessHealthDir("/var/lib/observer/observer.db"); got != filepath.FromSlash("/var/lib/observer") {
 		t.Errorf("got %q", got)
 	}
 	if got := ProcessHealthDir("~/.observer/observer.db"); strings.HasPrefix(got, "~") {

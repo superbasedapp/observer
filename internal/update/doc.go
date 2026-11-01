@@ -23,7 +23,12 @@
 //     target advance the schema, and therefore must a DB snapshot be
 //     taken" (plan.go, §3.7 steps 5 and 8),
 //   - the node update state enum and its legal transitions (state.go,
-//     §2.1).
+//     §2.1),
+//   - the vendor key set the signed content channel verifies with: the
+//     channel itself (joint roadmap F0-6, ledger SHR-7) is the core
+//     subpackage internal/update/content, because this package belongs to
+//     the org.update component and the channel is shared by the security
+//     pillar's feeds and the sandbox plan's artifact sets.
 //
 // It owns NO transport, NO storage and NO process control. Downloading
 // bytes, hashing a file on disk, extracting an archive, swapping a

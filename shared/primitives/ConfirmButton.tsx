@@ -67,7 +67,31 @@ export type ConfirmButtonProps = {
   ariaLabel?: string;
   /** Ask for a reason in the armed step (see the file header). */
   reason?: ConfirmReason;
+  /** holdArmed keeps the armed step until the operator confirms, presses
+   *  Cancel or Escape, or clicks elsewhere, instead of disarming after
+   *  `timeoutMs`; the armed step shows a Cancel button (WINNODE item 7: a
+   *  publish confirm that reverted after four seconds was easy to miss). */
+  holdArmed?: boolean;
 };
+
+/** ArmedBehaviour is how an armed ConfirmButton ends. */
+export type ArmedBehaviour = {
+  /** Auto-disarm delay, or null when the armed step waits for the operator. */
+  autoDisarmMs: number | null;
+  /** A Cancel button is shown beside the armed button. */
+  showCancel: boolean;
+  /** A click outside the control disarms it. */
+  disarmOnOutsideClick: boolean;
+};
+
+/** armedBehaviour is the one rule for how the armed step ends, by the
+ *  control's own shape: a reason field or holdArmed waits for the operator,
+ *  everything else disarms itself after timeoutMs. */
+export function armedBehaviour(p: { withReason: boolean; holdArmed: boolean; timeoutMs: number }): ArmedBehaviour {
+  if (p.withReason) return { autoDisarmMs: null, showCancel: true, disarmOnOutsideClick: false };
+  if (p.holdArmed) return { autoDisarmMs: null, showCancel: true, disarmOnOutsideClick: true };
+  return { autoDisarmMs: p.timeoutMs, showCancel: false, disarmOnOutsideClick: false };
+}
 
 export function ConfirmButton({
   onConfirm,
@@ -89,11 +113,14 @@ export function ConfirmButton({
   armedNoteClassName,
   ariaLabel,
   reason,
+  holdArmed = false,
 }: ConfirmButtonProps) {
   const [armed, setArmed] = useState(false);
   const [reasonText, setReasonText] = useState("");
   const timer = useRef<number | null>(null);
+  const root = useRef<HTMLSpanElement | null>(null);
   const withReason = reason !== undefined && !unstyled && requireConfirm;
+  const behaviour = armedBehaviour({ withReason, holdArmed: holdArmed && !unstyled, timeoutMs });
 
   const clear = useCallback(() => {
     if (timer.current !== null) {
@@ -116,6 +143,23 @@ export function ConfirmButton({
     if (disabled || loading || !requireConfirm) disarm();
   }, [disabled, loading, requireConfirm, disarm]);
 
+  // holdArmed: a click anywhere outside the control, or Escape, disarms it.
+  useEffect(() => {
+    if (!armed || !behaviour.disarmOnOutsideClick) return;
+    const onDown = (e: PointerEvent) => {
+      if (root.current && e.target instanceof Node && !root.current.contains(e.target)) disarm();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") disarm();
+    };
+    document.addEventListener("pointerdown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [armed, behaviour.disarmOnOutsideClick, disarm]);
+
   function fire() {
     const typed = reasonText.trim();
     disarm();
@@ -135,11 +179,12 @@ export function ConfirmButton({
     }
     setArmed(true);
     clear();
-    if (withReason) return; // no auto-disarm while a reason is being typed
+    // No auto-disarm while a reason is being typed, or under holdArmed.
+    if (behaviour.autoDisarmMs === null) return;
     timer.current = window.setTimeout(() => {
       timer.current = null;
       setArmed(false);
-    }, timeoutMs);
+    }, behaviour.autoDisarmMs);
   }
 
   const showArmed = armed && requireConfirm;
@@ -167,7 +212,7 @@ export function ConfirmButton({
   const reasonLabel = reason?.label ?? (reason?.required ? "Reason" : "Reason (optional)");
   const reasonMissing = withReason && showArmed && reason?.required === true && reasonText.trim() === "";
   return (
-    <span className="inline-flex flex-wrap items-center gap-2">
+    <span ref={root} className="inline-flex flex-wrap items-center gap-2">
       {withReason && showArmed && (
         <input
           type="text"
@@ -205,7 +250,7 @@ export function ConfirmButton({
       >
         {showArmed ? confirmLabel : children}
       </Button>
-      {withReason && showArmed && (
+      {behaviour.showCancel && showArmed && (
         <Button variant="ghost" size={size} onClick={disarm}>
           Cancel
         </Button>

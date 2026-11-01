@@ -55,6 +55,11 @@ type promptReplyOutcome struct {
 	// documented "ask" verb is deliberately NOT used for it, see
 	// promptDialectBlock's doc comment).
 	Blocking bool
+	// Confirmable is true when the stop is one the developer can confirm
+	// (re-enter: send it again; confirm: a native dialog), as opposed to a
+	// hard block. Only meaningful with Blocking; a dialect whose wire shape
+	// has a distinct ask state (the plugin shim) reads it.
+	Confirmable bool
 	// Reason is the house-style, human-facing message (§7) — never
 	// vendor-authored text, never a raw prompt/value.
 	Reason string
@@ -89,6 +94,13 @@ type promptDialect struct {
 	// silently treated as "prompt scanned, nothing found" — see
 	// policy.Event.PromptFieldMissing's doc comment.
 	extract func(body []byte) (prompt, sessionID string, ok, fieldMissing bool)
+	// decodes, when non-nil, says whether a payload extract answered
+	// ok=false for decodes as this dialect's shape after all: a dialect whose
+	// extractor also says ok=false for a benign reason (Command Code's input
+	// with no text member, Antigravity's model call with no transcript yet)
+	// sets it, so PromptPayloadUndecodable fails closed only on a payload
+	// that does not decode. nil: every ok=false is a decode failure.
+	decodes func(body []byte) bool
 	// reply builds the dialect's wire-shaped JSON reply object for one
 	// resolved outcome. nil for a dialect whose block signal is a bare
 	// process exit code with no structured stdout reply at all
@@ -107,8 +119,9 @@ type promptDialect struct {
 	// block is exit 2 with NO stdout reply, Qoder's shape.
 	blockExitCode int
 	// stderrReason, when true, means a Blocking or Warn outcome's
-	// house message is written VERBATIM as a plain-text line to
-	// stderr — Qoder's documented "exit 2 rejects the prompt; stderr
+	// house message is written as plain text to stderr (a Blocking one
+	// after the StderrBlockHeader on one line, DEC-1; a Warn one
+	// verbatim): Qoder's documented "exit 2 rejects the prompt; stderr
 	// is shown to the user" channel (docs.qoder.com/en/cli/hooks).
 	// The forensics debug line HandlePromptSubmitGuarded otherwise
 	// writes to stderr is suppressed for such a dialect (it goes to
@@ -158,6 +171,56 @@ type promptDialect struct {
 	// hook's stdout to the conversation as a <hook_result> message), so
 	// "nothing to say" must be an EMPTY stdout, never a JSON approve.
 	silentAllow bool
+	// capsProbe, when non-nil, narrows caps for THIS invocation's host
+	// (Antigravity CLI: the PreInvocation abort is offered only when the
+	// running agy is a version proven to honour it). It runs only for a
+	// prompt with something to judge, never on the clean-prompt path.
+	capsProbe func(guard.PromptSeamCaps) guard.PromptSeamCaps
+	// taintsSession marks a seam whose stop leaves the prompt in the
+	// conversation, which the host resends with every later turn (agy's
+	// PreInvocation abort). Such a seam first asks whether a prompt was
+	// already stopped in this conversation (guard.PromptSessionStopped)
+	// and, if so, stops the turn again whatever its own prompt says
+	// (guard.TaintedSessionPromptVerdict).
+	taintsSession bool
+}
+
+// promptSessionStopChecker is the optional evaluator capability a
+// taintsSession dialect uses (guard.Guard implements it).
+type promptSessionStopChecker interface {
+	PromptSessionStopped(tool, sessionID string) (guard.PromptSessionStop, bool)
+}
+
+// seamCapsFor returns d's capabilities for this invocation (capsProbe
+// applied).
+func (d promptDialect) seamCapsFor() guard.PromptSeamCaps {
+	if d.capsProbe != nil {
+		return d.capsProbe(d.caps)
+	}
+	return d.caps
+}
+
+// taintedSessionVerdict returns the verdict that stops this turn because
+// its conversation still carries a stopped prompt (ok=false: not a
+// taintsSession dialect, no session, nothing stopped, or a host that cannot
+// stop the turn, in which case the turn is judged on its own prompt).
+func taintedSessionVerdict(tool string, d promptDialect, ge PromptEvaluator, sessionID string) (guard.PromptVerdict, bool) {
+	if !d.taintsSession || sessionID == "" {
+		return guard.PromptVerdict{}, false
+	}
+	c, ok := ge.(promptSessionStopChecker)
+	if !ok {
+		return guard.PromptVerdict{}, false
+	}
+	stop, ok := c.PromptSessionStopped(tool, sessionID)
+	if !ok {
+		return guard.PromptVerdict{}, false
+	}
+	caps := d.seamCapsFor()
+	if !caps.Block {
+		return guard.PromptVerdict{}, false
+	}
+	return guard.TaintedSessionPromptVerdict(stop).WithAction(caps, "hook"), true
 }
 
 // repeatSeamNothingNew reports whether a oncePerPrompt seam has nothing
@@ -184,6 +247,22 @@ var promptHookStops = guard.PromptSeamCaps{Reenter: true, Block: true}
 
 // promptHookWarns adds the documented pass-through notice.
 var promptHookWarns = guard.PromptSeamCaps{Warn: true, Reenter: true, Block: true}
+
+// promptPluginShimStops is the OpenCode / Kilo CLI chat.message seam
+// through the plugin shim: it stops the prompt (the shim throws, so the
+// model is never called; the session id keys resend-to-confirm) and shows a
+// notice with the host's TUI toast (a headless run has no TUI, so a warning
+// there is seen only on the dashboard). No native confirm exists
+// (permission.ask has no trigger site in OpenCode 1.18.31), and no redact is
+// offered.
+var promptPluginShimStops = guard.PromptSeamCaps{Warn: true, Reenter: true, Block: true}
+
+// promptPluginShimConfirms is the pi `input` seam through the plugin shim:
+// a notice (ctx.ui.notify), a native confirm (ctx.ui.confirm; with no UI the
+// shim stops the prompt and the developer resends to confirm, so Reenter
+// backs it), a hard stop ({action:"handled"}, no request is sent) and a
+// rewrite ({action:"transform"}).
+var promptPluginShimConfirms = guard.PromptSeamCaps{Warn: true, Confirm: true, Reenter: true, Block: true, Redact: true}
 
 // promptHookStopsOrRedacts is a seam that can stop the prompt AND rewrite
 // what the model receives (Poolside updated_prompt, commandcode transform).
@@ -534,7 +613,11 @@ func extractCommandCodePrompt(body []byte) (prompt, sessionID string, ok, fieldM
 		return "", "", false, false
 	}
 	var text string
-	_ = json.Unmarshal(raw, &text)
+	if json.Unmarshal(raw, &text) != nil {
+		// A text member that is not a string is not an empty prompt: the
+		// guard cannot read it (FU-161, commandCodePromptDecodes).
+		return "", "", false, false
+	}
 	return text, "", true, false
 }
 
@@ -751,6 +834,26 @@ func buildDevinCLIPromptReply(out promptReplyOutcome) any {
 	}{devinCLIPromptOut{HookEventName: "UserPromptSubmit", AdditionalContext: out.Reason}}
 }
 
+// Kiro CLI's userPromptSubmit (kiro-cli 2.28.0, live on demo node 1,
+// gfiD research 2026-10-15): stdin {hook_event_name, cwd, session_id,
+// prompt} (the prompt also in $USER_PROMPT); the hook CANNOT block (exit 1
+// and exit 2 both let the prompt through) and an exit-0 stdout is added to
+// the MODEL's context only. So the seam warns the model in plain text and
+// every finding still toasts; the allow is an empty stdout (any text would
+// reach the model).
+var extractKiroCLIPrompt = extractGenericPrompt
+
+// plainTextReply is a dialect reply written verbatim as one line of plain
+// text (a host that adds stdout to the model context as text, not JSON).
+type plainTextReply string
+
+func buildKiroCLIPromptReply(out promptReplyOutcome) any {
+	if !out.Warn || out.Reason == "" {
+		return nil
+	}
+	return plainTextReply(out.Reason)
+}
+
 // Dialect ids — the channel's WIRE SHAPE, not a tool name. Multiple
 // registry tools may share one row (contract §6.7/§9.0).
 const (
@@ -800,9 +903,10 @@ const (
 	// analogous non-JSON-config registration model.
 	PromptDialectCommandCode = "command-code"
 	// PromptDialectAntigravityPreInvocation is Antigravity CLI's
-	// PreInvocation hook (promptagy.go): a warn-only seam that reads the
-	// prompt from the session transcript and can only inject a transient
-	// message for the model.
+	// PreInvocation hook (promptagy.go): a pre-model-call seam that reads
+	// the prompt from the session transcript, warns the developer with an
+	// injected userMessage, and blocks by aborting the turn (no message can
+	// accompany the abort; the toast carries the reason).
 	PromptDialectAntigravityPreInvocation = "antigravity-preinvocation"
 	// PromptDialectKimiCode is Kimi Code's UserPromptSubmit shape: exit 2
 	// with the reason on stderr blocks; an allow is an EMPTY stdout.
@@ -811,7 +915,89 @@ const (
 	// .devin/hooks.v1.json, distinct from Devin Desktop's Cascade
 	// pre_user_prompt): context injection only, no block.
 	PromptDialectDevinCLI = "devin-cli"
+	// PromptDialectKiroCLI is Kiro CLI's userPromptSubmit shape: context
+	// injection only (plain-text stdout reaches the model), no block.
+	PromptDialectKiroCLI = "kiro-cli"
+	// PromptDialectDirac is Dirac's UserPromptSubmit file hook: the prompt
+	// under userPromptSubmit.prompt, {cancel: true, errorMessage} cancels the
+	// whole task before any model call; the allow is silence.
+	PromptDialectDirac = "dirac"
+	// PromptDialectAutohand is Autohand's pre-prompt: the prompt is
+	// "instruction"; a top-level {decision: block, reason} (exit 0) stops it
+	// and the reason is printed to the developer.
+	PromptDialectAutohand = "autohand"
 )
+
+// Dirac's UserPromptSubmit (dirac-cli 0.5.22, live 2026-10-21 on Windows
+// and WSL): stdin {diracVersion, hookName, taskId, workspaceRoots, ...,
+// userPromptSubmit: {prompt, attachments?}}. It fires before EVERY API
+// request of a task (twice with the initial prompt, then with prompt "" on
+// each tool-result turn), so the row is oncePerPrompt (a repeat of an already
+// judged prompt replies allow without a second verdict) and an empty prompt
+// is simply clean. A block cancels the whole task; a resend is a NEW task
+// (a new session id), so no resend-to-confirm is offered: caps are a hard
+// stop. The reason goes to stderr, which Dirac echoes into the transcript
+// (the model never sees it).
+type promptDiracPayload struct {
+	TaskID           string `json:"taskId"`
+	UserPromptSubmit *struct {
+		Prompt *string `json:"prompt"`
+	} `json:"userPromptSubmit"`
+}
+
+func extractDiracPrompt(body []byte) (prompt, sessionID string, ok, fieldMissing bool) {
+	var p promptDiracPayload
+	if err := json.Unmarshal(body, &p); err != nil {
+		return "", "", false, false
+	}
+	if p.UserPromptSubmit == nil || p.UserPromptSubmit.Prompt == nil {
+		return "", p.TaskID, true, true
+	}
+	return *p.UserPromptSubmit.Prompt, p.TaskID, true, false
+}
+
+// diracPromptReply is Dirac's cancel reply.
+type diracPromptReply struct {
+	Cancel       bool   `json:"cancel"`
+	ErrorMessage string `json:"errorMessage,omitempty"`
+}
+
+func buildDiracPromptReply(out promptReplyOutcome) any {
+	if !out.Blocking {
+		return nil
+	}
+	return diracPromptReply{Cancel: true, ErrorMessage: out.Reason}
+}
+
+// promptDiracStops is Dirac's seam: a hard stop only (see above).
+var promptDiracStops = guard.PromptSeamCaps{Block: true}
+
+// Autohand's pre-prompt (autohand-cli 0.9.8, live 2026-10-21 on Windows and
+// WSL): stdin {session_id, cwd, hook_event_name, instruction,
+// mentioned_files?}. {"decision":"block","reason"} on exit 0 stops the
+// prompt before the model and prints the reason to the developer (yellow);
+// additionalContext reaches only the model, so there is no developer-visible
+// warning. exit 2 would print stderr instead, which carries Observer's own
+// diagnostics, so the block is the JSON reply alone.
+type promptAutohandPayload struct {
+	Instruction string `json:"instruction"`
+	SessionID   string `json:"session_id"`
+}
+
+func extractAutohandPrompt(body []byte) (prompt, sessionID string, ok, fieldMissing bool) {
+	var p promptAutohandPayload
+	if err := json.Unmarshal(body, &p); err != nil {
+		return "", "", false, false
+	}
+	return p.Instruction, p.SessionID, true, !jsonHasAnyKey(body, "instruction")
+}
+
+func buildAutohandPromptReply(out promptReplyOutcome) any {
+	if out.Blocking {
+		return topDecisionReply{Decision: "block", Reason: out.Reason}
+	}
+	return struct{}{}
+}
 
 // promptDialects is the dialect table (CLAUDE.md rule 5): exactly the
 // VERIFIED wire shapes (contract §6/§2.1b) get a row here. A
@@ -872,19 +1058,19 @@ var promptDialects = map[string]promptDialect{
 	PromptDialectPoolside:      {extract: extractGenericPrompt, reply: buildPoolsidePromptReply, redact: buildPoolsidePromptRedactReply, blockExitCode: 2, caps: promptHookStopsOrRedacts},
 	PromptDialectZcode:         {extract: extractGenericPrompt, reply: buildZcodePromptReply, caps: promptHookStops},
 	PromptDialectCascade:       {extract: extractCascadePrompt, reply: nil, blockExitCode: 2, caps: promptHookStops},
-	PromptDialectCommandCode:   {extract: extractCommandCodePrompt, reply: buildCommandCodePromptReply, redact: buildCommandCodePromptRedactReply, caps: promptHookStopsOrRedacts},
+	PromptDialectCommandCode:   {extract: extractCommandCodePrompt, decodes: commandCodePromptDecodes, reply: buildCommandCodePromptReply, redact: buildCommandCodePromptRedactReply, caps: promptHookStopsOrRedacts},
 	PromptDialectAntigravityPreInvocation: {
-		extract: extractAntigravityPreInvocationPrompt, reply: buildAntigravityPreInvocationReply,
-		caps: guard.PromptSeamWarnOnly, oncePerPrompt: true, allowReply: agyPreInvocationReply{},
+		extract: extractAntigravityPreInvocationPrompt, decodes: antigravityPreInvocationDecodes, reply: buildAntigravityPreInvocationReply,
+		caps: promptAgyAbortOrWarns, capsProbe: agyPreInvocationCaps, taintsSession: true,
+		oncePerPrompt: true, allowReply: agyPreInvocationReply{},
 	},
-	// Plugin hosts' prompt seam (OpenCode / Kilo CLI chat.message, through
-	// the pluginshim TS shim): modify-only, so a block is delivered by
-	// replacing the message text before the model sees it, and the session
-	// id makes the resend-to-confirm flow keyable. No developer-visible
-	// pass-through notice exists (an added part would reach the model).
-	// The allow reply is HandleApprove's: the shim treats anything that is
-	// not deny / ask / modify as an allow.
-	PromptDialectPluginShim: {extract: extractPluginPrompt, reply: buildPluginPromptReply, caps: promptHookStops},
+	// Plugin hosts' prompt seams (through the pluginshim TS shim). The
+	// session id makes the resend-to-confirm flow keyable on both. The
+	// allow reply is HandleApprove's: the shim treats anything that is not
+	// deny / ask / modify as an allow. Caps differ per seam, so each is its
+	// own row (data, not a host branch).
+	PromptDialectPluginShim:        {extract: extractPluginPrompt, reply: buildPluginPromptReply, caps: promptPluginShimStops},
+	PromptDialectPluginShimConfirm: {extract: extractPluginPrompt, reply: buildPluginPromptReply, redact: buildPluginPromptRedactReply, caps: promptPluginShimConfirms},
 	PromptDialectKimiCode: {
 		extract: extractKimiCodePrompt, reply: nil, blockExitCode: 2, stderrReason: true,
 		caps: promptHookStops, silentAllow: true,
@@ -892,6 +1078,31 @@ var promptDialects = map[string]promptDialect{
 	PromptDialectDevinCLI: {
 		extract: extractDevinCLIPrompt, reply: buildDevinCLIPromptReply,
 		caps: guard.PromptSeamWarnOnly, allowReply: struct{}{},
+	},
+	// Copilot CLI userPromptSubmitted (promptcopilot.go): handled +
+	// responseContent + modifiedPrompt blocks, modifiedPrompt redacts,
+	// additionalContext warns the model only; exit codes never block.
+	PromptDialectCopilotCLI: {
+		extract: extractCopilotCLIPrompt, reply: buildCopilotCLIPromptReply, redact: buildCopilotCLIPromptRedactReply,
+		caps: promptCopilotCLICaps, allowReply: promptCopilotCLIReply{},
+	},
+	// Cline CLI plugin beforeModel (promptclineplugin.go): stop or rewrite.
+	PromptDialectClinePlugin: {
+		extract: extractClinePluginPrompt, reply: buildClinePluginPromptReply, redact: buildClinePluginPromptRedactReply,
+		caps: promptClinePluginCaps,
+	},
+	PromptDialectKiroCLI: {
+		extract: extractKiroCLIPrompt, reply: buildKiroCLIPromptReply,
+		caps: guard.PromptSeamWarnOnly, silentAllow: true,
+	},
+	// 2026-10-21 wave (docs/guard.md "Live grounding: 2026-10-21 wave").
+	PromptDialectDirac: {
+		extract: extractDiracPrompt, reply: buildDiracPromptReply, stderrReason: true,
+		caps: promptDiracStops, silentAllow: true, oncePerPrompt: true,
+	},
+	PromptDialectAutohand: {
+		extract: extractAutohandPrompt, reply: buildAutohandPromptReply,
+		caps: promptHookStops, allowReply: struct{}{},
 	},
 }
 
@@ -930,6 +1141,20 @@ func KnownPromptDialect(dialect string) bool {
 	return ok
 }
 
+// PromptDialectSeamCaps returns dialect's prompt-seam capabilities as its
+// row declares them, and probed=true when the row narrows them per
+// invocation (capsProbe: the running host must prove it honours the stop,
+// otherwise the seam degrades). ok=false for an unknown dialect. Coverage
+// surfaces read it (controlcoverage.RuleCoverage); the handler itself uses
+// the per-invocation seamCapsFor.
+func PromptDialectSeamCaps(dialect string) (caps guard.PromptSeamCaps, probed, ok bool) {
+	d, ok := promptDialects[dialect]
+	if !ok {
+		return guard.PromptSeamCaps{}, false, false
+	}
+	return d.caps, d.capsProbe != nil, true
+}
+
 // promptBlockReasons is FIX-5's table-driven (CLAUDE.md rule 5) map
 // from a Blocked+non-Ask verdict's DegradedFrom marker to the honest,
 // case-specific suffix appended after pv.Verdict.Reason. The zero key
@@ -951,7 +1176,16 @@ var promptBlockReasons = map[string]string{
 	// mode=block): the Reason itself is already the complete,
 	// self-explanatory message — no generic suffix needed.
 	"unscanned": "",
+	// guard.DegradedFromTaintedSession: the reason already says why and
+	// what to do (start a new conversation).
+	guard.DegradedFromTaintedSession: ".",
 }
+
+// promptAskStoppedSuffix closes an ask on a seam that could only stop the
+// prompt (no confirm, no resend-to-confirm: agy's atomic abort), so the
+// developer is not told to resend something that would be stopped again.
+const promptAskStoppedSuffix = ". This tool cannot ask before the model call, so the prompt was stopped; " +
+	"edit it out and send it in a new conversation."
 
 // promptRemediationDetector picks the ONE detector id to name in the
 // in-band "run `observer guard prompt allow <detector> --session <id>`"
@@ -1000,6 +1234,11 @@ func promptHouseMessage(pv guard.PromptVerdict, sessionID string) string {
 			// caused it, so no "edit it out" or resend suffix applies.
 			return "observer: " + reason
 		}
+		if pv.Verdict.Decision == policy.DecisionAsk && pv.Action == guard.PromptActionBlock {
+			// The seam could not ask (promptaction.go's ask ladder fell
+			// through confirm and re-enter to block): no resend story.
+			return "observer: " + reason + promptAskStoppedSuffix
+		}
 		if pv.Verdict.Decision == policy.DecisionAsk {
 			detector := promptRemediationDetector(pv.Detectors)
 			if detector == "" {
@@ -1014,7 +1253,14 @@ func promptHouseMessage(pv guard.PromptVerdict, sessionID string) string {
 				// verdict, so tell them what to do (F2, retry-floor review).
 				return "observer: " + reason + ". That resend arrived too fast to count as your confirmation. Wait a moment and send it again unchanged to confirm, or edit it out."
 			}
-			return "observer: " + reason + ". Send it again unchanged to confirm, or edit it out. " +
+			// how names the confirm the seam offers: a native dialog
+			// (which falls back to a resend where the host has no UI) or
+			// the resend itself.
+			how := "Send it again unchanged to confirm, or edit it out. "
+			if pv.Action == guard.PromptActionConfirm {
+				how = "Confirm to send it anyway, or cancel and edit it out (where no confirm dialog can open, send it again unchanged to confirm). "
+			}
+			return "observer: " + reason + ". " + how +
 				"Run `observer guard prompt allow " + detector + " --session " + sessionID +
 				"` to stop asking (this allows every detector in the same rule class, not just " + detector + ")."
 		}
@@ -1140,6 +1386,11 @@ func promptRedactOffer(d promptDialect, ge PromptEvaluator, prompt string, secre
 // built for an oversize prompt TEXT (see below) — the caller no
 // longer silently bypasses the guard just because the JSON envelope
 // around the prompt didn't fit.
+//
+// A payload this returns handled=false for because it does not decode as
+// the dialect's shape (PromptPayloadUndecodable) must fail closed in the
+// caller under guard enforcement (FU-161); its unguarded allow is only for
+// a guard that is not enforcing.
 func HandlePromptSubmitGuarded(
 	tool, dialect, event string,
 	body []byte,
@@ -1155,7 +1406,16 @@ func HandlePromptSubmitGuarded(
 	if !dialectOK {
 		return false, nil, 0
 	}
+	// A leading UTF-8 BOM (a .NET / PowerShell stdin writer's) never makes
+	// the payload read as another shape (FU-161).
+	body = bytes.TrimPrefix(body, utf8BOM)
 	prompt, sessionID, extractOK, fieldMissing := d.extract(body)
+	// A conversation that still carries a stopped prompt is stopped again
+	// before anything else (taintsSession): the host resends that prompt
+	// with this turn whatever the turn's own text is.
+	if pv, tainted := taintedSessionVerdict(tool, d, ge, sessionID); tainted {
+		return finishPromptVerdict(tool, event, d, body, sessionID, pv, "", persist, stdout, stderr)
+	}
 	if !extractOK && !bodyTruncated {
 		// A genuinely unrecognized/malformed payload, unrelated to
 		// observer's own read bound — fall through to the caller's
@@ -1177,9 +1437,9 @@ func HandlePromptSubmitGuarded(
 	}
 	if d.oncePerPrompt && extractOK && !scanTruncated &&
 		repeatSeamNothingNew(ge, sessionID, prompt, len(secrets)+len(pii)) {
-		if d.reply != nil {
-			_ = json.NewEncoder(stdout).Encode(d.reply(promptReplyOutcome{}))
-		}
+		// The dialect's own nothing-to-say reply (a builder returning nil
+		// for it, Dirac's silent allow, writes nothing).
+		writePromptReply(d, promptReplyOutcome{}, stdout)
 		return true, nil, 0
 	}
 
@@ -1205,19 +1465,41 @@ func HandlePromptSubmitGuarded(
 	// decision, and the emission reports exactly that. A redact-capable
 	// dialect offers Redact only when the guard can mask THIS prompt
 	// completely (promptRedactOffer).
+	d.caps = d.seamCapsFor()
 	seamCaps, masked := promptRedactOffer(d, ge, prompt, secrets, pii, extractOK && !scanTruncated && !bodyTruncated)
 	pv := ge.EvaluatePrompt(ev).WithAction(seamCaps, "hook")
-	em := guard.PromptEmission(pv)
 	if extractOK {
 		// The pre-send mark the post-hoc capture lane dedupes on
 		// (guard/posthocprompt.go): carried to the one guard_events
 		// writer on the persisted verdict.
 		pv.CaptureDigest = guard.PromptPreSendDigest(prompt, pv.RecordWorthy())
 	}
+	return finishPromptVerdict(tool, event, d, body, sessionID, pv, masked, persist, stdout, stderr)
+}
 
+// finishPromptVerdict writes the dialect's reply for a resolved prompt
+// verdict, the forensics for a block, and returns HandlePromptSubmitGuarded's
+// results (the persist closure for a record-worthy or mark-carrying verdict,
+// and the dialect's block exit code).
+func finishPromptVerdict(
+	tool, event string,
+	d promptDialect,
+	body []byte,
+	sessionID string,
+	pv guard.PromptVerdict,
+	masked string,
+	persist func(pv guard.PromptVerdict, em guard.Emission, sessionID string),
+	stdout, stderr io.Writer,
+) (handled bool, recordAfterReply func(), exitCode int) {
+	em := guard.PromptEmission(pv)
 	out := promptOutcomeFor(pv, sessionID, masked)
 	writePromptReply(d, out, stdout)
-	if d.stderrReason && (out.Blocking || out.Warn) {
+	switch {
+	case d.stderrReason && out.Blocking:
+		// A block's reason carries the StderrBlockHeader line (DEC-1).
+		WriteStderrBlockReason(stderr, out.Reason)
+	case d.stderrReason && out.Warn:
+		// A warning is not a block: its notice stays verbatim.
 		fmt.Fprintln(stderr, out.Reason)
 	}
 	if out.Blocking && d.blockExitCode != 0 {
@@ -1265,9 +1547,10 @@ func HandlePromptSubmitGuarded(
 // a dialect builder consumes. masked is carried only on a redact.
 func promptOutcomeFor(pv guard.PromptVerdict, sessionID, masked string) promptReplyOutcome {
 	out := promptReplyOutcome{
-		Blocking: pv.Action.Stops(),
-		Warn:     pv.Action == guard.PromptActionWarn,
-		Redacted: pv.Action == guard.PromptActionRedact,
+		Blocking:    pv.Action.Stops(),
+		Confirmable: pv.Action == guard.PromptActionReenter || pv.Action == guard.PromptActionConfirm,
+		Warn:        pv.Action == guard.PromptActionWarn,
+		Redacted:    pv.Action == guard.PromptActionRedact,
 	}
 	if out.Blocking || out.Warn || out.Redacted {
 		out.Reason = promptHouseMessage(pv, sessionID)
@@ -1291,7 +1574,12 @@ func writePromptReply(d promptDialect, out promptReplyOutcome, stdout io.Writer)
 	if builder == nil {
 		return
 	}
-	if r := builder(out); r != nil {
+	r := builder(out)
+	if text, ok := r.(plainTextReply); ok {
+		_, _ = fmt.Fprintln(stdout, string(text))
+		return
+	}
+	if r != nil {
 		_ = json.NewEncoder(stdout).Encode(r)
 	}
 }

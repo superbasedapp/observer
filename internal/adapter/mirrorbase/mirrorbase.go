@@ -9,8 +9,15 @@
 // write into its own scratch directory with one call.
 //
 // The daemon/watcher path never calls SetBaseForProcess, so its
-// behavior is byte-identical to the old inline derivation:
+// base is the old inline derivation:
 // <UserCacheDir>/superbased-observer/<tool>-mirror/<hash>/.
+//
+// Since T-927 the package also owns the staging itself (Stage): every
+// adapter's mirror is built here from an allow-list of the tables it
+// queries, never as a byte copy of the vendor file, so credential tables
+// that share a store with the conversation (OpenCode `credential`, Kiro
+// CLI `auth_kv`, Qoder Work's BYOK and OAuth tables) never leave it. See
+// docs/security.md MIRROR-CRED-1.
 package mirrorbase
 
 import (

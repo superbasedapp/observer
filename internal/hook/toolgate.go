@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/guard"
+	"github.com/marmutapp/superbased-observer/internal/integration"
+	"github.com/marmutapp/superbased-observer/internal/jsonv1compat"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/policy"
 	"github.com/marmutapp/superbased-observer/internal/tooltax"
@@ -50,6 +52,13 @@ const (
 	// before* events (shell, MCP, read) gate those action classes
 	// already, so this dialect skips them (no double verdict).
 	ToolGateDialectCursor = "cursor-pretool"
+	// ToolGateDialectCursorReplay is the same preToolUse reaching Observer's
+	// Claude Code hooks (Cursor runs ~/.claude/settings.json too, FU-122)
+	// while Observer's own cursor hooks are absent. cursor-agent replays no
+	// before* event there, so the replay is the only gate Observer has on
+	// the call and judges every class, the shell, MCP and read ones
+	// included. Same wire as ToolGateDialectCursor.
+	ToolGateDialectCursorReplay = "cursor-pretool-replay"
 	// ToolGateDialectAntigravity is Antigravity's PreToolUse (agy CLI and
 	// the desktop app share ~/.gemini/config/hooks.json): camelCase
 	// toolCall.{name,args}, a REQUIRED top-level decision. deny blocks;
@@ -96,6 +105,28 @@ const (
 	// stderr is the reason written back to the model; stdout on exit 0 is
 	// added to the model context, so the allow is silence.
 	ToolGateDialectKimi = "kimi-pretool"
+	// ToolGateDialectClaudeWire is the Claude-shaped JSON tool gate of a host
+	// that names some or all tools with Claude Code's WIRE spellings (Bash,
+	// Read, Write, Edit) instead of its own (Deep Agents Code, Kimchi, Cortex
+	// Code): the host's vocabulary is tried first, then Claude Code's.
+	ToolGateDialectClaudeWire = "claude-wire-pretool"
+	// ToolGateDialectVTCode is VT Code's PreToolUse: the Claude JSON
+	// permissionDecision (deny and a native ask), but the allow is an EMPTY
+	// stdout because VT Code echoes any hook stdout into its TUI.
+	ToolGateDialectVTCode = "vtcode-pretool"
+	// ToolGateDialectDirac is Dirac's legacy-Cline file hook: the tool and its
+	// stringified parameters under preToolUse, {cancel, errorMessage} cancels
+	// the whole task; the allow is silence.
+	ToolGateDialectDirac = "dirac-pretool"
+	// ToolGateDialectAutohand is Autohand's pre-tool: top-level decision deny
+	// with a reason; the allow is {} (an explicit decision allow would skip
+	// Autohand's own permission prompt). The payload carries no session id.
+	ToolGateDialectAutohand = "autohand-pretool"
+	// ToolGateDialectKimchiBash is Kimchi's user-level bash pre-gate script:
+	// {tool_name: "bash", input: {command}, cwd}; exit 2 with the stderr
+	// reason blocks, the allow is silence (non-JSON stdout would REPLACE the
+	// command).
+	ToolGateDialectKimchiBash = "kimchi-bash-pretool"
 )
 
 // ToolGateRequest is one tool-gate invocation.
@@ -116,6 +147,10 @@ type ToolGateRequest struct {
 	// Truncated is true when the caller's read hit its bound: the body is
 	// not the whole payload and cannot be evaluated.
 	Truncated bool
+	// contextOnly asks a shaped extractor for the payload's session,
+	// working directory and project root alone, as one event, without
+	// classifying the tool (ToolGatePayloadContext).
+	contextOnly bool
 	// Enforcing is true when guard enforcement is in force; together with
 	// Truncated it holds the call (ask where the host can ask, else deny)
 	// instead of approving it unexamined (SR27-D2, generalized).
@@ -135,6 +170,12 @@ type ToolGateRequest struct {
 	// layer) instead of letting it pass silently (review M2-12). nativeTool
 	// is "" when the payload names no tool at all.
 	Unclassified func(nativeTool string)
+	// Enrich, when non-nil, is called once per extracted event before it
+	// is evaluated: the cmd layer fills the security pillar's facts
+	// (Event.Security) and raises the project's dirty marker there,
+	// through the hook context seam (security pillar plan section 4.7 item
+	// 2). Nil leaves every event as the extractor built it.
+	Enrich func(*policy.Event)
 }
 
 // ToolGateResult is what HandleToolGate decided.
@@ -150,9 +191,24 @@ type ToolGateResult struct {
 	// Evaluated is true when the payload yielded at least one evaluable
 	// tool event (false: unknown tool or no operand, an allow).
 	Evaluated bool
+	// Undecodable is true when nothing was replied because the payload is
+	// JSON whose fields the gate reads do not decode (a tool_input that is
+	// not an object, a tool name or operand of the wrong type): the call
+	// cannot be judged. Under guard enforcement the caller must fail closed
+	// (cmd/observer hookFailClosed with KindUnparseable), never reach its
+	// allow (FU-161); otherwise it keeps its allow, as before.
+	Undecodable bool
 	// RecordAfterReply, when non-nil, persists a record-worthy verdict on
 	// the allow path; the caller runs it AFTER writing its own reply.
 	RecordAfterReply func()
+	// Warn / WarnField: on the allow path of a record-worthy flag, the
+	// humanized notice and the allow-reply field the host shows the
+	// developer (integration.HookBinding.WarnField). Both empty when the
+	// binding declares no such field: the flag is then only recorded.
+	// The caller adds the field to its allow (WriteToolGateAllowWarn,
+	// WithWarnField).
+	Warn      string
+	WarnField string
 }
 
 // toolGateDialect is one row of the dialect table.
@@ -160,8 +216,13 @@ type toolGateDialect struct {
 	// extract reads the payload into the policy events to judge (one per
 	// target: an apply_patch touching three files is three events) and
 	// the native tool name for forensics. ok=false means "not an evaluable
-	// tool shape" (allow; unknown is never a violation).
-	extract func(req ToolGateRequest) (events []policy.Event, nativeTool string, ok bool)
+	// tool shape" (allow; unknown is never a violation), unless undecodable
+	// is also true: the payload is JSON but a field the gate reads has the
+	// wrong type (a tool_input that is not an object, a tool name or an
+	// operand that is not a string), so the gate cannot tell what the call
+	// does (FU-161). The caller fails closed on that under enforcement
+	// (ToolGateResult.Undecodable).
+	extract func(req ToolGateRequest) (events []policy.Event, nativeTool string, ok, undecodable bool)
 	// block renders a blocking emission (Permission "deny" or "ask") as the
 	// stdout reply; nil (or a nil result) writes nothing on stdout (an
 	// exit-code-only dialect).
@@ -174,14 +235,29 @@ type toolGateDialect struct {
 	// stdout reply carries it).
 	blockExitCode int
 	// stderrReason is true when the host shows the hook's stderr as the
-	// block reason: on a block the reason, and nothing else, goes to
-	// stderr (the T-048 rule the prompt dialects follow).
+	// block reason: on a block the reason, after the StderrBlockHeader on
+	// one line (DEC-1) and with nothing else, goes to stderr (the T-048
+	// rule the prompt dialects follow).
 	stderrReason bool
 	// silentAllow is true when the host's allow is an empty stdout (an
 	// exit-code-only host, or one whose only documented allow is silence:
 	// an explicit allow value there would skip the host's own permission
 	// prompt or is undocumented).
 	silentAllow bool
+	// quietStderr is true when the host reads the reason from stdout and
+	// any stderr text risks turning the reply into a hook error: Copilot
+	// (the CLI and VS Code Copilot Chat's local agent, which is the same
+	// runtime) reports a non-zero exit as "Denied by preToolUse hook (hook
+	// errored)" and drops the reason, and on Windows it runs the handler's
+	// powershell command, where a native program's stderr becomes an error
+	// record (WINNODE2 item 10). Observer's diagnostic line then goes to the
+	// forensics log only, never to stderr.
+	quietStderr bool
+	// mcpArgs are the dotted payload paths an MCP call's arguments sit at
+	// on this host, tried in order (audit SEC-P4 F5): the same paths the
+	// row's extractor reads its tool input from. nil is mcpToolInputFields,
+	// the top-level spellings of the Claude-shaped hosts.
+	mcpArgs []string
 }
 
 // topDecisionReply is the top-level {decision, reason} block several hosts
@@ -249,12 +325,12 @@ type cursorToolReply struct {
 // toolGateDialects is THE tool-gate dialect table.
 var toolGateDialects = map[string]toolGateDialect{
 	ToolGateDialectClaudeCode: {
-		extract: func(req ToolGateRequest) ([]policy.Event, string, bool) {
-			ev, ok := BuildClaudeCodeEvent(req.Body)
+		extract: func(req ToolGateRequest) ([]policy.Event, string, bool, bool) {
+			ev, ok, undecodable := buildClaudeCodeEvent(req.Body)
 			if !ok {
-				return nil, "", false
+				return nil, "", false, undecodable
 			}
-			return []policy.Event{ev}, payloadFieldString(req.Body, "tool_name"), true
+			return []policy.Event{ev}, payloadFieldString(bytes.TrimPrefix(req.Body, utf8BOM), "tool_name"), true, false
 		},
 		block: func(em guard.Emission, _ string) any { return buildClaudeCodeBlockReply(em) },
 	},
@@ -270,8 +346,14 @@ var toolGateDialects = map[string]toolGateDialect{
 	ToolGateDialectGemini: {
 		extract: genericToolExtractor(nil),
 		block: func(em guard.Emission, _ string) any {
-			// Deny only: the binding declares no ask, so ResolveEmission
-			// has already turned an ask into a deny.
+			// Deny-only unless a terminal is attached (D-791, JSP-6 live
+			// half): the binding can ask, but the ask host row withdraws it
+			// unless the per-call probe finds the gemini process with a
+			// terminal, because a headless ask hangs the run. So an ask
+			// reaches this writer only for an interactive gemini.
+			if em.Permission == "ask" {
+				return geminiToolReply{Decision: "ask", Reason: em.Reason, SystemMessage: em.Reason}
+			}
 			return geminiToolReply{Decision: "deny", Reason: em.Reason, SystemMessage: em.Reason}
 		},
 		allow: struct{}{},
@@ -289,19 +371,33 @@ var toolGateDialects = map[string]toolGateDialect{
 		},
 		allow: cursorReply{Permission: "allow", Continue: true},
 	},
+	ToolGateDialectCursorReplay: {
+		extract: genericToolExtractor(nil),
+		block: func(em guard.Emission, _ string) any {
+			return cursorToolReply{Permission: "deny", Continue: true, UserMessage: em.Reason, AgentMessage: em.Reason}
+		},
+		allow: cursorReply{Permission: "allow", Continue: true},
+	},
 	ToolGateDialectAntigravity: {
 		extract: shapedToolExtractor(toolPayloadShape{
 			session: []string{"conversationId"}, root: []string{"workspacePaths"},
 			tool: []string{"toolCall.name"}, input: []string{"toolCall.args"},
 		}, nil),
-		// Deny only: live (agy 1.2.16) force_ask under
-		// --dangerously-skip-permissions ran the command, so the binding
-		// lists no ask and ResolveEmission has turned an ask into a deny.
-		block: topDecision(map[string]string{"deny": "deny"}),
+		mcpArgs: []string{"toolCall.args"},
+		// deny blocks; an ask is force_ask, agy's NATIVE prompt with a
+		// "Reason:" line (live, agy 1.3.5: shown even for an in-workspace
+		// read). force_ask auto-denies headless and RUNS the tool under
+		// --dangerously-skip-permissions, so the channel's ask capability is
+		// probed per call (toolGateAskProbes): without an interactive agy
+		// ancestor ResolveEmission has already turned the ask into a deny
+		// that says how to confirm. Plain "ask" is never sent (it respects
+		// the default grants, weaker) nor "auto_approve" (skips the
+		// developer's prompt).
+		block: topDecision(map[string]string{"deny": "deny", "ask": "force_ask"}),
 		// Live: an empty object {} DENIES the call (decision is required)
-		// and decision:allow is documented to auto-approve past the
-		// developer's own prompt; an empty stdout leaves the call to agy's
-		// own permission flow.
+		// and decision:allow defers to agy's policy (auto_approve would
+		// skip the developer's own prompt); an empty stdout leaves the call
+		// to agy's own permission flow.
 		silentAllow: true,
 	},
 	ToolGateDialectGrok: {
@@ -318,12 +414,19 @@ var toolGateDialects = map[string]toolGateDialect{
 			session: []string{"sessionId", "session_id"}, cwd: []string{"cwd"},
 			tool: []string{"toolName", "tool_name"}, input: []string{"toolArgs", "tool_input"},
 		}, nil),
+		mcpArgs: []string{"toolArgs", "tool_input"},
+		// Exit 0 with the top-level decision and its reason on stdout: the
+		// GitHub hooks reference (docs.github.com/en/copilot/reference/
+		// copilot-cli-reference/cli-hooks-reference) shows the reason to
+		// the agent; exit 2 denies without it and any other non-zero exit
+		// is "Denied by preToolUse hook (hook errored)".
 		block: func(em guard.Emission, _ string) any {
 			return copilotToolReply{PermissionDecision: em.Permission, PermissionDecisionReason: em.Reason}
 		},
 		// "allow" skips the normal prompting (vendor doc); an empty object
 		// is no decision.
-		allow: struct{}{},
+		allow:       struct{}{},
+		quietStderr: true,
 	},
 	ToolGateDialectVibe: {
 		extract: genericToolExtractor(nil),
@@ -334,6 +437,12 @@ var toolGateDialects = map[string]toolGateDialect{
 		extract: shapedToolExtractor(toolPayloadShape{
 			session: []string{"session_id"}, cwd: []string{"working_dir", "cwd"},
 			tool: []string{"tool_name"}, input: []string{"tool_input"},
+			// goose 1.53 resolves a model-mangled name before the hook,
+			// but other extensions and older builds still send the
+			// prefixed spellings (gfiD research, goose source).
+			nameStrip: []string{"functions.", "functions:", "developer__", "developer."},
+			mcpAlias:  tooltax.MCPNameFromExtension,
+			flatten:   []string{"input"},
 		}, nil),
 		block:       topDecision(map[string]string{"deny": "block"}),
 		silentAllow: true,
@@ -351,6 +460,7 @@ var toolGateDialects = map[string]toolGateDialect{
 			// the shared runtime names in the extension's words.
 			vocab: []string{models.ToolCline},
 		}, nil),
+		mcpArgs: []string{"tool_call.input"},
 		block: func(em guard.Emission, _ string) any {
 			return clineToolReply{Cancel: true, ErrorMessage: em.Reason}
 		},
@@ -368,12 +478,17 @@ var toolGateDialects = map[string]toolGateDialect{
 		silentAllow: true,
 	},
 	ToolGateDialectJunie: {
-		extract: genericToolExtractor(nil),
+		// Junie CLI and the Junie IDE plugin send cwd = the directory the
+		// hook was registered from (~/.junie) and the project in
+		// project_path (Mac round 4 rows 19 and 30, FU-155), so the
+		// project is read first.
+		extract: genericToolExtractorCwd(nil, "project_path"),
 		block:   topDecision(map[string]string{"deny": "deny", "ask": "ask"}),
 		allow:   struct{}{},
 	},
 	ToolGateDialectCrush: {
-		extract: genericToolExtractor(nil),
+		// MCP tools arrive as mcp_<server>_<tool> (one underscore).
+		extract: shapedToolExtractor(claudeShapedPayload.withMCPAlias(tooltax.MCPNameFromSingleUnderscore), nil),
 		block:   topDecision(map[string]string{"deny": "deny"}),
 		allow:   struct{}{},
 	},
@@ -389,13 +504,71 @@ var toolGateDialects = map[string]toolGateDialect{
 		blockExitCode: 2, stderrReason: true, silentAllow: true,
 	},
 	ToolGateDialectKiro: {
-		extract:       genericToolExtractor(nil),
+		// 2.x agent hooks and the V3 standalone hooks share the payload
+		// {hook_event_name, cwd, session_id, tool_name, tool_input}; V3
+		// names an MCP tool mcp_<server>_<tool>. A read carries its paths
+		// as operations[].path (operandListFields).
+		extract:       shapedToolExtractor(claudeShapedPayload.withMCPAlias(tooltax.MCPNameFromSingleUnderscore), nil),
 		blockExitCode: 2, stderrReason: true, silentAllow: true,
 	},
 	ToolGateDialectKimi: {
 		extract:       genericToolExtractor(nil),
 		blockExitCode: 2, stderrReason: true, silentAllow: true,
 	},
+	// The Cline CLI plugin's beforeTool (toolgate_clineplugin.go).
+	ToolGateDialectClinePlugin: clinePluginToolGate,
+	// 2026-10-21 wave (docs/guard.md "Live grounding: 2026-10-21 wave").
+	ToolGateDialectClaudeWire: {
+		extract: shapedToolExtractor(claudeShapedPayload.withVocab(models.ToolClaudeCode), nil),
+		block:   claudeJSONBlock,
+		allow:   struct{}{},
+	},
+	ToolGateDialectVTCode: {
+		extract:     genericToolExtractor(nil),
+		block:       claudeJSONBlock,
+		silentAllow: true,
+	},
+	ToolGateDialectDirac: {
+		extract: shapedToolExtractor(toolPayloadShape{
+			session: []string{"taskId"}, root: []string{"workspaceRoots"},
+			tool: []string{"preToolUse.toolName"}, input: []string{"preToolUse.parameters"},
+		}, nil),
+		block: func(em guard.Emission, _ string) any {
+			return clineToolReply{Cancel: true, ErrorMessage: em.Reason}
+		},
+		// Dirac echoes hook stderr into its transcript: the bare reason there
+		// is the only place a developer can read why the task was cancelled
+		// (the model never sees it), and Observer's diagnostics stay off it.
+		stderrReason: true, silentAllow: true,
+	},
+	ToolGateDialectAutohand: {
+		extract: genericToolExtractor(nil),
+		block:   topDecision(map[string]string{"deny": "deny"}),
+		allow:   struct{}{},
+	},
+	ToolGateDialectKimchiBash: {
+		extract: shapedToolExtractor(toolPayloadShape{
+			session: []string{"session_id"}, cwd: []string{"cwd"},
+			tool: []string{"tool_name"}, input: []string{"input", "tool_input"},
+		}, nil),
+		blockExitCode: 2, stderrReason: true, silentAllow: true,
+	},
+}
+
+// claudeJSONBlock renders the modern Claude-shaped PreToolUse block
+// (hookSpecificOutput.permissionDecision deny|ask with the reason).
+func claudeJSONBlock(em guard.Emission, nativeEvent string) any {
+	return claudeJSONPermissionReply{HookSpecificOutput: claudeCodePermissionOut{
+		HookEventName: nativeEvent, PermissionDecision: em.Permission, PermissionDecisionReason: em.Reason,
+	}}
+}
+
+// ToolGateDialectQuietStderr reports whether the dialect's host must see
+// nothing on stderr (toolGateDialect.quietStderr): Observer's diagnostics go
+// to the forensics log only.
+func ToolGateDialectQuietStderr(dialect string) bool {
+	d, ok := toolGateDialects[dialect]
+	return ok && d.quietStderr
 }
 
 // IsToolGateDialect reports whether d is a row of the tool-gate table.
@@ -495,15 +668,15 @@ func toolGateBlockFor(dialect, nativeEvent string, em guard.Emission) (toolGateB
 }
 
 // writeToolGateBlock writes a rendered block: the stdout reply, then
-// either the bare reason on stderr (a host that shows stderr as the
-// reason) or Observer's diagnostic line. It returns the exit code that
-// carries the block.
+// either the reason on stderr after the StderrBlockHeader (a host that
+// shows stderr as the reason) or Observer's diagnostic line. It returns the
+// exit code that carries the block.
 func writeToolGateBlock(b toolGateBlock, reason, diagnostic string, stdout, stderr io.Writer) int {
 	if len(b.stdout) > 0 {
 		_, _ = stdout.Write(b.stdout)
 	}
 	if b.stderrReason {
-		fmt.Fprintln(stderr, reason)
+		WriteStderrBlockReason(stderr, reason)
 	} else {
 		fmt.Fprintln(stderr, diagnostic)
 	}
@@ -536,7 +709,7 @@ func HandleToolGate(req ToolGateRequest, ev guard.Evaluator, persist func(guard.
 	if req.Truncated {
 		return handleTruncatedToolGate(req, stdout, stderr)
 	}
-	events, nativeTool, ok := d.extract(req)
+	events, nativeTool, ok, undecodable := d.extract(req)
 
 	var (
 		best      guard.ActionVerdict
@@ -555,15 +728,31 @@ func HandleToolGate(req ToolGateRequest, ev guard.Evaluator, persist func(guard.
 			events = nil
 		} else if !ok {
 			// Not classifiable (an extractor's ok=false): the call passes, and a
-			// caller that asked is told after its own reply (review M2-12).
+			// caller that asked is told after its own reply (review M2-12). A
+			// payload whose fields the gate reads do not decode is marked
+			// Undecodable: under enforcement the caller fails closed on it
+			// instead of passing it (FU-161).
+			res := ToolGateResult{Undecodable: undecodable}
 			if req.Unclassified != nil {
 				native := nativeTool
-				return ToolGateResult{RecordAfterReply: func() { req.Unclassified(native) }}
+				res.RecordAfterReply = func() { req.Unclassified(native) }
 			}
-			return ToolGateResult{}
+			return res
+		}
+	}
+	if req.Enrich != nil {
+		for i := range events {
+			if events[i].Kind == policy.KindMCPCall && len(events[i].Raw) == 0 {
+				// The commit gate's MCP placement column reads the call's
+				// arguments (repo_path, file contents) from Raw (lane SEC-P4
+				// decision 2); in memory only, never persisted.
+				events[i].Raw = mcpToolInputRaw(req.Body, d.mcpArgs)
+			}
+			req.Enrich(&events[i])
 		}
 	}
 	for _, pe := range events {
+		pe.Caps = withHostAsk(req.Tool, pe.Caps)
 		verdict, recordWorthy := ev.EvaluateHook(pe)
 		em := guard.ResolveEmission(verdict.Verdict, pe.Caps)
 		if !found || emissionRank(em, recordWorthy) > emissionRank(bestEm, bestWorth) {
@@ -621,9 +810,66 @@ func HandleToolGate(req ToolGateRequest, ev guard.Evaluator, persist func(guard.
 		return ToolGateResult{Evaluated: true}
 	}
 	// Flag-class (or degraded) verdict on the allow path: record it, but
-	// only after the caller's reply.
+	// only after the caller's reply, and tell the developer through the
+	// allow's notice field where the binding declares one.
 	logForensics("approve+flag")
-	return ToolGateResult{Evaluated: true, RecordAfterReply: doPersist}
+	res := ToolGateResult{Evaluated: true, RecordAfterReply: doPersist}
+	if f := toolGateWarnField(req.Tool, req.NativeEvent); f != "" && verdict.Verdict.RuleID != "" && !verdict.GuardError {
+		res.WarnField, res.Warn = f, toolGateWarnText(verdict.Verdict.RuleID, em.Reason)
+	}
+	return res
+}
+
+// toolGateWarnField is the developer-visible notice field of tool's
+// tool-gate binding on nativeEvent ("" when it declares none). Read from the
+// registry row (capability data), never keyed by the tool name here.
+func toolGateWarnField(tool, nativeEvent string) string {
+	c, ok := integration.For(tool)
+	if !ok {
+		return ""
+	}
+	for _, b := range c.Hook.Bindings {
+		if b.Cap == integration.HookCapToolGate && b.NativeEvent == nativeEvent {
+			return b.WarnField
+		}
+	}
+	return ""
+}
+
+// toolGateWarnText is the developer-facing notice for a flagged tool call.
+func toolGateWarnText(ruleID, reason string) string {
+	return "SuperBased Observer flagged this tool call (" + ruleID + "): " + reason
+}
+
+// WithWarnField returns reply with field set to warn, as a JSON object
+// (reply must encode to one). It returns reply unchanged when field or warn
+// is empty or reply is not an object.
+func WithWarnField(reply any, field, warn string) any {
+	if field == "" || warn == "" {
+		return reply
+	}
+	b, err := json.Marshal(reply)
+	if err != nil {
+		return reply
+	}
+	var m map[string]any
+	if json.Unmarshal(b, &m) != nil || m == nil {
+		return reply
+	}
+	m[field] = warn
+	return m
+}
+
+// WriteToolGateAllowWarn writes the dialect's neutral allow reply with the
+// flag notice added under field (WriteToolGateAllow when there is no
+// notice). A dialect whose allow is silence writes nothing either way.
+func WriteToolGateAllowWarn(dialect, field, warn string, stdout io.Writer) {
+	d, ok := toolGateDialects[dialect]
+	if !ok || d.allow == nil || field == "" || warn == "" {
+		WriteToolGateAllow(dialect, stdout)
+		return
+	}
+	_, _ = stdout.Write(encodeReply(WithWarnField(d.allow, field, warn)))
 }
 
 // handleTruncatedToolGate holds a call whose payload the caller could not
@@ -675,10 +921,67 @@ func emissionRank(em guard.Emission, recordWorthy bool) int {
 // pins its own constants (claudeCodePreToolCaps, conformance-tested).
 func toolGateChannelCaps(req ToolGateRequest) policy.Capabilities {
 	if req.Dialect == ToolGateDialectClaudeCode {
-		return claudeCodePreToolCaps
+		return withHostAsk(req.Tool, claudeCodePreToolCaps)
 	}
 	caps, _ := guard.CapabilitiesFor(req.Tool, "hook:"+req.NativeEvent)
+	if probe, ok := toolGateAskProbes[req.Dialect]; ok && caps.CanAsk && !probe() {
+		caps.CanAsk = false
+	}
+	return withHostAsk(req.Tool, caps)
+}
+
+// withHostAsk withdraws CanAsk when the tool's ask host row says THIS
+// invocation cannot show a native ask (a headless run, or a terminal-gated
+// host without a terminal: integration.AskHost, D-791 Q27). The channel's
+// capability is otherwise unchanged; a tool without a row is untouched.
+func withHostAsk(tool string, caps policy.Capabilities) policy.Capabilities {
+	if !caps.CanAsk {
+		return caps
+	}
+	if can, ok := askHostProbeFn(tool); ok && !can {
+		caps.CanAsk = false
+	}
 	return caps
+}
+
+// askHostProbeFn is the per-call ask host probe (a test replaces it).
+var askHostProbeFn = askHostProbe
+
+// toolGateAskProbes lists the dialects whose native ask reaches a developer
+// only in some host modes: the probe reports whether THIS invocation's host
+// can ask, and a false answer withdraws CanAsk so ResolveEmission degrades
+// the ask to a deny that says how to confirm. Kept beside (not inside) the
+// dialect table so the table's initializer does not depend on this lookup.
+var toolGateAskProbes = map[string]func() bool{
+	// Antigravity: force_ask only under an interactive agy without
+	// --dangerously-skip-permissions or headless -p (agyhost.go).
+	ToolGateDialectAntigravity: agyAskProbe,
+}
+
+// ToolGateAskProbed reports whether dialect's native ask is offered only
+// when the running host proves it can show it (toolGateAskProbes): elsewhere
+// an ask is a deny that says how to confirm. Coverage surfaces read it
+// (controlcoverage.RuleCoverage).
+func ToolGateAskProbed(dialect string) bool {
+	if _, ok := toolGateAskProbes[dialect]; ok {
+		return true
+	}
+	// A terminal-gated ask host (integration.AskHost.AskNeedsTerminal) is
+	// offered its ask only when the per-call probe sees a terminal.
+	for _, tool := range integration.AskHostTools() {
+		h, _ := integration.AskHostFor(tool)
+		if !h.AskNeedsTerminal {
+			continue
+		}
+		if c, ok := integration.For(tool); ok {
+			for _, b := range c.Hook.Bindings {
+				if b.Cap == integration.HookCapToolGate && b.Dialect == dialect {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // genericToolPayload is the Claude-shaped pre-tool payload the generic
@@ -701,10 +1004,36 @@ type genericToolPayload struct {
 // genericToolExtractor returns the Claude-shaped extractor; skip names the
 // CANONICAL (tooltax) action types the channel leaves to a sibling event of
 // the same host.
-func genericToolExtractor(skip map[string]bool) func(ToolGateRequest) ([]policy.Event, string, bool) {
-	return func(req ToolGateRequest) ([]policy.Event, string, bool) {
+func genericToolExtractor(skip map[string]bool) func(ToolGateRequest) ([]policy.Event, string, bool, bool) {
+	return func(req ToolGateRequest) ([]policy.Event, string, bool, bool) {
 		return extractGenericToolEvents(req, skip)
 	}
+}
+
+// genericToolExtractorCwd is genericToolExtractor for a host whose payload
+// names the working directory under another key ahead of cwd: the first
+// non-empty string among cwdFirst (dotted paths) wins, then cwd. Only the
+// dialect row that passes cwdFirst reads those keys; every other row keeps
+// reading cwd alone.
+func genericToolExtractorCwd(skip map[string]bool, cwdFirst ...string) func(ToolGateRequest) ([]policy.Event, string, bool, bool) {
+	return func(req ToolGateRequest) ([]policy.Event, string, bool, bool) {
+		return extractGenericToolEventsCwd(req, skip, cwdFirst)
+	}
+}
+
+// utf8BOM is the UTF-8 byte order mark a .NET / PowerShell stdin writer on a
+// UTF-8 console prepends to a hook payload; every decoder strips it first.
+var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
+
+// rawNotObject reports whether a present tool-input value is not a JSON
+// object (null and absent count as an empty input, not a wrong type).
+func rawNotObject(raw json.RawMessage) bool {
+	t := bytes.TrimSpace(raw)
+	if len(t) == 0 || bytes.Equal(t, []byte("null")) {
+		return false
+	}
+	var m map[string]any
+	return jsonv1compat.UnmarshalObject(t, &m) != nil
 }
 
 // extractGenericToolEvents reads a Claude-shaped pre-tool payload into
@@ -712,25 +1041,46 @@ func genericToolExtractor(skip map[string]bool) func(ToolGateRequest) ([]policy.
 // (action type + operand), the operand's value comes from the tool input
 // under any of its field spellings, and an edit whose input is a patch
 // envelope fans out into one event per file the patch touches.
-func extractGenericToolEvents(req ToolGateRequest, skip map[string]bool) ([]policy.Event, string, bool) {
+func extractGenericToolEvents(req ToolGateRequest, skip map[string]bool) ([]policy.Event, string, bool, bool) {
+	return extractGenericToolEventsCwd(req, skip, nil)
+}
+
+// extractGenericToolEventsCwd is extractGenericToolEvents with cwdFirst, the
+// payload keys read for the working directory before cwd
+// (genericToolExtractorCwd); nil reads cwd alone.
+func extractGenericToolEventsCwd(req ToolGateRequest, skip map[string]bool, cwdFirst []string) ([]policy.Event, string, bool, bool) {
+	body := bytes.TrimPrefix(req.Body, utf8BOM)
 	var p genericToolPayload
-	if err := json.Unmarshal(bytes.TrimPrefix(req.Body, []byte{0xEF, 0xBB, 0xBF}), &p); err != nil {
-		return nil, "", false
+	if err := json.Unmarshal(body, &p); err != nil {
+		// Not an object, or a field the gate reads (session, cwd, tool name)
+		// of the wrong type: the call cannot be judged (FU-161).
+		return nil, "", false, true
+	}
+	cwd := p.Cwd
+	if len(cwdFirst) > 0 {
+		var m map[string]any
+		if json.Unmarshal(body, &m) == nil {
+			if s := firstPathString(m, cwdFirst); s != "" {
+				cwd = s
+			}
+		}
 	}
 	native := firstNonEmpty(p.ToolName, p.ToolNameCamel)
 	if native == "" {
-		return nil, "", false
+		return nil, "", false, false
 	}
 	input := map[string]any{}
 	raw := p.ToolInput
 	if len(raw) == 0 {
 		raw = p.ToolInputCamel
 	}
-	_ = json.Unmarshal(raw, &input)
+	// Go 1.26 result for an out-of-range number (internal/jsonv1compat).
+	_ = jsonv1compat.UnmarshalObject(raw, &input)
 	return buildToolGateEvents(req, skip, native, input, toolGateEventContext{
-		session: firstNonEmpty(p.SessionID, p.SessionIDCamel, p.ConversationID),
-		cwd:     p.Cwd,
-		root:    firstNonEmpty(firstWorkspaceRoot(p.WorkspaceRoots), p.WorkspaceRoot),
+		session:  firstNonEmpty(p.SessionID, p.SessionIDCamel, p.ConversationID),
+		cwd:      cwd,
+		root:     firstNonEmpty(firstWorkspaceRoot(p.WorkspaceRoots), p.WorkspaceRoot),
+		inputBad: rawNotObject(raw),
 	})
 }
 
@@ -740,6 +1090,9 @@ type toolGateEventContext struct {
 	session, cwd, root string
 	// vocab is toolPayloadShape.vocab.
 	vocab []string
+	// inputBad: the tool input is present but not an object (nor a string
+	// holding one), so a judged tool's operand cannot be read (FU-161).
+	inputBad bool
 }
 
 // buildToolGateEvents judges one native tool call: it resolves the native
@@ -751,20 +1104,26 @@ type toolGateEventContext struct {
 // tool whose operand is missing), true with no events means there is
 // legitimately nothing to judge here (a known tool the guard does not
 // evaluate, an action a sibling event of the host judges, a channel that is
-// not a grounded pre-execution gate).
-func buildToolGateEvents(req ToolGateRequest, skip map[string]bool, native string, input map[string]any, ctx toolGateEventContext) ([]policy.Event, string, bool) {
+// not a grounded pre-execution gate). undecodable (FU-161) is true with
+// ok=false when the judged tool's input is not an object, or its operand
+// field is present with the wrong type: the call does something the gate
+// cannot read, which is not the same as an input that names no operand.
+func buildToolGateEvents(req ToolGateRequest, skip map[string]bool, native string, input map[string]any, ctx toolGateEventContext) ([]policy.Event, string, bool, bool) {
 	shape, ok := resolveGateShapeIn(req.Tool, ctx.vocab, native)
 	if !ok {
-		return nil, native, nativeKnownIn(req.Tool, ctx.vocab, native)
+		return nil, native, nativeKnownIn(req.Tool, ctx.vocab, native), false
 	}
 	if skip[shape.canonical] {
-		return nil, native, true
+		return nil, native, true, false
 	}
 	caps := toolGateChannelCaps(req)
 	if !caps.PreExecution {
 		// Not a wired pre-execution channel (no conformance row): judge
 		// nothing; the binding has not been grounded as a gate.
-		return nil, native, true
+		return nil, native, true, false
+	}
+	if ctx.inputBad && shape.operand != tooltax.OperandMCPName {
+		return nil, native, false, true
 	}
 	var targets []string
 	switch shape.operand {
@@ -780,7 +1139,7 @@ func buildToolGateEvents(req ToolGateRequest, skip map[string]bool, native strin
 		targets = patchTargetsIn(input)
 	}
 	if len(targets) == 0 {
-		return nil, native, false
+		return nil, native, false, operandWrongType(shape.operand, input)
 	}
 	caps.Sandboxed = sandboxedChild()
 	base := policy.Event{
@@ -792,15 +1151,59 @@ func buildToolGateEvents(req ToolGateRequest, skip map[string]bool, native strin
 		ProjectRoot: ctx.root,
 		Caps:        caps,
 		Dialect:     shape.dialect,
+		AltDialect:  unstatedShellAltDialect(shape.kind, shape.dialect, ctx.cwd),
 		Now:         time.Now().UTC(),
+	}
+	// The proposed content of a write or edit rides each event (T-910,
+	// R-162); a patch envelope gives each file its own section.
+	var edits []policy.ProposedEdit
+	if isWriteAction(shape.actionType) {
+		edits = proposedEditsIn(input)
 	}
 	events := make([]policy.Event, 0, len(targets))
 	for _, t := range targets {
 		e := base
 		e.Target = t
+		e.Edits = edits
+		if edits == nil && isWriteAction(shape.actionType) {
+			e.Edits = patchEditsFor(input, t)
+		}
 		events = append(events, e)
 	}
-	return events, native, true
+	return events, native, true, false
+}
+
+// operandWrongType reports whether input carries operand's field (a single
+// or a batch spelling, exact or without case and separators) with a value
+// of a type the gate cannot read as one: neither a string nor, for a batch
+// field, a list. Such a call names an operand the gate cannot judge
+// (FU-161), which is not an input that names none.
+func operandWrongType(operand string, input map[string]any) bool {
+	matches := func(fields []string, k string) bool {
+		for _, f := range fields {
+			if k == f || normalizeNative(k) == normalizeNative(f) {
+				return true
+			}
+		}
+		return false
+	}
+	for k, v := range input {
+		if v == nil {
+			continue
+		}
+		_, isString := v.(string)
+		_, isList := v.([]any)
+		if matches(operandListFields[operand], k) {
+			if !isString && !isList {
+				return true
+			}
+			continue
+		}
+		if matches(operandFields[operand], k) && !isString {
+			return true
+		}
+	}
+	return false
 }
 
 // toolPayloadShape names where a vendor's pre-tool payload carries each
@@ -822,33 +1225,182 @@ type toolPayloadShape struct {
 	// runtime shared by several products names tools in one product's
 	// vocabulary whichever host runs it.
 	vocab []string
+	// nameStrip lists name prefixes a host's model may wrap a tool name in
+	// (Goose: `developer__shell`, `developer.shell`, `functions.shell`); a
+	// prefix is stripped only when the rest is a tool name the taxonomy
+	// knows, so an unrelated name is never mangled.
+	nameStrip []string
+	// mcpAlias, when non-nil, canonicalizes the host's own MCP tool-name
+	// form into `mcp__<server>__<tool>` (tooltax.MCPNameFromSingleUnderscore
+	// for crush and Kiro, tooltax.MCPNameFromExtension for Goose), so an MCP
+	// rule (server pins, taint origins) sees the server the call names. It
+	// runs only for a name no literal taxonomy row claims.
+	mcpAlias func(string) (string, bool)
+	// flatten lists tool-input keys whose OBJECT value carries the operand
+	// one level down (Goose Code Mode's execute_typescript {input: {code}}):
+	// the nested keys are merged into the input, outer keys winning.
+	flatten []string
+}
+
+// canonicalNative is the native tool name the gate judges for a payload
+// that names native: the name itself when a literal taxonomy row (host or
+// extra vocabulary) claims it EXACTLY, else the name with a nameStrip prefix
+// removed when that rest is known, else the host's MCP alias, else the
+// name unchanged (which then classifies, or not, as before).
+//
+// The literal check is exact, never the taxonomy's normalized match
+// (case, `_`, `-` and `.` folded): with the folded match a Goose extension
+// "web" exposing "fetch" (`web__fetch`) folded onto the built-in
+// `web_fetch` row and skipped the MCP alias, so MCP pin, deny and taint
+// rules never saw it (integration security review, 2026-10-15).
+func (s toolPayloadShape) canonicalNative(tool, native string) string {
+	if literalNativeExact(tool, s.vocab, native) {
+		return native
+	}
+	for _, p := range s.nameStrip {
+		if rest, ok := strings.CutPrefix(native, p); ok && rest != "" && nativeKnownIn(tool, s.vocab, rest) {
+			return rest
+		}
+	}
+	if s.mcpAlias != nil {
+		if m, ok := s.mcpAlias(native); ok {
+			return m
+		}
+	}
+	return native
+}
+
+// literalNativeExact reports whether a LITERAL (non-glob) taxonomy row of
+// the host's vocabulary or an extra one names native byte for byte.
+func literalNativeExact(tool string, vocab []string, native string) bool {
+	for _, v := range append([]string{tool}, vocab...) {
+		if _, ok := tooltax.For(v)[native]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// flattenInput merges the object value of each key in keys into input
+// (outer keys win) and returns input.
+func flattenInput(input map[string]any, keys []string) map[string]any {
+	for _, k := range keys {
+		inner, ok := input[k].(map[string]any)
+		if !ok {
+			continue
+		}
+		for ik, iv := range inner {
+			if _, taken := input[ik]; !taken {
+				input[ik] = iv
+			}
+		}
+	}
+	return input
+}
+
+// claudeShapedPayload is the snake_case Claude-shaped pre-tool payload a
+// toolPayloadShape reads when a host also needs a shape-only option
+// (crush, Kiro CLI): session_id, cwd, tool_name, tool_input.
+var claudeShapedPayload = toolPayloadShape{
+	session: []string{"session_id", "sessionId"}, cwd: []string{"cwd"},
+	tool: []string{"tool_name", "toolName"}, input: []string{"tool_input", "toolInput"},
+}
+
+// withVocab returns s with further tool vocabularies to try after the host's
+// own (toolPayloadShape.vocab).
+func (s toolPayloadShape) withVocab(v ...string) toolPayloadShape {
+	s.vocab = append(append([]string{}, s.vocab...), v...)
+	return s
+}
+
+// withMCPAlias returns s with its MCP alias set.
+func (s toolPayloadShape) withMCPAlias(f func(string) (string, bool)) toolPayloadShape {
+	s.mcpAlias = f
+	return s
 }
 
 // shapedToolExtractor returns the extractor for a toolPayloadShape; skip is
 // as for genericToolExtractor.
-func shapedToolExtractor(shape toolPayloadShape, skip map[string]bool) func(ToolGateRequest) ([]policy.Event, string, bool) {
-	return func(req ToolGateRequest) ([]policy.Event, string, bool) {
+func shapedToolExtractor(shape toolPayloadShape, skip map[string]bool) func(ToolGateRequest) ([]policy.Event, string, bool, bool) {
+	return func(req ToolGateRequest) ([]policy.Event, string, bool, bool) {
 		var m map[string]any
-		if err := json.Unmarshal(bytes.TrimPrefix(req.Body, []byte{0xEF, 0xBB, 0xBF}), &m); err != nil {
-			return nil, "", false
+		if err := json.Unmarshal(bytes.TrimPrefix(req.Body, utf8BOM), &m); err != nil {
+			// Valid JSON that is not an object decodes to no map either
+			// (json.Unmarshal fails): nothing the gate reads is there.
+			return nil, "", false, true
+		}
+		if req.contextOnly {
+			return []policy.Event{{
+				SessionID: firstPathString(m, shape.session), Cwd: firstPathString(m, shape.cwd), ProjectRoot: firstPathString(m, shape.root),
+			}}, "", true, false
 		}
 		native := firstPathString(m, shape.tool)
 		if server, tool := firstPathString(m, shape.mcpServer), firstPathString(m, shape.mcpTool); server != "" && tool != "" {
 			native = "mcp__" + server + "__" + tool
 		}
+		if native == "" && pathPresentNotString(m, shape.tool) {
+			// The payload names its tool, as something other than a name.
+			return nil, "", false, true
+		}
 		if native == "" {
 			native = shape.eventTools[req.NativeEvent]
 		}
 		if native == "" {
-			return nil, "", false
+			return nil, "", false, false
 		}
-		return buildToolGateEvents(req, skip, native, firstPathObject(m, shape.input), toolGateEventContext{
-			session: firstPathString(m, shape.session),
-			cwd:     firstPathString(m, shape.cwd),
-			root:    firstPathString(m, shape.root),
-			vocab:   shape.vocab,
+		native = shape.canonicalNative(req.Tool, native)
+		input := flattenInput(firstPathObject(m, shape.input), shape.flatten)
+		return buildToolGateEvents(req, skip, native, input, toolGateEventContext{
+			session:  firstPathString(m, shape.session),
+			cwd:      firstPathString(m, shape.cwd),
+			root:     firstPathString(m, shape.root),
+			vocab:    shape.vocab,
+			inputBad: pathObjectBad(m, shape.input),
 		})
 	}
+}
+
+// pathPresentNotString reports whether one of paths is present with a
+// non-null value that is neither a string nor a list starting with one
+// (what firstPathString reads).
+func pathPresentNotString(m map[string]any, paths []string) bool {
+	for _, p := range paths {
+		v, ok := pathValue(m, p)
+		if !ok || v == nil {
+			continue
+		}
+		if list, ok := v.([]any); ok && len(list) > 0 {
+			v = list[0]
+		}
+		if _, ok := v.(string); !ok {
+			return true
+		}
+	}
+	return false
+}
+
+// pathObjectBad reports whether a tool input is present under one of paths
+// but none of them holds what firstPathObject reads (an object, or a string
+// that decodes to one); null counts as absent.
+func pathObjectBad(m map[string]any, paths []string) bool {
+	present := false
+	for _, p := range paths {
+		v, ok := pathValue(m, p)
+		if !ok || v == nil {
+			continue
+		}
+		present = true
+		switch t := v.(type) {
+		case map[string]any:
+			return false
+		case string:
+			var obj map[string]any
+			if json.Unmarshal([]byte(t), &obj) == nil && obj != nil {
+				return false
+			}
+		}
+	}
+	return present
 }
 
 // pathValue walks a dotted path through decoded JSON objects.
@@ -937,6 +1489,15 @@ var gateUnclassifiedNatives = map[string]struct{ actionType, operand string }{
 // powerShellNatives are native shell tools whose command is PowerShell.
 var powerShellNatives = map[string]bool{"powershell": true, "pwsh": true}
 
+// unstatedShellAltDialect is the second reading a shell event gets when its
+// host does not state which shell runs the command; the rule lives in
+// policy.UnstatedShellAltDialect (one owner, shared with `observer guard
+// test`). Claude Code's Bash tool is Git-Bash on Windows and is built by
+// BuildClaudeCodeEvent, which does not ask for this reading.
+func unstatedShellAltDialect(kind policy.EventKind, dialect policy.Dialect, cwd string) policy.Dialect {
+	return policy.UnstatedShellAltDialect(kind, dialect, cwd)
+}
+
 // unionOperands is single followed by every list operand not equal to an
 // earlier one, in order ("" contributes nothing).
 func unionOperands(single string, list []string) []string {
@@ -1016,7 +1577,7 @@ func resolveGateShape(tool, native string) (gateShape, bool) {
 // operandFields lists, per tooltax operand, the tool-input field spellings
 // the vendors use, tried in order.
 var operandFields = map[string][]string{
-	tooltax.OperandCommand:      {"command", "cmd", "commandLine", "script"},
+	tooltax.OperandCommand:      {"command", "cmd", "commandLine", "script", "code"},
 	tooltax.OperandFilePath:     {"file_path", "filePath", "absolute_path", "target_file", "path", "notebook_path", "filename"},
 	tooltax.OperandNotebookPath: {"notebook_path", "file_path"},
 	tooltax.OperandPath:         {"path", "dir_path", "directory", "absolute_path", "file_path", "directory_path", "search_path"},
@@ -1027,11 +1588,12 @@ var operandFields = map[string][]string{
 // operandListFields lists, per tooltax operand, the BATCH field spellings a
 // tool input may carry instead of one operand: a list of strings, or of
 // objects that each carry the operand (Cline CLI's run_commands
-// {commands:[...]} and read_files {files:[{path}]}). Every element is judged.
+// {commands:[...]} and read_files {files:[{path}]}; Kiro CLI's read
+// {operations:[{path}]}). Every element is judged.
 var operandListFields = map[string][]string{
 	tooltax.OperandCommand:  {"commands"},
-	tooltax.OperandFilePath: {"files", "file_paths", "paths"},
-	tooltax.OperandPath:     {"paths", "files"},
+	tooltax.OperandFilePath: {"files", "file_paths", "paths", "operations"},
+	tooltax.OperandPath:     {"paths", "files", "operations"},
 }
 
 // operandList returns every operand of the first non-empty batch field for
@@ -1090,9 +1652,33 @@ func operandListValues(operand string, v any) []string {
 			if s := operandValue(operand, t); s != "" {
 				out = append(out, s)
 			}
+		case []any:
+			// An argv element (a command as a list of words): judged as the
+			// line those words make, so `["git","commit","-m","x"]`
+			// classifies like `git commit -m x` (security plan section 4.7
+			// item 4, Cline arrays element by element).
+			if operand == tooltax.OperandCommand {
+				if s := argvLine(t); s != "" {
+					out = append(out, s)
+				}
+			}
 		}
 	}
 	return out
+}
+
+// argvLine joins an argv element's words into one POSIX command line,
+// quoting each word that needs it; "" when an element is not a string.
+func argvLine(words []any) string {
+	parts := make([]string, 0, len(words))
+	for _, w := range words {
+		s, ok := w.(string)
+		if !ok {
+			return ""
+		}
+		parts = append(parts, shellQuoteIfNeeded(s))
+	}
+	return strings.Join(parts, " ")
 }
 
 // operandValue returns the first non-empty string input field for operand:
@@ -1201,4 +1787,55 @@ func firstNonEmpty(ss ...string) string {
 		}
 	}
 	return ""
+}
+
+// mcpToolInputFields are the top-level payload members a Claude-shaped
+// host carries an MCP call's arguments in, tried in order: tool_input and
+// toolInput (genericToolPayload: Claude Code, Gemini CLI, Kimi, Grok,
+// Vibe, Poolside, Junie; claudeShapedPayload: Crush, Kiro, Goose), toolArgs
+// (Copilot CLI), arguments, and input (Cursor's beforeMCPExecution,
+// internal/adapter/cursor's payload struct). A host whose payload nests
+// them lists its own paths (toolGateDialect.mcpArgs).
+var mcpToolInputFields = []string{"tool_input", "toolInput", "toolArgs", "arguments", "input"}
+
+// mcpToolInputRaw returns an MCP call's arguments from the hook payload as
+// raw JSON (nil when there are none), from the first of paths (dotted;
+// nil is mcpToolInputFields) that holds a value. The policy side bounds and
+// decodes it (policy.MaxMCPToolInput); a JSON string holding an object
+// (Copilot CLI's toolArgs) is decoded there.
+func mcpToolInputRaw(body []byte, paths []string) []byte {
+	if paths == nil {
+		paths = mcpToolInputFields
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(bytes.TrimPrefix(body, []byte{0xEF, 0xBB, 0xBF}), &m); err != nil {
+		return nil
+	}
+	for _, p := range paths {
+		if v, ok := rawPath(m, p); ok && len(v) > 0 && string(v) != "null" {
+			return []byte(v)
+		}
+	}
+	return nil
+}
+
+// rawPath walks a dotted path through raw JSON objects.
+func rawPath(m map[string]json.RawMessage, path string) (json.RawMessage, bool) {
+	keys := strings.Split(path, ".")
+	cur := m
+	for i, k := range keys {
+		v, ok := cur[k]
+		if !ok {
+			return nil, false
+		}
+		if i == len(keys)-1 {
+			return v, true
+		}
+		var next map[string]json.RawMessage
+		if json.Unmarshal(v, &next) != nil {
+			return nil, false
+		}
+		cur = next
+	}
+	return nil, false
 }

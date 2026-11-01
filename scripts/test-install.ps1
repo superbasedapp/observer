@@ -178,7 +178,7 @@ public static class P {
   New-Item -ItemType Directory -Force -Path (Join-Path $npmDir "node_modules\@superbased\observer") | Out-Null
   [IO.File]::WriteAllText((Join-Path $npmDir "observer.cmd"), "@echo observer version 1.34.0`r`n")
   $r = Run @("-FromDir", $rel, "-Prefix", "$T\p9", "-Yes") @{ OBSERVER_INSTALL_TEST_PATH = $npmDir }
-  if ($r.rc -ne 0 -and $r.out -match "npm install:" -and $r.out -match "npm install -g @superbased/observer@latest" -and $r.out -match "-Force" -and -not (Test-Path "$T\p9\observer.exe")) {
+  if ($r.rc -ne 0 -and $r.out -match "npm install:" -and $r.out -match "npm\.cmd install -g @superbased/observer@latest" -and $r.out -match "-Force" -and -not (Test-Path "$T\p9\observer.exe")) {
     Ok "an npm install on Path: explained, its upgrade command offered, nothing installed without -Force"
   } else { Bad "npm install on Path" $r.out }
   $r = Run @("-FromDir", $rel, "-Prefix", "$T\p9f", "-Yes", "-Force") @{ OBSERVER_INSTALL_TEST_PATH = $npmDir }
@@ -191,6 +191,57 @@ public static class P {
   if ($r.rc -eq 0 -and (Test-Path "$T\p10f\observer.exe") -and $r.out -match "A daemon from another install is running \(pid 4242\)" -and $r.out -notmatch "  observer start ") {
     Ok "with -Force beside a running daemon: no observer start step"
   } else { Bad "next steps beside a running daemon" $r.out }
+
+  # Lane SBX-P3B: an archive whose edition carries the Windows sandbox files
+  # (mxc\ with its manifest) installs them beside observer.exe; a file that
+  # does not match its manifest is refused before anything is written, and
+  # an existing set is replaced whole (the upgrade keeps no stale file).
+  $relM = Join-Path $T "relmxc"; $stM = Join-Path $T "stagemxc"
+  New-Item -ItemType Directory -Path $relM, (Join-Path $stM "mxc") | Out-Null
+  Copy-Item (Join-Path $stage "developer\observer.exe"), (Join-Path $stage "developer\superbased.exe") $stM
+  [IO.File]::WriteAllText((Join-Path $stM "mxc\mxc_ffi.dll"), "fake dll")
+  [IO.File]::WriteAllText((Join-Path $stM "mxc\wxc-exec.exe"), "fake exe!")
+  function MxcManifestFor([string]$d) {
+    $files = foreach ($n in @("mxc_ffi.dll", "wxc-exec.exe")) {
+      $p = Join-Path $d $n
+      @{ name = $n; package_path = "package/bin/x64/$n"; sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $p).Hash.ToLowerInvariant(); size = (Get-Item -LiteralPath $p).Length }
+    }
+    return (@{ kind = "observer.mxc-files.v1"; upstream = "npm:@microsoft/mxc-sdk"; version = "1.0.1"; files = @($files) } | ConvertTo-Json -Depth 4)
+  }
+  [IO.File]::WriteAllText((Join-Path $stM "mxc\mxc-manifest.json"), (MxcManifestFor (Join-Path $stM "mxc")))
+  $zM = Join-Path $relM "observer-$ver-developer-win32-x64.zip"
+  Compress-Archive -Path (Join-Path $stM "observer.exe"), (Join-Path $stM "superbased.exe"), (Join-Path $stM "mxc") -DestinationPath $zM
+  [IO.File]::WriteAllText((Join-Path $relM "SHA256SUMS"), ("{0}  {1}`n" -f (Get-FileHash -Algorithm SHA256 -LiteralPath $zM).Hash.ToLowerInvariant(), (Split-Path -Leaf $zM)))
+  [void](VS @("sign", "-key", $key, "-allow-unpinned-key", $zM))
+  $pM = Join-Path $T "pmxc"
+  New-Item -ItemType Directory -Path (Join-Path $pM "mxc") | Out-Null
+  [IO.File]::WriteAllText((Join-Path $pM "mxc\wxc-exec.exe"), "old exe")
+  $r = Run @("-FromDir", $relM, "-Prefix", $pM, "-Edition", "developer", "-Yes")
+  $gotExe = if (Test-Path "$pM\mxc\wxc-exec.exe") { [IO.File]::ReadAllText("$pM\mxc\wxc-exec.exe") } else { "" }
+  if ($r.rc -eq 0 -and $r.out -match "sandbox   mxc" -and $gotExe -eq "fake exe!" -and (Test-Path "$pM\mxc\mxc_ffi.dll") -and (Test-Path "$pM\mxc\mxc-manifest.json") -and @(Get-ChildItem -LiteralPath "$pM\mxc" -Filter "*.old-*").Count -eq 0) {
+    Ok "the sandbox files are checked against their manifest and replace the old set beside observer.exe"
+  } else { Bad "mxc install (exe=$gotExe)" $r.out }
+  # A tampered sandbox file in a correctly signed archive: refused, and the
+  # installed set and binary are untouched.
+  $stT = Join-Path $T "stagemxc-t"
+  Copy-Item -Recurse $stM $stT
+  [IO.File]::WriteAllText((Join-Path $stT "mxc\mxc_ffi.dll"), "fake dlX")
+  $relT = Join-Path $T "relmxc-t"
+  New-Item -ItemType Directory -Path $relT | Out-Null
+  $zT = Join-Path $relT "observer-$ver-developer-win32-x64.zip"
+  Compress-Archive -Path (Join-Path $stT "observer.exe"), (Join-Path $stT "superbased.exe"), (Join-Path $stT "mxc") -DestinationPath $zT
+  [IO.File]::WriteAllText((Join-Path $relT "SHA256SUMS"), ("{0}  {1}`n" -f (Get-FileHash -Algorithm SHA256 -LiteralPath $zT).Hash.ToLowerInvariant(), (Split-Path -Leaf $zT)))
+  [void](VS @("sign", "-key", $key, "-allow-unpinned-key", $zT))
+  $pT = Join-Path $T "pmxc-t"
+  New-Item -ItemType Directory -Path (Join-Path $pT "mxc") | Out-Null
+  [IO.File]::WriteAllText((Join-Path $pT "mxc\mxc_ffi.dll"), "old dll")
+  $r = Run @("-FromDir", $relT, "-Prefix", $pT, "-Edition", "developer", "-Yes")
+  if ($r.rc -ne 0 -and $r.out -match "does not match its manifest" -and [IO.File]::ReadAllText("$pT\mxc\mxc_ffi.dll") -eq "old dll" -and -not (Test-Path "$pT\observer.exe")) {
+    Ok "a sandbox file that does not match its manifest is refused before anything is written"
+  } else { Bad "tampered mxc file" $r.out }
+  # An archive with no mxc\ leaves an installed set alone.
+  $r = Run @("-FromDir", $rel, "-Prefix", $pM, "-Edition", "developer", "-Yes")
+  if ($r.rc -eq 0 -and [IO.File]::ReadAllText("$pM\mxc\wxc-exec.exe") -eq "fake exe!") { Ok "an archive without mxc\ leaves the installed sandbox files alone" } else { Bad "no mxc in the archive" $r.out }
 
   $r = Run @("-Uninstall", "-Prefix", "$T\p2", "-Yes")
   if ($r.rc -eq 0 -and -not (Test-Path "$T\p2\observer.exe") -and (Get-Content $log) -contains "uninstall --all") { Ok "uninstall runs observer uninstall --all and removes the binaries" } else { Bad "uninstall" $r.out }

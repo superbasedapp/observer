@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/marmutapp/superbased-observer/internal/testsupport/latencygate"
 )
 
 // piiLatencyBudget is the per-op wall-clock ceiling asserted by the
@@ -173,9 +175,7 @@ const piiLatencyTestCeiling = 50 * time.Millisecond
 // skip); otherwise runs a handful of iterations and fails if the mean
 // per-call cost exceeds piiLatencyTestCeiling.
 func TestDetectPII_LatencyRegression(t *testing.T) {
-	if testing.Short() {
-		t.Skip("wall-clock latency assertion skipped under -short")
-	}
+	latencygate.Gate(t) // listed, and skipped under -short and in a loaded CI shard
 	const size = 128 * 1024
 	const iterations = 5
 

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"log/slog"
 
@@ -15,7 +16,7 @@ import (
 // internal/otlpvendor and the vendor logs handler are not in the binary.
 // [ingest.otel] is reported, never obeyed: the receiver serves no logs, and
 // traces still reach Plane A when [observability] is on.
-func wireVendorOTLPIngest(_ config.Config, _ *sql.DB, logger *slog.Logger, planeA otlpingest.TraceHandler) (otlpingest.Handler, otlpingest.TraceHandler) {
+func wireVendorOTLPIngest(_ context.Context, _ config.Config, _ *sql.DB, logger *slog.Logger, planeA otlpingest.TraceHandler) (otlpingest.Handler, otlpingest.TraceHandler) {
 	if logger != nil {
 		logger.Warn("otlp receiver: [ingest.otel] enabled is ignored: OTLP ingest (ingest.otlp) is not in this build")
 	}

@@ -14,13 +14,16 @@ import { IntegrityBanner } from "@/components/IntegrityBanner";
 import { ManagedBanner } from "@/components/ManagedBanner";
 import { DemoBanner } from "@/components/DemoBanner";
 import { AnnouncementBanner } from "@/components/AnnouncementBanner";
+import { SecurityOrgNotice } from "@/components/SecurityOrgNotice";
 import { BudgetBanner } from "@/components/BudgetBanner";
 import { CostDisplayBanner } from "@/components/CostDisplayBanner";
 import { OrgIntelConsentBanner } from "@/components/OrgIntelConsentBanner";
 import { BudgetWarningBanner } from "@/components/BudgetWarningBanner";
 import { UpdateBanner } from "@/components/UpdateBanner";
 import { FirstCaptureToast } from "@/components/FirstCaptureToast";
+import { FirstRunHost } from "@/components/FirstRunHost";
 import { ToastViewport } from "@/components/Toast";
+import { MessageToast } from "@/components/MessageToast";
 import { ConfigSavePreviewHost } from "@/components/ConfigSavePreviewHost";
 import { KonamiEgg } from "@/components/KonamiEgg";
 import { FilterBar } from "@/components/FilterBar";
@@ -43,6 +46,7 @@ import {
   TopProgress,
 } from "@shared/primitives";
 import { useApiActivity } from "@/lib/useApi";
+import { useRouteRider } from "@shared/lib/routeRider";
 import { NAV_ITEMS } from "@/lib/nav";
 import { reportToCostSearch } from "@/lib/nodePageTabs";
 import {
@@ -232,10 +236,21 @@ function RouteFallback() {
 // mode="wait" held every navigation back ~140 ms while the outgoing page
 // faded. Suspense sits INSIDE the transition so a lazy chunk's skeleton
 // enters the same way the page does.
+// DOCK_CLEARED_PAGE is the page box: its height leaves the dock's
+// clearance free, and an ::after spacer of the same height follows the page
+// content wherever that content ends. 0 when no dock is on screen.
+const DOCK_CLEARED_PAGE =
+  "h-[calc(100%-var(--sb-dock-clearance,0px))] after:block after:h-[var(--sb-dock-clearance,0px)] after:content-['']";
+
 function AnimatedRoutes() {
   const location = useLocation();
   return (
-    <PageTransition routeKey={location.pathname} className="h-full">
+    // The floating terminal dock's clearance (T-855, lib/dockClearance) is
+    // taken off the page height and added back as a spacer AFTER the page,
+    // so a full-height page (Messages) ends above the dock and a long page
+    // that overflows this box still scrolls its last row clear of the dock
+    // (padding on the scroller alone stops at this box, not at its overflow).
+    <PageTransition routeKey={location.pathname} className={DOCK_CLEARED_PAGE}>
       <Suspense fallback={<RouteFallback />}>
         <Routes location={location}>
           {PAGE_ROUTES.map((r) =>
@@ -259,8 +274,14 @@ function AnimatedRoutes() {
 // shell re-rendering on every busy/idle flip would re-render the whole app.
 // Foreground requests in flight (a filter change, a page's first load)
 // drive the thin gradient bar along the top of the content column.
+// D-665..D-669: Obs rides the line only during a slow ROUTE load (useRouteRider:
+// from navigation until that page's own requests settle), never for a later
+// filter change, refetch or poll.
 function ActivityProgress() {
-  return <TopProgress active={useApiActivity() > 0} className="z-40" />;
+  const { pathname } = useLocation();
+  const active = useApiActivity() > 0;
+  const rider = useRouteRider(pathname, active);
+  return <TopProgress active={active} rider={rider} className="z-40" />;
 }
 
 // Renderer injected into the shared design-system help slot: DS components
@@ -383,6 +404,7 @@ export default function App() {
             <ManagedBanner gov={gov.data} />
             <DemoBanner />
             <AnnouncementBanner />
+            <SecurityOrgNotice />
             <CostDisplayBanner />
             {/* Cloud Intelligence parity (design 3.7): an individual machine whose
                 org made Cloud Intelligence a condition of membership sees
@@ -400,17 +422,27 @@ export default function App() {
                 once per browser through the ToastViewport below. */}
             <BudgetWarningBanner />
             <FirstCaptureToast />
+            {/* The first-run capture view (T-922): detected AI tools and the
+                watcher's progress over their existing history. Opens by
+                itself once on a fresh install; reopened from the command
+                palette or Settings, Connected tools. */}
+            <FirstRunHost />
             <ToastViewport />
+            {/* An admin message arriving while the dashboard is open (T-854):
+                one toast with Open and Reply, when the developer kept the
+                toast surface on. */}
+            <MessageToast />
             {/* The one preview every config section save opens before it
                 writes (T-432, lib/configSectionSave.ts). */}
             <ConfigSavePreviewHost />
             <KonamiEgg />
             <FilterBar onOpenPalette={() => setPaletteOpen(true)} />
-            {/* pb-24: a reserved gutter under every page so the floating
-                terminal dock (LaunchDock: the New terminal button and its
-                drag grip, fixed bottom-right) never sits on top of the last
-                rows of a table or card once you scroll to the end (T-803). */}
-            <div className="min-h-0 flex-1 overflow-y-auto pb-24">
+            {/* The page area. The floating terminal dock's clearance is
+                reserved by the page box itself (AnimatedRoutes,
+                DOCK_CLEARED_PAGE), so no page puts a row, a card or a Send
+                button under the dock once scrolled to its end (T-803,
+                T-855). */}
+            <div className="min-h-0 flex-1 overflow-y-auto">
               {routeReadOnly && <ManagedReadOnlyBar gov={gov.data} />}
               {routeUnresolved ? (
                 <PostureUnresolved posture={visibility.posture} onRetry={visibility.reload} />

@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/hook"
 )
 
 // wizardTestServer sandboxes setupWizardHome into a temp dir so the
@@ -155,5 +156,55 @@ func TestSetupMCPWizard(t *testing.T) {
 	server.Handler().ServeHTTP(rr2, httptest.NewRequest(http.MethodGet, "/api/setup/hooks", nil))
 	if rr2.Code != http.StatusMethodNotAllowed {
 		t.Errorf("GET hooks: got %d want 405", rr2.Code)
+	}
+}
+
+// TestSetupHooksWizardWindowsShellWarning: /api/setup/hooks carries the
+// registration's non-fatal warnings. A Windows observer registering VT Code
+// with no sh.exe on its PATH gets the hook-shell warning; with sh.exe on PATH
+// the key is absent (additive shape).
+func TestSetupHooksWizardWindowsShellWarning(t *testing.T) {
+	noSh := t.TempDir()
+	withSh := t.TempDir()
+	if err := os.WriteFile(filepath.Join(withSh, "sh.exe"), []byte("stub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name     string
+		path     string
+		wantWarn bool
+	}{
+		{"sh missing", noSh, true},
+		{"sh present", noSh + ";" + withSh, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, _ := wizardTestServer(t)
+			env := map[string]string{"PATH": tc.path}
+			server.opts.HookRegistryOptions = func() (hook.Options, error) {
+				return hook.Options{
+					BinaryPath: "/opt/observer/bin/observer",
+					GOOS:       "windows",
+					Getenv:     func(k string) string { return env[k] },
+				}, nil
+			}
+			rr := wizardPost(t, server, "/api/setup/hooks", `{"tool":"vtcode","dry_run":true}`)
+			if rr.Code != 200 {
+				t.Fatalf("status %d body=%s", rr.Code, rr.Body.String())
+			}
+			var got map[string]any
+			if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+				t.Fatal(err)
+			}
+			warnings, present := got["warnings"].([]any)
+			if !tc.wantWarn {
+				if present {
+					t.Fatalf("unexpected warnings: %v", got["warnings"])
+				}
+				return
+			}
+			if len(warnings) != 1 || !strings.Contains(warnings[0].(string), "sh.exe is not on the Windows PATH") {
+				t.Fatalf("warnings = %v (body %v)", got["warnings"], got)
+			}
+		})
 	}
 }

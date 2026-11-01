@@ -1,6 +1,7 @@
 package hook
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"strings"
@@ -52,11 +53,43 @@ func HandleGuardedDecided(
 	decided func(exitCode int),
 	stdout, stderr io.Writer,
 ) (blocked bool, recordAfterReply func()) {
-	res := HandleToolGate(ToolGateRequest{
-		Tool: models.ToolClaudeCode, Dialect: ToolGateDialectClaudeCode,
-		NativeEvent: "PreToolUse", Label: event, Body: body, Decided: decided,
-	}, ev, persist, stdout, stderr)
+	res := HandleGuardedResult(event, body, ev, persist, decided, stdout, stderr)
 	return res.Replied, res.RecordAfterReply
+}
+
+// HandleGuardedResult is HandleGuardedDecided returning the whole
+// ToolGateResult, so the caller can add a flag's developer notice
+// (Warn / WarnField, via WithWarnField) to its own approve or rewrite
+// reply.
+func HandleGuardedResult(
+	event string,
+	body []byte,
+	ev guard.Evaluator,
+	persist func(guard.ActionVerdict),
+	decided func(exitCode int),
+	stdout, stderr io.Writer,
+) ToolGateResult {
+	return HandleGuardedEnriched(event, body, ev, persist, decided, nil, stdout, stderr)
+}
+
+// HandleGuardedEnriched is HandleGuardedResult with ToolGateRequest.Enrich:
+// the cmd layer fills the security pillar's facts on each event before it
+// is evaluated, as every other tool gate does (lane sec-gate2: Claude
+// Code's PreToolUse ran no enrich, so the commit gate and S-721 never
+// fired there). A nil enrich is HandleGuardedResult.
+func HandleGuardedEnriched(
+	event string,
+	body []byte,
+	ev guard.Evaluator,
+	persist func(guard.ActionVerdict),
+	decided func(exitCode int),
+	enrich func(*policy.Event),
+	stdout, stderr io.Writer,
+) ToolGateResult {
+	return HandleToolGate(ToolGateRequest{
+		Tool: models.ToolClaudeCode, Dialect: ToolGateDialectClaudeCode,
+		NativeEvent: "PreToolUse", Label: event, Body: body, Decided: decided, Enrich: enrich,
+	}, ev, persist, stdout, stderr)
 }
 
 // HandleTruncatedPreTool is the fail-closed branch for a Claude Code
@@ -83,12 +116,15 @@ func HandleTruncatedPreTool(event string, enforcing bool, stdout, stderr io.Writ
 // claudeCodeBlockReply is the §6.2 Claude Code decision shape: the
 // modern hookSpecificOutput.permissionDecision contract plus the
 // legacy top-level decision/reason fields, emitted TOGETHER in one
-// object (documented compatible — new clients prefer the modern
-// field, old clients only read the legacy one; an ask maps to legacy
-// "block" since the legacy protocol has no ask).
+// object for a DENY (documented compatible: new clients prefer the modern
+// field, old clients only read the legacy one). An ASK carries the modern
+// field alone: the legacy protocol has no ask, and the live audit
+// (2026-10-15) found that the legacy decision:"block" sent beside
+// permissionDecision:"ask" turned the native ask into a block, so the
+// developer was never asked.
 type claudeCodeBlockReply struct {
-	Decision           string                  `json:"decision"`
-	Reason             string                  `json:"reason"`
+	Decision           string                  `json:"decision,omitempty"`
+	Reason             string                  `json:"reason,omitempty"`
 	HookSpecificOutput claudeCodePermissionOut `json:"hookSpecificOutput"`
 }
 
@@ -99,18 +135,21 @@ type claudeCodePermissionOut struct {
 	PermissionDecisionReason string `json:"permissionDecisionReason"`
 }
 
-// buildClaudeCodeBlockReply assembles the dual-shape reply for a
-// blocking emission.
+// buildClaudeCodeBlockReply assembles the reply for a blocking emission:
+// the dual shape for a deny, the modern permissionDecision alone for an
+// ask (the native ask prompt).
 func buildClaudeCodeBlockReply(em guard.Emission) claudeCodeBlockReply {
-	return claudeCodeBlockReply{
-		Decision: "block",
-		Reason:   em.Reason,
+	r := claudeCodeBlockReply{
 		HookSpecificOutput: claudeCodePermissionOut{
 			HookEventName:            "PreToolUse",
 			PermissionDecision:       em.Permission,
 			PermissionDecisionReason: em.Reason,
 		},
 	}
+	if em.Permission != "ask" {
+		r.Decision, r.Reason = "block", em.Reason
+	}
+	return r
 }
 
 // guardedPreToolPayload is the subset of the Claude Code PreToolUse
@@ -244,11 +283,52 @@ var claudeToolShape = map[string]struct {
 //     Windows-native PowerShell tool rows set DialectPowerShell.
 //   - mcp__<server>__<tool> names classify as mcp_call with the full
 //     name as Target (MCPServerFromTarget parses the server out).
+//   - A leading UTF-8 BOM (a .NET / PowerShell stdin writer's) is stripped
+//     here too, so no caller's untrimmed copy reads as unparseable (FU-161).
 func BuildClaudeCodeEvent(body []byte) (policy.Event, bool) {
-	var p guardedPreToolPayload
-	if err := json.Unmarshal(body, &p); err != nil || p.ToolName == "" {
-		return policy.Event{}, false
+	ev, ok, _ := buildClaudeCodeEvent(body)
+	return ev, ok
+}
+
+// buildClaudeCodeEvent is BuildClaudeCodeEvent that also says whether a
+// not-ok payload is undecodable (FU-161): JSON that is not an object, a
+// session / cwd / tool name of the wrong type, or, for a tool the gate
+// judges, a tool_input that is not an object or whose operand fields have
+// the wrong type. An MCP tool's input is never decoded here (its target is
+// its name), so an MCP server's own argument types never read as
+// undecodable. undecodable is false for an unknown tool or a missing
+// operand: those pass, as before.
+func buildClaudeCodeEvent(body []byte) (ev policy.Event, ok, undecodable bool) {
+	body = bytes.TrimPrefix(body, utf8BOM)
+	var top struct {
+		SessionID string          `json:"session_id"`
+		Cwd       string          `json:"cwd"`
+		ToolName  string          `json:"tool_name"`
+		ToolInput json.RawMessage `json:"tool_input"`
 	}
+	if err := json.Unmarshal(body, &top); err != nil {
+		return policy.Event{}, false, true
+	}
+	if top.ToolName == "" {
+		return policy.Event{}, false, false
+	}
+	p := guardedPreToolPayload{SessionID: top.SessionID, Cwd: top.Cwd, ToolName: top.ToolName}
+	if _, judged := claudeToolShape[p.ToolName]; judged {
+		if rawNotObject(top.ToolInput) {
+			return policy.Event{}, false, true
+		}
+		if t := bytes.TrimSpace(top.ToolInput); len(t) > 0 && !bytes.Equal(t, []byte("null")) {
+			if err := json.Unmarshal(t, &p.ToolInput); err != nil {
+				return policy.Event{}, false, true
+			}
+		}
+	}
+	ev, ok = claudeCodeEventFrom(&p, body)
+	return ev, ok, false
+}
+
+// claudeCodeEventFrom builds the policy event from a decoded payload.
+func claudeCodeEventFrom(p *guardedPreToolPayload, body []byte) (policy.Event, bool) {
 	ev := policy.Event{
 		Tool:      models.ToolClaudeCode,
 		SessionID: p.SessionID,
@@ -260,10 +340,13 @@ func BuildClaudeCodeEvent(body []byte) (policy.Event, bool) {
 	if shape, ok := claudeToolShape[p.ToolName]; ok {
 		ev.Kind = shape.kind
 		ev.ActionType = shape.actionType
-		ev.Target = shape.target(&p)
+		ev.Target = shape.target(p)
 		ev.Dialect = shape.dialect
 		if ev.Target == "" {
 			return policy.Event{}, false
+		}
+		if isWriteAction(ev.ActionType) {
+			ev.Edits = proposedEditsIn(toolInputMap(body))
 		}
 		return ev, true
 	}

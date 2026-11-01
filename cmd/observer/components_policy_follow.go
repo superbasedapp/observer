@@ -54,6 +54,12 @@ type componentPolicyFollower struct {
 	resolve  func(ctx context.Context, cfg config.Config) (componentstate.Snapshot, nodecomponents.Outcome)
 	teardown func(ctx context.Context, ids []string) ([]componentsvc.StepOutcome, error)
 	now      func() time.Time
+	// liveSandboxed is the live sandboxed run count (the live-run gate's
+	// source); a blocked sandbox component's teardown waits while it is
+	// above zero (deferred_live_sandbox, SBX-UPD-1). waiting holds the ids
+	// already reported as waiting, so the audit row is written once.
+	liveSandboxed func() int
+	waiting       map[string]bool
 }
 
 // newComponentPolicyFollower builds the follower; start is the daemon's
@@ -62,7 +68,10 @@ func newComponentPolicyFollower(configPath string, st *store.Store, start compon
 	if logger == nil {
 		logger = slog.Default()
 	}
-	f := &componentPolicyFollower{configPath: configPath, st: st, logger: logger, tornDown: map[string]bool{}, now: time.Now}
+	f := &componentPolicyFollower{
+		configPath: configPath, st: st, logger: logger, tornDown: map[string]bool{}, now: time.Now,
+		liveSandboxed: liveSandboxedNow, waiting: map[string]bool{},
+	}
 	for _, id := range start.Inactive() {
 		f.tornDown[id] = true
 	}
@@ -92,6 +101,39 @@ func (f *componentPolicyFollower) run(ctx context.Context) {
 		case <-t.C:
 		}
 	}
+}
+
+// holdForLiveRuns takes the sandbox components out of fresh while sandboxed
+// runs are live: their teardown waits for the runs (the gate's
+// org_policy_teardown row answers defer), never ending a run silently. The
+// wait is logged and audited once as deferred_live_sandbox; the next pass
+// after the runs end tears them down.
+func (f *componentPolicyFollower) holdForLiveRuns(ctx context.Context, fresh []string) []string {
+	held := liveRunHeldIDs(fresh)
+	if len(held) == 0 || f.liveSandboxed == nil {
+		return fresh
+	}
+	n := f.liveSandboxed()
+	if liveRunGate(liveRunTriggerPolicyTeardown, n, "") == liveRunProceed {
+		return fresh
+	}
+	var keep, newlyWaiting []string
+	for _, id := range fresh {
+		if !liveRunHoldsComponent(id) {
+			keep = append(keep, id)
+			continue
+		}
+		if !f.waiting[id] {
+			f.waiting[id] = true
+			newlyWaiting = append(newlyWaiting, id)
+		}
+	}
+	if len(newlyWaiting) > 0 {
+		f.logger.Warn("components: the organization's policy blocks sandbox components; their teardown waits for the live sandboxed runs (deferred_live_sandbox)",
+			"ids", strings.Join(newlyWaiting, ","), "live", n)
+		f.audit(ctx, "components.policy.teardown", "deferred_live_sandbox ids="+strings.Join(newlyWaiting, ","))
+	}
+	return keep
 }
 
 // policyBlocked lists the components the org's policy blocks in snap.
@@ -153,6 +195,7 @@ func (f *componentPolicyFollower) pass(ctx context.Context) {
 				fresh = append(fresh, id)
 			}
 		}
+		fresh = f.holdForLiveRuns(ctx, fresh)
 		if len(fresh) > 0 {
 			outcomes, terr := f.teardown(ctx, fresh)
 			for _, id := range fresh {

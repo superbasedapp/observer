@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -95,6 +96,10 @@ const schtasksNotFound = "ERROR: The system cannot find the file specified."
 // TestResolveProcessBridgeTaskInputs covers the I/O layer's short-circuits:
 // which probes run, and — just as important — which do NOT.
 func TestResolveProcessBridgeTaskInputs(t *testing.T) {
+	// The task is planned by a WSL (Linux) daemon for the Windows capturer;
+	// the fixture is that daemon's POSIX observer dir (Windows 11 Pro rerun
+	// 2026-10-25, D5 group 8).
+	skipDriverOffHost(t, "the process bridge task planner (a WSL daemon)")
 	ctx := context.Background()
 
 	t.Run("disabled etw probes nothing", func(t *testing.T) {
@@ -164,7 +169,7 @@ func TestResolveProcessBridgeTaskInputs(t *testing.T) {
 		if f.observerCalls != 1 || f.userCalls != 1 {
 			t.Fatalf("absent task must resolve binary+user once each: observer=%d user=%d", f.observerCalls, f.userCalls)
 		}
-		if in.TokenPath != "/home/u/.observer/process-bridge-token" {
+		if in.TokenPath != filepath.Join("/home/u/.observer", "process-bridge-token") {
 			t.Fatalf("TokenPath = %q, want the daemon's generated token path", in.TokenPath)
 		}
 		plan := setup.PlanTask(in)

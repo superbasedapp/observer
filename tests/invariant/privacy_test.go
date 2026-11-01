@@ -27,11 +27,14 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/hookliveness"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/platform/jetbrainshost"
 	"github.com/marmutapp/superbased-observer/internal/platform/vscodehost"
+	"github.com/marmutapp/superbased-observer/internal/policyfam/securityscanning"
+	"github.com/marmutapp/superbased-observer/internal/scrub"
 	"github.com/marmutapp/superbased-observer/internal/store"
 	"github.com/marmutapp/superbased-observer/internal/toolaccount"
 )
@@ -2197,6 +2200,87 @@ func TestSessionToolAccountsShipOnlyUnderToolAccountDetail(t *testing.T) {
 	}
 }
 
+// TestSessionHookActivityShipOnlyUnderHookActivity is the DEC-5 wire-surface
+// pin for the per-session hook liveness wire (surface-gap review OBS-7, lane
+// w5-wire). hook_activity STAYS in forbiddenCacheTables: that sentinel is the
+// source-level rule that orgpush.go never names the table (the read lives in
+// internal/store/hookactivitysummary.go, the cache_events arrangement). What
+// this test pins is the DATA posture:
+//
+//	(a) the zero value ships nothing, and full_content ALONE does not unlock
+//	    the tier: hook_activity is its own consent;
+//	(b) hook_activity ALONE ships the count half (session, tool, event,
+//	    count, first and last time, the coarse env classes) and DROPS the
+//	    CLAUDE_CONFIG_DIR path hash;
+//	(c) with full_content, admin_managed, or the org-signed enterprise
+//	    content grant, the hash crosses too.
+func TestSessionHookActivityShipOnlyUnderHookActivity(t *testing.T) {
+	hash := hookliveness.PathHashClass("/home/dev/SENTINEL_CONFIG_DIR_pangram_gg")
+	for _, tc := range []struct {
+		name     string
+		share    store.ShareOptions
+		wantRows bool
+		wantHash bool
+	}{
+		{"zero-value", store.ShareOptions{}, false, false},
+		{"full_content-only", store.ShareOptions{FullContent: true}, false, false},
+		{"hook_activity", store.ShareOptions{HookActivity: true}, true, false},
+		{"hook_activity+full_content", store.ShareOptions{HookActivity: true, FullContent: true}, true, true},
+		{"hook_activity+admin_managed", store.ShareOptions{HookActivity: true, AdminManaged: true}, true, true},
+		{"hook_activity+enterprise_granted", store.ShareOptions{HookActivity: true, EnterpriseGranted: true}, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "agent.db")})
+			if err != nil {
+				t.Fatalf("db.Open: %v", err)
+			}
+			defer func() { _ = database.Close() }()
+			st := store.New(database)
+			seed(ctx, t, st)
+			now := time.Now().UTC()
+			if err := st.UpsertHookActivity(ctx, []store.HookActivityRow{{
+				Tool: "claude-code", Event: "PreToolUse", SessionID: "sess-cc-1", Count: 3,
+				FirstAt: now.Add(-time.Minute), LastAt: now,
+				EnvClasses: map[string]string{"ANTHROPIC_BASE_URL": "loopback", "CLAUDE_CONFIG_DIR": hash},
+			}}); err != nil {
+				t.Fatalf("UpsertHookActivity: %v", err)
+			}
+
+			batch, err := st.SelectUnpushedSince(ctx, store.PushCursor{}, 1<<20, "org-1", "dev@acme.example",
+				tc.share, store.ScopeOptions{})
+			if err != nil {
+				t.Fatalf("SelectUnpushedSince: %v", err)
+			}
+			if !tc.wantRows {
+				if len(batch.SessionHookActivity) != 0 {
+					t.Errorf("hook activity shipped %d rows under %s; the tier is OFF", len(batch.SessionHookActivity), tc.name)
+				}
+			} else {
+				if len(batch.SessionHookActivity) != 1 {
+					t.Fatalf("hook_activity shipped %d rows under %s, want 1", len(batch.SessionHookActivity), tc.name)
+				}
+				r := batch.SessionHookActivity[0]
+				if r.SessionID != "sess-cc-1" || r.Tool != "claude-code" || r.Event != "PreToolUse" || r.Count != 3 ||
+					r.FirstAt == "" || r.LastAt == "" || r.EnvClasses["ANTHROPIC_BASE_URL"] != "loopback" || r.OrgID != "org-1" {
+					t.Errorf("count half = %+v, want the seeded row with its coarse class", r)
+				}
+				if _, got := r.EnvClasses["CLAUDE_CONFIG_DIR"]; got != tc.wantHash {
+					t.Errorf("config dir hash present = %v, want %v under %s: the hash is a SECOND gate (shipsRawContent)",
+						got, tc.wantHash, tc.name)
+				}
+			}
+			raw, err := json.Marshal(batch)
+			if err != nil {
+				t.Fatalf("marshal batch: %v", err)
+			}
+			if leaked := bytes.Contains(raw, []byte(hash)); leaked != tc.wantHash {
+				t.Errorf("hash present in the marshalled batch = %v, want %v under %s", leaked, tc.wantHash, tc.name)
+			}
+		})
+	}
+}
+
 // TestSessionToolAccountKeyGatedWhenIdentityDerived is the PRIV-1 pin (codebase
 // audit 2026-09-16). TestSessionToolAccountsShipOnlyUnderToolAccountDetail
 // above pins that the IDENTITY columns need the second gate; this pins that the
@@ -2983,6 +3067,81 @@ var forbiddenCacheTables = []string{
 	"org_access_grant_state",
 	"org_access_grants",
 	"access_request_outbox",
+	// Admin and developer messaging (agent migrations 173 to 176,
+	// docs/plans/admin-developer-messaging-plan-2026-10-15.md section 6.2,
+	// T-854). The inbox and thread headers are RECEIVED state the org signed
+	// for this one member (pushing them back would be the same receipt
+	// problem as org_display_policy), the rail row is this node's pull cursor
+	// and pinned key, and the outbox holds the developer's own unsent words
+	// and read marks, which leave the node only through the authenticated
+	// message POSTs, never through the telemetry push.
+	// internal/store/orgmessages.go is the one owner.
+	"org_message_rail",
+	"org_message_threads_local",
+	"org_messages_inbox",
+	"org_message_outbox",
+	// The security pillar's findings store (agent migration 177, security
+	// pillar plan section 4.6): NODE-LOCAL. Paths, redacted evidence and
+	// lifecycle never reach orgpush.go by name; the org rows are composed
+	// through the SecurityOrgProviders function seam (Phase E).
+	"sec_findings",
+	"sec_finding_events",
+	"sec_scan_runs",
+	"sec_baselines",
+	// Local finding exceptions (agent migration 183, lane sec-c3, security
+	// pillar plan section 6.3): one finding's key, reason and expiry, and a
+	// file fingerprint. NODE-LOCAL; internal/store/secexceptions.go is the
+	// one owner; the org's finding_exception requests are Phase E's.
+	"sec_finding_exceptions",
+	// Per-file sightings of each finding (agent migration 184, lane
+	// sec-gate2): a project-relative path and a timestamp per finding.
+	// NODE-LOCAL; internal/store/secfindings.go is the one owner.
+	"sec_finding_sightings",
+	// The unpushed commits each open finding was seen added in (agent
+	// migration 185, lane sec-gate3): a commit id and a timestamp per
+	// finding. NODE-LOCAL; internal/store/secfindings.go is the one owner.
+	"sec_finding_commits",
+	// The signed AI change records, the node's signing keys and the
+	// per-repository writer consent (agent migration 191, security plan
+	// 7.10, lane sec-f2a). NODE-LOCAL; internal/store/secchange.go is the
+	// one owner; the change record rows reach the org only through the
+	// SecurityOrgProviders.ChangeRecords function seam.
+	"sec_change_records",
+	"sec_change_keys",
+	"sec_change_consent",
+	// The org's approvals of this node's baseline references, as the
+	// security managed pull last served them (agent migration 194, lane
+	// LEFT-SHARED): a label only. NODE-LOCAL;
+	// internal/store/secorgrows_approvals.go is the one owner.
+	"sec_org_baseline_approvals",
+	// The module managed-pull kit's node cache (agent migration 187, roadmap
+	// F0-7, lane shr-kit): the ORG's own signed per-caller enabling
+	// documents (security, sandbox) as the node last verified them, coming
+	// BACK, never going out. NODE-LOCAL; internal/store/managedpull.go is the
+	// one owner.
+	"managed_pull_cache",
+	// The project audience's node index (agent migration 190, security plan
+	// section 7.11, lane sec-p): the ORG's own signed project mapping
+	// (identity hashes to org project ids) as the node last accepted it,
+	// coming BACK, never going out. NODE-LOCAL;
+	// internal/store/projectaudience.go is the one owner.
+	"org_project_mapping_index",
+	// The repository trust accept flow and config baseline of the security
+	// pillar (agent migration 178, security pillar plan sections 4.6 and
+	// 5.1, component security.trust): a developer's accepts of repository
+	// commands, by project root hash and digest. NODE-LOCAL; any org view
+	// is composed through the SecurityOrgProviders seam (section 7.4), never
+	// by selecting this table. internal/store/sectrust.go is the one owner.
+	"sec_config_baseline",
+	// The config baseline snapshot (agent migration 180, component
+	// security.trust): per-project agent config file paths and digests.
+	// NODE-LOCAL; internal/store/sectrust.go is the one owner.
+	"sec_config_files",
+	// The install gate's online-answer cache (agent migration 182, security
+	// pillar plan section 8.3, component security.deps): public package
+	// names an agent tried to install and what the online check said.
+	// NODE-LOCAL; internal/store/secpkgcache.go is the one owner.
+	"sec_pkg_cache",
 	// Code-intelligence tables (internal/codeintel, migrations 050+,
 	// docs/codeintel/) are NODE-LOCAL: they hold a project's source
 	// paths, symbol names, signatures, import specifiers, and the
@@ -3340,6 +3499,25 @@ var forbiddenCacheTables = []string{
 	"plan_snapshots",
 	"plan_runs",
 	"plan_optins",
+	// Delivery, commit to PR to merge (agent migrations 166 to 172, D-689,
+	// docs/plans/commit-pr-merge-tracking-plan-2026-10-15.md 6.1). All
+	// NODE-LOCAL BY TABLE NAME: orgpush.go must never reference them.
+	// project_remotes and pull_requests carry the repo slug, PR titles and
+	// URLs (they name clients and codenames); delivery_branch_tips keeps the
+	// branch NAME for this node's own display (branch names encode ticket
+	// ids, the M2 precedent); provider_links names keychain entries;
+	// delivery_mirrors holds local mirror paths. What ships is composed by a
+	// FUNCTION CALL into internal/store/deliverysummary.go: DeliveryDayRow
+	// counts from every node, PullRequestRow only under shipsRawContent().
+	// TestDeliveryTablesPinnedOutOfPush is the end-to-end seeded-value pin.
+	"project_remotes",
+	"commit_landings",
+	"provider_links",
+	"pull_requests",
+	"pull_request_commits",
+	"delivery_mirrors",
+	"delivery_project_settings",
+	"delivery_branch_tips",
 	// Enterprise pricing, node side (agent migration 106,
 	// docs/plans/enterprise-pricing-and-admin-assistant-plan-2026-09-08.md
 	// §3.3). org_pricing_cache is NODE-LOCAL BY TABLE NAME: orgpush.go must
@@ -3581,6 +3759,18 @@ var forbiddenCacheTables = []string{
 	// internal/store/componentpurge.go.
 	"component_purge_plans",
 	"component_purge_candidates",
+	// Hook liveness (agent migration 198, surface-gap review OBS-7 / CC-2):
+	// one row per (tool, event, session id) with a count, first/last
+	// invocation times and the route-relevant env NAMES the hook saw mapped
+	// to coarse classes (never values). The table name stays forbidden
+	// here: per-session org reach (decision DEC-5, lane w5-wire) is the
+	// HookActivitySessionRow wire composed by
+	// internal/store/hookactivitysummary.go through a function call, under
+	// [org_client.share].hook_activity, with the config-dir hash behind
+	// shipsRawContent() (TestSessionHookActivityShipOnlyUnderHookActivity).
+	// Single writer internal/store/hookactivity.go, fed only by the daemon's
+	// hook spool drainer (the hook process never opens SQLite).
+	"hook_activity",
 }
 
 // forbiddenGatewayTables names the SERVER-SIDE gateway tables that MUST NEVER be
@@ -3915,6 +4105,17 @@ var forbiddenOrgControlPlaneTables = []string{
 	// Its per-member successor (server migration 229, REVIEW-4 P4-06): same
 	// credentials keyed by (org, machine, member); equally server-only.
 	"org_member_machine_keys",
+	// Admin and developer messaging (server migration 237, T-854). The node
+	// RECEIVES its own messages on the signed per-caller pull rail and sends
+	// replies and receipts by direct POST; no messaging table ever rides the
+	// push wire.
+	"org_message_settings",
+	"org_message_threads",
+	"org_messages",
+	"org_message_attachments",
+	"org_message_delivery",
+	"org_message_admin_reads",
+	"org_message_suggestions",
 	// The org AI tool settings policy documents (server migration 201) and
 	// managed nodes' applied state as the server stores it (202). The node
 	// RECEIVES the composed policy on its own signed rail and ships its
@@ -4124,6 +4325,18 @@ var forbiddenOrgControlPlaneTables = []string{
 	// the end-to-end seeded-value pin.
 	"commit_ownership",
 	"commit_ownership_contributors",
+	// Delivery (server migration 236 / PG lineage 0103, lane COMMITPR): the
+	// org landing tables for the DeliveryDayRow / PullRequestRow wire. Data
+	// plane, server-only; the node composes the wire through
+	// internal/store/deliverysummary.go, and orgpush.go must never name them.
+	"delivery_daily",
+	"org_pull_requests",
+	// Sandbox posture (server migration 243 / PG lineage 0110, lane
+	// sbx-p1a2): the org landing tables for the SandboxPostureRow /
+	// SandboxCapabilityRow wire. Server-only; the node composes the wire
+	// through internal/store/sandboxposture.go.
+	"sandbox_posture_days",
+	"sandbox_node_capability",
 	// Org stored-cost re-price (server migration 187 / PG lineage 0053, lane
 	// G-REPRICE): the org admin's re-price run record and its per-row change
 	// log. Server-only; the node has its own node-local pair (agent 145) and
@@ -4447,6 +4660,12 @@ func TestForbiddenOrgControlPlaneTablesExpectedSet(t *testing.T) {
 		// Commit ownership (server migration 186, lane F-PROJ).
 		"commit_ownership",
 		"commit_ownership_contributors",
+		// Delivery (server migration 236, lane COMMITPR).
+		"delivery_daily",
+		"org_pull_requests",
+		// Sandbox posture (server migration 243, lane sbx-p1a2).
+		"sandbox_posture_days",
+		"sandbox_node_capability",
 		// Org stored-cost re-price (server migration 187, lane G-REPRICE).
 		"org_reprice_runs",
 		"org_reprice_changes",
@@ -4504,6 +4723,14 @@ func TestForbiddenOrgControlPlaneTablesExpectedSet(t *testing.T) {
 		"org_vendor_content",
 		// Per-member machine keys (server migration 229, REVIEW-4 P4-06).
 		"org_member_machine_keys",
+		// Admin and developer messaging (server migration 237, T-854).
+		"org_message_settings",
+		"org_message_threads",
+		"org_messages",
+		"org_message_attachments",
+		"org_message_delivery",
+		"org_message_admin_reads",
+		"org_message_suggestions",
 	}
 	have := make(map[string]struct{}, len(forbiddenOrgControlPlaneTables))
 	for _, n := range forbiddenOrgControlPlaneTables {
@@ -4778,6 +5005,15 @@ func TestTerminalRunTablesPinnedOutOfPush(t *testing.T) {
 		RunID: secTermRun, Tool: secTermRun, Kind: "handoff",
 		SourceSessionID: secTermRun, ProjectRootHash: secTermRun,
 		CorrelationTokenHash: secTermRun,
+		// The G19 isolation evidence (migration 179) is per-run: it rides
+		// only on the TerminalRunRow, so it obeys the same two postures.
+		Isolation: store.TerminalRunIsolation{
+			Class: secTermRun + "_class", CaptureLevel: secTermRun + "_capture",
+			CaptureOrigin: secTermRun + "_origin", EvidenceDigest: secTermRun + "_digest",
+			// The digest's producer inputs (migration 181) ride the same row.
+			EvidenceProducer: secTermRun + "_producer", EvidenceComponent: secTermRun + "_component",
+			EvidenceComponentVersion: secTermRun + "_version",
+		},
 	}); err != nil {
 		t.Fatalf("InsertTerminalRun: %v", err)
 	}
@@ -4819,6 +5055,8 @@ func TestTerminalRunTablesPinnedOutOfPush(t *testing.T) {
 	}
 	if len(batch.TerminalRuns) == 0 {
 		t.Error("full_content shipped no terminal runs — the W2.6 enterprise wire failed to flip")
+	} else if batch.TerminalRuns[0].EvidenceDigest != secTermRun+"_digest" {
+		t.Error("the run's isolation evidence did not ride on its TerminalRunRow under full_content")
 	}
 	batch.TerminalRuns, batch.TerminalCommands = nil, nil
 	raw, err := json.Marshal(batch)
@@ -5319,6 +5557,156 @@ func TestProjectCommitTablesPinnedOutOfPush(t *testing.T) {
 		if bytes.Contains(raw, []byte(sentinel)) {
 			t.Errorf("project_commit_* table content leaked into the push payload under %s — commit "+
 				"capture is node-local (R1/R12) and has no wire surface yet", p.name)
+		}
+	}
+}
+
+// TestDeliveryTablesPinnedOutOfPush is the delivery (commit to PR to merge,
+// D-689) sibling of TestProjectCommitTablesPinnedOutOfPush. Same two halves:
+// (1) all eight node tables are in forbiddenCacheTables, and (2) a seeded
+// sentinel in every TEXT column never reaches a marshaled push payload in the
+// metadata posture. Under the raw-content postures ONLY a PR's own title,
+// URL and repo slug may ship (PullRequestRow); the remote URL, the branch
+// name, the keychain entry name, the mirror path and the raw commit id
+// never do.
+func TestDeliveryTablesPinnedOutOfPush(t *testing.T) {
+	deliveryTables := []string{
+		"project_remotes", "commit_landings", "provider_links", "pull_requests",
+		"pull_request_commits", "delivery_mirrors", "delivery_project_settings", "delivery_branch_tips",
+	}
+	for _, name := range deliveryTables {
+		found := false
+		for _, n := range forbiddenCacheTables {
+			if n == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("%s is not in forbiddenCacheTables: the source-level sentinel is missing", name)
+		}
+	}
+
+	const sentinel = "SBDELIVSENT"
+	s := func(table, col string) string { return sentinel + "_" + table + "_" + col }
+
+	ctx := context.Background()
+	database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "agent.db")})
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer func() { _ = database.Close() }()
+	st := store.New(database)
+	seed(ctx, t, st)
+
+	projectID, err := st.UpsertProject(ctx, "/repo/delivery-sentinel", "")
+	if err != nil {
+		t.Fatalf("UpsertProject: %v", err)
+	}
+	execSeed := func(query string, args ...any) {
+		if _, err := database.ExecContext(ctx, query, args...); err != nil {
+			t.Fatalf("seed delivery table: %v\nquery: %s", err, query)
+		}
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	execSeed(`INSERT INTO project_commits
+		  (id, project_id, sha, parents_json, author_hash, authored_at, committed_at,
+		   subject, is_merge, reachable, files_count, added, deleted, scanned_at, patch_fp, patch_fp_state)
+		VALUES (9001, ?, ?, '[]', '', ?, ?, '', 0, 1, 1, 1, 0, ?, ?, 'ok')`,
+		projectID, s("project_commits", "sha"), now, now, now, s("project_commits", "patch_fp"))
+	execSeed(`INSERT INTO project_remotes
+		  (project_id, remote_name, url, host, provider, repo_slug, default_branch, default_ref_sha, fetch_head_at, observed_at)
+		VALUES (?, ?, ?, ?, 'github', ?, ?, ?, ?, ?)`,
+		projectID, s("project_remotes", "remote_name"), s("project_remotes", "url"), s("project_remotes", "host"),
+		s("project_remotes", "repo_slug"), s("project_remotes", "default_branch"), s("project_remotes", "default_ref_sha"), now, now)
+	execSeed(`INSERT INTO provider_links
+		  (id, provider, host, auth_mode, key_name, account_login, scopes_seen, status, last_error_kind, last_error, created_at)
+		VALUES (1, 'github', ?, 'token', ?, ?, ?, 'ok', ?, ?, ?)`,
+		s("provider_links", "host"), s("provider_links", "key_name"), s("provider_links", "account_login"),
+		s("provider_links", "scopes_seen"), s("provider_links", "last_error_kind"), s("provider_links", "last_error"), now)
+	execSeed(`INSERT INTO pull_requests
+		  (id, provider_link_id, provider, host, repo_slug, number, title, url, author_login, pr_state, merge_readiness,
+		   facets_json, provider_raw_state, head_sha, base_ref, merge_commit_sha, merge_method, created_at, merged_at, fetched_at)
+		VALUES (1, 1, 'github', 'github.com', ?, 5, ?, ?, ?, 'merged', '', '{}', ?, ?, ?, ?, 'squash', ?, ?, ?)`,
+		s("pull_requests", "repo_slug"), s("pull_requests", "title"), s("pull_requests", "url"), s("pull_requests", "author_login"),
+		s("pull_requests", "provider_raw_state"), s("pull_requests", "head_sha"), s("pull_requests", "base_ref"),
+		s("pull_requests", "merge_commit_sha"), now, now, now)
+	execSeed(`INSERT INTO pull_request_commits (pr_id, sha, position, patch_fp) VALUES (1, ?, 0, ?)`,
+		s("project_commits", "sha"), s("pull_request_commits", "patch_fp"))
+	execSeed(`INSERT INTO commit_landings
+		  (commit_id, project_id, status, kind, confidence, rule_id, rule_version, landing_sha, pr_id, pr_number,
+		   abandon_reason, source, evaluated_at, contributors_json)
+		VALUES (9001, ?, 'landed', 'squash', 'exact', 'P1', 1, ?, 1, 5, '', 'provider', ?, ?)`,
+		projectID, s("commit_landings", "landing_sha"), now, `["`+s("commit_landings", "contributors_json")+`"]`)
+	execSeed(`INSERT INTO delivery_mirrors (url_hash, url, path, default_branch, tip_sha, status, last_error, created_at)
+		VALUES (?, ?, ?, ?, ?, 'ok', ?, ?)`,
+		s("delivery_mirrors", "url_hash"), s("delivery_mirrors", "url"), s("delivery_mirrors", "path"),
+		s("delivery_mirrors", "default_branch"), s("delivery_mirrors", "tip_sha"), s("delivery_mirrors", "last_error"), now)
+	execSeed(`INSERT INTO delivery_project_settings (project_id, mirror_enabled, schedule_minutes, updated_at) VALUES (?, 1, 30, ?)`,
+		projectID, now)
+	execSeed(`INSERT INTO delivery_branch_tips
+		  (project_id, ref_name_hash, ref_name, tip_sha, merge_base_sha, range_fp, range_fp_state, member_shas_json, files_json, observed_at)
+		VALUES (?, ?, ?, ?, ?, ?, 'ok', ?, ?, ?)`,
+		projectID, s("delivery_branch_tips", "ref_name_hash"), s("delivery_branch_tips", "ref_name"),
+		s("delivery_branch_tips", "tip_sha"), s("delivery_branch_tips", "merge_base_sha"), s("delivery_branch_tips", "range_fp"),
+		`["`+s("delivery_branch_tips", "member_shas_json")+`"]`, `["`+s("delivery_branch_tips", "files_json")+`"]`, now)
+
+	// Under the raw posture, these three may ship inside a PullRequestRow.
+	rawAllowed := map[string]bool{
+		s("pull_requests", "repo_slug"): true,
+		s("pull_requests", "title"):     true,
+		s("pull_requests", "url"):       true,
+	}
+	postures := []struct {
+		name  string
+		share store.ShareOptions
+		raw   bool
+	}{
+		{"metadata_only", store.ShareOptions{}, false},
+		{"full_content", store.ShareOptions{FullContent: true}, true},
+		{"admin_managed", store.ShareOptions{AdminManaged: true}, true},
+	}
+	const wireCanary = "gpt-5-codex"
+	for _, p := range postures {
+		batch, err := st.SelectUnpushedSince(ctx, store.PushCursor{}, 1<<20, "org-1", "dev@x", p.share, store.ScopeOptions{})
+		if err != nil {
+			t.Fatalf("SelectUnpushedSince(%s): %v", p.name, err)
+		}
+		raw, err := json.Marshal(batch)
+		if err != nil {
+			t.Fatalf("marshal batch(%s): %v", p.name, err)
+		}
+		if !bytes.Contains(raw, []byte(wireCanary)) {
+			t.Fatalf("positive canary %q missing from the %s push payload", wireCanary, p.name)
+		}
+		if len(batch.DeliveryDays) == 0 {
+			t.Fatalf("%s: no delivery day rows: the absence assertion would be vacuous", p.name)
+		}
+		if p.raw && (len(batch.PullRequests) != 1 || batch.PullRequests[0].Title != s("pull_requests", "title")) {
+			t.Fatalf("%s: raw posture PR rows = %+v", p.name, batch.PullRequests)
+		}
+		if !p.raw && len(batch.PullRequests) != 0 {
+			t.Fatalf("%s: metadata posture shipped PR rows", p.name)
+		}
+		for _, table := range deliveryTables {
+			for _, col := range []string{
+				"remote_name", "url", "host", "repo_slug", "default_branch", "default_ref_sha",
+				"key_name", "account_login", "scopes_seen", "last_error_kind", "last_error", "title", "author_login",
+				"provider_raw_state", "head_sha", "base_ref", "merge_commit_sha", "patch_fp", "landing_sha",
+				"contributors_json", "url_hash", "path", "tip_sha", "ref_name_hash", "ref_name", "merge_base_sha",
+				"range_fp", "member_shas_json", "files_json",
+			} {
+				v := s(table, col)
+				if p.raw && rawAllowed[v] {
+					continue
+				}
+				if bytes.Contains(raw, []byte(v)) {
+					t.Errorf("%s leaked into the %s push payload", v, p.name)
+				}
+			}
+		}
+		if bytes.Contains(raw, []byte(s("project_commits", "sha"))) {
+			t.Errorf("the raw commit id leaked into the %s push payload", p.name)
 		}
 	}
 }
@@ -5939,16 +6327,139 @@ func TestPolicyStateRowWireShapeIsHashOnly(t *testing.T) {
 		// "other"; even a config value outside its own enum collapses to the
 		// fixed "other" token rather than travelling.
 		"EffectivePins": true,
+		// gen3 (T-846 / T-848, guard tamper visibility): a closed
+		// verified/absent/tampered enum, and the effective local guard
+		// posture, which is bools, closed mode enums, closed detector ids and
+		// an allow-list COUNT (orgcontract.LocalGuardPosture; pinned field by
+		// field below), so no regex or path a developer typed can travel.
+		"BundleIntegrity": true,
+		"LocalGuard":      true,
+		// gen4 (T-864, guard tamper re-test gap 4): the repaired-tamper
+		// record, a COUNT, an RFC3339 time and a closed kind token
+		// (orgcontract.GuardTamperReport, validated on the server by
+		// Valid(); pinned field by field below). The "missing" value it
+		// brings to BundleIntegrity stays inside that closed enum.
+		"GuardTamper": true,
+		// gen5 (SEC-P2B, plans decision log P-063): per project in the
+		// signed project mapping the node holds, the org-minted project id
+		// (an id the org itself signed to this node) and a closed status
+		// (orgcontract.ValidProjectSectionStatus refuses anything else;
+		// pinned field by field below), plus a bool saying the node cut the
+		// list. No path, directory, repository identity or rule text: which
+		// directory matched never travels.
+		"ProjectSectionStatus":    true,
+		"ProjectSectionTruncated": true,
+		// gen6 (SEC-P3): per project family section the node holds, the
+		// org-minted project id, the family from a closed set, the section's
+		// sequence and a closed status (orgcontract.ValidProjectFamilyStatus
+		// refuses anything else; pinned field by field below). No path, no
+		// body, no repository identity.
+		"ProjectFamilyStatus": true,
+		// gen7 (SEC-P4 decision 11): the family list's own truncation flag,
+		// a bool (it was missing here since that lane; added by lane
+		// LEFT-SHARED, which found this test failing at its base).
+		"ProjectFamilyTruncated": true,
+		// gen8 (lane LEFT-SHARED, SECP-10): on the security.scanning row,
+		// each floor key the node could not apply with a closed reason
+		// (orgcontract.ValidateFamilyNotApplicable refuses anything else;
+		// pinned field by field below). A dotted body key, never a value.
+		"FamilyNotApplicable": true,
+	}
+	fna := reflect.TypeOf(orgcontract.FamilyKeyNotApplicable{})
+	for i := 0; i < fna.NumField(); i++ {
+		if n := fna.Field(i).Name; n != "Key" && n != "Reason" {
+			t.Errorf("FamilyKeyNotApplicable gained non-allow-listed field %q - it is floor-key/closed-reason ONLY (gen8)", n)
+		}
+	}
+	pf := reflect.TypeOf(orgcontract.ProjectFamilySectionState{})
+	pfAllowed := map[string]bool{
+		"OrgProjectID": true, "Family": true, "Version": true, "Status": true,
+		// RefusedAxes (SEC-P3 merge, finding 2): the names of the section's
+		// axes this node did not apply. Its vocabulary is the closed axis
+		// table of the security.scanning family
+		// (internal/policyfam/securityscanning.Axes, dotted body keys such
+		// as "require.online_checks"): the node's only producer,
+		// SectionOutcome.RefusedAxes, drops any name LookupAxis does not know
+		// (TestProjectFamilyRefusedAxesClosedVocabulary below), and the
+		// server's ValidProjectFamilyStatus refuses a list that is unsorted,
+		// over MaxProjectFamilyRefusedAxes or not axis-shaped. No path, no
+		// body value, no free text.
+		"RefusedAxes": true,
+	}
+	for i := 0; i < pf.NumField(); i++ {
+		if !pfAllowed[pf.Field(i).Name] {
+			t.Errorf("ProjectFamilySectionState gained non-allow-listed field %q - it is org-project-id/family/version/closed-status ONLY (SEC-P3)", pf.Field(i).Name)
+		}
+	}
+	ps := reflect.TypeOf(orgcontract.ProjectSectionState{})
+	psAllowed := map[string]bool{"OrgProjectID": true, "Status": true}
+	for i := 0; i < ps.NumField(); i++ {
+		if !psAllowed[ps.Field(i).Name] {
+			t.Errorf("ProjectSectionState gained non-allow-listed field %q - it is org-project-id/closed-status ONLY (P-063)", ps.Field(i).Name)
+		}
+	}
+	if f, ok := reflect.TypeOf(orgcontract.PolicyStateRow{}).FieldByName("ProjectSectionTruncated"); !ok || f.Type.Kind() != reflect.Bool {
+		t.Error("PolicyStateRow.ProjectSectionTruncated must stay a bool flag (P-063)")
+	}
+	gt := reflect.TypeOf(orgcontract.GuardTamperReport{})
+	gtAllowed := map[string]bool{"Repairs": true, "LastAt": true, "LastKind": true}
+	for i := 0; i < gt.NumField(); i++ {
+		if !gtAllowed[gt.Field(i).Name] {
+			t.Errorf("GuardTamperReport gained non-allow-listed field %q - it is count/timestamp/closed-kind ONLY", gt.Field(i).Name)
+		}
+	}
+	lg := reflect.TypeOf(orgcontract.LocalGuardPosture{})
+	lgAllowed := map[string]bool{"Enabled": true, "Mode": true, "PromptEnabled": true, "PromptMode": true, "DetectorModes": true, "AllowListCount": true}
+	for i := 0; i < lg.NumField(); i++ {
+		if !lgAllowed[lg.Field(i).Name] {
+			t.Errorf("LocalGuardPosture gained non-allow-listed field %q - it is bool/enum/detector-id/count ONLY", lg.Field(i).Name)
+		}
 	}
 	typ := reflect.TypeOf(orgcontract.PolicyStateRow{})
 	if typ.NumField() != len(allowed) {
-		t.Errorf("PolicyStateRow has %d fields, want exactly %d (§2.1 allow-list + the gen2 P4-2 and Track C widenings)", typ.NumField(), len(allowed))
+		t.Errorf("PolicyStateRow has %d fields, want exactly %d (§2.1 allow-list + the gen2 P4-2, Track C, gen5 P-063, gen6 SEC-P3, gen7 SEC-P4 and gen8 LEFT-SHARED widenings)", typ.NumField(), len(allowed))
 	}
 	for i := 0; i < typ.NumField(); i++ {
 		name := typ.Field(i).Name
 		if !allowed[name] {
 			t.Errorf("PolicyStateRow gained non-allow-listed field %q — the P0-6 §2.1 wire shape is hash/version/enum/timestamp ONLY", name)
 		}
+	}
+}
+
+// TestProjectFamilyRefusedAxesClosedVocabulary pins the normalizer behind
+// ProjectFamilySectionState.RefusedAxes (allow-listed in
+// TestPolicyStateRowWireShapeIsHashOnly): a refusal naming anything but a
+// row of the security.scanning axis table, even an axis-shaped one, never
+// reaches the wire list, and a list the normalizer returns passes the
+// server's check.
+func TestProjectFamilyRefusedAxesClosedVocabulary(t *testing.T) {
+	t.Parallel()
+	o := securityscanning.SectionOutcome{Partial: true, Refused: []securityscanning.AxisRefusal{
+		{Axis: "home.alice.secret_repo"},
+		{Axis: securityscanning.AxisAllowOnlineChecks},
+		{Axis: securityscanning.AxisOnlineChecks},
+		{Axis: securityscanning.AxisOnlineChecks},
+		{Axis: "require.online_checks /etc/passwd"},
+		{Axis: ""},
+	}}
+	got := o.RefusedAxes()
+	want := []string{securityscanning.AxisAllowOnlineChecks, securityscanning.AxisOnlineChecks}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("RefusedAxes() = %q, want %q (only the closed axis table may travel)", got, want)
+	}
+	for _, a := range got {
+		if _, ok := securityscanning.LookupAxis(a); !ok {
+			t.Errorf("axis %q is not in the family's axis table", a)
+		}
+	}
+	e := orgcontract.ProjectFamilySectionState{OrgProjectID: "P1", Family: orgcontract.ProjectSectionFamilies[0], Version: 1, Status: orgcontract.ProjectFamilyPartial, RefusedAxes: got}
+	if !orgcontract.ValidProjectFamilyStatus([]orgcontract.ProjectFamilySectionState{e}) {
+		t.Errorf("the normalized list fails the server's check: %+v", e)
+	}
+	none := securityscanning.SectionOutcome{Refused: []securityscanning.AxisRefusal{{Axis: "free text"}}}
+	if got := none.RefusedAxes(); len(got) != 0 {
+		t.Errorf("an outcome with only non-vocabulary names yields %q, want none", got)
 	}
 }
 
@@ -6308,6 +6819,587 @@ func TestPlatformSurfaceHostsShipVerbatim(t *testing.T) {
 	for _, h := range hosts {
 		if !store.SurfaceHostShipsVerbatim(h) {
 			t.Errorf("host token %q would ship to the org as \"other\"", h)
+		}
+	}
+}
+
+// TestSandboxPostureCarriesNoRunIdentity pins the sandbox posture aggregate
+// (sandbox plan v2 section 8.4): under terminal_detail WITHOUT raw content
+// it ships per-day counts by the closed enums only. The seeded run's tool,
+// run id, session, project hash, digest and producer inputs never appear,
+// and SandboxPostureRow has no field that could carry them.
+func TestSandboxPostureCarriesNoRunIdentity(t *testing.T) {
+	const secret = "SECRET_SBXPOSTURE_obstreperous_zz"
+	ctx := context.Background()
+	database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "agent.db")})
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer func() { _ = database.Close() }()
+	st := store.New(database)
+	if err := st.InsertTerminalRun(ctx, store.TerminalRun{
+		RunID: secret, Tool: secret, Kind: "fresh", SourceSessionID: secret,
+		ProjectRootHash: secret, CorrelationTokenHash: secret,
+		Isolation: store.TerminalRunIsolation{
+			Class: "process", Stack: []string{"bwrap"}, CaptureLevel: "full", CaptureOrigin: "sandboxed",
+			Verification: "live", KeyCustody: "host_bound", EvidenceDigest: secret,
+			EvidenceProducer: "terminal_run", EvidenceComponent: secret, EvidenceComponentVersion: secret,
+		},
+	}); err != nil {
+		t.Fatalf("InsertTerminalRun: %v", err)
+	}
+	st.SetSandboxCapabilityProvider(func() (orgcontract.SandboxCapabilityRow, bool) {
+		return orgcontract.SandboxCapabilityRow{Backends: []string{"bwrap"}, MaxClass: "process", FullCapture: true}, true
+	})
+	batch, err := st.SelectUnpushedSince(ctx, store.PushCursor{}, 1<<20, "org-1", "dev@x",
+		store.ShareOptions{TerminalDetail: true}, store.ScopeOptions{})
+	if err != nil {
+		t.Fatalf("SelectUnpushedSince: %v", err)
+	}
+	if len(batch.SandboxPosture) != 1 || batch.SandboxPosture[0].Runs != 1 {
+		t.Fatalf("posture %+v, want one bucket of one run", batch.SandboxPosture)
+	}
+	// The terminal summaries of the same tier carry the tool by design; the
+	// check is on what the posture adds.
+	raw, err := json.Marshal(struct {
+		Posture    []orgcontract.SandboxPostureRow
+		Capability *orgcontract.SandboxCapabilityRow
+	}{batch.SandboxPosture, batch.SandboxCapability})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if bytes.Contains(raw, []byte(secret)) {
+		t.Errorf("a run identity, hash or digest leaked into the sandbox posture: %s", raw)
+	}
+	allowed := map[string]bool{
+		"OrgID": true, "UserEmail": true, "Day": true, "IsolationClass": true, "CaptureLevel": true,
+		"CaptureOrigin": true, "Verification": true, "NativeSandboxState": true, "KeyCustody": true, "Runs": true,
+	}
+	rt := reflect.TypeOf(orgcontract.SandboxPostureRow{})
+	for i := 0; i < rt.NumField(); i++ {
+		if !allowed[rt.Field(i).Name] {
+			t.Errorf("SandboxPostureRow.%s is not in the reviewed enum-and-count field set", rt.Field(i).Name)
+		}
+	}
+	// The capability row is pinned the same way (P-017 (g)): closed backend
+	// ids, one class enum and two booleans, beside the forced attribution.
+	// It ships from every node where the module resolves active, which
+	// includes an install with no [components] block, so it must stay
+	// content-free.
+	// ManagedRefused (lane sbx-p2e) is a list of closed (key, reason) pairs,
+	// pinned below to two string fields and clamped at ingest.
+	capAllowed := map[string]reflect.Kind{
+		"OrgID": reflect.String, "UserEmail": reflect.String, "Backends": reflect.Slice,
+		"MaxClass": reflect.String, "FullCapture": reflect.Bool, "Beta": reflect.Bool,
+		"ManagedRefused": reflect.Slice,
+	}
+	ct := reflect.TypeOf(orgcontract.SandboxCapabilityRow{})
+	if ct.NumField() != len(capAllowed) {
+		t.Errorf("SandboxCapabilityRow has %d fields, the reviewed set has %d", ct.NumField(), len(capAllowed))
+	}
+	for i := 0; i < ct.NumField(); i++ {
+		f := ct.Field(i)
+		if k, ok := capAllowed[f.Name]; !ok || k != f.Type.Kind() {
+			t.Errorf("SandboxCapabilityRow.%s (%s) is not in the reviewed enum-and-boolean field set", f.Name, f.Type.Kind())
+		}
+	}
+	if ct.NumField() > 0 {
+		if b, ok := ct.FieldByName("Backends"); ok && b.Type.Elem().Kind() != reflect.String {
+			t.Errorf("SandboxCapabilityRow.Backends must stay a list of closed ids")
+		}
+		if m, ok := ct.FieldByName("ManagedRefused"); ok {
+			et := m.Type.Elem()
+			if et.Kind() != reflect.Struct || et.NumField() != 2 {
+				t.Errorf("SandboxCapabilityRow.ManagedRefused must stay a list of (key, reason) pairs")
+			} else {
+				for i := 0; i < et.NumField(); i++ {
+					if f := et.Field(i); (f.Name != "Key" && f.Name != "Reason") || f.Type.Kind() != reflect.String {
+						t.Errorf("SandboxCapabilityRow.ManagedRefused.%s is not a closed key or reason", f.Name)
+					}
+				}
+			}
+		}
+	}
+}
+
+// TestSecurityWireCanaries is the security plan 7.4 per-field canary test
+// (lane SEC-E2, revision 2.4 [JSP-1]: tag-driven). A canary is planted in
+// every content-bearing source column of the node-local sec_* tables,
+// including the ones that must never ship; the push is composed through the
+// SecurityOrgProviders seam (bound to the store's own reads, as the cmd
+// layer binds them) at the findings level and captured in the three share
+// modes: metadata only, shipsRawContent(), and the full-tool-bodies tier
+// alone. Each canary must appear only where its 7.4 class allows. Every
+// canary is shaped to pass the wire normalization, so an absence proves the
+// gate, not the normalizer.
+func TestSecurityWireCanaries(t *testing.T) {
+	if !securityInBuild {
+		t.Skip("the security module is compiled out (sbo_omit_security): no sec_* read exists to plant canaries behind")
+	}
+	ctx := context.Background()
+	database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "agent.db")})
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer func() { _ = database.Close() }()
+
+	type canary struct{ col, value, class string }
+	hex := func(c byte, n int) string { return strings.Repeat(string(c), n) }
+	cols := []canary{
+		// never: node-local identity, location-free key, per-node root hash,
+		// rendered text.
+		{"id", "CANARYIDneverq9", "never"},
+		{"local_key", "CANARYLOCALKEYneverq9", "never"},
+		{"project_root_hash", "CANARYROOTHASHneverq9", "never"},
+		{"message", "CANARY_MESSAGE_never AKIAIOSFODNN7EXAMPLE", "never"},
+		{"fix_hint", "CANARY_FIXHINT_never", "never"},
+		// raw: only under shipsRawContent().
+		{"rel_path", "src/CANARYRELPATHraw.go", "raw"},
+		{"path_aliases_json", `["old/CANARYALIASraw.go"]`, "raw"},
+		{"evidence_redacted", "CANARY_EVIDENCE_raw", "raw"},
+		{"commit_sha", hex('c', 40), "raw"},
+		{"patch_fp", hex('d', 64), "raw"},
+		{"baseline_ref_json", `{"Kind":"commit","Ref":"CANARYBASEREFraw","PackVersion":"CANARYPACKVERalways","PolicyVersion":"CANARYPOLVERalways"}`, "raw"},
+		// always.
+		{"org_key", hex('e', 64), "always"},
+		{"rule_id", "CANARY-RULE-always", "always"},
+		{"rule_version", "CANARYRULEVERalways", "always"},
+		{"rule_pack", "CANARYRULEPACKalways", "always"},
+		{"rule_pack_version", "CANARYPACKVERSIONalways", "always"},
+		{"driver", "CANARYDRIVERalways", "always"},
+		{"driver_version", "CANARYDRIVERVERalways", "always"},
+		{"engine_digest", hex('a', 64), "always"},
+		{"database_epoch", "CANARYEPOCHalways", "always"},
+		{"refs_json", `{"CWE":["CWE-CANARY"]}`, "always"},
+		{"project_identity_hash", hex('1', 64), "always"},
+		{"org_project_id", "CANARYORGPROJECTalways", "always"},
+		{"evidence_hash", hex('2', 64), "always"},
+		{"attribution_method", "CANARYMETHODalways", "always"},
+		{"session_id", "CANARYSESSIONalways", "always"},
+		{"action_id", "CANARYACTIONalways", "always"},
+		{"prompt_action_id", "CANARYPROMPTACTIONalways", "always"},
+		{"tool", "CANARYTOOLalways", "always"},
+		{"tool_version", "CANARYTOOLVERalways", "always"},
+		{"model", "CANARYMODELalways", "always"},
+		{"surface", "CANARYSURFACEalways", "always"},
+		{"taint_origin_class", "CANARYTAINTCLASSalways", "always"},
+		{"exception_id", "CANARYEXCEPTIONalways", "always"},
+		{"verdict_ids_json", `["CANARYVERDICTalways"]`, "always"},
+	}
+	names := []string{"category", "severity", "confidence", "status", "baseline", "first_seen", "last_seen"}
+	args := []any{"secret", "high", "high", "open", "new", time.Now().UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano)}
+	for _, c := range cols {
+		names, args = append(names, c.col), append(args, c.value)
+	}
+	q := "INSERT INTO sec_findings (" + strings.Join(names, ", ") + ") VALUES (" + strings.TrimSuffix(strings.Repeat("?,", len(names)), ",") + ")"
+	if _, err := database.ExecContext(ctx, q, args...); err != nil {
+		t.Fatalf("seed sec_findings: %v", err)
+	}
+	// The sightings, commits and scan runs never ship in any form.
+	for _, seed := range []struct {
+		q    string
+		args []any
+	}{
+		{`INSERT INTO sec_finding_sightings (finding_id, rel_path, last_seen) VALUES (?, ?, ?)`, []any{"CANARYIDneverq9", "sight/CANARYSIGHTINGnever.go", "2026-10-21T00:00:00Z"}},
+		{`INSERT INTO sec_finding_commits (finding_id, commit_sha, last_seen) VALUES (?, ?, ?)`, []any{"CANARYIDneverq9", hex('9', 40), "2026-10-21T00:00:00Z"}},
+		{`INSERT INTO sec_scan_runs (project_root_hash, driver, scope, target_json, outcome, started_at) VALUES (?, ?, ?, ?, ?, ?)`, []any{"CANARYROOTHASHneverq9", "CANARYSCANDRIVERnever", "manual", `{"path":"CANARYSCANTARGETnever"}`, "clean", time.Now().UTC().Format(time.RFC3339Nano)}},
+	} {
+		if _, err := database.ExecContext(ctx, seed.q, seed.args...); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	never := []string{"CANARYSIGHTINGnever", hex('9', 40), "CANARYSCANDRIVERnever", "CANARYSCANTARGETnever", "AKIAIOSFODNN7EXAMPLE"}
+
+	modes := []struct {
+		name  string
+		share store.ShareOptions
+		raw   bool
+	}{
+		{"metadata_only", store.ShareOptions{}, false},
+		{"raw_content", store.ShareOptions{FullContent: true}, true},
+		{"tool_bodies_only", store.ShareOptions{FullToolBodies: true}, false},
+	}
+	for _, m := range modes {
+		st := store.New(database)
+		st.SetSecurityOrgProviders(store.SecurityOrgProviders{
+			Level: func(context.Context, store.ShareOptions) store.SecurityShare {
+				return store.SecurityShare{Level: orgcontract.SecurityShareFindings, HoldsOrgKey: true}
+			},
+			Posture: func(ctx context.Context, day string, scope store.SecurityScope) (orgcontract.SecurityPostureRow, bool, error) {
+				r, err := st.SecurityPostureFacts(ctx, day, time.Now().UTC(), scope)
+				return r, err == nil, err
+			},
+			Findings: st.SelectSecurityFindingRows,
+		})
+		batch, err := st.SelectUnpushedSince(ctx, store.PushCursor{}, 4<<20, "org-1", "dev@x", m.share, store.ScopeOptions{})
+		if err != nil {
+			t.Fatalf("%s: SelectUnpushedSince: %v", m.name, err)
+		}
+		if len(batch.SecurityFindings) != 1 || len(batch.SecurityPosture) != 1 {
+			t.Fatalf("%s: want one finding and one posture row, got %d and %d", m.name, len(batch.SecurityFindings), len(batch.SecurityPosture))
+		}
+		raw, err := json.Marshal(orgcontract.PushEnvelope{SecurityFindings: batch.SecurityFindings, SecurityPosture: batch.SecurityPosture})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range cols {
+			// The canary as it reaches the wire: inside a JSON column it is
+			// the inner value.
+			v := c.value
+			for _, inner := range []string{"old/CANARYALIASraw.go", "CANARYBASEREFraw", "CWE-CANARY", "CANARYVERDICTalways"} {
+				if strings.Contains(v, inner) {
+					v = inner
+				}
+			}
+			present := bytes.Contains(raw, []byte(v))
+			want := c.class == "always" || (c.class == "raw" && m.raw)
+			if present != want {
+				t.Errorf("%s: %s (%s) present=%v, want %v", m.name, c.col, c.class, present, want)
+			}
+		}
+		for _, v := range append(never, "CANARYPACKVERalways", "CANARYPOLVERalways") {
+			present := bytes.Contains(raw, []byte(v))
+			if want := strings.HasSuffix(v, "always"); present != want {
+				t.Errorf("%s: %s present=%v, want %v", m.name, v, present, want)
+			}
+		}
+	}
+	// The tags drive the strip: every security wire row is fully classified.
+	for _, rt := range orgcontract.SecurityWireRowTypes() {
+		if err := orgcontract.CheckSecurityWireTags(rt); err != nil {
+			t.Error(err)
+		}
+	}
+}
+
+// TestSecurityWireSecretCanary is ruling P-055's canary (lane SEC-E2 audit
+// finding 4): known secrets of several detector types are planted in every
+// text a security wire row is built from (the redacted evidence, a clipped
+// evidence window ending in a piece of a secret, the path, a path alias, the
+// baseline reference, an always-class field, and the AI change record's
+// paths and model list); every security wire row is built in the three share
+// modes (metadata only, an individual's full_content, a managed node's
+// enterprise grant) plus the tool-bodies tier; the test fails if any secret
+// value, or any 8 or more character piece of one, appears in any row. A row
+// with no secret must still ship, so a pass is never vacuous.
+func TestSecurityWireSecretCanary(t *testing.T) {
+	if !securityInBuild {
+		t.Skip("the security module is compiled out (sbo_omit_security)")
+	}
+	ctx := context.Background()
+	database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "agent.db")})
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer func() { _ = database.Close() }()
+
+	// One value per detector type; each is checked to be detected before use.
+	// The fake key values are split so GitHub push protection on the public
+	// mirror does not read them as real credentials (same runtime bytes).
+	secrets := map[string]string{
+		"aws_access_key":    "AKIA" + "QWRTYPLMNBVCXZ23",
+		"github_pat":        "ghp_Zq8mWv3TnR6yKp2LsX9uBd4HjF7cGe1NwQ",
+		"gcp_api_key":       "AIza" + "SyQ7vN2mK8pL4wR1tX6yU3oZ9cB5dF0gHjK",
+		"private_key_block": "MIIEowIBAAKCAQEA" + "zq9vXk7Lp2Rw4Tm8Ny6Hb3Qj",
+		"secret_assignment": "Hunter2CorrectHorseBatteryStaple",
+	}
+	contexts := map[string]string{
+		"aws_access_key":    "aws = " + secrets["aws_access_key"],
+		"github_pat":        "token " + secrets["github_pat"],
+		"gcp_api_key":       "key: " + secrets["gcp_api_key"],
+		"private_key_block": "-----BEGIN RSA PRIVATE KEY----- " + secrets["private_key_block"] + " -----END RSA PRIVATE KEY-----",
+		"secret_assignment": "password=" + secrets["secret_assignment"],
+	}
+	for typ, c := range contexts {
+		found := false
+		for _, f := range scrub.DetectSecrets(c) {
+			if f.Type == typ {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("canary precondition: %s is not detected in %q", typ, c)
+		}
+	}
+	evidence := ""
+	for _, typ := range []string{"aws_access_key", "github_pat", "gcp_api_key", "private_key_block", "secret_assignment"} {
+		evidence += contexts[typ] + " ; "
+	}
+	evidence = strings.TrimSuffix(evidence, " ; ")
+	// A window clipped at the 240-rune cap whose last token is the first 16
+	// characters of a token no detector recognises on its own.
+	clipped := strings.Repeat("y", 240-len(" config ")-16) + " config " + secrets["github_pat"][:16]
+	hex := func(c byte, n int) string { return strings.Repeat(string(c), n) }
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	seed := func(id, evidence, relPath, aliases, baseRef, model string) {
+		t.Helper()
+		if _, err := database.ExecContext(ctx, `INSERT INTO sec_findings (id, project_root_hash, local_key, rule_id, category, severity,
+			confidence, status, baseline, first_seen, last_seen, rel_path, path_aliases_json, evidence_redacted, evidence_hash,
+			baseline_ref_json, model) VALUES (?, 'r1', ?, 'S-721', 'secret', 'high', 'high', 'open', 'new', ?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, "k-"+id, now, now, relPath, aliases, evidence, hex('2', 64), baseRef, model); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+	seed("f-masked", evidence, "keys/"+secrets["aws_access_key"]+".txt",
+		`["old/`+secrets["github_pat"]+`.env","old/clean.go"]`, `{"Kind":"commit","Ref":"`+secrets["aws_access_key"]+`"}`, "claude-opus")
+	seed("f-clipped", clipped, "src/clean.go", "", "", "claude-opus")
+	seed("f-always", "nothing here", "src/other.go", "", "", secrets["aws_access_key"])
+
+	changeRecords := func(context.Context, int, store.SecurityScope) ([]orgcontract.AIChangeRecordRow, error) {
+		return []orgcontract.AIChangeRecordRow{
+			{CommitIdentityHash: hex('c', 64), Paths: []string{"deploy/" + secrets["gcp_api_key"] + ".yml", "src/ok.go"}, Models: []string{"claude-opus"}},
+			{CommitIdentityHash: hex('d', 64), Models: []string{secrets["aws_access_key"]}},
+		}, nil
+	}
+	modes := []struct {
+		name  string
+		share store.ShareOptions
+		raw   bool
+	}{
+		{"individual_metadata_only", store.ShareOptions{}, false},
+		{"individual_full_content", store.ShareOptions{FullContent: true}, true},
+		{"managed_enterprise_grant", store.ShareOptions{EnterpriseGranted: true}, true},
+		{"tool_bodies_only", store.ShareOptions{FullToolBodies: true}, false},
+	}
+	for _, m := range modes {
+		st := store.New(database)
+		st.SetSecurityOrgProviders(store.SecurityOrgProviders{
+			Level: func(context.Context, store.ShareOptions) store.SecurityShare {
+				return store.SecurityShare{Level: orgcontract.SecurityShareFindings, HoldsOrgKey: true}
+			},
+			Posture: func(ctx context.Context, day string, scope store.SecurityScope) (orgcontract.SecurityPostureRow, bool, error) {
+				r, err := st.SecurityPostureFacts(ctx, day, time.Now().UTC(), scope)
+				return r, err == nil, err
+			},
+			Findings:      st.SelectSecurityFindingRows,
+			ChangeRecords: changeRecords,
+		})
+		batch, err := st.SelectUnpushedSince(ctx, store.PushCursor{}, 4<<20, "org-1", "dev@x", m.share, store.ScopeOptions{})
+		if err != nil {
+			t.Fatalf("%s: SelectUnpushedSince: %v", m.name, err)
+		}
+		wire, err := json.Marshal(orgcontract.PushEnvelope{SecurityFindings: batch.SecurityFindings, SecurityPosture: batch.SecurityPosture, AIChangeRecords: batch.AIChangeRecords})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for typ, v := range secrets {
+			for i := 0; i+8 <= len(v); i++ {
+				if piece := v[i : i+8]; bytes.Contains(wire, []byte(piece)) {
+					t.Errorf("%s: an 8-character piece %q of the %s secret reached the wire", m.name, piece, typ)
+					break
+				}
+			}
+		}
+		// Not vacuous: the two clean findings and the clean change record ship,
+		// and under raw content the masked excerpt and the clean alias ship.
+		if len(batch.SecurityFindings) != 2 || len(batch.AIChangeRecords) != 1 || len(batch.SecurityPosture) != 1 {
+			t.Fatalf("%s: shipped %d findings, %d change records, %d posture rows; want 2, 1, 1", m.name, len(batch.SecurityFindings), len(batch.AIChangeRecords), len(batch.SecurityPosture))
+		}
+		if m.raw {
+			for _, want := range []string{"[REDACTED:aws_access_key]", "old/clean.go", "src/ok.go"} {
+				if !bytes.Contains(wire, []byte(want)) {
+					t.Errorf("%s: %q missing from a raw-content push: %s", m.name, want, wire)
+				}
+			}
+		} else if bytes.Contains(wire, []byte("REDACTED")) || bytes.Contains(wire, []byte("old/clean.go")) {
+			t.Errorf("%s: a metadata-only push carried an excerpt or a path: %s", m.name, wire)
+		}
+	}
+}
+
+// TestSecurityWireOffByDefault pins Q7 for an existing install: with the
+// seam unbound (the module inactive) or bound at the default individual
+// level, an envelope carries no security key at all.
+func TestSecurityWireOffByDefault(t *testing.T) {
+	ctx := context.Background()
+	database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "agent.db")})
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer func() { _ = database.Close() }()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := database.ExecContext(ctx, `INSERT INTO sec_findings (id, project_root_hash, local_key, rule_id, category, severity, confidence, first_seen, last_seen)
+		VALUES ('f1', 'r1', 'k1', 'S-721', 'secret', 'high', 'high', ?, ?)`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	for _, bind := range []bool{false, true} {
+		st := store.New(database)
+		if bind {
+			st.SetSecurityOrgProviders(store.SecurityOrgProviders{
+				Level: func(context.Context, store.ShareOptions) store.SecurityShare {
+					return store.ResolveSecurityShare(store.ResolveSecurityShareFacts{})
+				},
+				Findings: st.SelectSecurityFindingRows,
+			})
+		}
+		batch, err := st.SelectUnpushedSince(ctx, store.PushCursor{}, 1<<20, "org-1", "dev@x", store.ShareOptions{FullContent: true}, store.ScopeOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, _ := json.Marshal(orgcontract.PushEnvelope{SecurityFindings: batch.SecurityFindings, SecurityPosture: batch.SecurityPosture, AIChangeRecords: batch.AIChangeRecords})
+		for _, key := range []string{"security_findings", "security_posture", "ai_change_records"} {
+			if bytes.Contains(raw, []byte(key)) {
+				t.Errorf("bound=%v: %s on the wire at the default level: %s", bind, key, raw)
+			}
+		}
+	}
+}
+
+// secTableLiteral matches a sec_* table name inside a Go string literal.
+var secTableLiteral = regexp.MustCompile(`\bsec_[a-z_]+`)
+
+// TestOrgPushNamesNoSecTable is the prefix half of the source-name sentinel
+// for the security pillar (security plan 7.4, spike JSP-1): the security
+// wire is composed through SecurityOrgProviders, so no string literal in
+// orgpush.go may name any sec_* table, including one added after this test.
+func TestOrgPushNamesNoSecTable(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join("..", "..", "internal", "store", "orgpush.go")
+	src, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, src, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	ast.Inspect(file, func(n ast.Node) bool {
+		if lit, ok := n.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+			if m := secTableLiteral.FindString(lit.Value); m != "" {
+				t.Errorf("%s: orgpush.go names the node-local security table %q; compose it through SecurityOrgProviders", fset.Position(lit.Pos()), m)
+			}
+		}
+		return true
+	})
+}
+
+// TestSecurityPostureFactsH2Canary (lane SEC-H2): the posture row's new
+// facts carry enums and counts only. A commit-gate event and two launch
+// trust events whose reason, target and session text hold canaries yield
+// gate_outcomes and trust_verdicts on the wire in every share mode, and no
+// canary reaches it. The two daemon facts (database_ages and platform_gaps,
+// composed in cmd/observer's posture provider, added here the same way)
+// also reach the wire in every share mode, and a canary in their closed
+// vocabularies never does (SEC-H2 merge, audit finding 7).
+func TestSecurityPostureFactsH2Canary(t *testing.T) {
+	if !securityInBuild {
+		t.Skip("the security module is compiled out (sbo_omit_security)")
+	}
+	ctx := context.Background()
+	database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "agent.db")})
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer func() { _ = database.Close() }()
+	st := store.New(database)
+	now := time.Now().UTC()
+	var rows []store.GuardEventRow
+	for i, rule := range []string{"S-793", "S-701", "S-705"} {
+		rows = append(rows, store.GuardEventRow{
+			TS: now.Add(time.Duration(-i-1) * time.Minute), SessionID: "CANARYSESSIONnever", Tool: "claude-code",
+			EventKind: "git_commit", RuleID: rule, Category: "code_security", Severity: "warn", Decision: "ask",
+			Source: "builtin", Reason: "CANARYREASONnever", TargetHash: "CANARYTARGETHASHnever", TargetExcerpt: "CANARYEXCERPTnever",
+		})
+	}
+	if _, err := st.InsertGuardEvents(ctx, rows); err != nil {
+		t.Fatal(err)
+	}
+	never := []string{
+		"CANARYSESSIONnever", "CANARYREASONnever", "CANARYTARGETHASHnever", "CANARYEXCERPTnever",
+		"CANARYDBKINDnever", "CANARYBUCKETnever", "CANARYSUPPORTnever",
+	}
+	for _, share := range []store.ShareOptions{{}, {FullContent: true}, {FullToolBodies: true}} {
+		s := store.New(database)
+		s.SetSecurityOrgProviders(store.SecurityOrgProviders{
+			Level: func(context.Context, store.ShareOptions) store.SecurityShare {
+				return store.SecurityShare{Level: orgcontract.SecuritySharePosture}
+			},
+			Posture: func(ctx context.Context, day string, scope store.SecurityScope) (orgcontract.SecurityPostureRow, bool, error) {
+				r, err := s.SecurityPostureFacts(ctx, day, time.Now().UTC(), scope)
+				// The daemon facts, as securityPostureDaemonFacts adds them.
+				r.DatabaseAges = append(r.DatabaseAges,
+					orgcontract.SecurityDatabaseAge{Kind: "osv_export", Bucket: "over_7d"},
+					orgcontract.SecurityDatabaseAge{Kind: "CANARYDBKINDnever", Bucket: "never"},
+					orgcontract.SecurityDatabaseAge{Kind: "popular_names", Bucket: "CANARYBUCKETnever"})
+				r.PlatformGaps = append(r.PlatformGaps,
+					orgcontract.SecurityPlatformGap{Driver: "scalibr", Support: "untested"},
+					orgcontract.SecurityPlatformGap{Driver: "osv", Support: "CANARYSUPPORTnever"})
+				r.Reported = append(r.Reported, "database_ages", "platform_gaps")
+				return r, err == nil, err
+			},
+		})
+		batch, err := s.SelectUnpushedSince(ctx, store.PushCursor{}, 4<<20, "org-1", "dev@x", share, store.ScopeOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := json.Marshal(orgcontract.PushEnvelope{SecurityPosture: batch.SecurityPosture})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, key := range []string{
+			`"gate_outcomes"`, `"trust_verdicts"`, `"waited"`, `"untrusted"`, `"flagged"`,
+			`"database_ages"`, `"platform_gaps"`, `"over_7d"`, `"untested"`, `"scalibr"`,
+		} {
+			if !bytes.Contains(raw, []byte(key)) {
+				t.Errorf("%+v: %s missing from %s", share, key, raw)
+			}
+		}
+		for _, v := range never {
+			if bytes.Contains(raw, []byte(v)) {
+				t.Errorf("%+v: %s reached the wire", share, v)
+			}
+		}
+	}
+}
+
+// TestChangeRecordEnvelopeCanary (lane SEC-F2B): the AI change record's
+// signed envelope is a raw-class field. A canary planted in it reaches the
+// wire only under raw content (an individual node's own full_content, a
+// managed node's grant) and never in the metadata-only or the
+// tool-bodies-only push.
+func TestChangeRecordEnvelopeCanary(t *testing.T) {
+	if !securityInBuild {
+		t.Skip("the security module is compiled out (sbo_omit_security)")
+	}
+	ctx := context.Background()
+	database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "agent.db")})
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer func() { _ = database.Close() }()
+	const canary = "sbo-envelope-canary"
+	envelope := `{"payloadType":"` + canary + `","payload":"e30=","signatures":[{"keyid":"k","sig":"AA=="}]}`
+	changeRecords := func(context.Context, int, store.SecurityScope) ([]orgcontract.AIChangeRecordRow, error) {
+		return []orgcontract.AIChangeRecordRow{{CommitIdentityHash: strings.Repeat("c", 64), RecordDigest: strings.Repeat("d", 64), Envelope: envelope}}, nil
+	}
+	for _, m := range []struct {
+		name  string
+		share store.ShareOptions
+		raw   bool
+	}{
+		{"individual_metadata_only", store.ShareOptions{}, false},
+		{"individual_full_content", store.ShareOptions{FullContent: true}, true},
+		{"managed_enterprise_grant", store.ShareOptions{EnterpriseGranted: true}, true},
+		{"tool_bodies_only", store.ShareOptions{FullToolBodies: true}, false},
+	} {
+		st := store.New(database)
+		st.SetSecurityOrgProviders(store.SecurityOrgProviders{
+			Level: func(context.Context, store.ShareOptions) store.SecurityShare {
+				return store.SecurityShare{Level: orgcontract.SecurityShareFindings, HoldsOrgKey: true}
+			},
+			ChangeRecords: changeRecords,
+		})
+		batch, err := st.SelectUnpushedSince(ctx, store.PushCursor{}, 4<<20, "org-1", "dev@x", m.share, store.ScopeOptions{})
+		if err != nil {
+			t.Fatalf("%s: SelectUnpushedSince: %v", m.name, err)
+		}
+		if len(batch.AIChangeRecords) != 1 {
+			t.Fatalf("%s: %d change records shipped, want 1 (the canary would pass vacuously)", m.name, len(batch.AIChangeRecords))
+		}
+		wire, _ := json.Marshal(orgcontract.PushEnvelope{AIChangeRecords: batch.AIChangeRecords})
+		if got := bytes.Contains(wire, []byte(canary)); got != m.raw {
+			t.Errorf("%s: envelope canary on the wire = %v, want %v", m.name, got, m.raw)
 		}
 	}
 }

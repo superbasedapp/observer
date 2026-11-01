@@ -351,9 +351,17 @@ func TestManagedDirectLaunchWaitsForTheDaemonToInventoryAFreshInstall(t *testing
 		t.Fatal(err)
 	}
 	settle, poll, notice := budgetLaunchInventorySettle, budgetLaunchInventoryPoll, budgetLaunchSettleNotice
+	// The daemon's catch-up write starts when the launch announces its
+	// wait, never on a fixed delay: on a loaded host the launch could reach
+	// its check after a 300 ms writer had already landed, find the report
+	// current, never wait and print no notice (an RB1 gate flake).
 	noticed := make(chan string, 1)
+	waiting := make(chan struct{})
 	budgetLaunchInventorySettle, budgetLaunchInventoryPoll = 5*time.Second, 20*time.Millisecond
-	budgetLaunchSettleNotice = func(tool string, _ time.Duration) { noticed <- tool }
+	budgetLaunchSettleNotice = func(tool string, _ time.Duration) {
+		noticed <- tool
+		close(waiting)
+	}
 	t.Cleanup(func() {
 		budgetLaunchInventorySettle, budgetLaunchInventoryPoll, budgetLaunchSettleNotice = settle, poll, notice
 	})
@@ -382,12 +390,20 @@ func TestManagedDirectLaunchWaitsForTheDaemonToInventoryAFreshInstall(t *testing
 	writeLiveInterventionReport(t, ctx, dbPath, before, nil, candidates)
 	caughtUp := liveInterventionReport(t, ctx, dbPath, manifest, controlled)
 	done := make(chan error, 1)
+	returned := make(chan struct{})
 	go func() {
-		time.Sleep(300 * time.Millisecond)
+		select {
+		case <-waiting:
+		case <-returned:
+			done <- nil // the launch never waited; the notice check below fails
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
 		caughtUp.At = time.Now().UTC()
 		done <- writeNodeInterventionStatus(ctx, dbPath, caughtUp)
 	}()
 	err = enforceBudgetControlledLaunch(ctx, cfgPath, "aider", budgetLaunchEvidence{Route: budgetLaunchRouteUnknown, Executable: launcher})
+	close(returned)
 	if writeErr := <-done; writeErr != nil {
 		t.Fatal(writeErr)
 	}

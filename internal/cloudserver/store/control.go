@@ -112,6 +112,37 @@ func (s *Store) ResolveRoute(ctx context.Context, feature string) (RouteInfo, er
 	return r, nil
 }
 
+// ActiveRoutes lists every active route of feature, plan-pinned ones included,
+// in route_id order. It is the read an operator verb needs to retire the other
+// routes of a feature (`route bind-anthropic --exclusive`); default-route
+// resolution keeps using ResolveRoute.
+func (s *Store) ActiveRoutes(ctx context.Context, feature string) ([]RouteInfo, error) {
+	var out []RouteInfo
+	err := s.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		rows, e := tx.Query(ctx,
+			`SELECT `+routeSelectColumns+`
+			   FROM route_registry
+			  WHERE feature = $1 AND active = true
+			  ORDER BY route_id`, feature)
+		if e != nil {
+			return e
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var r RouteInfo
+			if e := scanRoute(rows, &r); e != nil {
+				return e
+			}
+			out = append(out, r)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, fmt.Errorf("cloudserver/store.ActiveRoutes: %w", err)
+	}
+	return out, nil
+}
+
 // pickDefaultRoute picks the winner among a feature's already-filtered
 // candidate routes (active = true, plan_pinned = false - the caller's job, not
 // this function's: it does not re-check either flag). Highest route_version

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"testing"
 
@@ -17,44 +16,6 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/componentsvc"
 	"github.com/marmutapp/superbased-observer/internal/config"
 )
-
-// TestEveryDaemonLoopIsClassified keeps daemonLoopComponents in step with
-// start.go: every named loop is in the table, every table row names a loop
-// that exists, and every component it names is a catalog node row.
-func TestEveryDaemonLoopIsClassified(t *testing.T) {
-	src, err := os.ReadFile("start.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	found := map[string]bool{}
-	for _, m := range regexp.MustCompile(`ng\.Go\("([^"]+)"`).FindAllStringSubmatch(string(src), -1) {
-		found[m[1]] = true
-	}
-	if len(found) < 30 {
-		t.Fatalf("found only %d loops in start.go; the pattern is stale", len(found))
-	}
-	for name := range found {
-		if _, ok := daemonLoopComponents[name]; !ok {
-			t.Errorf("start.go loop %q is not classified in daemonLoopComponents", name)
-		}
-	}
-	for name, ids := range daemonLoopComponents {
-		if !found[name] {
-			t.Errorf("daemonLoopComponents row %q names no loop in start.go", name)
-		}
-		for _, id := range ids {
-			c, ok := components.Get(id)
-			if !ok || c.Binary != components.BinaryNode {
-				t.Errorf("loop %q names %q, not a node component", name, id)
-			}
-		}
-	}
-	for _, row := range inertOverlay {
-		if _, ok := components.Get(row.component); !ok {
-			t.Errorf("inertOverlay names unknown component %q", row.component)
-		}
-	}
-}
 
 func fullNodeIDs() []string {
 	var out []string

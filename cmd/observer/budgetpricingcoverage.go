@@ -191,6 +191,11 @@ func budgetPricingCoverageLine(cov budgetPricingCoverage) string {
 			line += " unpriced_rows=" + strconv.Itoa(cov.UnpricedRows)
 			if len(cov.UnpricedModels) > 0 {
 				line += " unpriced_models=" + strings.Join(cov.UnpricedModels, ",")
+			} else {
+				// WINNODE2 16d: never a bare count. Rows with no model name
+				// to show are the invalid ones (broken counters or a
+				// timestamp outside every window).
+				line += " unpriced_models=none-named(invalid-rows)"
 			}
 		}
 		return line

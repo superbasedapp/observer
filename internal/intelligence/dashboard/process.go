@@ -78,7 +78,14 @@ type ProcessNode struct {
 	// (process_runs.started_at, RFC3339 UTC). The drawer shows the actual
 	// capture time alongside the elapsed/duration figures. Empty (zero)
 	// when unknown.
-	StartedAt  string `json:"started_at,omitempty"`
+	StartedAt string `json:"started_at,omitempty"`
+	// LastSeenAt is the last instant the capture saw the process alive
+	// (process_runs.last_seen_at, RFC3339 UTC). The Call stack view uses it
+	// to draw an honest "exit not seen" bar for a process that was never
+	// marked exited but has not been seen for a while (a missed exit: the
+	// daemon stopped, or a poll gap), instead of a bar that runs to now.
+	// Empty when unknown.
+	LastSeenAt string `json:"last_seen_at,omitempty"`
 	IsBoundary bool   `json:"is_boundary,omitempty"`
 	ActionID   *int64 `json:"action_id,omitempty"`
 	TurnIndex  *int   `json:"turn_index,omitempty"`
@@ -1349,6 +1356,7 @@ func nodeFromRow(r store.ProcessRunRow, cmds, msgIDs map[int64]string, networkCo
 		ExitSignal:      r.ExitSignal,
 		DurationMs:      r.DurationMs,
 		StartedAt:       startedAtISO(r.StartedAt),
+		LastSeenAt:      startedAtISO(r.LastSeenAt),
 		IsBoundary:      r.IsBoundary,
 		ActionID:        r.ActionID,
 		TurnIndex:       r.TurnIndex,

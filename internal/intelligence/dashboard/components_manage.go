@@ -210,6 +210,14 @@ type componentsStateResponse struct {
 	// cannot be chosen here carries the reason, the fix and the step, so
 	// the page shows it disabled with the reason (internal/feasibility).
 	Feasibility []feasibility.Verdict `json:"feasibility"`
+	// SecuritySelected lists the security components (the root and its
+	// children) this daemon's one opt-in rule selects
+	// (Options.SecuritySelected, cmd/observer/security_optin.go): an
+	// opt-in child is listed only when a [components] block names it, not
+	// merely because it is compiled and active. The Code security Settings
+	// card shows a child's rows only when it is listed. No rule wired lists
+	// none (fail closed).
+	SecuritySelected []string `json:"security_selected"`
 }
 
 // componentPending is one component whose live state differs from the
@@ -233,13 +241,18 @@ func (s *Server) handleComponentsState(w http.ResponseWriter, r *http.Request) {
 		snap = componentstate.Legacy()
 	}
 	resp.Wired = ok
-	resp.View = snap.View()
+	resp.View = s.componentView(snap)
 	resp.Feasibility = nodefeas.ComponentVerdicts(snap.Result.Decisions, snap.Selected)
+	resp.SecuritySelected = []string{}
 	for _, c := range components.ForBinary(components.BinaryNode) {
 		if store.HasPurgePlan(c.ID) {
 			resp.Purgeable = append(resp.Purgeable, c.ID)
 		}
+		if isSecurityComponent(c.ID) && s.opts.SecuritySelected != nil && s.opts.SecuritySelected(snap, c.ID) {
+			resp.SecuritySelected = append(resp.SecuritySelected, c.ID)
+		}
 	}
+	sort.Strings(resp.SecuritySelected)
 	if ok {
 		s.comps.mu.Lock()
 		started, known := append([]string(nil), s.comps.started...), s.comps.startedKnown
@@ -266,7 +279,7 @@ func (s *Server) handleComponentsState(w http.ResponseWriter, r *http.Request) {
 		}
 		if m := s.routeComponents.Load(); m != nil {
 			for pattern, comp := range *m {
-				if comp != coreComponent && !snap.Active(comp) {
+				if comp != coreComponent && !viewActive(resp.View, comp) {
 					resp.InactiveRoutes = append(resp.InactiveRoutes, pattern)
 				}
 			}
@@ -274,6 +287,33 @@ func (s *Server) handleComponentsState(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, resp)
+}
+
+// componentView is the component view the page shows: the daemon's view
+// with the optional modules' own rules (Options.ComponentStateView, so a
+// removed sandbox root and its drivers read as off, P-057), else core's.
+func (s *Server) componentView(snap componentstate.Snapshot) componentstate.View {
+	if s.opts.ComponentStateView != nil {
+		return s.opts.ComponentStateView(snap)
+	}
+	return snap.View()
+}
+
+// viewActive reports whether id is active in v; an id the view does not
+// list (a component outside this binary) is not.
+func viewActive(v componentstate.View, id string) bool {
+	for _, r := range v.Components {
+		if r.ID == id {
+			return r.State == components.StateActive
+		}
+	}
+	return false
+}
+
+// isSecurityComponent reports whether id is the security module root or one
+// of its children, the ids GET /api/components/state reports selection for.
+func isSecurityComponent(id string) bool {
+	return id == "security" || strings.HasPrefix(id, "security.")
 }
 
 // componentsOr503 returns the wired service, or answers 503 itself.

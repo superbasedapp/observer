@@ -4,9 +4,10 @@ package agentconfig
 // CLI (JSONC config.json at user / project / project-local scope, an
 // admin system.json, dedicated mcp_config.json files) and Devin Desktop
 // (the renamed Windsurf VS Code fork) whose in-IDE agent Cascade has its own
-// hooks.json and MCP file under ~/.codeium/windsurf. Observer registers its
-// Cascade hooks in ~/.codeium/windsurf/hooks.json. Sources: audit
-// docs/audits/adapter-config-surface-2026-10-03.md section 5 "devin" and the
+// hooks.json under ~/.codeium/windsurf and reads its MCP servers from the
+// CLI's mcp_config.json (docs.devin.ai/desktop/cascade/mcp, 2026-10-25).
+// Observer registers its Cascade hooks in ~/.codeium/windsurf/hooks.json.
+// Sources: audit docs/audits/adapter-config-surface-2026-10-03.md section 5 "devin" and the
 // docs.devin.ai pages below, re-fetched 2026-10-04.
 
 const (
@@ -15,8 +16,12 @@ const (
 	devinPermRef   = "https://docs.devin.ai/cli/reference/permissions.md"
 	devinHooksRef  = "https://docs.devin.ai/desktop/cascade/hooks"
 	devinCLIHooks  = "https://docs.devin.ai/cli/extensibility/hooks/overview.md"
-	devinLiveRef   = "docs/audits/adapter-config-surface-2026-10-03.md section 5 devin + section 6 (node 1 live key names, 2026-10-03)"
-	devinLiveNote  = "Key name seen live in ~/.config/devin/config.json on node 1 (2026-10-03)."
+	// devinCascadeMCP is the Cascade MCP page (surface-gap S-10, 2026-10-25):
+	// %APPDATA%\devin\mcp_config.json, else $XDG_CONFIG_HOME/devin or
+	// ~/.config/devin.
+	devinCascadeMCP = "https://docs.devin.ai/desktop/cascade/mcp"
+	devinLiveRef    = "docs/audits/adapter-config-surface-2026-10-03.md section 5 devin + section 6 (node 1 live key names, 2026-10-03)"
+	devinLiveNote   = "Key name seen live in ~/.config/devin/config.json on node 1 (2026-10-03)."
 )
 
 var (
@@ -58,8 +63,10 @@ var devinFiles = []FileRow{
 	{
 		ID: "devin/user-mcp", Tool: "devin", Shape: "devin/mcp", Kind: KindMCP, Scope: ScopeUser,
 		Paths:  OSPaths{Linux: "~/.config/devin/mcp_config.json", Darwin: "~/.config/devin/mcp_config.json", Windows: `%APPDATA%\devin\mcp_config.json`},
-		Format: FormatJSON, Precedence: 20, WriteNeeds: PrivUser, Grounding: doc(devinConfigRef),
-		Note: "Dedicated MCP file since v3000.3 (older config.json mcpServers are migrated on startup).",
+		Format: FormatJSON, Precedence: 20, WriteNeeds: PrivUser, Grounding: doc(devinCascadeMCP),
+		Note: "Dedicated MCP file since v3000.3 (older config.json mcpServers are migrated on startup). Devin Desktop reads the same file for both " +
+			"its agents: Cascade's MCP servers live here, and the default Devin Local agent uses the CLI's config. Linux and macOS honour " +
+			"$XDG_CONFIG_HOME/devin/mcp_config.json.",
 	},
 	{
 		ID: "devin/project-mcp", Tool: "devin", Shape: "devin/mcp", Kind: KindMCP, Scope: ScopeProjectShared,
@@ -101,19 +108,24 @@ var devinFiles = []FileRow{
 			Windows: `C:\ProgramData\Devin\hooks.json`,
 		},
 		Format: FormatJSON, Precedence: 10, WriteNeeds: PrivAdminRoot, Grounding: doc(devinHooksRef),
-		Note: "Runs first (system, then user, then workspace; cloud dashboard hooks before all). Legacy Windsurf directories are the fallback.",
+		Note: "Runs first (system, then user, then workspace; cloud dashboard hooks before all). Legacy Windsurf directories are the fallback. " +
+			"The three system roots (and their legacy Windsurf twins) are in the shipped Devin Desktop language server and CLI binaries (MAC-4, " + mac4Report + "); " +
+			"the hooks.json join inside them was not exercised (it needs a sign-in), so the file name stays doc-grounded.",
 	},
-	{
-		ID: "devin/cascade-mcp", Tool: "devin", Shape: "devin/cascade-mcp", Kind: KindMCP, Scope: ScopeUser,
-		Paths: samePath("~/.codeium/windsurf/mcp_config.json"), Format: FormatJSON, Precedence: 20, WriteNeeds: PrivUser,
-		Grounding: doc("https://docs.devin.ai/llms.txt"),
-		Note:      "Cascade MCP servers (mcpServers). Legacy Windsurf path, UNVERIFIED as still current (audit); no rows until re-grounded.",
-	},
+	// No separate Cascade MCP row: docs.devin.ai/desktop/cascade/mcp now puts
+	// Cascade's MCP servers in the Devin CLI's own mcp_config.json
+	// (devin/user-mcp), and the legacy ~/.codeium/windsurf/mcp_config.json
+	// row it replaced was never re-grounded (surface-gap S-10, NEW-1).
 	{
 		ID: "devin/desktop-settings", Tool: "devin", Shape: "devin/desktop-settings", Kind: KindSettings, Scope: ScopeUser,
-		Paths: OSPaths{Windows: `%APPDATA%\Devin\User\settings.json`}, Format: FormatVSCodeSettings, Precedence: 20, WriteNeeds: PrivUser,
-		Grounding: doc("https://docs.devin.ai/llms.txt"),
-		Note:      "Devin Desktop (VS Code fork) settings; Windows path repo-grounded, macOS ~/Library/Application Support/Devin and Linux ~/.config/Devin UNVERIFIED. Cascade keys (auto-execution, Turbo) not catalogued.",
+		Paths: OSPaths{
+			Darwin:  "~/Library/Application Support/Devin/User/settings.json",
+			Windows: `%APPDATA%\Devin\User\settings.json`,
+		},
+		Format: FormatVSCodeSettings, Precedence: 20, WriteNeeds: PrivUser,
+		Grounding: mac4Live("Devin Desktop 3.11.228 (bundle com.exafunction.windsurf, product nameShort Devin) created ~/Library/Application Support/Devin/User/ on first launch"),
+		Note: "Devin Desktop (VS Code fork) settings. The macOS dir is live-grounded by MAC-4; settings.json itself appears only once a setting is changed (the VS Code layout). " +
+			"The Windows path is repo-grounded (docs.devin.ai/llms.txt); Linux ~/.config/Devin is UNVERIFIED, so it has no path. Cascade keys (auto-execution, Turbo) not catalogued.",
 	},
 }
 

@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -393,6 +394,11 @@ func runEnvLauncher(spec envLauncherSpec) error {
 	// an SMB/NFS HOME can't break the agent's provider-dependency install
 	// (adapter-agnostic; no-op unless [launch].agent_runtime_dir is set).
 	childEnv, applied, presets := applyBaseURLEnv(applyAgentRuntimeEnv(os.Environ(), agentRuntimeDir()), spec.env)
+	// CLI-8 (D13): on a managed node whose organization owns the routes, a
+	// preset that points elsewhere is rewritten to the proxy for this run.
+	var orgRewrote []string
+	childEnv, presets, orgRewrote = applyManagedPresetRewrite(context.Background(), spec.stderr, spec.tool, spec.configPath, spec.proxyURL, childEnv, spec.env, presets, spec.unrouted)
+	applied = append(applied, orgRewrote...)
 	// PATH parity (audit DI-04b): the tool was RESOLVED over the merged PATH
 	// (process + login shell), so it must EXECUTE with that PATH too — an
 	// `#!/usr/bin/env node` shim found under a login-only npm prefix otherwise
@@ -408,8 +414,18 @@ func runEnvLauncher(spec envLauncherSpec) error {
 		}
 		evidence = fileRouteBudgetLaunchEvidence(gateTool, spec.proxyURL, spec.routeFile, routeArgs)
 	}
+	// CLI-7: the tool's own .env or config file can outrank the base URL set
+	// here; then the route proves nothing and "routing via" would over-claim.
+	var shadows []string
+	if !spec.unrouted {
+		shadows = launchRouteShadows(gateTool, spec.args, spec.dir, childEnv)
+	}
+	if len(shadows) > 0 {
+		evidence = budgetLaunchEvidence{Route: budgetLaunchRouteUnknown}
+	}
 	evidence.Executable = spec.bin
 	evidence.Arguments = spec.args
+	evidence.OrgRewrote = orgRewrote
 	if err := enforceBudgetControlledLaunch(context.Background(), spec.configPath, gateTool, evidence); err != nil {
 		return err
 	}
@@ -422,21 +438,23 @@ func runEnvLauncher(spec envLauncherSpec) error {
 	switch {
 	case spec.unrouted:
 		// The caller already printed its own "not routed" note.
+	case len(shadows) > 0:
+		fmt.Fprintln(spec.stderr, routeShadowNotice(spec.tool, shadows))
 	case !proxyReachable(spec.proxyURL, 250*time.Millisecond):
 		fmt.Fprintln(spec.stderr, proxyUnreachableNotice(spec.tool, spec.proxyURL, runningAsDaemonChild()))
 	case len(applied) > 0:
 		fmt.Fprintf(spec.stderr,
 			"observer %s: routing via %s (set %s)\n",
-			spec.tool, spec.proxyURL, strings.Join(applied, ", "))
+			spec.tool, redactRouteURL(spec.proxyURL), strings.Join(applied, ", "))
 		printRouteCaveat(spec)
 	default:
-		fmt.Fprintf(spec.stderr, "observer %s: routing via %s\n", spec.tool, spec.proxyURL)
+		fmt.Fprintf(spec.stderr, "observer %s: routing via %s\n", spec.tool, redactRouteURL(spec.proxyURL))
 		printRouteCaveat(spec)
 	}
 
 	// T-536: mark the run's own telemetry as proxied only when every
 	// base-URL variable is ours (a preset user value may point elsewhere).
-	if !spec.unrouted && len(presets) == 0 {
+	if !spec.unrouted && len(presets) == 0 && len(shadows) == 0 {
 		childEnv = withOTelRouteMarker(childEnv, gateTool)
 	}
 	child := exec.Command(spec.bin, spec.args...) //nolint:gosec // user-launched tool, args are theirs
@@ -451,6 +469,7 @@ func runEnvLauncher(spec envLauncherSpec) error {
 	}
 	discovery := prepareGenericDiscovery(context.Background(), seedTool, spec.dir)
 	if err := child.Start(); err != nil {
+		noteBoxToolLaunch(spec.stderr, spec.tool, spec.bin, spec.args, err)
 		return fmt.Errorf("exec %s: %w", spec.tool, err)
 	}
 	// Direct process attribution (migration 086): record the child pid now
@@ -472,6 +491,7 @@ func runEnvLauncher(spec envLauncherSpec) error {
 		defer discoverCancel()
 	}
 	if err := child.Wait(); err != nil {
+		noteBoxToolLaunch(spec.stderr, spec.tool, spec.bin, spec.args, err)
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
 			return exitErr(ee.ExitCode())
@@ -479,4 +499,39 @@ func runEnvLauncher(spec envLauncherSpec) error {
 		return fmt.Errorf("exec %s: %w", spec.tool, err)
 	}
 	return nil
+}
+
+// routeTokenPrefix is the path prefix a sandbox's token-scoped model proxy
+// base URL carries its run token under (sandboxmxc.BaseURL:
+// http://127.0.0.1:<port>/t/<token>).
+const routeTokenPrefix = "/t/"
+
+// redactRouteURL masks the run token of a token-scoped base URL before a
+// "routing via" line prints it (Windows 11 Pro run 3, 2026-10-22: the token
+// reached terminal scrollback and pasted reports). The first path segment
+// after /t/ becomes <redacted>; any other URL, or one that does not parse,
+// prints as it is. It runs on every OS: the line is the same everywhere.
+func redactRouteURL(u string) string {
+	p, err := url.Parse(u)
+	if err != nil || p.Host == "" || !strings.HasPrefix(p.EscapedPath(), routeTokenPrefix) {
+		return u
+	}
+	at := strings.Index(u, p.Host)
+	if at < 0 {
+		return u
+	}
+	head := u[:at+len(p.Host)]
+	rest := u[len(head):]
+	if !strings.HasPrefix(rest, routeTokenPrefix) {
+		return u
+	}
+	rest = rest[len(routeTokenPrefix):]
+	end := strings.IndexAny(rest, "/?#")
+	if end < 0 {
+		end = len(rest)
+	}
+	if end == 0 {
+		return u
+	}
+	return head + routeTokenPrefix + "<redacted>" + rest[end:]
 }

@@ -39,7 +39,7 @@ func assertSpelled(t *testing.T, c Check, want ...remedy.Action) {
 func TestHookChecksRemediations(t *testing.T) {
 	home := t.TempDir()
 	assertSpelled(t, checkHookChecksums(home), remedy.Init)
-	c := checkMCPRegistrations(home, "/opt/observer", "/opt/observer")
+	c := checkMCPRegistrations(home, "/opt/observer", "/opt/observer", nil, false)
 	assertSpelled(t, c, remedy.Init)
 	if c.Remediations[0].Tool != "" {
 		t.Errorf("mcp remediation = %+v", c.Remediations)

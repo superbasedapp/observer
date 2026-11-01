@@ -554,8 +554,12 @@ func TestRunPass_SkipsUnscannableRoot(t *testing.T) {
 	if _, ok, _ := fs.State(ctx, 1); !ok {
 		t.Errorf("scannable project 1 was not scanned")
 	}
-	if _, ok, _ := fs.State(ctx, 2); ok {
-		t.Errorf("unscannable project 2 recorded a scan attempt")
+	// Since 2026-10-15 the unscannable root records WHY (no folder), once,
+	// with the count pinned at 1, instead of leaving whatever an older scan
+	// said on the Projects page forever. It still never reaches git.
+	st2, ok, _ := fs.State(ctx, 2)
+	if !ok || st2.LastErrorKind != KindNoFolder || st2.ConsecutiveFailures != 1 {
+		t.Errorf("unscannable project 2 state = %+v (ok=%v), want kind %q with 1 failure", st2, ok, KindNoFolder)
 	}
 	exec.mu.Lock()
 	defer exec.mu.Unlock()
@@ -1834,4 +1838,41 @@ func (l *lockedWriter) Write(p []byte) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.w.Write(p)
+}
+
+// TestRootNotRootedOnTheHostIsNeverTouched (audit row 8, FU-193): a project
+// root that is not a path rooted on this host ("Xcode (project unknown)",
+// a placeholder) is skipped by the tick and refused by ScanNow, ScanOnce
+// and FullScan before any Scannable stat or git run, so nothing resolves
+// against the daemon's working directory.
+func TestRootNotRootedOnTheHostIsNeverTouched(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	const unknown = "Xcode (project unknown)"
+	exec := &fakeExec{logOut: renderCommitLog(nil), revOut: []byte("")}
+	var statted []string
+	fs := newFakeStore()
+	sc := New(Options{
+		Exec: exec.Exec, State: fs.State, SetState: fs.SetState, Sink: fs.Sink,
+		Reachability: func(context.Context, int64, map[string]bool, time.Time) error { return nil },
+		Roots: func(context.Context) ([]Root, error) {
+			return []Root{{ProjectID: 7, RootPath: unknown}}, nil
+		},
+		Scannable: func(p string) bool { statted = append(statted, p); return true },
+	})
+	sc.runPass(ctx)
+	root := Root{ProjectID: 7, RootPath: unknown}
+	for name, run := range map[string]func() error{
+		"ScanNow":  func() error { _, err := sc.ScanNow(ctx, root); return err },
+		"ScanOnce": func() error { _, err := sc.ScanOnce(ctx, root); return err },
+		"FullScan": func() error { _, err := sc.FullScan(ctx, root, time.Time{}, 0); return err },
+	} {
+		var re *RootError
+		if err := run(); !errors.As(err, &re) || re.Kind != KindNoFolder {
+			t.Errorf("%s(%q) = %v, want a no-folder RootError", name, unknown, err)
+		}
+	}
+	if len(statted) != 0 || exec.count() != 0 {
+		t.Errorf("a non-rooted root was touched: Scannable %v, %d git runs", statted, exec.count())
+	}
 }

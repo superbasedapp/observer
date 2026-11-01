@@ -125,7 +125,7 @@ func launchSeedRunID(getenv func(string) string, oobActive bool) string {
 // child. Fire-and-forget: failures are reported on warn (the launcher's
 // stderr) and degrade to lazy correlation.
 func recordLaunchSeed(dbPath, tool, dir string, pid int, warn interface{ Write([]byte) (int, error) }) {
-	if dbPath == "" || pid <= 0 || tool == "" {
+	if dbPath == "" || pid <= 0 || tool == "" || inRelayBox() {
 		return
 	}
 	seedTool, seedCWD := launchSeedIdentity(tool, dir, os.Getwd)

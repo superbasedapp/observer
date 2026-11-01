@@ -55,14 +55,19 @@ func planOpenRouter(in PlanInput) ([]Request, error) {
 	if err != nil {
 		return nil, err
 	}
-	reqs := []Request{{
-		Key: "key", Kind: ReqHTTP, Method: "GET", URL: "https://openrouter.ai/api/v1/key",
-		Header: map[string]string{"Accept": "application/json"}, SecretHeaders: bearer(k),
-	}}
+	h := map[string]string{"Accept": "application/json"}
+	// The account balance (credits) is asked with the key itself first:
+	// OpenRouter answers it for a regular key, and the balance left is the
+	// number a person cares about (D-681). A management key, when given, is
+	// the fallback for a key OpenRouter does not answer credits for.
+	reqs := []Request{
+		{Key: "key", Kind: ReqHTTP, Method: "GET", URL: "https://openrouter.ai/api/v1/key", Header: h, SecretHeaders: bearer(k)},
+		{Key: "credits", Kind: ReqHTTP, Method: "GET", URL: "https://openrouter.ai/api/v1/credits", Header: h, SecretHeaders: bearer(k), Optional: true},
+	}
 	if m := strings.TrimSpace(in.Secrets["mgmt"]); m != "" {
 		reqs = append(reqs, Request{
-			Key: "credits", Kind: ReqHTTP, Method: "GET", URL: "https://openrouter.ai/api/v1/credits",
-			Header: map[string]string{"Accept": "application/json"}, SecretHeaders: bearer(m), Optional: true,
+			Key: "credits_mgmt", Kind: ReqHTTP, Method: "GET", URL: "https://openrouter.ai/api/v1/credits",
+			Header: h, SecretHeaders: bearer(m), Optional: true,
 		})
 	}
 	return reqs, nil
@@ -147,8 +152,9 @@ func ParseOpenRouterKey(body []byte, now time.Time) (Snapshot, error) {
 	return s, nil
 }
 
-// ParseOpenRouterCredits maps GET /api/v1/credits (management key). Balance
-// = total_credits - total_usage; both must be present or the read fails.
+// ParseOpenRouterCredits maps GET /api/v1/credits. The balance left is
+// total_credits - total_usage; both must be present or the read fails.
+// "prepaid" is what is left, "purchased" what was bought in total.
 func ParseOpenRouterCredits(body []byte) ([]Balance, error) {
 	var r struct {
 		Data *struct {
@@ -163,7 +169,7 @@ func ParseOpenRouterCredits(body []byte) ([]Balance, error) {
 	used := microsFromFloat(*r.Data.TotalUsage)
 	return []Balance{
 		{Kind: "prepaid", Unit: UnitUSDMicros, Amount: bought - used},
-		{Kind: "total", Unit: UnitUSDMicros, Amount: bought},
+		{Kind: "purchased", Unit: UnitUSDMicros, Amount: bought},
 	}, nil
 }
 
@@ -176,9 +182,12 @@ func parseOpenRouter(in ParseInput) (Snapshot, error) {
 	if err != nil {
 		return s, err
 	}
-	if r, ok := in.Responses["credits"]; ok && httpErr(r, true) == nil {
-		if b, err := ParseOpenRouterCredits(r.Body); err == nil {
-			s.Balances = append(s.Balances, b...)
+	for _, k := range []string{"credits", "credits_mgmt"} {
+		if r, ok := in.Responses[k]; ok && httpErr(r, true) == nil {
+			if b, err := ParseOpenRouterCredits(r.Body); err == nil {
+				s.Balances = append(s.Balances, b...)
+				break
+			}
 		}
 	}
 	return s, nil

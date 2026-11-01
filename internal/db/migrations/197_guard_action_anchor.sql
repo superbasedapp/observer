@@ -1,0 +1,44 @@
+-- 197_guard_action_anchor.sql - the guard audit chain survives action
+-- maintenance (ledger GUARD-CHAIN-1, docs/security.md).
+--
+-- Authored as 177 on main (wave-followups-2026-10-24, 2026-10-22) and
+-- renumbered to 197 when that line merged into the plans branch, whose
+-- 177-196 had landed first (D-880 released-step rule). A node database a
+-- wave build migrated holds version 177 from THIS step and none of the plans
+-- line's 177-196: internal/db.lateSteps probes both (177 by sec_findings,
+-- 197 by guard_events.action_anchor), so on such a database the plans
+-- line's 177-196 run and this step is adopted, never re-run (its ALTER
+-- would fail on the existing column).
+--
+-- guard_events.action_id is a foreign key to actions(id) and part of every
+-- row's hashed canonical bytes (store.GuardEventRow.canonicalBytes). Action
+-- retention (internal/retention), component purge
+-- (internal/store/componentpurge.go) and migration 079 set it to NULL when
+-- the action is removed, so the foreign key holds; the row then no longer
+-- hashes to its stored chain_hash and `observer guard verify-audit` reported
+-- it as a rewritten row although nothing was tampered with.
+--
+-- action_anchor is the action id the row was hashed with: written once, at
+-- insert, by store.InsertGuardEvents, and never cleared by maintenance (it
+-- carries no foreign key). The chain reads the action slot from it (falling
+-- back to action_id for a row that has none), so a NULLed action_id no
+-- longer changes the hashed bytes. The preimage format of chain versions 1
+-- and 2 is unchanged: the same decimal id is hashed, read from a column the
+-- prune does not touch. The verifier also requires action_id to be NULL or
+-- equal to action_anchor, so re-pointing a row at another action is still
+-- reported.
+--
+-- Backfill: every row whose action_id is still set gets it copied, so rows
+-- that verify today keep verifying after their action is pruned. Rows whose
+-- action_id was already cleared before this migration stay NULL here and
+-- keep failing verification until `observer guard repair-anchors --apply`
+-- restores the id the stored hash proves (an operator step, never automatic).
+--
+-- NODE-LOCAL column: the org push never selects row-id anchors
+-- (orgpush.go), and the org does not re-verify node chains. No chain_hash
+-- changes, so the org's (chain_hash, user_id) dedup key is unaffected. NO
+-- server pair.
+
+ALTER TABLE guard_events ADD COLUMN action_anchor INTEGER;
+
+UPDATE guard_events SET action_anchor = action_id WHERE action_id IS NOT NULL;

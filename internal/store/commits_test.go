@@ -281,6 +281,73 @@ func TestCommitScanStateRoundTrip(t *testing.T) {
 	}
 }
 
+// TestCommitScanState_HealthColumnsAndZeroWatermark pins migration 164's
+// columns round-tripping and the zero-watermark fix: a zero LastCommittedAt
+// is stored as "" (unknown), never as the scan's own wall-clock time.
+func TestCommitScanState_HealthColumnsAndZeroWatermark(t *testing.T) {
+	t.Parallel()
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+	projectID, err := s.UpsertProject(ctx, "/repo/health", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 15, 10, 0, 0, 0, time.UTC)
+	want := ScanState{
+		ProjectID: projectID, LastScanAt: now, LastError: "fatal: detected dubious ownership",
+		ConsecutiveFailures: 3, LastErrorKind: "dubious_ownership", LastSuccessAt: now.Add(-time.Hour),
+		LastHeadSHA: "abc", HistoryPending: true, BackfillRev: "abc", BackfillSkip: 1500,
+	}
+	if err := s.SetCommitScanState(ctx, want); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.CommitScanState(ctx, projectID)
+	if err != nil || !ok {
+		t.Fatalf("ok=%v err=%v", ok, err)
+	}
+	if !got.LastCommittedAt.IsZero() {
+		t.Errorf("zero watermark read back as %v, want zero", got.LastCommittedAt)
+	}
+	if got.LastErrorKind != want.LastErrorKind || !got.LastSuccessAt.Equal(want.LastSuccessAt) || got.LastHeadSHA != "abc" ||
+		!got.HistoryPending || got.BackfillRev != "abc" || got.BackfillSkip != 1500 {
+		t.Errorf("round-trip = %+v, want %+v", got, want)
+	}
+	h, err := s.CommitScanHealth(ctx, projectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.State != "error" || h.Kind != "dubious_ownership" || h.Detail == "" || h.Failures != 3 {
+		t.Errorf("health = %+v", h)
+	}
+}
+
+// TestCommitCaptureStateFor_Table is one case per commitCaptureStates row.
+func TestCommitCaptureStateFor_Table(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name, kind, lastError string
+		failures              int
+		pending               bool
+		want                  string
+	}{
+		{"git missing by kind", "git_missing", "git not found on PATH", 1, false, "no_git"},
+		{"git missing legacy row", "", "git not found on PATH", 1, false, "no_git"},
+		{"placeholder", "no_folder", "no folder", 1, false, "no_folder"},
+		{"gone", "root_missing", "folder not found", 1, false, "root_missing"},
+		{"not a repo", "not_repo", "fatal: not a git repository", 1, false, "not_repo"},
+		{"timeout", "timeout", "timed out", 2, false, "error"},
+		{"legacy unknown", "", "boom", 2, false, "error"},
+		{"catching up", "", "", 0, true, "catching_up"},
+		{"failing while catching up", "timeout", "timed out", 1, true, "error"},
+		{"ok", "", "", 0, false, "ok"},
+	}
+	for _, tc := range cases {
+		if got := commitCaptureStateFor(tc.kind, tc.lastError, tc.failures, tc.pending); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestActiveProjectRoots(t *testing.T) {
 	t.Parallel()
 	s, database := newTestStore(t)

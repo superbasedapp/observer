@@ -121,13 +121,13 @@ func (s *Store) InsertArenaCandidate(ctx context.Context, c *models.ArenaCandida
 		    branch_name, worktree_path, patch_path, exit_code, wall_ms, timed_out,
 		    final_answer_excerpt, diff_files, diff_added, diff_removed,
 		    input_tokens, output_tokens, cost_usd, session_ids, scores, verdict,
-		    kept_commit_sha, error, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		    kept_commit_sha, error, updated_at, permission_lane)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.ID, c.RunID, c.Tool, c.Model, c.Seq, c.Status,
 		c.BranchName, c.WorktreePath, c.PatchPath, c.ExitCode, c.WallMS, boolInt(c.TimedOut),
 		c.FinalAnswerExcerpt, c.DiffFiles, c.DiffAdded, c.DiffRemoved,
 		c.InputTokens, c.OutputTokens, c.CostUSD, sessionIDs, scores, c.Verdict,
-		c.KeptCommitSHA, c.Error, c.UpdatedAt)
+		c.KeptCommitSHA, c.Error, c.UpdatedAt, c.PermissionLane)
 	if err != nil {
 		return fmt.Errorf("store.InsertArenaCandidate: %w", err)
 	}
@@ -151,7 +151,7 @@ func (s *Store) UpdateArenaCandidate(ctx context.Context, c *models.ArenaCandida
 		    diff_files = ?, diff_added = ?, diff_removed = ?,
 		    input_tokens = ?, output_tokens = ?, cost_usd = ?,
 		    session_ids = ?, scores = ?, verdict = ?, kept_commit_sha = ?,
-		    error = ?, updated_at = ?
+		    error = ?, updated_at = ?, permission_lane = ?
 		WHERE id = ?`,
 		c.Tool, c.Model, c.Seq, c.Status,
 		c.BranchName, c.WorktreePath, c.PatchPath, c.ExitCode,
@@ -159,7 +159,7 @@ func (s *Store) UpdateArenaCandidate(ctx context.Context, c *models.ArenaCandida
 		c.DiffFiles, c.DiffAdded, c.DiffRemoved,
 		c.InputTokens, c.OutputTokens, c.CostUSD,
 		sessionIDs, scores, c.Verdict, c.KeptCommitSHA,
-		c.Error, c.UpdatedAt, c.ID)
+		c.Error, c.UpdatedAt, c.PermissionLane, c.ID)
 	if err != nil {
 		return fmt.Errorf("store.UpdateArenaCandidate: %w", err)
 	}
@@ -218,7 +218,8 @@ const arenaCandidateColumns = `id, run_id, tool, model, seq, status,
 	branch_name, worktree_path, patch_path, COALESCE(exit_code, 0),
 	COALESCE(wall_ms, 0), timed_out, final_answer_excerpt, diff_files,
 	diff_added, diff_removed, input_tokens, output_tokens, cost_usd,
-	session_ids, scores, verdict, kept_commit_sha, error, updated_at`
+	session_ids, scores, verdict, kept_commit_sha, error, updated_at,
+	permission_lane`
 
 func scanArenaCandidate(row interface{ Scan(...any) error }) (*models.ArenaCandidate, error) {
 	var c models.ArenaCandidate
@@ -228,7 +229,7 @@ func scanArenaCandidate(row interface{ Scan(...any) error }) (*models.ArenaCandi
 		&c.BranchName, &c.WorktreePath, &c.PatchPath, &c.ExitCode, &c.WallMS, &timedOut,
 		&c.FinalAnswerExcerpt, &c.DiffFiles, &c.DiffAdded, &c.DiffRemoved,
 		&c.InputTokens, &c.OutputTokens, &c.CostUSD, &sessionIDs, &scores, &c.Verdict,
-		&c.KeptCommitSHA, &c.Error, &c.UpdatedAt); err != nil {
+		&c.KeptCommitSHA, &c.Error, &c.UpdatedAt, &c.PermissionLane); err != nil {
 		return nil, err
 	}
 	c.TimedOut = timedOut != 0

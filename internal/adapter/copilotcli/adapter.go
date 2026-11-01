@@ -56,6 +56,12 @@ func (a *Adapter) WatchPaths() []string {
 		return a.watchRoots
 	}
 	var roots []string
+	// COPILOT_HOME moves ~/.copilot (session-state and logs with it) on the
+	// native side, resolved through the copilot-cli/user-settings artifact
+	// the hook writer uses (CLI-4).
+	if d := adapter.RelocatedToolHome("copilot-cli/user-settings", 0); d != "" {
+		roots = append(roots, filepath.Join(d, "session-state"), filepath.Join(d, "logs"))
+	}
 	for _, h := range crossmount.AllHomes() {
 		roots = append(roots, candidateRoots(h)...)
 	}

@@ -27,6 +27,9 @@ export type ConfigSavePreviewRequest = SectionPreviewRequest;
 
 type PreviewPrompt = (req: ConfigSavePreviewRequest) => Promise<boolean>;
 
+/** A review that answers one save's preview in place of the shell's dialog. */
+export type ConfigSavePreviewPrompt = PreviewPrompt;
+
 let prompt: PreviewPrompt | null = null;
 
 /**
@@ -67,13 +70,19 @@ export function saveConfigSection(
  * one section (PUT /api/terminal/ssh/profiles, PUT /api/terminal/policy;
  * REVIEW-3 P3-18): the same preview, the same dialog, the same save at the
  * previewed etag. `headers` carries the route's own confirm token.
+ *
+ * `opts.prompt` answers the preview in place of the shell's dialog, for a
+ * caller that is itself a dialog: the shell's dialog would open behind it
+ * (Windows 11 Pro run 4, B4: the New Terminal dialog's inline steps show the
+ * diff and Save in place). The dry run, the diff and the save at the
+ * previewed etag are the same either way.
  */
 export function saveConfigEdit<T = object>(
   url: string,
   section: string,
   body: unknown,
   headers: Record<string, string>,
-  opts: { title?: string } = {},
+  opts: { title?: string; prompt?: PreviewPrompt } = {},
 ): Promise<T & ConfigSectionSaveResult> {
   const put = (_section: string, params: Record<string, string>, payload: string) =>
     fetchJSON<unknown>(url, params, {
@@ -81,5 +90,7 @@ export function saveConfigEdit<T = object>(
       headers: { "Content-Type": "application/json", ...headers },
       body: payload,
     });
-  return runSectionSave(section, body, { put, prompt }, opts) as Promise<T & ConfigSectionSaveResult>;
+  return runSectionSave(section, body, { put, prompt: opts.prompt ?? prompt }, { title: opts.title }) as Promise<
+    T & ConfigSectionSaveResult
+  >;
 }

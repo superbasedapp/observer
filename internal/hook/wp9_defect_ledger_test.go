@@ -60,7 +60,7 @@ func TestConcurrentChecksumWritersDoNotCorrupt(t *testing.T) {
 			}
 			paths[i] = cfgPath
 			<-start // maximize collision by releasing all writers together
-			errs[i] = r.recordChecksum(cfgPath)
+			errs[i] = r.recordChecksum("", cfgPath)
 		}(i)
 	}
 	close(start)

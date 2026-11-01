@@ -19,6 +19,8 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+
+	"github.com/marmutapp/superbased-observer/internal/integration"
 )
 
 // errLauncherHelpShown is the sentinel splitLauncherArgs returns when argv
@@ -176,6 +178,13 @@ func splitLauncherArgs(cmd *cobra.Command, argv []string) ([]string, error) {
 
 	if helpFlag := fs.Lookup("help"); helpFlag != nil && helpFlag.Changed && helpFlag.Value.String() == "true" {
 		_ = cmd.Help()
+		// The one flag every launch verb takes before Cobra runs, documented
+		// once for all of them (sandboxLauncherHelp).
+		if _, launcher := integration.ToolForLaunchSubcommand(cmd.Name()); launcher {
+			if note := sandboxLauncherHelp(); note != "" {
+				_, _ = fmt.Fprint(cmd.OutOrStdout(), note)
+			}
+		}
 		return nil, errLauncherHelpShown
 	}
 

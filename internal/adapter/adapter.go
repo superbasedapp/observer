@@ -189,6 +189,17 @@ type FileCursorSemantics struct {
 	// the total-size gate every adapter had before this field existed.
 	// Set it true only with the seek verified at a file:line.
 	StreamsFromCursor bool
+	// SelfContained declares that a parse of this file reads ONLY the file
+	// itself (and, for a SQLite store, its -wal / -shm / -journal sidecars),
+	// so an unchanged size + modification time since the last successful
+	// parse means there is nothing new. The watcher then skips the parse
+	// instead of re-reading the whole file on every poll tick (a 174 MB
+	// freebuff transcript was re-decoded every ~2 s, 2026-10-18). Leave it
+	// false for a file whose parse also reads other files (an index that
+	// points at message files, a sibling project JSON): a change there would
+	// go unnoticed. Set it true only with every read in the parse path
+	// verified.
+	SelfContained bool
 	// RewindsOnTruncate declares that the file's WRITER truncates or
 	// replaces it in place (log rotation: the old bytes move to a
 	// sibling and the same path restarts empty). For such a file a
@@ -374,6 +385,19 @@ type ParseResult struct {
 	// is a clean no-op at every stop on the path, and an entry that
 	// matches no row is silently tolerated (unknown id, pruned row).
 	OutcomeUpdates []models.ActionOutcomeUpdate
+	// ToolAccounts carries vendor login / account observations an adapter
+	// read from a grounded, NON-credential on-disk field, bound to an exact
+	// native id (BindingKind "message" | "turn" | "tool_call"). The watcher
+	// plumbs them into store.IngestOptions.ToolAccounts, the same seam the
+	// hook-time capture writes through (Store.RecordToolAccounts, the one
+	// writer of tool_account_observations, node-local). An identity that is
+	// an ACCOUNT rather than a person (a device account id, a tenant or
+	// account host) sets Scope to models.ToolAccountScopeAccount (or
+	// "account:<detail>"), AccountID only, Email and Name empty.
+	// Credential files are never a source. Additive: nil is a clean no-op at
+	// every stop on the path, and a malformed observation is dropped by
+	// toolaccount.Normalize.
+	ToolAccounts []models.ToolAccountObservation
 	// NewOffset is the byte offset to persist in parse_cursors. Subsequent
 	// calls with this value as fromOffset will resume from the next
 	// unparsed byte.

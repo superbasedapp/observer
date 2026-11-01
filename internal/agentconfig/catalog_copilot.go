@@ -14,6 +14,7 @@ const (
 	copilotFAQRef    = "https://code.visualstudio.com/docs/supporting/faq"
 	copilotThemeRef  = "https://code.visualstudio.com/docs/configure/themes"
 	copilotPolicyNt  = "Policy-backed: /etc/vscode/policy.json (Linux), the Windows registry or a macOS profile locks it."
+	copilotVSMCPRef  = "https://learn.microsoft.com/en-us/visualstudio/ide/mcp-servers"
 )
 
 // copilotNoPolicy: an ordinary setting with no VS Code policy behind it.
@@ -46,6 +47,14 @@ var copilotFiles = []FileRow{
 		Grounding: doc(copilotMCPRef),
 		Note: "Workspace MCP servers (key servers). The user-profile mcp.json is opened through \"MCP: Open User Configuration\" (path not stated by the docs); " +
 			"the portable .mcp.json and ~/.copilot/mcp-config.json use mcpServers.",
+	},
+	{
+		ID: "copilot/visual-studio-user-mcp", Tool: "copilot", Shape: "copilot/visual-studio-mcp", Kind: KindMCP, Scope: ScopeUser,
+		Paths: OSPaths{Windows: `%USERPROFILE%\.mcp.json`}, Format: FormatJSON, Precedence: 20, WriteNeeds: PrivNever,
+		Grounding: doc(copilotVSMCPRef),
+		Note: "Visual Studio 2022 / 2026 (and SSMS 22): the user-global MCP file, read first of five (then <sln>\\.vs\\mcp.json, <sln>\\.mcp.json, <sln>\\.vscode\\mcp.json, <sln>\\.cursor\\mcp.json); key servers. " +
+			"Its own shape, so no VS Code Copilot setting (servers included) ever resolves to it, and PrivNever for every catalogue writer: " +
+			"only Observer's MCP writer for it (target visual-studio, surface-gap S-3) targets it, built and switched off until live check LCR-68.",
 	},
 }
 

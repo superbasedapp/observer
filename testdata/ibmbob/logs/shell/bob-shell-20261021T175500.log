@@ -1,0 +1,5 @@
+{"ts":"2026-10-21T12:25:00.488Z","level":"debug","module":"bob-shell:harness","msg":"[TreeSitter] Starting initialization"}
+{"ts":"2026-10-21T12:25:00.520Z","level":"info","module":"TaskStore","msg":"Task store opened","data":"/home/user/.bob/db/bob.db"}
+{"ts":"2026-10-21T12:25:00.538Z","level":"debug","module":"Auth","msg":"Found stored tokens, checking expiry"}
+{"ts":"2026-10-21T12:25:00.538Z","level":"debug","module":"Auth","msg":"Auth state changed to","data":"authenticated"}
+{"ts":"2026-10-21T12:25:00.538Z","level":"info","module":"Auth","msg":"Restored session from stored tokens"}

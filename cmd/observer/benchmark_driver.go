@@ -40,6 +40,14 @@ type DriveRequest struct {
 	ProxyURL     string // observer proxy base (route on)
 	TimeoutSec   int    // per-attempt wall cap; 0 = no cap
 	MaxTurns     int    // per-attempt turn cap where the harness supports it
+	// TaskRepo is the task's source repository as the spec names it; a
+	// local directory is the accept root of the attempt's trust check
+	// (benchmarkTrustLaunch).
+	TaskRepo string
+	// TrustEnv are the environment entries the launch-gate walk gives the
+	// harness process (the checked marker, the task source for an inner
+	// launcher), layered after the inherited environment.
+	TrustEnv []string
 }
 
 // DriveResult is the harness outcome. SessionIDs is the captured/minted
@@ -67,6 +75,11 @@ type codexDriver struct {
 
 func (codexDriver) Name() string { return "codex" }
 
+// ChecksLaunchAgain reports that the harness process is the `observer
+// codex` launcher, which walks the launch-gate table again in the
+// workspace (benchmarkRelauncher).
+func (codexDriver) ChecksLaunchAgain() bool { return true }
+
 func (d codexDriver) Drive(ctx context.Context, req DriveRequest) (DriveResult, error) {
 	lastMsg := filepath.Join(req.WorkspaceDir, ".sbo-last-message.txt")
 	args := []string{
@@ -84,7 +97,7 @@ func (d codexDriver) Drive(ctx context.Context, req DriveRequest) (DriveResult, 
 	cmd := exec.CommandContext(ctx, d.observerBin, args...) //nolint:gosec // G204: args are built from the operator-authored spec TOML (local trust boundary), not external/untrusted input
 	cmd.Dir = req.WorkspaceDir
 	cmd.Stdin = nil // < /dev/null — codex exec is non-interactive
-	cmd.Env = append(os.Environ(), "CODEX_HOME="+req.HomeDir)
+	cmd.Env = append(benchmarkTrustChildEnv(os.Environ(), req.TrustEnv), "CODEX_HOME="+req.HomeDir)
 	setProcGroup(cmd)
 	// Kill the whole process group on ctx cancellation so a hung grandchild
 	// (app-server) can't outlive the cell (plan §3.2 step 2).
@@ -253,7 +266,7 @@ func (d claudeCodeDriver) Drive(ctx context.Context, req DriveRequest) (DriveRes
 	cmd := exec.CommandContext(ctx, bin, args...) //nolint:gosec // G204: prompt/model from the operator-authored spec TOML + a minted uuid (local trust boundary), not external input
 	cmd.Dir = req.WorkspaceDir
 	cmd.Stdin = nil // < /dev/null — print mode is non-interactive
-	cmd.Env = append(os.Environ(), extraEnv...)
+	cmd.Env = append(benchmarkTrustChildEnv(os.Environ(), req.TrustEnv), extraEnv...)
 	setProcGroup(cmd)
 	// Kill the whole process group on ctx cancellation so a hung tool child
 	// can't outlive the cell (re-spike §6.1 / plan §3.2 step 2).
@@ -415,4 +428,19 @@ func stripANSI(s string) string {
 		b.WriteByte(s[i])
 	}
 	return b.String()
+}
+
+// benchmarkTrustChildEnv is the environment a harness process starts with:
+// base without any inherited trust variable, then the attempt's own
+// entries, so an attempt with no source never carries another's.
+func benchmarkTrustChildEnv(base, own []string) []string {
+	out := make([]string, 0, len(base)+len(own))
+	for _, kv := range base {
+		if strings.HasPrefix(kv, repoTrustBenchmarkSourceEnv+"=") || strings.HasPrefix(kv, repoTrustBenchmarkMarkerEnv+"=") ||
+			strings.HasPrefix(kv, repoTrustSourceEnv+"=") || strings.HasPrefix(kv, repoTrustCheckedEnv+"=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, own...)
 }

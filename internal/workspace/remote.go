@@ -2,8 +2,13 @@ package workspace
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
+
+// transportHelperRE matches the <name> of git's <name>::<address> remote
+// helper syntax (a URL scheme-like word: letters, digits, +, -, .).
+var transportHelperRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9+.-]*$`)
 
 // ValidateRemoteURL is the RCE guard for a daemon-run `git clone <url>`
 // (docs/plans/b9-sandboxed-terminals-implementation-plan-2026-08-08.md
@@ -33,6 +38,12 @@ func ValidateRemoteURL(url string, allowedHosts []string) error {
 		// git's "ext::" transport execs an arbitrary shell command as the
 		// "clone" — a real RCE, not a hardening nicety.
 		return fmt.Errorf("workspace.ValidateRemoteURL: %q uses the ext:: transport (arbitrary command execution) and is refused", url)
+	}
+	if helper, _, ok := strings.Cut(url, "::"); ok && transportHelperRE.MatchString(helper) {
+		// git reads <name>::<address> as "run git-remote-<name>" (fd::,
+		// testgit::, any helper on PATH), the same shape as ext:: with a
+		// different program (RB1 sweep finding S2).
+		return fmt.Errorf("workspace.ValidateRemoteURL: %q names the git transport helper %q and is refused", url, helper)
 	}
 	if strings.HasPrefix(url, "file://") {
 		// A "remote" that is actually a local path smuggles filesystem

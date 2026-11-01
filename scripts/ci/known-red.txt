@@ -1,0 +1,20 @@
+# known-red.txt: the quarantine list of known red tests (item 4 of the
+# test-time plan). scripts/merge-checks.sh and scripts/ci/gate-go-test.sh
+# (every go test gate of the pre-merge tier), which would otherwise re-run a
+# failing test on a base worktree to prove it was red before, read it
+# through `go run ./scripts/ci/knownred`:
+#   knownred check            fails when an entry is malformed or past expiry;
+#   knownred filter <log>     passes a go test log only when every failing
+#                             test is listed here, unexpired, for its package,
+#                             and its failure output matches the entry's
+#                             signature when it has one.
+# A red not on the list still fails the gate. An entry past its expiry fails
+# the gate on its own: the owner fixes the test or renews the entry with new
+# evidence. CI does not read this file; it is for local gates.
+#
+# Tab separated, one entry per line, the seventh field optional:
+# test	package (module-relative)	owner	expiry (last day it holds)	reason	evidence	signature
+# signature: a Go regular expression the test's own failure output must
+# match; a listed test that fails another way (a panic, a new assertion)
+# is then a new red. Give every entry one once its failure text is known.
+TestRelayDirectEquivalence	cmd/observer	orchestrator	2026-12-15	flaky under load: row counts off by one, passes alone and on the base; kept by RB1: not reproduced in 12 runs (8 at load 10 to 15) and passed in the RB1 full gate, so no failing trace to fix from before the release	decision log P-039 (SEC-GATE3 merge checks) and P-134 (SBX-UPD merge); cmd/observer/sandbox_relay_test.go; RB1 gate 2026-10-30 (relayeq-stress, 12 of 12 pass)	table \S+: (direct \d+ rows, relayed \d+|relayed \d+ rows, direct none)

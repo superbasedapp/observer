@@ -132,9 +132,14 @@ func (r *Registry) registerPoolsideAt(t poolsideHookTarget) RegistrationResult {
 		return res
 	}
 
+	// FU-192: an entry in Observer's shape running another binary is kept.
+	if r.refusesForeignBinaryInFile(&res, t.errPrefix, pinned.target, "poolside", identityContent) {
+		return res
+	}
 	hooks := decodePoolsideHooksRaw(doc)
 
 	binPath := forwardSlashPath(r.opts.BinaryPath)
+	var repaired []string
 	for _, event := range poolsideEvents {
 		if r.skipEvent("poolside", event) {
 			continue
@@ -148,13 +153,25 @@ func (r *Registry) registerPoolsideAt(t poolsideHookTarget) RegistrationResult {
 			}
 		}
 		if idx >= 0 {
-			if poolsideEntryCommand(entries[idx]) == cmd {
+			// T-847: the entry is "already set" only in the exact shape
+			// this writer emits (name, a "*" matcher, the command).
+			if !poolsideEntryCanonical(entries[idx]) {
+				shapeRewrite(&res, event, cmd, cmd)
+			} else if poolsideEntryCommand(entries[idx]) == cmd {
 				res.AlreadySet = append(res.AlreadySet, event)
 				continue
 			}
 			entries = append(entries[:idx:idx], entries[idx+1:]...)
 		}
-		if !r.opts.Force {
+		// T-872: on a managed repair pass an entry under Observer's own
+		// name that no longer runs observer is a neutralised Observer hook
+		// (identityOwnedName) and is replaced; any other non-observer
+		// entry is the user's (identityContent).
+		if kept, dropped := r.dropNeutralisedPoolside(path, entries); dropped {
+			entries = kept
+			repaired = append(repaired, event)
+		}
+		if r.refuses(path, identityContent) {
 			for _, e := range entries {
 				if !isObserverAnyHookEntry(poolsideEntryCommand(e), "poolside") {
 					res.Error = safeErrorf("%s: %s already has a non-observer hook; pass --force to overwrite", t.errPrefix, event)
@@ -181,7 +198,39 @@ func (r *Registry) registerPoolsideAt(t poolsideHookTarget) RegistrationResult {
 		res.Error = err
 		return res
 	}
+	noteOwnedRepair(&res, path, repaired)
 	return res
+}
+
+// dropNeutralisedPoolside removes, on a managed repair pass, every entry
+// under Observer's own hook name whose command is not observer's (T-872).
+// dropped is false, and entries untouched, when there is none or the
+// conflict rules do not repair here.
+func (r *Registry) dropNeutralisedPoolside(path string, entries []any) (kept []any, dropped bool) {
+	var neutralised []int
+	for i, e := range entries {
+		m, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		if name, _ := m["name"].(string); name == observerPoolsideHookName && !isObserverAnyHookEntry(poolsideEntryCommand(e), "poolside") {
+			neutralised = append(neutralised, i)
+		}
+	}
+	if len(neutralised) == 0 || r.resolveConflict(path, identityOwnedName) != conflictRepair {
+		return entries, false
+	}
+	kept = make([]any, 0, len(entries))
+	skip := map[int]bool{}
+	for _, i := range neutralised {
+		skip[i] = true
+	}
+	for i, e := range entries {
+		if !skip[i] {
+			kept = append(kept, e)
+		}
+	}
+	return kept, true
 }
 
 // unregisterPoolside removes ONLY the observer-owned UserPromptSubmit
@@ -290,6 +339,27 @@ func decodePoolsideHooksRaw(doc map[string]any) map[string][]any {
 		}
 	}
 	return hooks
+}
+
+// poolsideEntryCanonical reports whether an Observer poolside entry has the
+// exact shape registerPoolsideAt writes: the observer-guard name, a "*"
+// matcher and the command, nothing else (T-847).
+func poolsideEntryCanonical(e any) bool {
+	switch v := e.(type) {
+	case poolsideHookEntry:
+		return v.Name == observerPoolsideHookName && v.Matcher == "*"
+	case map[string]any:
+		for k := range v {
+			if k != "name" && k != "matcher" && k != "command" {
+				return false
+			}
+		}
+		name, _ := v["name"].(string)
+		matcher, _ := v["matcher"].(string)
+		return name == observerPoolsideHookName && matcher == "*"
+	default:
+		return false
+	}
 }
 
 // poolsideEntryCommand extracts the "command" field from an

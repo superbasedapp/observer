@@ -1,0 +1,8 @@
+{"object":"key.usage","currency":"USD","as_of":"2025-10-09T12:00:00+00:00",
+ "key":{"id":"k1","name":"Developer CLI","project_id":"p1","project_name":"Engineering"},
+ "usage":{"window":"7d","requests":12,"total_tokens":1200,"spend_usd":"1.25"},
+ "budgets":[{"id":"b1","scope":"project","interval":"monthly","limit_usd":"100","enforcement":"hard","spend_usd":"20","remaining_usd":"80","spend_status":"available",
+   "availability":{"status":"available","spent_usd":"20","reserved_usd":"10","remaining_usd":"70"},
+   "starts_at":"2025-10-01T00:00:00+00:00","resets_at":"2025-11-01T00:00:00+00:00"},
+  {"id":"b2","scope":"api_key","interval":"daily","limit_usd":"5","enforcement":"monitor","spend_usd":"1","remaining_usd":"4","spend_status":"available",
+   "starts_at":"2025-10-09T00:00:00+00:00","resets_at":"2025-10-10T00:00:00+00:00"}]}

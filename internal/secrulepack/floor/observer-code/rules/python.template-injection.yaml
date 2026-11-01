@@ -1,0 +1,28 @@
+rules:
+  - id: python.template-injection
+    languages: [python]
+    severity: ERROR
+    message: Input from a web request is used as template source, so a caller can run template code on the server; render a fixed template and pass the input as a variable.
+    metadata:
+      category: code_vuln
+      cwe: CWE-1336
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: flask.request.$ATTR
+              - pattern: request.$ATTR
+              - pattern: self.request.$ATTR
+          - metavariable-regex:
+              metavariable: $ATTR
+              regex: ^(args|form|values|json|data|files|cookies|get_json|get_data|GET|POST|body|COOKIES|FILES|query_params)$
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: render_template_string($T, ...)
+              - pattern: flask.render_template_string($T, ...)
+              - pattern: jinja2.Template($T, ...)
+              - pattern: Template($T, ...)
+              - pattern: $ENV.from_string($T, ...)
+              - pattern: mako.template.Template($T, ...)
+          - focus-metavariable: $T

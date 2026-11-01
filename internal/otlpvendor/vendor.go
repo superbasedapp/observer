@@ -10,6 +10,11 @@ type Vendor struct {
 	// vendor's (or the GenAI-shaped) events inside it are never
 	// double-counted.
 	ServiceNames []string
+	// ServiceNamePrefixes claim a resource whose service.name starts with
+	// one of them, for an exporter that stamps its own version into the
+	// name (CodeBuddy Code sends "CodeBuddy-CLI-2.171.0"). An exact
+	// ServiceNames match on any row wins over a prefix match.
+	ServiceNamePrefixes []string
 	// ClaimByEventName lets the vendor's rules also read a resource that no
 	// vendor claimed by service.name (an exporter that sets no service.name).
 	// Only the Claude Code row sets it: its original parser read every
@@ -33,6 +38,14 @@ type Vendor struct {
 	// Owner says which observation kinds this export owns while the tool's
 	// own transcript adapter is ALSO capturing (see Ownership).
 	Owner Ownership
+	// TranscriptTiming names the column of the tool's OWN transcript token
+	// row (token_usage) that a KindGenTiming record's per-call key
+	// (Fields.Request) equals, so the export's generation duration can be
+	// stamped onto that row (AP-131 follow-up). Set only when a live fixture
+	// proves the equality for this vendor; empty means the export's timing
+	// has no proven join to the transcript, and the row may then have no
+	// KindGenTiming rule (TestTimingRowsDeclareJoin).
+	TranscriptTiming TimingKey
 	// ActionTypes maps a raw tool name to an Observer action type; a name
 	// not listed falls back to models.ActionUnknown at the store boundary.
 	ActionTypes map[string]string
@@ -45,6 +58,22 @@ type Vendor struct {
 	// shape from a documented one.
 	Evidence string
 }
+
+// TimingKey names a transcript token_usage column an export's per-call id
+// may equal (Vendor.TranscriptTiming). The set is closed; the store accepts
+// exactly these (pinned against store.TranscriptKeyMessageID by a
+// cmd/observer test).
+type TimingKey string
+
+// Timing keys.
+const (
+	// TimingKeyMessageID: the export's per-call id is the transcript row's
+	// message_id (CodeBuddy: request.id == providerData.messageId).
+	TimingKeyMessageID TimingKey = "message_id"
+)
+
+// TimingKeys returns every timing key the table may use.
+func TimingKeys() []TimingKey { return []TimingKey{TimingKeyMessageID} }
 
 // Normalize converts a vendor's token counts to the proxy-row convention.
 type Normalize struct {
@@ -165,6 +194,18 @@ type Fields struct {
 	BillingID       []string
 	Cost            []string
 	Duration        []string
+	// TTFT is the vendor's time-to-first-token in milliseconds
+	// (Turn.TimeToFirstTokenMS).
+	TTFT []string
+	// FirstTokenEvent, on a KindGenTiming span rule, names the span event
+	// that marks the call's first token. The call's start is that event's
+	// time minus its TTFT value (Fields.TTFT, read from the event's own
+	// attributes, then the span's), and its duration runs from there to the
+	// span end. It exists for a span that opens only when the response
+	// starts (CodeBuddy's model_stream), whose own start-to-end would leave
+	// the time to first token out. A record without the event, or without a
+	// positive TTFT on it, yields no timing (never the stream-only span).
+	FirstTokenEvent string
 
 	ToolName []string
 	CallID   []string
@@ -172,6 +213,15 @@ type Fields struct {
 	// presence marks the call failed (GenAI error.type).
 	Success []string
 	Failure []string
+	// SuccessFromStatus resolves a span-derived tool call's outcome from the
+	// span status when neither Success nor Failure decided it: ERROR is a
+	// failure, OK a success, UNSET leaves the outcome unknown.
+	SuccessFromStatus bool
+	// FromSpanEvents lets a span rule read a field from the attributes of
+	// the span's own events when the span attribute is absent (record, then
+	// events, then resource). CodeBuddy puts a tool span's session id only
+	// on its agent.tool.* events.
+	FromSpanEvents bool
 
 	ContentKind string
 	Content     []string

@@ -28,7 +28,7 @@ var configInspectors = map[integration.RouteKind]Inspector{
 	integration.RouteEnvSettings:    envSettingsInspector,
 	integration.RouteConfigFile:     configFileInspector,
 	integration.RouteProviderJSON:   stubInspector(integration.RouteProviderJSON, "provider-JSON config files (crush.json, ~/.cline/data/settings/providers.json, ~/.pi/agent/models.json, ~/.hermes/config.yaml) have no shared read-only inspector yet"),
-	integration.RouteVSCodeSettings: stubInspector(integration.RouteVSCodeSettings, "VS Code globalState/state.vscdb is not a readable JSON file (Cline/Kilo Code route via manual-paste instructions, not a config write)"),
+	integration.RouteVSCodeSettings: stubInspector(integration.RouteVSCodeSettings, "VS Code globalState/state.vscdb is not a readable JSON file (the legacy Kilo Code extension routes via manual-paste instructions, not a config write)"),
 	integration.RouteLauncher:       stubInspector(integration.RouteLauncher, "launcher-injected env vars are exec-time only and leave no persisted config surface to read after the fact"),
 	integration.RouteManual:         stubInspector(integration.RouteManual, "operator-pasted routes are never persisted anywhere observer can read"),
 }
@@ -88,6 +88,8 @@ func mapRouteState(s proxyroute.RouteState) (Verdict, string) {
 		return VerdictDrifted, "points at a non-loopback host matching no authorized gateway - possible bypass"
 	case proxyroute.RouteAbsent:
 		return VerdictUnrouted, "no route configured (config or key missing)"
+	case proxyroute.RouteUnknown:
+		return VerdictUnrouted, "route file unknown (a relocation variable is a relative path), not read"
 	default:
 		return VerdictUnrouted, fmt.Sprintf("unrecognized proxyroute.RouteState %q", s)
 	}

@@ -401,6 +401,13 @@ func TestPushChangeTriggersAt141ThenUpgrade(t *testing.T) {
 			if _, err := sqlDB.Exec(`ALTER TABLE sessions ADD COLUMN tool_version_last TEXT`); err != nil {
 				t.Fatalf("add post-141 push column: %v", err)
 			}
+			// Same for the delivery wire (agent migrations 165 to 172), read
+			// by the delivery push family: apply the real files here and
+			// remove them again before the upgrade below.
+			addDeliverySchemaForPush(t, sqlDB)
+			// Same for the terminal_run isolation columns (agent migrations
+			// 179 and 181), read by the terminal runs push branch.
+			addTerminalIsolationForPush(t, sqlDB)
 			err2, rev1 := runUpsertTriggerCase(t, c, s, sqlDB)
 			got, want := c.check(t, sqlDB)
 			switch c.at141 {
@@ -436,6 +443,8 @@ func TestPushChangeTriggersAt141ThenUpgrade(t *testing.T) {
 			if _, err := sqlDB.Exec(`ALTER TABLE sessions DROP COLUMN tool_version_last`); err != nil {
 				t.Fatalf("drop post-141 push column: %v", err)
 			}
+			dropDeliverySchemaForPush(t, sqlDB)
+			dropTerminalIsolationForPush(t, sqlDB)
 			if err := sqlDB.Close(); err != nil {
 				t.Fatal(err)
 			}
@@ -470,5 +479,90 @@ func TestPushChangeTriggersAt141ThenUpgrade(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// deliverySchemaFiles are the agent migrations the delivery push family
+// reads (lane COMMITPR, 165 to 172).
+var deliverySchemaFiles = []string{
+	"165_project_commits_patch_fp.sql",
+	"166_project_remotes.sql",
+	"167_commit_landings.sql",
+	"168_provider_links.sql",
+	"169_pull_requests.sql",
+	"170_delivery_mirrors.sql",
+	"171_delivery_project_settings.sql",
+	"172_delivery_branch_tips.sql",
+}
+
+// addDeliverySchemaForPush applies the delivery migrations to a DB pinned
+// below them, so this build's push seam can read the delivery family.
+func addDeliverySchemaForPush(t *testing.T, sqlDB *sql.DB) {
+	t.Helper()
+	for _, name := range deliverySchemaFiles {
+		body, err := fs.ReadFile(migrations.Files, name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if _, err := sqlDB.Exec(string(body)); err != nil {
+			t.Fatalf("apply %s: %v", name, err)
+		}
+	}
+}
+
+// terminalIsolationColumns are the columns agent migrations 179 and 181 add
+// to terminal_run.
+var terminalIsolationColumns = []string{
+	"isolation_class", "stack", "egress_tier", "capture_level", "capture_rule", "capture_origin",
+	"capture_degraded", "native_sandbox_state", "verification", "key_custody", "evidence_digest",
+	"evidence_producer", "evidence_component", "evidence_component_version",
+	"evidence_seal_key_id", "evidence_seal_public_key", "evidence_seal_sig",
+}
+
+// addTerminalIsolationForPush applies agent migrations 179, 181 and 195 to a database
+// pinned below it, for the push seam's terminal runs read.
+func addTerminalIsolationForPush(t *testing.T, sqlDB *sql.DB) {
+	t.Helper()
+	for _, name := range []string{"179_terminal_run_isolation.sql", "181_terminal_run_evidence_producer.sql", "195_terminal_run_seal.sql"} {
+		body, err := fs.ReadFile(migrations.Files, name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if _, err := sqlDB.Exec(string(body)); err != nil {
+			t.Fatalf("apply %s: %v", name, err)
+		}
+	}
+}
+
+// dropTerminalIsolationForPush removes what addTerminalIsolationForPush
+// added, so the real runner's upgrade applies 179 and 181 cleanly.
+func dropTerminalIsolationForPush(t *testing.T, sqlDB *sql.DB) {
+	t.Helper()
+	for _, c := range terminalIsolationColumns {
+		if _, err := sqlDB.Exec(`ALTER TABLE terminal_run DROP COLUMN ` + c); err != nil {
+			t.Fatalf("drop terminal_run.%s: %v", c, err)
+		}
+	}
+}
+
+// dropDeliverySchemaForPush removes what addDeliverySchemaForPush added, so
+// the real runner's upgrade applies 165 to 172 cleanly.
+func dropDeliverySchemaForPush(t *testing.T, sqlDB *sql.DB) {
+	t.Helper()
+	for _, stmt := range []string{
+		`DROP TABLE IF EXISTS delivery_branch_tips`,
+		`DROP TABLE IF EXISTS delivery_project_settings`,
+		`DROP TABLE IF EXISTS delivery_mirrors`,
+		`DROP TABLE IF EXISTS pull_request_commits`,
+		`DROP TABLE IF EXISTS pull_requests`,
+		`DROP TABLE IF EXISTS provider_links`,
+		`DROP TABLE IF EXISTS commit_landings`,
+		`DROP TABLE IF EXISTS project_remotes`,
+		`ALTER TABLE project_commits DROP COLUMN patch_fp_state`,
+		`ALTER TABLE project_commits DROP COLUMN patch_fp`,
+	} {
+		if _, err := sqlDB.Exec(stmt); err != nil {
+			t.Fatalf("drop delivery schema (%s): %v", stmt, err)
+		}
 	}
 }

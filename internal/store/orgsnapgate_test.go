@@ -83,15 +83,28 @@ var gatedWireFamilies = map[string]snapFamily{
 	"SessionQuality": snapFamSessionQuality,
 	// Commit ownership (lane F-PROJ), probed over commits + AI line changes.
 	"CommitOwnership": snapFamCommitOwnership,
+	// Delivery (commit to PR to merge, D-689): one recompute, two slices
+	// (day counts + raw-gated PR rows), probed in delivery.go.
+	"DeliveryDays": snapFamDelivery,
+	"PullRequests": snapFamDelivery,
 	// Node session-detail trickle-up W2/W3. The two task wires share ONE
 	// probe over their single source family, the benchmark arrangement.
 	"SessionTaskItems":       snapFamSessionTasks,
 	"SessionTaskTransitions": snapFamSessionTasks,
 	"SessionToolAccounts":    snapFamSessionToolAccount,
+	// Per-session hook liveness (surface-gap DEC-5), probed on MAX(last_at).
+	"SessionHookActivity": snapFamSessionHookActivity,
 	// Agent Access P4: the relay activity aggregate probes the chain head.
 	"MCPRelayActivity": snapFamMCPRelayActivity,
 	// Agent Access P11 (c) shadow-MCP discovery inventory (mcpinventory.go).
 	"MCPInventory": snapFamMCPInventory,
+	// The sandbox posture aggregate (sandboxposture.go), probed over
+	// terminal_run like the other terminal wires.
+	"SandboxPosture": snapFamSandboxPosture,
+	// The security pillar wire (secorgrows.go), probed over the sec_* tables.
+	"SecurityFindings": snapFamSecurityFindings,
+	"AIChangeRecords":  snapFamSecurityChangeRecords,
+	"SecurityPosture":  snapFamSecurityPosture,
 }
 
 // relayWireFamilies are the PushBatch fields only the agentaccess.relay
@@ -129,6 +142,8 @@ var ungatedWireFamilies = map[string]string{
 	"ObsAdmissionPolicies": "obs provider seam (T6)",
 	"ObsEvalItems":         "obs provider seam (T7)",
 	"ObsEgressDecisions":   "obs provider seam (T8)",
+	// The AI change record rows have no producer until phase F2; an unbound
+	// provider costs nothing per tick.
 	// Cursor wires are bounded by the fits() guard and read only rows above a
 	// persisted watermark — they are already O(new) and must never be gated.
 	"Sessions":       "cursor wire",

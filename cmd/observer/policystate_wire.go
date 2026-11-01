@@ -87,26 +87,36 @@ type guardRunning struct {
 
 // --- point readers (the injected I/O boundary) ----------------------------
 
-// newGuardPointReader builds the guard PointReader (§4.3). cachedVersion reads
-// the verified bundle-cache envelope Version (B9); running reads the live
-// Guard.PolicyStates() org entry (0 + empty when the org layer is ABSENT,
-// R3-B2); lastFetch is the reporter's in-memory typed last-fetch slot (the only
-// source of delivered_unaccepted / stale_lkg). HasOrgRail is always true.
+// newGuardPointReader builds the guard PointReader (§4.3). bundle re-verifies
+// the on-disk bundle-cache envelope and supplies its Version (B9) plus the
+// gen3 integrity verdict (T-846); running reads the live Guard.PolicyStates()
+// org entry (0 + empty when the org layer is ABSENT, R3-B2); lastFetch is the
+// reporter's in-memory typed last-fetch slot (the only source of
+// delivered_unaccepted / stale_lkg); localGuard is the gen3 effective local
+// guard configuration (T-848, nil = not reported). HasOrgRail is always true.
 func newGuardPointReader(
-	cachedVersion func() (int64, error),
+	bundle func(ctx context.Context) (guardBundleCheck, error),
 	running func() guardRunning,
 	lastFetch func() orgclient.GuardFetchOutcome,
+	localGuard func() *orgcontract.LocalGuardPosture,
 	now func() time.Time,
 ) policystate.PointReader {
-	return func(context.Context) (policystate.PointFacts, error) {
-		cached, err := cachedVersion()
+	return func(ctx context.Context) (policystate.PointFacts, error) {
+		b, err := bundle(ctx)
 		if err != nil {
 			return policystate.PointFacts{}, fmt.Errorf("guard cached version: %w", err)
 		}
 		r := running()
 		o := lastFetch()
+		var lg *orgcontract.LocalGuardPosture
+		if localGuard != nil {
+			lg = localGuard()
+		}
 		return policystate.PointFacts{
-			CachedAcceptedVersion: cached,
+			BundleIntegrity:       b.Integrity,
+			BundleRejectCode:      b.RejectCode,
+			LocalGuard:            lg,
+			CachedAcceptedVersion: b.Version,
 			RunningVersion:        r.RunningVersion,
 			EffectiveHash:         r.EffectiveHash,
 			LatestFetchRejected:   o.RejectCode != "",
@@ -418,6 +428,10 @@ func wirePolicyResourceRejectReason(code orgclient.PolicyResourceRejectCode) str
 		// only with PRDeliveredUnaccepted (see acceptPolicyResourceGates),
 		// so this is a delivered_unaccepted row, never accepted_inert.
 		return orgcontract.ReasonFamilyNotAccepted
+	case orgclient.PRRejectPostureLoosened:
+		// F0-8: the body would loosen this node's posture; the LKG stays.
+		// Lands with the server allow-list entry (api/policystate.go).
+		return orgcontract.ReasonPostureLoosened
 	case orgclient.PRRejectVersionDowngrade:
 		return orgcontract.ReasonVersionDowngrade
 	case orgclient.PRRejectVersionReplay:
@@ -542,9 +556,18 @@ type policyStateReporter struct {
 	// lastMCPRelay is the tools.mcp_access slot (Agent Access P4, doc3
 	// §12.8) — the node-mcp-relay point's LATEST-FETCH facts.
 	lastMCPRelay orgclient.PolicyResourceFetchOutcome
+	// lastIsolation is the terminals.isolation slot (lane SBX-P1B).
+	lastIsolation orgclient.PolicyResourceFetchOutcome
+	// lastSecurity is the security.scanning slot (lane SEC-E), the
+	// node-security point's LATEST-FETCH facts.
+	lastSecurity orgclient.PolicyResourceFetchOutcome
 
 	running     atomic.Bool // single-flight guard for report()
 	unsupported atomic.Bool // 404/405 latch (S8)
+	// incomplete records that the last report() skipped its POST because a
+	// reader failed, so run() retries on a bounded backoff instead of on
+	// every poke (D-704).
+	incomplete atomic.Bool
 	// latched / latchDepth implement the OPTIONAL-POINT LADDER probe
 	// (docs/plans/admin-controlled-plane-b-spec-2026-08-15.md §3.8,
 	// adversarial review A11; generalizing
@@ -574,6 +597,32 @@ type policyStateReporter struct {
 	// the ladder loop only ever walks gen1-projected rows (see report()). It
 	// is meaningless while !latched and is never read there.
 	latchGen1 atomic.Bool
+
+	// latchGen2 is true once the gen3 rung (T-846 / T-848) latched: a gen2
+	// server refused the gen3 guard-row fields but took the gen2 snapshot,
+	// so every later send strips only those fields (projectGen2) and keeps
+	// the gen2 fields and identity. Meaningless while !latched.
+	latchGen2 atomic.Bool
+
+	// latchGen4 is true once the gen5 rung (lane sec-p2b) latched: a gen4
+	// server, so every send strips the per-section project status.
+	latchGen4 atomic.Bool
+	// latchGen5 is true once the gen6 rung (lane sec-p3) latched: a gen5
+	// server, so every send strips the project family section status.
+	latchGen5 atomic.Bool
+	// latchGen6 is true once the gen7 rung (lane SEC-P4) latched: a gen6
+	// server, so every send folds the family truncation flag into the
+	// shared one it read before.
+	latchGen6 atomic.Bool
+	// latchGen7 is true once the gen8 rung (lane LEFT-SHARED) latched: a
+	// gen7 server, so every send strips the security.scanning row's
+	// not_applicable list.
+	latchGen7 atomic.Bool
+	// latchGen3 is true once the gen4 rung (T-864) latched: a gen3 server
+	// refused the guard tamper record (or the "missing" integrity value) but
+	// took the gen3 snapshot, so every later send strips only those
+	// (projectGen3). Meaningless while !latched.
+	latchGen3 atomic.Bool
 
 	// liveCaps resolves the node's advertised capability-token list at report
 	// time (PolicyStateReport.LiveCapabilities, Plane B §3, Sol S3; P6b) — the
@@ -667,9 +716,20 @@ func (r *policyStateReporter) recordPolicyResource(family string, o orgclient.Po
 		r.lastFeatures = mergePolicyResourceOutcome(r.lastFeatures, o)
 	case policyfam.FamilyMCPAccess:
 		r.lastMCPRelay = mergePolicyResourceOutcome(r.lastMCPRelay, o)
+	case policyfam.FamilyTerminalsIsolation:
+		r.lastIsolation = mergePolicyResourceOutcome(r.lastIsolation, o)
+	case policyfam.FamilySecurityScanning:
+		r.lastSecurity = mergePolicyResourceOutcome(r.lastSecurity, o)
 	}
 	r.mu.Unlock()
 	r.notifier.Poke()
+}
+
+// isolationSlot is the terminals.isolation LATEST-FETCH slot.
+func (r *policyStateReporter) isolationSlot() orgclient.PolicyResourceFetchOutcome {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.lastIsolation
 }
 
 // mcpRelaySlot is the tools.mcp_access LATEST-FETCH slot (doc3 §12.8).
@@ -677,6 +737,13 @@ func (r *policyStateReporter) mcpRelaySlot() orgclient.PolicyResourceFetchOutcom
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.lastMCPRelay
+}
+
+// securitySlot is the security.scanning LATEST-FETCH slot (lane SEC-E).
+func (r *policyStateReporter) securitySlot() orgclient.PolicyResourceFetchOutcome {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.lastSecurity
 }
 
 func (r *policyStateReporter) admitterSlot() orgclient.PolicyResourceFetchOutcome {
@@ -853,6 +920,47 @@ func policyStateReportingEnabled(local bool, eff govern.Effective) bool {
 	return eff.MergeBoolGated("policy_state", local)
 }
 
+// postLatched sends one snapshot at the rung the reporter latched on
+// (split out of report, lane SEC-P4, so the ladder reads one rung per
+// case).
+func (r *policyStateReporter) postLatched(ctx context.Context, rows, gen1Full []orgcontract.PolicyStateRow) {
+	depth := int(r.latchDepth.Load())
+	switch {
+	case r.latchGen1.Load():
+		r.post(ctx, rowsAtDepth(gen1Full, depth), "")
+	case r.latchGen7.Load():
+		// A gen7 server: every gen7 field, the gen8 not_applicable list
+		// stripped (lane LEFT-SHARED).
+		r.post(ctx, rowsAtDepth(projectGen7(rows), depth), r.poster.ManagedMachineIdentity(ctx))
+	case r.latchGen6.Load():
+		// A gen6 server: every gen6 field, the gen7 family truncation
+		// flag folded into the section flag (lane SEC-P4).
+		r.post(ctx, rowsAtDepth(projectGen6(rows), depth), r.poster.ManagedMachineIdentity(ctx))
+	case r.latchGen5.Load():
+		// A gen5 server: every gen5 field, the gen6 project family
+		// section status stripped (lane sec-p3).
+		r.post(ctx, rowsAtDepth(projectGen5(rows), depth), r.poster.ManagedMachineIdentity(ctx))
+	case r.latchGen4.Load():
+		// A gen4 server: every gen4 field, the gen5 per-section project
+		// status stripped (lane sec-p2b).
+		r.post(ctx, rowsAtDepth(projectGen4(rows), depth), r.poster.ManagedMachineIdentity(ctx))
+	case r.latchGen3.Load():
+		// A gen3 server: every gen3 field, the gen4 guard tamper record
+		// stripped and a missing bundle reported as absent (T-864).
+		r.post(ctx, rowsAtDepth(projectGen3(rows), depth), r.poster.ManagedMachineIdentity(ctx))
+	case r.latchGen2.Load():
+		// A gen2 server: every gen2 field and the live identity, gen3
+		// fields stripped (T-846 / T-848 compat rung).
+		r.post(ctx, rowsAtDepth(projectGen2(rows), depth), r.poster.ManagedMachineIdentity(ctx))
+	default:
+		// Defensive / should be unreachable: every latching branch of
+		// report sets a rung flag together with latched, so a plain latch can only arise from a future code path
+		// that sets latched some other way. Falls back to the live
+		// identity + full rows rather than silently downgrading.
+		r.post(ctx, rowsAtDepth(rows, depth), r.poster.ManagedMachineIdentity(ctx))
+	}
+}
+
 func (r *policyStateReporter) report(ctx context.Context) {
 	if r == nil || r.unsupported.Load() {
 		return
@@ -864,6 +972,7 @@ func (r *policyStateReporter) report(ctx context.Context) {
 		return // a report is already in flight; the buffered poke coalesces
 	}
 	defer r.running.Store(false)
+	r.incomplete.Store(false)
 
 	rows, err := policystate.Assemble(ctx, r.readers)
 	if err != nil {
@@ -871,25 +980,22 @@ func (r *policyStateReporter) report(ctx context.Context) {
 	}
 	// Completeness is measured against the READERS registered on this daemon,
 	// not a frozen literal: a v1 reporter registers four, a v2 reporter five.
+	// A short snapshot is never posted (a server validates the row set as
+	// complete, and an omitted row must not read as a policy the node does
+	// not run); run() retries it on a bounded backoff. A reader fails only on
+	// a genuine I/O or store fault: an org bundle path that cannot be read as
+	// the bundle file is a fact the guard reader reports ("missing"), not a
+	// reader failure (D-704).
 	if len(rows) != len(r.readers) {
-		r.logger.Warn("policystate: incomplete snapshot; skipping POST (retry next heartbeat)",
+		r.incomplete.Store(true)
+		r.logger.Warn("policystate: incomplete snapshot; skipping this POST (retrying with backoff)",
 			"rows", len(rows), "want", len(r.readers))
 		return
 	}
 	gen1Full := projectGen1(rows)
 
 	if r.latched.Load() {
-		depth := int(r.latchDepth.Load())
-		if r.latchGen1.Load() {
-			r.post(ctx, rowsAtDepth(gen1Full, depth), "")
-		} else {
-			// Defensive / should be unreachable via this function: every
-			// latching branch below sets latchGen1 together with latched, so
-			// a gen2 latch can only arise from a future code path that sets
-			// latched some other way. Falls back to the live identity + full
-			// rows rather than silently downgrading.
-			r.post(ctx, rowsAtDepth(rows, depth), r.poster.ManagedMachineIdentity(ctx))
-		}
+		r.postLatched(ctx, rows, gen1Full)
 		return
 	}
 
@@ -910,7 +1016,92 @@ func (r *policyStateReporter) report(ctx context.Context) {
 	if !r.probed.CompareAndSwap(false, true) {
 		return
 	}
-	skipGen1Probe := mid == "" && rowsEqualContent(rows, gen1Full)
+	// Gen8 rung first (lane LEFT-SHARED): a gen7 server 400s the
+	// security.scanning row's not_applicable list but understands every
+	// gen7 field, so strip ONLY that. Skipped when the snapshot carries no
+	// gen8 content (every node whose floor keys all apply, or that holds no
+	// floor).
+	gen7Full := projectGen7(rows)
+	if !rowsEqualContent(rows, gen7Full) {
+		if r.post(ctx, gen7Full, mid) == postOK {
+			r.latched.Store(true)
+			r.latchGen7.Store(true)
+			r.latchDepth.Store(int32(len(policystate.OptionalPoints)))
+			r.logger.Info("policystate: server rejected the gen8 security.scanning not_applicable list but accepted the gen7 snapshot - older server, dropping family_not_applicable for this daemon lifetime")
+			return
+		}
+	}
+	// Gen7 rung next (lane SEC-P4): a gen6 server 400s the family
+	// truncation flag but understands every gen6 field, so fold ONLY that.
+	// Skipped when the snapshot carries no gen7 content (every node whose
+	// family list fits).
+	gen6Full := projectGen6(rows)
+	if !rowsEqualContent(rows, gen6Full) {
+		if r.post(ctx, gen6Full, mid) == postOK {
+			r.latched.Store(true)
+			r.latchGen6.Store(true)
+			r.latchDepth.Store(int32(len(policystate.OptionalPoints)))
+			r.logger.Info("policystate: server rejected the gen7 project family truncation flag but accepted the gen6 snapshot - older server, folding project_family_truncated into project_section_truncated for this daemon lifetime")
+			return
+		}
+	}
+	// Gen6 rung next (lane sec-p3): a gen5 server 400s the project family
+	// section status but understands every gen5 field, so strip ONLY that.
+	// Skipped when the snapshot carries no gen6 content (every node of an
+	// org with no project family section).
+	gen5Full := projectGen5(rows)
+	if !rowsEqualContent(rows, gen5Full) {
+		if r.post(ctx, gen5Full, mid) == postOK {
+			r.latched.Store(true)
+			r.latchGen5.Store(true)
+			r.latchDepth.Store(int32(len(policystate.OptionalPoints)))
+			r.logger.Info("policystate: server rejected the gen6 project family section status but accepted the gen5 snapshot - older server, dropping project_family_status for this daemon lifetime")
+			return
+		}
+	}
+	// Gen5 rung next (lane sec-p2b): a gen4 server 400s the per-section
+	// project status but understands every gen4 field, so strip ONLY that.
+	// Skipped when the snapshot carries no gen5 content (a node with no
+	// project delivery, every existing install).
+	gen4Full := projectGen4(rows)
+	if !rowsEqualContent(rows, gen4Full) {
+		if r.post(ctx, gen4Full, mid) == postOK {
+			r.latched.Store(true)
+			r.latchGen4.Store(true)
+			r.latchDepth.Store(int32(len(policystate.OptionalPoints)))
+			r.logger.Info("policystate: server rejected the gen5 project section status but accepted the gen4 snapshot - older server, dropping project_section_status for this daemon lifetime")
+			return
+		}
+	}
+	// Gen4 rung next (T-864): a gen3 server 400s the guard tamper record and
+	// the "missing" bundle integrity value but understands every gen3 field,
+	// so strip ONLY those and keep the rest. Skipped when the snapshot carries
+	// no gen4 content.
+	gen3Full := projectGen3(rows)
+	if !rowsEqualContent(rows, gen3Full) {
+		if r.post(ctx, gen3Full, mid) == postOK {
+			r.latched.Store(true)
+			r.latchGen3.Store(true)
+			r.latchDepth.Store(int32(len(policystate.OptionalPoints)))
+			r.logger.Info("policystate: server rejected the gen4 guard fields but accepted the gen3 snapshot - older server, dropping guard_tamper for this daemon lifetime")
+			return
+		}
+	}
+	// Gen3 rung next (T-846 / T-848): a gen2 server 400s the gen3 guard-row
+	// fields (DisallowUnknownFields) but understands every gen2 one, so strip
+	// ONLY the gen3 fields and keep the identity. Skipped when the snapshot
+	// carries no gen3 content (that send would repeat the rejected one).
+	gen2Full := projectGen2(rows)
+	if !rowsEqualContent(rows, gen2Full) {
+		if r.post(ctx, gen2Full, mid) == postOK {
+			r.latched.Store(true)
+			r.latchGen2.Store(true)
+			r.latchDepth.Store(int32(len(policystate.OptionalPoints)))
+			r.logger.Info("policystate: server rejected the gen3 guard fields but accepted the gen2 snapshot - older server, dropping bundle_integrity/local_guard for this daemon lifetime")
+			return
+		}
+	}
+	skipGen1Probe := mid == "" && rowsEqualContent(gen2Full, gen1Full)
 	if !skipGen1Probe {
 		if r.post(ctx, gen1Full, "") == postOK {
 			r.latched.Store(true)
@@ -966,15 +1157,150 @@ func projectGen1(rows []orgcontract.PolicyStateRow) []orgcontract.PolicyStateRow
 		// too. (In practice a gen1 server also ignores unknown JSON keys,
 		// but the projection's contract is "emit exactly the gen1 shape".)
 		row.EffectivePins = nil
+		// gen3 and gen4 ride the gen1 projection too: gen1 is strictly
+		// older.
+		row.BundleIntegrity = ""
+		row.LocalGuard = nil
+		row.GuardTamper = nil
+		row.ProjectSectionStatus = nil
+		row.ProjectSectionTruncated = false
+		row.ProjectFamilyStatus = nil
+		row.ProjectFamilyTruncated = false
+		row.FamilyNotApplicable = nil
 		switch row.Reason {
 		case orgcontract.ReasonFamilyNotAccepted:
 			row.Reason = orgcontract.ReasonCapabilityMismatch
 		case orgcontract.ReasonSidecarUnwritable:
 			row.Reason = orgcontract.ReasonNotPreauthorized
+		case orgcontract.ReasonPostureLoosened:
+			row.Reason = orgcontract.ReasonCapabilityMismatch
 		}
 		out[i] = row
 	}
 	return out
+}
+
+// projectGen2 returns a copy of rows with only the gen3 fields cleared
+// (BundleIntegrity, LocalGuard; T-846 / T-848): exactly the shape a gen2
+// server validates. The gen3 STATUS change (an on-disk tamper reads
+// delivered_unaccepted + sig_invalid/key_pin_mismatch) uses the gen1 status
+// vocabulary and survives this projection on purpose, so even an older
+// server never shows a tampered bundle as effective.
+func projectGen2(rows []orgcontract.PolicyStateRow) []orgcontract.PolicyStateRow {
+	out := make([]orgcontract.PolicyStateRow, len(rows))
+	for i, row := range rows {
+		row.BundleIntegrity = ""
+		row.LocalGuard = nil
+		row.GuardTamper = nil
+		row.ProjectSectionStatus = nil
+		row.ProjectSectionTruncated = false
+		row.ProjectFamilyStatus = nil
+		row.ProjectFamilyTruncated = false
+		row.FamilyNotApplicable = nil
+		row.Reason = foldPostureLoosened(row.Reason)
+		out[i] = row
+	}
+	return out
+}
+
+// foldPostureLoosened maps the F0-8 reason posture_loosened onto
+// capability_mismatch, the nearest reason every older server understands
+// ("this node did not install what was delivered"), for the projections sent
+// to a server that refused the full snapshot. In practice an older server
+// cannot publish a family that produces it; the fold keeps the ladder total.
+func foldPostureLoosened(reason string) string {
+	if reason == orgcontract.ReasonPostureLoosened {
+		return orgcontract.ReasonCapabilityMismatch
+	}
+	return reason
+}
+
+// projectGen3 returns a copy of rows in the shape a gen3 server validates
+// (T-864): the gen4 guard tamper record cleared and the gen4 "missing" bundle
+// integrity value reported as "absent", the nearest gen3 word (the file is
+// not there). Every gen3 field survives.
+func projectGen3(rows []orgcontract.PolicyStateRow) []orgcontract.PolicyStateRow {
+	out := make([]orgcontract.PolicyStateRow, len(rows))
+	for i, row := range rows {
+		row.GuardTamper = nil
+		row.ProjectSectionStatus = nil
+		row.ProjectSectionTruncated = false
+		row.ProjectFamilyStatus = nil
+		row.ProjectFamilyTruncated = false
+		row.FamilyNotApplicable = nil
+		if row.BundleIntegrity == orgcontract.BundleIntegrityMissing {
+			row.BundleIntegrity = orgcontract.BundleIntegrityAbsent
+		}
+		row.Reason = foldPostureLoosened(row.Reason)
+		out[i] = row
+	}
+	return out
+}
+
+// projectGen7 returns a copy of rows in the shape a gen7 server validates
+// (lane LEFT-SHARED): the gen8 security.scanning not_applicable list
+// cleared. Every gen7 field survives.
+func projectGen7(rows []orgcontract.PolicyStateRow) []orgcontract.PolicyStateRow {
+	out := make([]orgcontract.PolicyStateRow, len(rows))
+	for i, row := range rows {
+		row.FamilyNotApplicable = nil
+		out[i] = row
+	}
+	return out
+}
+
+// projectGen6 returns a copy of rows in the shape a gen6 server validates
+// (lane SEC-P4): the gen7 family truncation flag folded into the shared
+// truncation flag a gen6 server reads for both lists, as the node sent it
+// before. Every gen6 field survives.
+func projectGen6(rows []orgcontract.PolicyStateRow) []orgcontract.PolicyStateRow {
+	out := make([]orgcontract.PolicyStateRow, len(rows))
+	for i, row := range rows {
+		row.ProjectSectionTruncated = row.ProjectSectionTruncated || row.ProjectFamilyTruncated
+		row.ProjectFamilyTruncated = false
+		row.FamilyNotApplicable = nil
+		out[i] = row
+	}
+	return out
+}
+
+// projectGen5 returns a copy of rows in the shape a gen5 server validates
+// (lane sec-p3): the gen6 project family section status cleared. Every gen5
+// field survives.
+func projectGen5(rows []orgcontract.PolicyStateRow) []orgcontract.PolicyStateRow {
+	out := make([]orgcontract.PolicyStateRow, len(rows))
+	for i, row := range rows {
+		row.ProjectFamilyStatus = nil
+		row.ProjectFamilyTruncated = false
+		row.FamilyNotApplicable = nil
+		out[i] = row
+	}
+	return out
+}
+
+// projectGen4 returns a copy of rows in the shape a gen4 server validates
+// (lane sec-p2b): the gen5 per-section project status cleared. Every gen4
+// field survives.
+func projectGen4(rows []orgcontract.PolicyStateRow) []orgcontract.PolicyStateRow {
+	out := make([]orgcontract.PolicyStateRow, len(rows))
+	for i, row := range rows {
+		row.ProjectSectionStatus = nil
+		row.ProjectSectionTruncated = false
+		row.ProjectFamilyStatus = nil
+		row.ProjectFamilyTruncated = false
+		row.FamilyNotApplicable = nil
+		out[i] = row
+	}
+	return out
+}
+
+// bundleVerifierOf returns poster's on-disk bundle verifier when it has one
+// (the live *orgclient.Client does), nil otherwise.
+func bundleVerifierOf(poster policyStatePoster) guardBundleVerifier {
+	if v, ok := poster.(guardBundleVerifier); ok {
+		return v
+	}
+	return nil
 }
 
 // rowsEqualContent reports whether a and b carry identical rows in the same
@@ -1106,19 +1432,74 @@ func (r *policyStateReporter) run(ctx context.Context, heartbeat time.Duration) 
 	if heartbeat <= 0 {
 		heartbeat = time.Duration(config.DefaultPolicyStateHeartbeatSeconds) * time.Second
 	}
-	r.report(ctx) // startup emit
+	// A skipped (incomplete) snapshot is retried on a bounded backoff
+	// (nextPolicyStateRetry) owned by retry: while it is armed, heartbeat
+	// ticks and pokes do not report (each one would re-read the same failing
+	// reader within milliseconds; the D-704 live test logged seven skipped
+	// snapshots inside 30 ms, one per policy outcome poke), and the
+	// timer's own fire is the next attempt, so no wake-up is lost.
+	var (
+		backoff time.Duration
+		retry   *time.Timer
+		retryC  <-chan time.Time
+	)
+	attempt := func() {
+		r.report(ctx)
+		if !r.incomplete.Load() {
+			backoff = 0
+			return
+		}
+		backoff = nextPolicyStateRetry(backoff, heartbeat)
+		retry = time.NewTimer(backoff)
+		retryC = retry.C
+	}
+	defer func() {
+		if retry != nil {
+			retry.Stop()
+		}
+	}()
+	attempt() // startup emit
 	t := time.NewTicker(heartbeat)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-retryC:
+			retryC = nil
+			attempt()
 		case <-t.C:
-			r.report(ctx)
+			if retryC == nil {
+				attempt()
+			}
 		case <-r.notifier.poke:
-			r.report(ctx)
+			if retryC == nil {
+				attempt()
+			}
 		}
 	}
+}
+
+// Bounds of the incomplete-snapshot retry (D-704): the first retry after a
+// skipped POST waits policyStateRetryFirst, each further one doubles, capped
+// at policyStateRetryCap or the heartbeat, whichever is shorter.
+const (
+	policyStateRetryFirst = time.Second
+	policyStateRetryCap   = time.Minute
+)
+
+// nextPolicyStateRetry is the wait before the next attempt after a skipped
+// snapshot, given the previous wait (0 = the first skip).
+func nextPolicyStateRetry(prev, heartbeat time.Duration) time.Duration {
+	next := policyStateRetryFirst
+	if prev > 0 {
+		next = 2 * prev
+	}
+	ceiling := policyStateRetryCap
+	if heartbeat > 0 && heartbeat < ceiling {
+		ceiling = heartbeat
+	}
+	return min(next, ceiling)
 }
 
 // buildPolicyStateReporter wires the reporter from the daemon's live
@@ -1160,14 +1541,16 @@ func buildPolicyStateReporter(
 	// the node's static mode-capability token. Resolved as a closure over
 	// `admission` so a runtime judge wiring change reaches the very next
 	// report.
-	rep.liveCaps = func() []string { return nodeLiveCapabilities(admission) }
+	moduleActive := componentSnapshotForConfig(cfg).ModuleActive
+	rep.liveCaps = func() []string { return nodeLiveCapabilitiesFor(admission, moduleActive) }
 	rep.readers = map[string]policystate.PointReader{
-		policystate.PointGuard: newGuardPointReader(
-			guardCachedVersionFromFile(orgBundleCachePath(cfg)),
+		policystate.PointGuard: withProjectFamilyStatus(withProjectSectionStatus(withGuardTamper(newGuardPointReader(
+			guardBundleCheckFrom(bundleVerifierOf(poster), orgBundleCachePath(cfg)),
 			guardRunningFromGuard(g),
 			rep.guardSlot,
+			localGuardPostureFromDisk(daemonConfigPath),
 			now,
-		),
+		), guardTamperFromStore(guardTamperSource(st), now)), projectSectionStatusFrom(g, now)), projectFamilyStatusFrom(g, now)),
 		policystate.PointRouter: newRouterPointReader(
 			routingHandle,
 			routerCachedVersionFromStore(st),
@@ -1203,6 +1586,17 @@ func buildPolicyStateReporter(
 		// node runs no MCP relay"; with it enabled the row carries the
 		// compiled table's version + effective hash, enum-only.
 		policystate.PointNodeMCPRelay: newMCPRelayPointReader(processMCPRelay.Load(), rep.mcpRelaySlot, now),
+		// v6 (lane SBX-P1B): the terminals.isolation floors, registered
+		// UNCONDITIONALLY for the same optional-point-ladder reason; with no
+		// body it is the honest none/no_policy row (and "off" in a build
+		// without the sandbox module).
+		policystate.PointNodeSandboxIsolation: newIsolationFloorsPointReader(rep.isolationSlot, now),
+		// v7 (lane SEC-E): registered UNCONDITIONALLY for the same reason; a
+		// node with no floor (or no security module in its build) reports
+		// the honest none/no_policy row, and a NACK names its reason.
+		// gen8 (lane LEFT-SHARED): the floor keys the node holds but cannot
+		// apply, read by security_scanning_na.go from the existing state.
+		policystate.PointNodeSecurity: withFamilyNotApplicable(newSecurityScanningPointReader(rep.securitySlot, now), securityNotApplicableKeys),
 	}
 	return rep
 }
@@ -1214,4 +1608,22 @@ func policyStateHeartbeat(cfg config.Config) time.Duration {
 		secs = config.DefaultPolicyStateHeartbeatSeconds
 	}
 	return time.Duration(secs) * time.Second
+}
+
+// withFamilyNotApplicable decorates the security.scanning point reader with
+// the gen8 not_applicable list (lane LEFT-SHARED, SECP-10): keys returns the
+// held floor's not_applicable keys (nil when none). A row whose floor is not
+// running reports none.
+func withFamilyNotApplicable(r policystate.PointReader, keys func() []orgcontract.FamilyKeyNotApplicable) policystate.PointReader {
+	if keys == nil {
+		return r
+	}
+	return func(ctx context.Context) (policystate.PointFacts, error) {
+		f, err := r(ctx)
+		if err != nil || !f.HasOrgRail {
+			return f, err
+		}
+		f.FamilyNotApplicable = keys()
+		return f, nil
+	}
 }

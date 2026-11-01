@@ -20,12 +20,16 @@ import (
 const nodeControlProbeReady = "observer-owned-control-probe-v1"
 
 func printEnrolledNodeControl(ctx context.Context, out io.Writer, st *store.Store, dbPath string) {
-	auth, err := nodeInterventionAuthority(ctx, st, os.Getuid(), time.Now().UTC())
-	if err != nil {
-		fmt.Fprintln(out, "Policy control: unavailable - managed authority could not be verified.")
-		return
-	}
-	if !auth.Authorized {
+	printEnrolledNodeControlOn(ctx, out, st, dbPath, runtime.GOOS)
+}
+
+// printEnrolledNodeControlOn is printEnrolledNodeControl for goos.
+func printEnrolledNodeControlOn(ctx context.Context, out io.Writer, st *store.Store, dbPath, goos string) {
+	auth, err := nodeInterventionAuthority(ctx, st, nodeInterventionAuthorityUID(), time.Now().UTC())
+	if line, done := nodeControlPreamble(goos, auth.Authorized, err); done {
+		if line != "" {
+			fmt.Fprintln(out, line)
+		}
 		return
 	}
 	if os.Getuid() <= 0 || probeNodeControl(ctx) != nil {
@@ -35,6 +39,26 @@ func printEnrolledNodeControl(ctx context.Context, out io.Writer, st *store.Stor
 	fmt.Fprintln(out, "Policy control: owned-child process-control self-test passed. This does not establish adapter coverage.")
 	fmt.Fprintf(out, "Daemon control: %s\n", nodeInterventionStatusLine(ctx, st, dbPath))
 	fmt.Fprintln(out, "The daemon must be running to apply org policies to supported direct adapter processes. Check `observer guard status` for current coverage.")
+}
+
+// nodeControlPreamble is the policy-control line printed before (or instead
+// of) the controller self-test, and whether the caller stops there. A failed
+// authority read keeps its failure wording on every OS (audit F6: on Windows
+// it read "not supported", hiding a real read failure); a node without the
+// managed authority prints nothing; an authorized node on an OS with no
+// process-control backend is told the capability is not supported there
+// (WINNODE item 3); an authorized node on a supported OS goes on.
+func nodeControlPreamble(goos string, authorized bool, err error) (string, bool) {
+	switch {
+	case err != nil:
+		return "Policy control: unavailable - managed authority could not be verified.", true
+	case !authorized:
+		return "", true
+	}
+	if line, unsupported := nodeControlUnsupported(goos); unsupported {
+		return "Policy control: " + line + ".", true
+	}
+	return "", false
 }
 
 // newNodeControlProbeChildCmd is a bounded, controller-owned child used only

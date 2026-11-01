@@ -9,6 +9,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/marmutapp/superbased-observer/internal/conpty"
 )
 
 // newOSSpawner returns the native-Windows ConPTY-backed spawner. It launches
@@ -69,38 +71,17 @@ func (windowsSpawner) Spawn(spec Spec) (PTY, error) {
 		rows = 24
 	}
 
-	// Two pipes: one feeds the child's input (we keep the write end), one
-	// drains its output (we keep the read end). ConPTY takes the opposite
-	// ends and holds its own references, so we close our copies of those
-	// after CreatePseudoConsole.
-	var inRead, inWrite, outRead, outWrite windows.Handle
-	if err := windows.CreatePipe(&inRead, &inWrite, nil, 0); err != nil {
-		return nil, fmt.Errorf("termsession: create input pipe: %w", err)
-	}
-	if err := windows.CreatePipe(&outRead, &outWrite, nil, 0); err != nil {
-		_ = windows.CloseHandle(inRead)
-		_ = windows.CloseHandle(inWrite)
-		return nil, fmt.Errorf("termsession: create output pipe: %w", err)
-	}
-
-	var hpc windows.Handle
-	err = windows.CreatePseudoConsole(windows.Coord{X: int16(cols), Y: int16(rows)}, inRead, outWrite, 0, &hpc)
-	// ConPTY now holds its own references to the ends it consumes.
-	_ = windows.CloseHandle(inRead)
-	_ = windows.CloseHandle(outWrite)
+	// The pseudo console and its two pipes (internal/conpty, the one owner
+	// the mxc-process helper shares, RERUN2 D1).
+	pc, err := conpty.New(int(cols), int(rows))
 	if err != nil {
-		_ = windows.CloseHandle(inWrite)
-		_ = windows.CloseHandle(outRead)
-		return nil, fmt.Errorf("termsession: create pseudoconsole: %w", err)
+		return nil, fmt.Errorf("termsession: %w", err)
 	}
+	hpc := pc.HPC
 
 	// cleanup releases everything allocated so far; used on every error path
 	// after the ConPTY exists but before we hand ownership to a conPTY.
-	cleanup := func() {
-		windows.ClosePseudoConsole(hpc)
-		_ = windows.CloseHandle(inWrite)
-		_ = windows.CloseHandle(outRead)
-	}
+	cleanup := pc.Close
 
 	// STARTUPINFOEX carrying the pseudoconsole as a proc-thread attribute.
 	attrList, err := windows.NewProcThreadAttributeList(1)
@@ -111,7 +92,7 @@ func (windowsSpawner) Spawn(spec Spec) (PTY, error) {
 	defer attrList.Delete()
 	if err := attrList.Update(
 		windows.PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-		handleAttrValue(&hpc),
+		conpty.AttrValue(&hpc),
 		unsafe.Sizeof(hpc),
 	); err != nil {
 		cleanup()
@@ -247,12 +228,12 @@ func (windowsSpawner) Spawn(spec Spec) (PTY, error) {
 	_ = windows.CloseHandle(pi.Thread)
 
 	return &conPTY{
-		hpc:     hpc,
+		pc:      pc,
 		job:     job,
 		process: pi.Process,
 		pid:     int(pi.ProcessId),
-		in:      os.NewFile(uintptr(inWrite), "conpty-in"),
-		out:     os.NewFile(uintptr(outRead), "conpty-out"),
+		in:      pc.In,
+		out:     pc.Out,
 	}, nil
 }
 
@@ -268,7 +249,7 @@ var _ ProcessReporter = (*conPTY)(nil)
 // the manager's waitExit); Kill terminates+closes the job; the ConPTY and
 // pipes close once via teardownOnce (shared by Kill and Close).
 type conPTY struct {
-	hpc     windows.Handle
+	pc      *conpty.Console
 	job     windows.Handle
 	process windows.Handle
 	pid     int      // OS pid of the launcher child (ProcessInformation.ProcessId)
@@ -297,7 +278,7 @@ func (p *conPTY) Resize(rows, cols uint16) error {
 	if rows == 0 {
 		rows = 24
 	}
-	return windows.ResizePseudoConsole(p.hpc, windows.Coord{X: int16(cols), Y: int16(rows)})
+	return p.pc.Resize(int(cols), int(rows))
 }
 
 // Wait blocks until the launcher process exits and returns its exit code. It
@@ -327,11 +308,7 @@ func (p *conPTY) Wait() (int, error) {
 // draining, so we close the OUTPUT pipe first, then the pseudoconsole, then
 // the input pipe.
 func (p *conPTY) closeMaster() {
-	p.teardownOnce.Do(func() {
-		_ = p.out.Close()
-		windows.ClosePseudoConsole(p.hpc)
-		_ = p.in.Close()
-	})
+	p.teardownOnce.Do(p.pc.Close)
 }
 
 // Kill force-reaps the whole child tree and releases the job + master
@@ -350,25 +327,6 @@ func (p *conPTY) Kill() error {
 func (p *conPTY) Close() error {
 	p.closeMaster()
 	return nil
-}
-
-// handleAttrValue returns the lpValue UpdateProcThreadAttribute expects for a
-// handle-VALUED proc-thread attribute such as
-// PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, whose value IS the HPCON itself (MS's
-// own ConPTY sample passes hPC directly as lpValue, not &hPC — passing the
-// address would hand the console a pointer where it reads a handle).
-//
-// It reinterprets the handle variable's own memory rather than writing
-// unsafe.Pointer(uintptr(h)). That direct conversion is what `go vet`'s
-// unsafeptr check flags, and the check is right to flag it in general: the
-// compiler and GC treat unsafe.Pointer as a real pointer, so materialising one
-// out of an arbitrary integer is exactly the pattern that hides bugs. Reading
-// the bytes through a *windows.Handle keeps every conversion pointer-typed
-// (vet-clean, no behaviour change) and mirrors what the C call does when it
-// passes a HANDLE in an LPVOID slot. The value never leaves this call, and an
-// OS handle lies outside every Go heap span, so the GC simply ignores it.
-func handleAttrValue(h *windows.Handle) unsafe.Pointer {
-	return *(*unsafe.Pointer)(unsafe.Pointer(h))
 }
 
 // makeEnvBlock builds a double-NUL-terminated UTF-16 environment block from a

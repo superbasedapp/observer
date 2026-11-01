@@ -3,6 +3,7 @@ package mcpregister
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -54,8 +55,10 @@ func TestRegisterRefreshesStaleObserverEntryWithoutForce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	writeFile(filepath.Join(home, ".claude.json"), `{"mcpServers":{"observer":{"command":"`+stale+`","args":["serve"]}}}`)
-	writeFile(filepath.Join(home, ".codex", "config.toml"), "[mcp_servers.observer]\ncommand = \""+stale+"\"\nargs = [\"serve\"]\n")
+	// strconv.Quote keeps a Windows temp path (backslashes) a valid JSON
+	// and TOML string; a POSIX path quotes to the same bytes as before.
+	writeFile(filepath.Join(home, ".claude.json"), `{"mcpServers":{"observer":{"command":`+strconv.Quote(stale)+`,"args":["serve"]}}}`)
+	writeFile(filepath.Join(home, ".codex", "config.toml"), "[mcp_servers.observer]\ncommand = "+strconv.Quote(stale)+"\nargs = [\"serve\"]\n")
 	r, err := NewRegistrar(RegisterOptions{BinaryPath: "/new/bin/observer", HomeDir: home})
 	if err != nil {
 		t.Fatal(err)
@@ -98,7 +101,7 @@ func TestRepairOnly(t *testing.T) {
 	if err := os.WriteFile(existing, []byte("x"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	body := `{"mcpServers":{"observer":{"command":"` + existing + `","args":["serve"]}}}`
+	body := `{"mcpServers":{"observer":{"command":` + strconv.Quote(existing) + `,"args":["serve"]}}}`
 	p := filepath.Join(home, ".cursor", "mcp.json")
 	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
 		t.Fatal(err)

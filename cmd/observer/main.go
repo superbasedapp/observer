@@ -27,6 +27,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/dashapi"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	extrunhost "github.com/marmutapp/superbased-observer/internal/extrun/host"
 	"github.com/marmutapp/superbased-observer/internal/freshness"
 	"github.com/marmutapp/superbased-observer/internal/identity"
 	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
@@ -44,10 +45,41 @@ var version = "dev"
 var daemonHardExit = func(code int) { os.Exit(code) }
 
 func main() {
+	// The external-program runner's trampoline (internal/extrun/host): when
+	// this process is a trampoline start it applies the run's caps and
+	// becomes the program; it never returns then. In a normal start it only
+	// marks the trampoline as offered. It runs first, before any other
+	// work, so nothing of this binary's own start-up reaches the program.
+	if code, ok := extrunhost.TrampolineDispatch(os.Args); ok {
+		os.Exit(code)
+	}
 	// Sandbox network helpers (SR27-SBX-1) run before cobra and before the
 	// OOB channel below: they must hand the inherited OOB fd to the real
 	// launcher inside the sandbox untouched (sandbox_helpers.go).
 	if code, ok := sandboxHelperDispatch(os.Args); ok {
+		os.Exit(code)
+	}
+	// `observer <tool> --observer-sandbox <profile>` (sandbox plan v2 section 9, Q10)
+	// also runs before cobra: it strips its own flag and runs the launch
+	// inside the sandbox (terminal_sandbox_cli.go).
+	if code, ok := sandboxCLIDispatch(os.Args); ok {
+		os.Exit(code)
+	}
+	// Inside a sandbox driver's own box, the inner launcher takes values
+	// that must never sit on its command line (the MXC row's token-scoped
+	// proxy URL, finding F2) from its environment and inserts them into its
+	// own argv here, in memory; everywhere else this is a no-op.
+	os.Args = boxArgs(os.Args)
+	// A recognised box whose limits are not in force runs nothing (fail
+	// closed; the reason is in the run's inner log too).
+	if boxStartRefusal != "" {
+		fmt.Fprintln(os.Stderr, "observer sandbox: "+boxStartRefusal)
+		os.Exit(125)
+	}
+	// A double-click on observer.exe in Explorer (no arguments) starts the
+	// daemon and opens the dashboard instead of cobra's five-second "this is
+	// a command line tool" notice (doubleclick_windows.go; a no-op elsewhere).
+	if code, ok := doubleClickDispatch(os.Args); ok {
 		os.Exit(code)
 	}
 	// Trusted OOB launcher emission (F3): when this process was spawned by the
@@ -65,7 +97,11 @@ func main() {
 	// bounded safe message, and do so before the OOB end frame can announce
 	// process exit to a dashboard terminal. Ordinary Cobra errors and vendor
 	// exitErr values retain their existing behavior.
-	renderSuppressedLauncherError(os.Stderr, root, executed, err)
+	shown := renderSuppressedLauncherError(os.Stderr, root, executed, err)
+	// Inside a sandbox box a failure is never silent: one line on the
+	// terminal when Cobra hid it, and one in the run's inner log, which the
+	// host helper prints when the box exits non-zero (box_inner_log.go).
+	reportBoxInnerFailure(os.Stderr, executed, shown, err)
 	exitCode := 0
 	var ec exitErr
 	if errors.As(err, &ec) {
@@ -154,6 +190,7 @@ func newRootCmdWith(deps usageDeps) *cobra.Command {
 			return runBareRoot(cmd, deps)
 		},
 	}
+	addCrossmountIsolationFlag(root)
 	for _, c := range observerSubcommandsWith(deps) {
 		root.AddCommand(c)
 	}
@@ -164,9 +201,13 @@ func newRootCmdWith(deps usageDeps) *cobra.Command {
 	}
 	root.AddCommand(newIDECmd())
 	root.AddCommand(newShellWrapCmd())
+	root.AddCommand(newRelayCmd())
+	root.AddCommand(newHookBridgeCmd())
 	root.AddCommand(newLOCCmd())
+	root.AddCommand(newDeliveryCmd())
 	root.AddCommand(newGuardCmd())
 	root.AddCommand(newBenchmarkCmd())
+	root.AddCommand(newSecurityCmd())
 	root.AddCommand(newHookCmd())
 	root.AddCommand(newBrowserCmd())
 	root.AddCommand(newProxyCmd())
@@ -174,6 +215,7 @@ func newRootCmdWith(deps usageDeps) *cobra.Command {
 	root.AddCommand(newCodeIntelCmd())
 	root.AddCommand(newRunCmd())
 	root.AddCommand(newServiceCmd())
+	root.AddCommand(newSetupCmd())
 	root.AddCommand(newStartCmd())
 	root.AddCommand(newRemoteCmd())
 	root.AddCommand(newSSHCmd())
@@ -189,6 +231,7 @@ func newRootCmdWith(deps usageDeps) *cobra.Command {
 	root.AddCommand(newPrivacyCmd())
 	root.AddCommand(newUpdateCmd())
 	root.AddCommand(newWorkspacesCmd())
+	root.AddCommand(newSandboxCmd())
 	root.AddCommand(newCloudCmd())
 	root.AddCommand(newIntelCmd())
 	root.AddCommand(newPricingCmd())
@@ -448,11 +491,44 @@ func cursorSemanticsFor() func(string) dashapi.CursorSemantics {
 // canonical watch paths for the dashboard's Connected-tools panel
 // (P4.1). Same injection seam as recognizesSessionFile — the
 // dashboard never imports adapter packages.
+//
+// The snapshot is built on the listener start path, so it is bounded
+// (D-MU1): an adapter whose WatchPaths has not answered within
+// toolCatalogBound is listed with no watch paths instead of holding the
+// dashboard (and the proxy, which binds after it) behind a walk.
 func toolCatalog() []dashapi.ToolCatalogEntry {
-	adapters := adapterdefaults.Adapters()
-	out := make([]dashapi.ToolCatalogEntry, 0, len(adapters))
-	for _, a := range adapters {
-		out = append(out, dashapi.ToolCatalogEntry{Tool: a.Name(), WatchPaths: a.WatchPaths()})
+	return toolCatalogFrom(adapterdefaults.Adapters(), toolCatalogBound)
+}
+
+// toolCatalogBound caps how long toolCatalog waits for every adapter's
+// WatchPaths together. A var for tests.
+var toolCatalogBound = 3 * time.Second
+
+// toolCatalogFrom asks every adapter for its watch paths concurrently and
+// waits at most bound for all of them; a late adapter keeps its entry with
+// nil WatchPaths (its goroutine finishes on its own and is dropped).
+func toolCatalogFrom(adapters []adapter.Adapter, bound time.Duration) []dashapi.ToolCatalogEntry {
+	out := make([]dashapi.ToolCatalogEntry, len(adapters))
+	type answer struct {
+		i     int
+		paths []string
+	}
+	answers := make(chan answer, len(adapters))
+	for i, a := range adapters {
+		out[i] = dashapi.ToolCatalogEntry{Tool: a.Name()}
+		go func(i int, a adapter.Adapter) {
+			answers <- answer{i: i, paths: a.WatchPaths()}
+		}(i, a)
+	}
+	timer := time.NewTimer(bound)
+	defer timer.Stop()
+	for got := 0; got < len(adapters); got++ {
+		select {
+		case ans := <-answers:
+			out[ans.i].WatchPaths = ans.paths
+		case <-timer.C:
+			return out
+		}
 	}
 	return out
 }
@@ -562,6 +638,11 @@ func buildWatcherWithOverride(ctx context.Context, configPath, adapterFilter str
 	var preparers []adapter.CaptureStartupPreparer
 	nativePredicates := map[string]func(string) bool{}
 	wireEnv := adapterWireEnv{ctx: ctx, cfg: cfg, st: st, logger: logger}
+	allow := cfg.Observer.Watch.EnabledAdapters
+	if adapterFilter != "" {
+		allow = []string{adapterFilter}
+	}
+	watched := adapterAllowed(allow)
 	for _, a := range adapterdefaults.Adapters() {
 		if !comps.AdapterActive(a.Name()) {
 			logger.Debug("components: adapter inactive, not watched", "tool", a.Name())
@@ -570,9 +651,14 @@ func buildWatcherWithOverride(ctx context.Context, configPath, adapterFilter str
 		// Per-adapter watcher wiring (antigravity, cursor, claude-code)
 		// lives in each adapter's own build-tagged wire_adapter_<pkg>.go,
 		// so a build without the adapter has no reference to its package
-		// (lane MP-L1D, T-598).
-		for _, wire := range adapterWirers {
-			wire(a, wireEnv)
+		// (lane MP-L1D, T-598). Only for an adapter the allow-list watches:
+		// a wirer may scan the adapter's own files at start (live run 2,
+		// finding N4: with enabled_adapters = ["poolside"] the start still
+		// counted antigravity's .pb files on the Windows mount).
+		if watched(a.Name()) {
+			for _, wire := range adapterWirers {
+				wire(a, wireEnv)
+			}
 		}
 		// Hook/transcript cross-path dedup (the H1 hermes-audit shape):
 		// an adapter whose tool also reports through Observer's hook
@@ -586,7 +672,7 @@ func buildWatcherWithOverride(ctx context.Context, configPath, adapterFilter str
 		if hd, ok := a.(adapter.HookDedupConfigurer); ok {
 			hd.ConfigureHookDedup(st.SessionHasSourceFileRows)
 		}
-		if pp, ok := a.(adapter.CaptureStartupPreparer); ok {
+		if pp, ok := a.(adapter.CaptureStartupPreparer); ok && watched(a.Name()) {
 			preparers = append(preparers, pp)
 		}
 		if nc, ok := a.(adapter.NativeToolClassifier); ok {
@@ -627,10 +713,7 @@ func buildWatcherWithOverride(ctx context.Context, configPath, adapterFilter str
 		})
 	}
 	indexer := excerptIndexer(database, cfg.Compression.Indexing)
-	allow := cfg.Observer.Watch.EnabledAdapters
-	if adapterFilter != "" {
-		allow = []string{adapterFilter}
-	} else {
+	if adapterFilter == "" {
 		// Once-per-startup warning when a registered default adapter
 		// is silently filtered out by an explicit `enabled_adapters`
 		// list in the user's config (Invariant #51). Config.Default()
@@ -657,6 +740,19 @@ func buildWatcherWithOverride(ctx context.Context, configPath, adapterFilter str
 
 	cleanup := func() { _ = database.Close() }
 	return w, cleanup, nil
+}
+
+// adapterAllowed is the watcher's allow-list as a predicate: an empty list
+// watches every adapter (watcher.Options.Allow's own rule).
+func adapterAllowed(allow []string) func(string) bool {
+	if len(allow) == 0 {
+		return func(string) bool { return true }
+	}
+	set := make(map[string]bool, len(allow))
+	for _, a := range allow {
+		set[a] = true
+	}
+	return func(name string) bool { return set[name] }
 }
 
 // warnMissingDefaultsFromAllowList logs a WARN when one or more

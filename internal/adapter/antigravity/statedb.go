@@ -97,7 +97,7 @@ func (a *Adapter) lookupDesktopIndexEntry(sessionPath, conversationID string) *i
 //     from the session path to find the `.gemini` parent dir, then try
 //     the OS-specific user-data subpath under its parent (.config on
 //     Linux, AppData/Roaming on Windows, Library/Application Support
-//     on macOS).
+//     on macOS, where the IDE dir is "Antigravity IDE"; stateDBDirs).
 //
 //  2. Cross-mount candidates: when the IDE runs on a different OS
 //     than the conversation file (e.g. Antigravity-server on WSL with
@@ -124,11 +124,10 @@ func stateDBPathFor(sessionPath string) string {
 		return ""
 	}
 	homeDir := filepath.Dir(cur)
-	candidates := []string{
-		// Layer 1: same-home (Antigravity-native install).
-		filepath.Join(homeDir, ".config", "Antigravity", "User", "globalStorage", "state.vscdb"),
-		filepath.Join(homeDir, "Library", "Application Support", "Antigravity", "User", "globalStorage", "state.vscdb"),
-		filepath.Join(homeDir, "AppData", "Roaming", "Antigravity", "User", "globalStorage", "state.vscdb"),
+	// Layer 1: same-home (Antigravity-native install).
+	var candidates []string
+	for _, goos := range []string{crossmount.OSLinux, crossmount.OSDarwin, crossmount.OSWindows} {
+		candidates = append(candidates, stateDBCandidates(homeDir, goos)...)
 	}
 	// Layer 2: cross-mount candidates. When the IDE lives on a
 	// different OS than the conversation file (Antigravity-server on
@@ -140,17 +139,7 @@ func stateDBPathFor(sessionPath string) string {
 		if h.Path == homeDir {
 			continue // already covered by layer 1
 		}
-		switch h.OS {
-		case crossmount.OSLinux:
-			candidates = append(candidates,
-				filepath.Join(h.Path, ".config", "Antigravity", "User", "globalStorage", "state.vscdb"))
-		case crossmount.OSDarwin:
-			candidates = append(candidates,
-				filepath.Join(h.Path, "Library", "Application Support", "Antigravity", "User", "globalStorage", "state.vscdb"))
-		case crossmount.OSWindows:
-			candidates = append(candidates,
-				filepath.Join(h.Path, "AppData", "Roaming", "Antigravity", "User", "globalStorage", "state.vscdb"))
-		}
+		candidates = append(candidates, stateDBCandidates(h.Path, h.OS)...)
 	}
 	for _, c := range candidates {
 		if _, err := os.Stat(c); err == nil {
@@ -158,6 +147,29 @@ func stateDBPathFor(sessionPath string) string {
 		}
 	}
 	return ""
+}
+
+// stateDBDirs is the IDE's user-data directory per OS, relative to the
+// home, newest layout first. On macOS the IDE is "Antigravity IDE"
+// (Antigravity IDE 2.6.0, MAC-4: docs/handovers/surface-gap-mac4-report.md);
+// "Antigravity" there now belongs to the separate Antigravity 2 agent app,
+// which has no User/ layout, and stays as the fallback for an older IDE
+// install that still used it. Linux and Windows keep the one grounded name.
+var stateDBDirs = map[string][][]string{
+	crossmount.OSLinux:   {{".config", "Antigravity"}},
+	crossmount.OSDarwin:  {{"Library", "Application Support", "Antigravity IDE"}, {"Library", "Application Support", "Antigravity"}},
+	crossmount.OSWindows: {{"AppData", "Roaming", "Antigravity"}},
+}
+
+// stateDBCandidates lists the state.vscdb candidates under home for one OS
+// layout, in stateDBDirs order.
+func stateDBCandidates(home, goos string) []string {
+	var out []string
+	for _, rel := range stateDBDirs[goos] {
+		parts := append([]string{home}, rel...)
+		out = append(out, filepath.Join(append(parts, "User", "globalStorage", "state.vscdb")...))
+	}
+	return out
 }
 
 // pickFreshIndexDB returns the path of the most recently modified

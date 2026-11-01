@@ -196,7 +196,7 @@ func TestHandlePromptSubmitGuarded_KimiCode(t *testing.T) {
 	if out.Len() != 0 {
 		t.Fatalf("a Kimi block writes nothing to stdout, got %q", out.String())
 	}
-	if !strings.HasPrefix(errb.String(), "observer: secret-shaped content") || strings.Contains(errb.String(), "observer-hook:") {
+	if !strings.HasPrefix(errb.String(), "Blocked by Observer guard: observer: secret-shaped content") || strings.Contains(errb.String(), "observer-hook:") {
 		t.Fatalf("stderr must be the house reason only, got %q", errb.String())
 	}
 	if stub.lastEvent.SessionID != "k1" {

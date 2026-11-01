@@ -72,7 +72,7 @@ func WindowsUserName() string {
 	if staged := stagedForeign.Load(); staged != nil {
 		return staged.windowsUser
 	}
-	if foreignSuppressedWith(nil, os.Getenv(EnvDisableForeignHomes), testBinaryGuard) {
+	if foreignSuppressedWith(nil, os.Getenv(EnvDisableForeignHomes), testBinaryGuard) || IsolationReason() != "" {
 		return ""
 	}
 	return currentWindowsUser()

@@ -25,6 +25,7 @@ var evidenceJargon = map[string]struct{}{
 	"tests_passed":            {},
 	"tests_unknown":           {},
 	"builds_unknown":          {},
+	"usage_status":            {},
 	"model_family":            {},
 	"outcome.tests":           {},
 	"outcome.build":           {},

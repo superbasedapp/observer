@@ -2,12 +2,9 @@ package opencode
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -55,25 +52,38 @@ func (*Adapter) Name() string { return models.ToolOpenCode }
 func (a *Adapter) WatchPaths() []string { return a.roots }
 
 // IsSessionFile implements adapter.Adapter. Matches OpenCode's SQLite
-// state store and WAL sibling. The under-WatchPaths constraint
-// enforces the v1.4.51 dispatch contract — basename-only predicates
-// can't accidentally claim foreign opencode.db files (e.g. a copy
-// archived elsewhere on disk).
+// state store and WAL sibling, for every release channel: opencode.db
+// and the opencode-<channel>.db a non-default channel writes (see
+// storeFileRE). The under-WatchPaths constraint enforces the v1.4.51
+// dispatch contract: basename-only predicates can't accidentally claim
+// foreign opencode.db files (e.g. a copy archived elsewhere on disk).
 func (a *Adapter) IsSessionFile(path string) bool {
-	base := strings.ToLower(filepath.Base(path))
-	if base != "opencode.db" && base != "opencode.db-wal" {
+	db, suffix := splitWALSibling(filepath.Base(path))
+	if suffix == "-shm" || !isStoreDBName(db) {
 		return false
 	}
 	return adapter.UnderAnyWatchRoot(path, a.WatchPaths())
 }
 
 // ParseSessionFile implements adapter.Adapter.
+//
+// OpenCode has shipped two storage generations in the same opencode.db
+// file (see schema.go): the original message/part/session tables and the
+// OpenCode 2.x session_v2/session_message pair. The schema is detected
+// once per call and each generation present is parsed by its own reader;
+// a database with neither (a store still bootstrapping, or a foreign
+// file) is a quiet no-op that warns once per file instead of failing
+// every scan.
 func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset int64) (adapter.ParseResult, error) {
 	dbPath := resolveDBPath(path)
-	latest, err := latestWatermark(ctx, dbPath)
+	latest, schema, err := latestWatermark(ctx, dbPath)
 	if err != nil {
 		return adapter.ParseResult{}, fmt.Errorf("opencode.ParseSessionFile: latest watermark: %w", err)
 	}
+	if !schema.known() {
+		return adapter.NotReadyResult(models.ToolOpenCode, dbPath, fromOffset, noSchemaDetail), nil
+	}
+	adapter.ClearNotReady(models.ToolOpenCode, dbPath)
 	res := adapter.ParseResult{NewOffset: latest}
 	if latest <= fromOffset {
 		return res, nil
@@ -86,48 +96,80 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 	defer database.Close()
 
 	rootCache := map[string]projectGitInfo{}
+	if schema.v1 {
+		if err := a.parseV1(ctx, database, dbPath, fromOffset, rootCache, &res); err != nil {
+			return adapter.ParseResult{}, err
+		}
+	}
+	if schema.v2 {
+		if err := a.parseV2(ctx, database, dbPath, fromOffset, schema.v1, rootCache, &res); err != nil {
+			return adapter.ParseResult{}, err
+		}
+	}
+	// T-784: the OpenCode build that produced a session rides on its
+	// `version` column (grounded on a live opencode.db 2026-10-13:
+	// `version text NOT NULL`, "1.14.29"; OpenCode 2.x keeps the same
+	// column on session_v2). Stamp it for the sessions this slice
+	// touched; the store write is first-wins-unless-empty + bounded-token
+	// validated.
+	touched := touchedSessions(res)
+	if schema.v1 {
+		res.SessionToolVersions = append(res.SessionToolVersions,
+			loadSessionToolVersions(ctx, database, touched)...)
+	}
+	if schema.v2 {
+		res.SessionToolVersions = append(res.SessionToolVersions,
+			loadSessionV2ToolVersions(ctx, database, touched)...)
+	}
+	adapter.ApplyProjectIdentityByRoot(&res, identitiesByRoot(rootCache))
+	return res, nil
+}
+
+// parseV1 runs every reader over the original message/part/session
+// tables and appends their rows to res.
+func (a *Adapter) parseV1(ctx context.Context, database *sql.DB, dbPath string, fromOffset int64, rootCache map[string]projectGitInfo, res *adapter.ParseResult) error {
 	// Resolve reasoning → successor assignment BEFORE any emitter runs,
 	// so the threading can't depend on loader order (see
 	// loadReasoningIndex). Reasoning parts are never rows of their own.
 	reasoning, err := a.loadReasoningIndex(ctx, database, fromOffset)
 	if err != nil {
-		return adapter.ParseResult{}, fmt.Errorf("opencode.ParseSessionFile: reasoning index: %w", err)
+		return fmt.Errorf("opencode.ParseSessionFile: reasoning index: %w", err)
 	}
 	prompts, err := a.loadUserPromptEvents(ctx, database, dbPath, fromOffset, rootCache)
 	if err != nil {
-		return adapter.ParseResult{}, fmt.Errorf("opencode.ParseSessionFile: prompts: %w", err)
+		return fmt.Errorf("opencode.ParseSessionFile: prompts: %w", err)
 	}
 	tools, err := a.loadToolEvents(ctx, database, dbPath, fromOffset, rootCache, reasoning)
 	if err != nil {
-		return adapter.ParseResult{}, fmt.Errorf("opencode.ParseSessionFile: tools: %w", err)
+		return fmt.Errorf("opencode.ParseSessionFile: tools: %w", err)
 	}
 	completions, err := a.loadCompletionEvents(ctx, database, dbPath, fromOffset, rootCache)
 	if err != nil {
-		return adapter.ParseResult{}, fmt.Errorf("opencode.ParseSessionFile: completions: %w", err)
+		return fmt.Errorf("opencode.ParseSessionFile: completions: %w", err)
 	}
 	assistantTexts, err := a.loadAssistantTextEvents(ctx, database, dbPath, fromOffset, rootCache, reasoning)
 	if err != nil {
-		return adapter.ParseResult{}, fmt.Errorf("opencode.ParseSessionFile: assistant_text: %w", err)
+		return fmt.Errorf("opencode.ParseSessionFile: assistant_text: %w", err)
 	}
 	subtasks, err := a.loadSubtaskEvents(ctx, database, dbPath, fromOffset, rootCache)
 	if err != nil {
-		return adapter.ParseResult{}, fmt.Errorf("opencode.ParseSessionFile: subtasks: %w", err)
+		return fmt.Errorf("opencode.ParseSessionFile: subtasks: %w", err)
 	}
 	stepFinishes, err := a.loadStepFinishEvents(ctx, database, dbPath, fromOffset, rootCache)
 	if err != nil {
-		return adapter.ParseResult{}, fmt.Errorf("opencode.ParseSessionFile: step_finish: %w", err)
+		return fmt.Errorf("opencode.ParseSessionFile: step_finish: %w", err)
 	}
 	todos, err := a.loadTodoEvents(ctx, database, dbPath, fromOffset, rootCache)
 	if err != nil {
-		return adapter.ParseResult{}, fmt.Errorf("opencode.ParseSessionFile: todos: %w", err)
+		return fmt.Errorf("opencode.ParseSessionFile: todos: %w", err)
 	}
 	tokens, err := a.loadTokenEvents(ctx, database, dbPath, fromOffset, rootCache)
 	if err != nil {
-		return adapter.ParseResult{}, fmt.Errorf("opencode.ParseSessionFile: tokens: %w", err)
+		return fmt.Errorf("opencode.ParseSessionFile: tokens: %w", err)
 	}
 	lineages, err := a.loadSessionLineages(ctx, database)
 	if err != nil {
-		return adapter.ParseResult{}, fmt.Errorf("opencode.ParseSessionFile: session lineages: %w", err)
+		return fmt.Errorf("opencode.ParseSessionFile: session lineages: %w", err)
 	}
 	// §14.3 Tier-2 cache observation. Volatile-element exclusion
 	// (wall-clock fields inside tool/reasoning/subtask part bodies)
@@ -136,7 +178,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 	// marshallers in cachetrack.go (R3 byte-stability guard).
 	cacheObservations, err := a.loadCacheObservations(ctx, database, dbPath, fromOffset)
 	if err != nil {
-		return adapter.ParseResult{}, fmt.Errorf("opencode.ParseSessionFile: cache_observations: %w", err)
+		return fmt.Errorf("opencode.ParseSessionFile: cache_observations: %w", err)
 	}
 	res.ToolEvents = append(res.ToolEvents, prompts...)
 	res.ToolEvents = append(res.ToolEvents, tools...)
@@ -148,15 +190,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 	res.TokenEvents = append(res.TokenEvents, tokens...)
 	res.CacheObservations = append(res.CacheObservations, cacheObservations...)
 	res.SessionLineages = append(res.SessionLineages, lineages...)
-	// T-784: the OpenCode build that produced a session rides on its
-	// `session.version` row (grounded on a live opencode.db 2026-10-13:
-	// `version text NOT NULL`, "1.14.29"). Stamp it for the sessions this
-	// slice touched; the store write is first-wins-unless-empty +
-	// bounded-token validated.
-	res.SessionToolVersions = append(res.SessionToolVersions,
-		loadSessionToolVersions(ctx, database, touchedSessions(res))...)
-	adapter.ApplyProjectIdentityByRoot(&res, identitiesByRoot(rootCache))
-	return res, nil
+	return nil
 }
 
 // touchedSessions collects the session ids that carry at least one new
@@ -1379,26 +1413,31 @@ func identitiesByRoot(cache map[string]projectGitInfo) map[string]git.Identity {
 	return out
 }
 
-func latestWatermark(ctx context.Context, path string) (int64, error) {
+// latestWatermark returns the newest time_updated across every OpenCode
+// table the database actually carries, plus the storage generations it
+// detected. A missing table is never an error (OpenCode 2.x has no
+// `session` table at all); a database with neither generation reports
+// an unknown schema and a zero watermark.
+func latestWatermark(ctx context.Context, path string) (int64, storeSchema, error) {
 	db, err := openReadOnlyDB(path)
 	if err != nil {
-		return 0, err
+		return 0, storeSchema{}, err
 	}
 	defer db.Close()
 
-	var latest int64
-	row := db.QueryRowContext(ctx, `
-		SELECT MAX(v) FROM (
-			SELECT COALESCE(MAX(time_updated), 0) AS v FROM message
-			UNION ALL
-			SELECT COALESCE(MAX(time_updated), 0) AS v FROM part
-			UNION ALL
-			SELECT COALESCE(MAX(time_updated), 0) AS v FROM session
-		)`)
-	if err := row.Scan(&latest); err != nil {
-		return 0, err
+	tables, err := listTables(ctx, db)
+	if err != nil {
+		return 0, storeSchema{}, err
 	}
-	return latest, nil
+	schema := detectSchema(tables)
+	if !schema.known() {
+		return 0, schema, nil
+	}
+	latest, err := maxWatermark(ctx, db, tables)
+	if err != nil {
+		return 0, schema, err
+	}
+	return latest, schema, nil
 }
 
 func openReadOnlyDB(path string) (*sql.DB, error) {
@@ -1410,104 +1449,28 @@ func openReadOnlyDB(path string) (*sql.DB, error) {
 	return sql.Open("sqlite", dsn)
 }
 
-// stageMirrorIfForeign returns the source path unchanged when it's
-// native. For foreign-mount sources (e.g. /mnt/c/Users/<u>/.local/share/
-// opencode/opencode.db on a WSL2 Linux host reading the Windows-side
-// OpenCode Desktop store) it stages a local mirror — copying the
-// SQLite trio (.db + -wal + -shm) into a per-source cache dir under
-// mirrorbase.Base() (the single-owner seam over os.UserCacheDir(),
-// overridable per-process for one-shot lifecycles) and returning the
-// path to the mirrored .db.
-//
-// Why the mirror is load-bearing on /mnt/c: modernc.org/sqlite returns
-// SQLITE_IOERR_SHORT_READ (4618) when opening the foreign-mount path
-// while Windows is actively writing the WAL. Verified 2026-05-21 with
-// a live Desktop session reproduced via the adapter's exact DSN —
-// the disk-I/O error blocked ingestion of every Windows Desktop
-// session until this mirror was wired in.
-//
-// Refresh policy: skip the copy when every source file is older than
-// (or matches) the mirror sibling. WAL is the fast-moving signal —
-// its mtime advances faster than the main .db file as Windows
-// appends pages. Same applies for the reverse direction (Windows
-// host reading \\wsl.localhost\<distro>\… would hit the same race
-// on a sufficiently loaded Linux writer).
+// stageMirrorIfForeign returns srcDB unchanged when it is native. A foreign-mount
+// store (a Windows-side store read by a WSL observer over /mnt/c, or
+// the reverse), which modernc.org/sqlite cannot open in place while the
+// vendor process writes its WAL, is read through a filtered local
+// mirror built by mirrorbase.Stage: only the tables in mirrorSpec are
+// kept, so the store's other tables (credentials included) never leave
+// the vendor's file.
 func stageMirrorIfForeign(srcDB string) (string, error) {
 	if !isForeignMountPath(srcDB) {
 		return srcDB, nil
 	}
-	base, err := mirrorbase.Base()
-	if err != nil || base == "" {
-		base = filepath.Join(os.TempDir(), "superbased-observer")
-	}
-	sum := sha256.Sum256([]byte(srcDB))
-	mirrorDir := filepath.Join(base, "opencode-mirror", hex.EncodeToString(sum[:8]))
-	if err := os.MkdirAll(mirrorDir, 0o700); err != nil {
-		return "", fmt.Errorf("mkdir mirror: %w", err)
-	}
-	dstDB := filepath.Join(mirrorDir, "opencode.db")
-	if mirrorUpToDate(srcDB, dstDB) {
-		return dstDB, nil
-	}
-	// Copy the trio. Main .db is the primary; -wal carries pages the
-	// writer hasn't checkpointed yet; -shm is the shared-memory index
-	// of the WAL (32 KB, regenerable but matching siblings keeps SQLite
-	// from re-deriving it on open). Missing siblings are removed from
-	// the mirror so a stale -wal doesn't shadow a freshly-checkpointed
-	// source.
-	for _, suffix := range []string{"", "-wal", "-shm"} {
-		src := srcDB + suffix
-		dst := dstDB + suffix
-		data, err := os.ReadFile(src)
-		if err != nil {
-			if os.IsNotExist(err) {
-				_ = os.Remove(dst)
-				continue
-			}
-			return "", fmt.Errorf("read %s: %w", src, err)
-		}
-		if err := os.WriteFile(dst, data, 0o600); err != nil { //nolint:gosec // G703: dst is a private staging copy under the adapter's own temp dir
-			return "", fmt.Errorf("write %s: %w", dst, err)
-		}
-	}
-	return dstDB, nil
+	return mirrorbase.Stage(context.Background(), srcDB, mirrorSpec)
 }
 
-// mirrorUpToDate reports whether the mirror trio is at least as fresh
-// as the source trio. Uses (size, mtime) per sibling — the size guard
-// catches an in-flight truncate/realloc that mtime alone misses
-// (occasionally seen on /mnt/c when Windows checkpoints the WAL).
-// Returns false on any stat error so a fresh copy gets attempted.
-func mirrorUpToDate(srcDB, dstDB string) bool {
-	if !filesMatch(srcDB, dstDB) {
-		return false
-	}
-	// WAL is the fast-moving signal — its mtime ticks every flush.
-	if sw, err := os.Stat(srcDB + "-wal"); err == nil {
-		if !filesMatchInfo(sw, dstDB+"-wal") {
-			return false
-		}
-	}
-	return true
-}
-
-func filesMatch(src, dst string) bool {
-	s, err := os.Stat(src)
-	if err != nil {
-		return false
-	}
-	return filesMatchInfo(s, dst)
-}
-
-func filesMatchInfo(srcInfo os.FileInfo, dst string) bool {
-	d, err := os.Stat(dst)
-	if err != nil {
-		return false
-	}
-	if srcInfo.Size() != d.Size() {
-		return false
-	}
-	return !srcInfo.ModTime().After(d.ModTime())
+// mirrorSpec is the allow-list mirror of the OpenCode store (opencode.db): every table this
+// package queries and nothing else. A query on a new table must add it
+// here, or the foreign-mount mirror silently lacks it;
+// mirrortest.AssertSpecCoversQueries pins that.
+var mirrorSpec = mirrorbase.Spec{
+	Dir:    "opencode-mirror",
+	File:   "opencode.db",
+	Tables: []string{"session", "message", "part", "todo", "session_v2", "session_message"},
 }
 
 // allHomesFunc is the test seam over crossmount.AllHomes — tests
@@ -1536,10 +1499,12 @@ func isForeignMountPath(path string) bool {
 	return false
 }
 
+// resolveDBPath maps a store's -wal or -shm sibling (any channel) to the
+// store itself; every other path is returned unchanged.
 func resolveDBPath(path string) string {
-	base := strings.ToLower(filepath.Base(path))
-	if base == "opencode.db-wal" || base == "opencode.db-shm" {
-		return filepath.Join(filepath.Dir(path), "opencode.db")
+	db, suffix := splitWALSibling(filepath.Base(path))
+	if suffix != "" && isStoreDBName(db) {
+		return filepath.Join(filepath.Dir(path), db)
 	}
 	return path
 }

@@ -127,6 +127,8 @@ type Client struct {
 	// pushLocal is the node's own pre-governance interval it composes with.
 	pushCeiling func() int64
 	pushLocal   int64
+	// messages is the admin messaging rail's state (orgmessages.go).
+	messages orgMessagesState
 	// Per-rail 404 backoff (railbackoff.go): rails whose 404 means "none
 	// published / not offered" are re-asked on a doubling interval.
 	routingNotFound, announcementNotFound, intelNotFound notFoundBackoff
@@ -142,6 +144,17 @@ type Client struct {
 	// proof is sent, exactly like a released node.
 	machineKeys     MachineKeyStore
 	machineKeyState machineKeyState
+	// machineProofSink receives each change of the machine-proof outcome
+	// (SetMachineProofSink); nil keeps it in memory only.
+	machineProofSink func(MachineProofState)
+	// noticeDir is the observer dir whose notices/ markers make a routine
+	// warning print once per install and state (notice_once.go); "" keeps
+	// the per-process behaviour.
+	noticeDir string
+	// credentialState is this process's last view of its own org
+	// credential and credentialSink receives each change (credential.go).
+	credentialState credentialView
+	credentialSink  func(CredentialState)
 	httpClient      *http.Client
 	logger          *slog.Logger
 	agentVersion    string
@@ -165,8 +178,17 @@ type Client struct {
 	// PushLoop and ONLY for a managed node — so it rides the existing push cycle
 	// (no new timer/host/connection, the announce.go discipline) and the
 	// individual plane never computes or sends an integrity signal. Nil = an
-	// exact no-op. Set via SetIntegrityCollector.
+	// exact no-op. Set via SetIntegrityCollector. Since T-849 it is also
+	// consulted on the daemon's policy-state heartbeat through
+	// ReportManagedIntegrity, the one owner of "probe and report";
+	// integrityMu serializes the two cadences.
 	integrityCollector func() orgcontract.ManagedIntegrityReport
+	integrityMu        sync.Mutex
+	// switchedBound and managedHereAfter are guarded by integrityMu: a node
+	// managed by its org's switch binds its machine once per process, and
+	// a 403 from the managed routes silences both until managedHereAfter.
+	switchedBound    bool
+	managedHereAfter time.Time
 
 	// routingReloadSink is the P0-7 router hot-reload trigger (docs/plans/
 	// plane-a-p0-7-guard-router-hotreload-plan.md §2.2/§4.5): a nil-defaulted
@@ -330,6 +352,12 @@ type Client struct {
 	// A seam rather than a direct call so a test can age a document without
 	// sleeping — the only way to exercise a one-hour window.
 	budgetNow func() time.Time
+	// managedPullNow is the managed-pull kit's clock (managedpull.go); nil
+	// means time.Now. A seam so a test can expire a document.
+	managedPullNow func() time.Time
+	// managedPullRails is the managed-pull kit's rail registration, polled
+	// by pollManagedPullRails beside refreshBudgetRails (managedpull_poll.go).
+	managedPullRails managedPullRailSet
 
 	// pricing is the org PRICING rail's in-memory mirror of the PERSISTED
 	// document (pricingpolicy.go, wave W2). Unlike the budget rail's cache
@@ -516,7 +544,9 @@ func ShareOptionsFromConfig(cfg config.OrgClientConfig) store.ShareOptions {
 		TerminalDetail:        cfg.Share.TerminalDetail,
 		TaskDetail:            cfg.Share.TaskDetail,
 		ToolAccountDetail:     cfg.Share.ToolAccountDetail,
+		HookActivity:          cfg.Share.HookActivity,
 		MCPActivity:           cfg.Share.MCPActivity,
+		Security:              cfg.Share.Security,
 		ObsSummary:            cfg.Share.Obs.Summary,
 		ObsTraces:             cfg.Share.Obs.Traces,
 		ObsContent:            cfg.Share.Obs.Content,
@@ -563,12 +593,14 @@ func (c *Client) clearPolicyResourceCacheTree(orgKey string) {
 	_ = os.RemoveAll(filepath.Join(c.policyResourceCacheDir, orgKey))
 }
 
-// New constructs a push Client. httpClient may be nil (a default with a sane
-// timeout is used); logger may be nil (slog.Default). agentVersion is stamped
-// into each push envelope for server-side diagnostics.
+// New constructs a push Client. httpClient may be nil (the default is the org
+// transport of transport.go: a 30 s request bound plus dead-connection
+// detection, so a connection the network forgot during an outage is dropped
+// within about 45 s, T-899); logger may be nil (slog.Default). agentVersion
+// is stamped into each push envelope for server-side diagnostics.
 func New(cfg config.OrgClientConfig, st *store.Store, bearers BearerStore, agentVersion string, httpClient *http.Client, logger *slog.Logger) *Client {
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 30 * time.Second}
+		httpClient = newOrgHTTPClient(defaultConnHealth, nil)
 	}
 	if logger == nil {
 		logger = slog.Default()
@@ -710,8 +742,11 @@ func (c *Client) Enroll(ctx context.Context, orgURL, token string) (*store.Enrol
 			if msg == "" {
 				msg = "your organization account is not active yet"
 			}
+			// WINNODE2 16d: say what to do, in order; "after you have
+			// signed in" left a new member guessing where.
 			return nil, nil, fmt.Errorf("orgclient.Enroll: %w: %s"+
-				" (your enrolment token is still valid; run the same command again after you have signed in)",
+				" (your enrolment token is still valid: open the set-password link from your invitation first,"+
+				" set your password and sign in to the organization dashboard once, then run the same command again)",
 				ErrMemberNotActive, msg)
 		}
 		return nil, nil, fmt.Errorf("orgclient.Enroll: %w: invalid or expired enrolment token"+
@@ -1043,22 +1078,28 @@ func (c *Client) PushOnce(ctx context.Context) (PushResult, error) {
 		return PushResult{}, fmt.Errorf("orgclient.PushOnce: %w", err)
 	}
 	if enr == nil {
+		c.noteCredential(false, credentialNoRecord)
 		return PushResult{}, ErrNotEnrolled
 	}
 	bearer, err := c.bearers.LoadBearer()
 	if errors.Is(err, ErrNoSecret) {
+		c.noteCredential(false, credentialNoBearer)
 		return PushResult{}, ErrNotEnrolled
 	}
 	if err != nil {
+		c.noteCredential(false, credentialNoBearer+": "+err.Error())
 		return PushResult{}, fmt.Errorf("orgclient.PushOnce: load bearer: %w", err)
 	}
 	signKey, err := c.bearers.LoadAgentKey()
 	if errors.Is(err, ErrNoSecret) {
+		c.noteCredential(false, credentialNoKey)
 		return PushResult{}, ErrNotEnrolled
 	}
 	if err != nil {
+		c.noteCredential(false, credentialNoKey+": "+err.Error())
 		return PushResult{}, fmt.Errorf("orgclient.PushOnce: load signing key: %w", err)
 	}
+	c.noteCredential(true, "")
 
 	cur, err := c.store.LoadPushCursor(ctx)
 	if err != nil {
@@ -1142,26 +1183,44 @@ func (c *Client) PushOnce(ctx context.Context) (PushResult, error) {
 		SessionTaskItems:       batch.SessionTaskItems,
 		SessionTaskTransitions: batch.SessionTaskTransitions,
 		SessionToolAccounts:    batch.SessionToolAccounts,
+		SessionHookActivity:    batch.SessionHookActivity,
 		SessionProcesses:       batch.SessionProcesses,
 		SessionNetworkEvents:   batch.SessionNetworkEvents,
 		SessionLOC:             batch.SessionLOC,
 		LOCDays:                batch.LOCDays,
 		SessionQuality:         batch.SessionQuality,
 		CommitOwnership:        batch.CommitOwnership,
-		AdvisorSuggestions:     batch.AdvisorSuggestions,
-		ProjectPatterns:        batch.ProjectPatterns,
-		BenchmarkRuns:          batch.BenchmarkRuns,
-		BenchmarkAttempts:      batch.BenchmarkAttempts,
-		CompressionStats:       batch.CompressionStats,
-		RoutingDevRows:         batch.RoutingDevRows,
-		CodeintelDevRows:       batch.CodeintelDevRows,
-		TerminalRuns:           batch.TerminalRuns,
-		TerminalCommands:       batch.TerminalCommands,
-		RemoteAudit:            batch.RemoteAudit,
-		GuardPins:              batch.GuardPins,
-		GuardApprovals:         batch.GuardApprovals,
-		TerminalSummaries:      batch.TerminalSummaries,
-		RemoteAuditSummaries:   batch.RemoteAuditSummaries,
+		// Delivery (commit to PR to merge, D-689): day counts from every
+		// node; PR identity rows only under shipsRawContent(), decided by
+		// store/deliverysummary.go. omitempty, so an older server ignores
+		// both keys and a node with no evaluated commit sends neither.
+		DeliveryDays:         batch.DeliveryDays,
+		PullRequests:         batch.PullRequests,
+		AdvisorSuggestions:   batch.AdvisorSuggestions,
+		ProjectPatterns:      batch.ProjectPatterns,
+		BenchmarkRuns:        batch.BenchmarkRuns,
+		BenchmarkAttempts:    batch.BenchmarkAttempts,
+		CompressionStats:     batch.CompressionStats,
+		RoutingDevRows:       batch.RoutingDevRows,
+		CodeintelDevRows:     batch.CodeintelDevRows,
+		TerminalRuns:         batch.TerminalRuns,
+		TerminalCommands:     batch.TerminalCommands,
+		RemoteAudit:          batch.RemoteAudit,
+		GuardPins:            batch.GuardPins,
+		GuardApprovals:       batch.GuardApprovals,
+		TerminalSummaries:    batch.TerminalSummaries,
+		RemoteAuditSummaries: batch.RemoteAuditSummaries,
+		// The sandbox posture aggregate (sandbox plan v2 section 8.4):
+		// composed only under terminal_detail while the sandbox module is
+		// active; nil otherwise, so both omitempty keys are absent.
+		SandboxPosture:    batch.SandboxPosture,
+		SandboxCapability: batch.SandboxCapability,
+		// The security pillar wire (security plan 7.4): composed through the
+		// SecurityOrgProviders seam only while the security module is active
+		// and the share level allows; nil otherwise, so the keys are absent.
+		SecurityPosture:  batch.SecurityPosture,
+		SecurityFindings: batch.SecurityFindings,
+		AIChangeRecords:  batch.AIChangeRecords,
 		// Agent Access P4 W4e relay wires: the HMAC-only aggregate (individual
 		// mcp_activity opt-in, or enrolled capture posture) and the per-record
 		// L2 events (enrolled posture only). Both composed by
@@ -1361,6 +1420,12 @@ func (c *Client) PushOnce(ctx context.Context) (PushResult, error) {
 		// fetch the SIGNED manifest with a separate authenticated GET. An org
 		// that has published nothing adds ZERO requests to this cycle.
 		c.noteUpdateNudge(resp.Body)
+		// The org's stated purpose for its Code security views (lane
+		// SEC-E3), for the dashboard's affected-worker notice.
+		c.noteSecurityPurpose(ctx, resp.Body)
+		// A renamed org (T-862): the acknowledgment carries the org's current
+		// display name, recorded in place of the enrolment's. Best-effort.
+		c.noteOrgName(ctx, resp.JSON200, enr)
 		// An accepted push proves this node is not below the org's floor, so
 		// a previously-recorded 426 refusal is stale the instant we get here.
 		c.clearAgentTooOld()
@@ -1402,8 +1467,44 @@ func (c *Client) PushOnce(ctx context.Context) (PushResult, error) {
 		// msg is the server's response body, which routinely carries a
 		// fresh request id or timestamp that would otherwise re-arm a WARN
 		// every single retry.
-		return PushResult{}, &httpStatusError{op: "orgclient.PushOnce", status: resp.StatusCode(), body: msg}
+		//
+		// The push cursor is NOT advanced on this path (only the 200 branch
+		// saves it), so every row of this batch stays unpushed in the node's
+		// store and is re-sent on the next cycle; a 503 log_full / 429 never
+		// marks anything pushed (T-823).
+		err := &httpStatusError{op: "orgclient.PushOnce", status: resp.StatusCode(), body: msg}
+		if resp.HTTPResponse != nil {
+			err.retryAfter = parseRetryAfter(resp.HTTPResponse.Header.Get("Retry-After"), time.Now())
+		}
+		return PushResult{}, err
 	}
+}
+
+// parseRetryAfter reads a Retry-After header (delay-seconds or an HTTP-date)
+// and returns the wait it asks for, clamped to [0, maxBackoff] so a hostile
+// or broken server cannot park a node for longer than the ladder's own cap.
+// An absent or unparseable header is 0 (no hint).
+func parseRetryAfter(v string, now time.Time) time.Duration {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0
+	}
+	var d time.Duration
+	if secs, err := strconv.Atoi(v); err == nil {
+		d = time.Duration(secs) * time.Second
+	} else if t, err := http.ParseTime(v); err == nil {
+		d = t.Sub(now)
+	}
+	return min(max(d, 0), maxBackoff)
+}
+
+// retryAfterOf extracts the server's Retry-After hint from a push error.
+func retryAfterOf(err error) time.Duration {
+	var hs *httpStatusError
+	if errors.As(err, &hs) {
+		return hs.retryAfter
+	}
+	return 0
 }
 
 // failureDeduper tracks whether the CURRENT failure in a retry loop is new
@@ -1577,6 +1678,11 @@ type httpStatusError struct {
 	op     string
 	status int
 	body   string
+	// retryAfter is the server's Retry-After hint (0 when absent). The push
+	// loop waits at least this long before the next attempt, so a server
+	// shedding load (503 log_full when its durable log is at its byte cap,
+	// T-823) is not hammered by the fast first steps of the backoff ladder.
+	retryAfter time.Duration
 }
 
 func (e *httpStatusError) Error() string {
@@ -1673,7 +1779,7 @@ var errIdle = errors.New("orgclient: idle cycle")
 // fetch recovering cannot re-arm the announcement fetch's WARN and vice versa.
 // A fresh set per PushLoop invocation (same lifetime as the loop).
 type pushCycleState struct {
-	enrolRead, routing, announcement, displayPolicy, accessGrants, requestOutbox, agentConfig failureDeduper
+	enrolRead, routing, announcement, displayPolicy, accessGrants, requestOutbox, agentConfig, messages failureDeduper
 }
 
 // cycleKind is what one push-loop cycle does (pushsched.Decision, restated so
@@ -1727,6 +1833,7 @@ func (c *Client) pushCycle(ctx context.Context, state *pushCycleState, kind cycl
 	// false.
 	if rails {
 		c.refreshBudgetRails(ctx)
+		c.pollManagedPullRails(ctx)
 	}
 	// A RAIL-ONLY cycle (Sol A5-06) skips the upload: the org asked this
 	// node to space its pushes, and the rails below are pulls the hint does
@@ -1744,6 +1851,12 @@ func (c *Client) pushCycle(ctx context.Context, state *pushCycleState, kind cycl
 		// The update nudge is ack-driven and fetches nothing unless the
 		// ack named a newer manifest, so it rides light cycles too.
 		c.FetchPendingUpdateManifests(ctx)
+		// A light push the org accepted proves it is back: a message rail
+		// left stalled by the outage retries now instead of waiting for
+		// the next rail cycle (T-854). A rail cycle syncs it below anyway.
+		if err == nil {
+			c.retryStalledOrgMessages(ctx)
+		}
 		return res, err
 	}
 	// Best-effort §R19.1 policy sync rides the same cycle: a fetch
@@ -1833,6 +1946,12 @@ func (c *Client) pushCycle(ctx context.Context, state *pushCycleState, kind cycl
 	} else {
 		state.requestOutbox.observe("")
 	}
+	// Admin and developer messaging (T-854) rides the SAME cycle for the
+	// same reasons: the outbox (replies, new threads, read and acknowledge
+	// receipts) goes first, then the signed per-caller pull, paged until the
+	// org says there is no more. A failure never affects push health and
+	// never deletes a held message.
+	c.syncOrgMessagesInCycle(ctx, &state.messages)
 	// The org AI tool policy rail (adapter config P6) rides the SAME cycle
 	// and fails the same way: a failure never affects push health and leaves
 	// the last verified policy in force. Gated to managed nodes with a live
@@ -1859,13 +1978,10 @@ func (c *Client) pushCycle(ctx context.Context, state *pushCycleState, kind cycl
 	// makes no extra request at all. A fetch failure never affects push
 	// health - it leaves the update card at its last verified manifest.
 	c.FetchPendingUpdateManifests(ctx)
-	if c.integrityCollector != nil && enr.IsManaged() {
-		report := c.integrityCollector()
-		if _, ierr := c.ReportIntegrity(ctx, report); ierr != nil &&
-			!errors.Is(ierr, ErrNotEnrolled) && !errors.Is(ierr, ErrManagedIntegrityUnbound) {
-			c.logger.Warn("org managed-integrity report failed", "err", ierr)
-		}
-	}
+	// Managed nodes only (ReportManagedIntegrity gates itself on
+	// IsManagedEnrolment: a managed enrolment, or a node its org switched to
+	// enterprise, P-205).
+	c.ReportManagedIntegrity(ctx)
 	return res, err
 }
 
@@ -2054,7 +2170,10 @@ func (c *Client) runLoop(ctx context.Context, interval time.Duration, action fun
 // runLoopKick is runLoop with an optional wake channel: a receive on kick
 // runs the next cycle immediately (the 2026-09-01 policy-propagation nudge).
 // A nil kick blocks forever in the select, making this byte-identical to the
-// plain loop — every existing caller passes nil via runLoop.
+// plain loop: every existing caller passes nil via runLoop. While the last
+// cycle failed on the retryable ladder the kick is held until the backoff
+// elapses (it stays queued and coalesced, so the wake is not lost): a kick
+// shortens an idle wait, never a failure backoff (D-704).
 func (c *Client) runLoopKick(ctx context.Context, interval time.Duration, kick <-chan struct{}, action func(context.Context) error) error {
 	return c.runLoopKickFn(ctx, func() time.Duration { return interval }, kick, action)
 }
@@ -2066,11 +2185,15 @@ func (c *Client) runLoopKickFn(ctx context.Context, intervalFn func() time.Durat
 	retry := newLoopRetry()
 	sleep := intervalFn()
 	for {
+		wake := kick
+		if retry.backingOff {
+			wake = nil // a nil channel never fires: the kick waits out the backoff
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(sleep):
-		case <-kick:
+		case <-wake:
 		}
 		err := action(ctx)
 		var stop bool

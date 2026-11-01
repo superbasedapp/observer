@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Code intelligence runs tree-sitter grammars in wazero's compiler,
+	     which maps memory writable and then executable without MAP_JIT.
+	     Under the hardened runtime that page is killed (Code Signature
+	     Invalid) unless this entitlement is present; allow-jit does not
+	     help. Proven on macOS 26 arm64, 2026-10-30 (MAC-8, AW-138). -->
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+</dict>
+</plist>

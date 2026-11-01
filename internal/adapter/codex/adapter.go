@@ -12,11 +12,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/adapter"
+	"github.com/marmutapp/superbased-observer/internal/agentconfig"
+	"github.com/marmutapp/superbased-observer/internal/codexpatch"
 	"github.com/marmutapp/superbased-observer/internal/contentcap"
 	"github.com/marmutapp/superbased-observer/internal/git"
 	"github.com/marmutapp/superbased-observer/internal/models"
@@ -59,6 +62,9 @@ type Adapter struct {
 	// by WatchPaths (default "CODEX_HOME"). Set to "INTERPRETER_HOME"
 	// for the Open Interpreter variant.
 	homeEnvVar string
+	// getenv reads the relocation variables WatchPaths follows; nil =
+	// os.Getenv. CONSTRUCTION-ONLY (tests set it on a fresh instance).
+	getenv func(string) string
 	// homeDirName overrides the per-cross-mount-home subdirectory
 	// name checked by WatchPaths (default ".codex"). Set to
 	// ".openinterpreter" for the Open Interpreter variant.
@@ -92,11 +98,19 @@ type Adapter struct {
 	// opened, so the tier read is gated here at construction rather than
 	// by a name check on the parse path (CLAUDE.md #3).
 	readsServiceTier bool
+
+	// hostHomeArtifact is the catalogued home a host app gives this
+	// binary (codex proper: Xcode's Codex home, xcode.go); its sessions
+	// are watched and stamped by place. Empty for the Open Interpreter
+	// variant.
+	hostHomeArtifact string
+	// xcodeRootFn, when set, replaces the Xcode sessions root; tests only.
+	xcodeRootFn func() string
 }
 
 // New returns a Codex adapter with defaults.
 func New() *Adapter {
-	return &Adapter{scrubber: scrub.New(), readsServiceTier: true}
+	return &Adapter{scrubber: scrub.New(), readsServiceTier: true, hostHomeArtifact: xcodeHomeArtifact}
 }
 
 // NewWithOptions customizes the scrubber and/or watch root.
@@ -104,7 +118,7 @@ func NewWithOptions(s *scrub.Scrubber, watchRoot string) *Adapter {
 	if s == nil {
 		s = scrub.New()
 	}
-	return &Adapter{scrubber: s, watchRoot: watchRoot, readsServiceTier: true}
+	return &Adapter{scrubber: s, watchRoot: watchRoot, readsServiceTier: true, hostHomeArtifact: xcodeHomeArtifact}
 }
 
 // Name implements adapter.Adapter.
@@ -162,7 +176,7 @@ func (a *Adapter) WatchPaths() []string {
 		return []string{a.watchRoot}
 	}
 	var roots []string
-	envHome := os.Getenv(a.homeEnv())
+	envHome := a.relocatedHome()
 	if envHome != "" {
 		roots = append(roots, filepath.Join(envHome, "sessions"))
 	}
@@ -173,7 +187,43 @@ func (a *Adapter) WatchPaths() []string {
 		}
 		roots = append(roots, a.desktopStoreRoots(h)...)
 	}
+	// A host app's own Codex home (Xcode, FU-150) survives the env
+	// override for the same reason the desktop roots do: CODEX_HOME moves
+	// the CLI's home, not the host's.
+	if r := a.xcodeRoot(); r != "" {
+		roots = append(roots, r)
+	}
 	return adapter.DedupRootsByIdentity(roots)
+}
+
+// codexConfigArtifact is the agentconfig FileRow whose directory is the
+// Codex home; its relocation rule (CODEX_HOME, CX-4) is the one the hook,
+// MCP and route writers follow too.
+const codexConfigArtifact = "codex/user-config"
+
+// relocatedHome is the CLI home a relocation variable moves this instance
+// to, "" when none applies. Codex proper resolves codexConfigArtifact
+// through its agentconfig relocation rules, so a value the rule refuses (a
+// relative path the daemon cannot place) is not followed. A variant that
+// names its own variable (homeEnvVar: Open Interpreter's INTERPRETER_HOME)
+// reads it directly until its catalogue row carries the rule.
+func (a *Adapter) relocatedHome() string {
+	getenv := a.getenv
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	if a.homeEnvVar != "" {
+		return getenv(a.homeEnv())
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	got, err := agentconfig.ResolveArtifact(codexConfigArtifact, agentconfig.PathEnv{GOOS: runtime.GOOS, Home: home, Getenv: getenv})
+	if err != nil || got.RelocatedBy == "" || got.Path == "" {
+		return ""
+	}
+	return filepath.Dir(filepath.Clean(got.Path))
 }
 
 // IsSessionFile matches rollout-*.jsonl files under one of this
@@ -1746,7 +1796,7 @@ func (a *Adapter) parseSessionFile(ctx context.Context, path string, fromOffset 
 				preceding := agentMessages[firstNonEmpty(vi.TurnID, ctxState.TurnID)]
 				targetPath := vi.Path
 				if targetPath != "" && projectRoot != "" {
-					targetPath = git.RelativePath(projectRoot, targetPath)
+					targetPath = git.CheckoutRelativePath(projectRoot, targetPath)
 				}
 				if idx, ok := pending[vi.CallID]; ok && idx < len(res.ToolEvents) {
 					row := &res.ToolEvents[idx]
@@ -2568,7 +2618,12 @@ func (a *Adapter) parseSessionFile(ctx context.Context, path string, fromOffset 
 		// Interpreter desktop's own originator resolves to
 		// desktop/"open-interpreter" without any tool-identity branch
 		// on this path.
-		if kind, host, ok := a.surface.resolve(ownerSource, ownerOriginator); ok {
+		kind, host, ok := a.surface.resolve(ownerSource, ownerOriginator)
+		if hk, hh, hosted := a.hostedSurface(path); hosted {
+			// The rollout's place (the Xcode home) decides.
+			kind, host, ok = hk, hh, true
+		}
+		if ok {
 			res.SessionSurfaces = append(res.SessionSurfaces, models.SessionSurface{
 				SessionID:   ctxState.SessionID,
 				Surface:     kind,
@@ -2641,11 +2696,20 @@ func (a *Adapter) buildCustomToolCallEvent(
 	}
 	if patchText != "" {
 		if p := applyPatchTarget(patchText); p != "" {
-			target = p
+			// A header is relative to the session's working directory, which
+			// may be a subdirectory of the project (lane LEFT2-SEC item
+			// R-024): resolve it there, so the stored target and the
+			// post-write scan name the file the patch wrote. With no
+			// working directory known it is anchored on the project root.
+			base := sess.Cwd
+			if base == "" {
+				base = projectRoot
+			}
+			target = codexpatch.ResolveHeader(p, base)
 		}
 	}
 	if target != "" && (actionType == models.ActionEditFile) && projectRoot != "" {
-		target = git.RelativePath(projectRoot, target)
+		target = git.CheckoutRelativePath(projectRoot, target)
 	}
 	return models.ToolEvent{
 		SourceFile:         sourceFile,
@@ -3308,18 +3372,7 @@ func patchFileSet(patch, base string) map[string]struct{} {
 // match each other exactly as they did before relative resolution
 // existed.
 func isAbsAnyOS(p string) bool {
-	if filepath.IsAbs(p) || strings.HasPrefix(p, "/") {
-		return true
-	}
-	// UNC (`\\server\share`) and Windows drive-letter (`C:\`, `c:/`).
-	if strings.HasPrefix(p, `\\`) {
-		return true
-	}
-	if len(p) >= 3 && p[1] == ':' && (p[2] == '\\' || p[2] == '/') {
-		c := p[0]
-		return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
-	}
-	return false
+	return filepath.IsAbs(p) || codexpatch.IsAbsAnyOS(p)
 }
 
 // changesFileSet is the executor side of the same guard: the paths a
@@ -3405,7 +3458,7 @@ func patchApplyTargetFromChanges(changes map[string]patchApplyChange, projectRoo
 			continue
 		}
 		if projectRoot != "" {
-			return git.RelativePath(projectRoot, path)
+			return git.CheckoutRelativePath(projectRoot, path)
 		}
 		return path
 	}
@@ -3893,7 +3946,7 @@ func (a *Adapter) extractTarget(toolName string, rawInput json.RawMessage, proje
 			return ""
 		}
 		if projectRoot != "" {
-			return git.RelativePath(projectRoot, fp)
+			return git.CheckoutRelativePath(projectRoot, fp)
 		}
 		return fp
 	case "web_search":

@@ -97,10 +97,11 @@ func TestHandleGuarded_DenyWritesDualShapeReply(t *testing.T) {
 	}
 }
 
-// TestHandleGuarded_AskEmitsAskWithLegacyBlock pins the ask emission:
-// modern permissionDecision "ask", legacy "block" (the legacy
-// protocol has no ask — conservative mapping).
-func TestHandleGuarded_AskEmitsAskWithLegacyBlock(t *testing.T) {
+// TestHandleGuarded_AskEmitsNativeAskOnly pins the ask emission: the
+// modern permissionDecision "ask" ALONE. A legacy decision:"block" beside
+// it turned the native ask into a block (live audit 2026-10-15), so the
+// legacy fields ride only a deny.
+func TestHandleGuarded_AskEmitsNativeAskOnly(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
 	blocked, _ := HandleGuarded("claude-code:pre-tool",
@@ -111,8 +112,8 @@ func TestHandleGuarded_AskEmitsAskWithLegacyBlock(t *testing.T) {
 		t.Fatal("ask emission must block (defer) the call")
 	}
 	raw := out.String()
-	if !strings.Contains(raw, `"permissionDecision":"ask"`) || !strings.Contains(raw, `"decision":"block"`) {
-		t.Errorf("ask reply = %s", raw)
+	if !strings.Contains(raw, `"permissionDecision":"ask"`) || strings.Contains(raw, `"decision"`) || strings.Contains(raw, `"reason"`) {
+		t.Errorf("ask reply = %s, want the native ask with no legacy decision/reason", raw)
 	}
 }
 

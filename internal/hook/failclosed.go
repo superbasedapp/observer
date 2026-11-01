@@ -27,7 +27,8 @@ type FailClosedReply struct {
 	ExitCode int
 	// StderrReason is true when the dialect shows the hook's stderr to the
 	// developer as the block reason; the reason is then written to stderr
-	// verbatim, with no diagnostic noise on the same stream.
+	// through StderrBlockReason (the StderrBlockHeader and the reason on
+	// one line), with no diagnostic noise on the same stream.
 	StderrReason bool
 }
 

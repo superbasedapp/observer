@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
@@ -26,6 +27,9 @@ import (
 // live at pid before trusting any row for it, so an arbitrary made-up pid
 // can no longer hit.
 func TestNodeInterventionWorkloadSessionID(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux only: pidbridge.ProcessStartTime is Linux-only (startfence_other.go), so the bridged lookup cannot confirm a live pid here; process intervention is Linux-only (ruling P-175)")
+	}
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "store.db")
 	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})

@@ -1,0 +1,27 @@
+{
+ "number": 14679,
+ "state": "open",
+ "draft": true,
+ "title": "Reject terminal stdin for `gh auth login --with-token`",
+ "html_url": "https://github.com/cli/cli/pull/14679",
+ "created_at": "2026-10-14T05:05:15Z",
+ "updated_at": "2026-10-14T05:07:25Z",
+ "closed_at": null,
+ "merged_at": null,
+ "merge_commit_sha": "3082102b9f9b3462c964b247a19a463dcf81d217",
+ "merged": false,
+ "mergeable": true,
+ "mergeable_state": "clean",
+ "commits": 1,
+ "head": {
+  "sha": "2de1e0886a0cf896165db70e7729b28bd5b0febc",
+  "ref": "bagtoad/auth-login-with-token-tty-error"
+ },
+ "base": {
+  "ref": "trunk",
+  "sha": "d6b82b12e67d108b7c82d76d943a3a47814acbc1"
+ },
+ "user": {
+  "login": "BagToad"
+ }
+}

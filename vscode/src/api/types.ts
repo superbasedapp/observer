@@ -213,3 +213,45 @@ export interface CacheStatusResponse {
   keepwarm_mode: string;
   windows: CacheWindowStatus[] | null;
 }
+
+// ---------- /api/messages/summary (admin and developer messaging, T-854) ----------
+
+/** The newest admin message a push surface may announce (store.OrgMessageNewest). */
+export interface MessagesNewest {
+  thread_id: string;
+  message_id: number;
+  subject: string;
+  author_name: string;
+  kind: string;
+  created_at: string;
+  require_ack: boolean;
+}
+
+/** The developer's [messages] surface choices, echoed by the daemon. */
+export interface MessagesSurfaces {
+  toast: boolean;
+  vscode: boolean;
+  statusline: boolean;
+  desktop: boolean;
+  alerts_only: boolean;
+  read_receipts: boolean;
+}
+
+/**
+ * MessagesSummaryResponse mirrors GET /api/messages/summary. `push` already
+ * applies the developer's alerts_only choice, so a push surface reads it and
+ * never the raw counts.
+ */
+export interface MessagesSummaryResponse {
+  enrolled: boolean;
+  rail: { state: string };
+  unread: number;
+  unread_threads: number;
+  needs_ack: number;
+  unread_alerts: number;
+  failed_outbox: number;
+  newest: MessagesNewest | null;
+  newest_alert: MessagesNewest | null;
+  push: { unread: number; newest: MessagesNewest | null };
+  surfaces: MessagesSurfaces;
+}

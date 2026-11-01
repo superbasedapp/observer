@@ -22,14 +22,22 @@ func TestOpenDefersMigrationsWhenTheDeferralSaysSo(t *testing.T) {
 		t.Fatalf("fresh Open: version %d, want %d", v, latest)
 	}
 	// Pretend the file is one release behind (the daemon that owns it has
-	// not migrated yet).
-	if _, err := d.ExecContext(ctx, `UPDATE schema_meta SET value = ? WHERE key = 'version'`, latest-1); err != nil {
+	// not migrated yet). A late step at the head whose column is present is
+	// adopted, never run (lateSteps: the wave fork's 197), so rewinding past
+	// only that step leaves nothing to defer; rewind one step further then.
+	behind := latest - 1
+	for _, s := range lateSteps {
+		if s.Version == latest {
+			behind = latest - 2
+		}
+	}
+	if _, err := d.ExecContext(ctx, `UPDATE schema_meta SET value = ? WHERE key = 'version'`, behind); err != nil {
 		t.Fatal(err)
 	}
 	_ = d.Close()
 
 	var gotApplied, gotLatest, calls int
-	SetMigrationDeferral(func(_ string, applied, l int) bool {
+	SetMigrationDeferral(func(_ string, applied, l int, _ []int) bool {
 		calls++
 		gotApplied, gotLatest = applied, l
 		return true
@@ -40,11 +48,11 @@ func TestOpenDefersMigrationsWhenTheDeferralSaysSo(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer d2.Close()
-	if v, _ := Version(ctx, d2); v != latest-1 {
-		t.Fatalf("deferred Open migrated: version %d, want %d", v, latest-1)
+	if v, _ := Version(ctx, d2); v != behind {
+		t.Fatalf("deferred Open migrated: version %d, want %d", v, behind)
 	}
-	if calls != 1 || gotApplied != latest-1 || gotLatest != latest {
-		t.Fatalf("deferral saw (%d, %d) in %d calls, want (%d, %d) once", gotApplied, gotLatest, calls, latest-1, latest)
+	if calls != 1 || gotApplied != behind || gotLatest != latest {
+		t.Fatalf("deferral saw (%d, %d) in %d calls, want (%d, %d) once", gotApplied, gotLatest, calls, behind, latest)
 	}
 
 	// A current schema never asks.
@@ -56,7 +64,7 @@ func TestOpenDefersMigrationsWhenTheDeferralSaysSo(t *testing.T) {
 	}
 	_ = d3.Close()
 	calls = 0
-	SetMigrationDeferral(func(string, int, int) bool { calls++; return true })
+	SetMigrationDeferral(func(string, int, int, []int) bool { calls++; return true })
 	d4, err := Open(ctx, Options{Path: path2})
 	if err != nil {
 		t.Fatal(err)

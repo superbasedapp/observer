@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 	"runtime"
 	"slices"
 	"sort"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/dashapi"
 	"github.com/marmutapp/superbased-observer/internal/diag"
+	"github.com/marmutapp/superbased-observer/internal/git"
 	"github.com/marmutapp/superbased-observer/internal/hookdisable"
 	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/toolresolve"
@@ -117,7 +117,7 @@ func nodeToolGateFor(c integration.Capability, binary, configPath string) nodeTo
 		}
 		events = append(events, b.NativeEvent)
 	}
-	for _, f := range hookdisable.Detect(hookdisable.Options{Home: home, GOOS: runtime.GOOS, ReadFile: os.ReadFile}) {
+	for _, f := range hookdisable.Detect(diag.HookSwitchInputs(hookdisable.Options{Home: home, GOOS: runtime.GOOS, ReadFile: diag.ReadHookSwitchFile})) {
 		if slices.Contains(f.Tools, tool) {
 			st.Reason = "hooks are switched off (" + f.Key + " in " + f.Path + ")"
 			return st
@@ -132,6 +132,12 @@ func nodeToolGateFor(c integration.Capability, binary, configPath string) nodeTo
 const (
 	hookHomeNative = "native"
 	hookHomeBridge = "bridge"
+	// hookHomeXcode is an Xcode agent home (the hook doctor's
+	// xcodeHookChecks; never a launch home).
+	hookHomeXcode = "xcode"
+	// hookHomeWSL is a WSL distro's Linux home a Windows observer writes a
+	// "-wsl" twin into (the hook doctor's wslHookChecks, FU-211).
+	hookHomeWSL = "wsl"
 )
 
 // launchHookHomes keeps only the config home whose hook governs a launch of
@@ -174,6 +180,48 @@ func launchHomeForResolution(r toolresolve.Resolution) string {
 		return hookHomeBridge
 	}
 	return hookHomeNative
+}
+
+// launchHookSwitchDirs is the directories whose project-scope hook switches
+// govern a launch in dir (T-910): dir itself and, when different, the
+// checkout's top level above it (Claude Code reads the working directory's
+// .claude, Copilot CLI the repository's .github/copilot; in a linked
+// worktree both read the worktree's own files, git.FindCheckoutRoot).
+func launchHookSwitchDirs(dir string) []string {
+	if dir == "" {
+		return nil
+	}
+	out := []string{dir}
+	if root, ok := git.FindCheckoutRoot(dir); ok && root != dir {
+		out = append(out, root)
+	}
+	return out
+}
+
+// withProjectHookSwitches narrows a node tool-gate reader to one launch: a
+// hook that is current on the node is NOT current for a launch whose
+// project sets a switch that silences the tool (T-910), so an enforce-mode
+// launch there falls back exactly like a tool whose hook does not hold
+// (D-262). It reads only; Observer never edits the project file. A nil gate
+// or no directory returns gate unchanged.
+func withProjectHookSwitches(gate func(string) nodeToolGateState, dirs []string) func(string) nodeToolGateState {
+	if gate == nil || len(dirs) == 0 {
+		return gate
+	}
+	return func(tool string) nodeToolGateState {
+		st := gate(tool)
+		if !st.Current {
+			return st
+		}
+		for _, f := range hookdisable.Detect(hookdisable.Options{ProjectRoots: dirs, ReadFile: diag.ReadHookSwitchFile}) {
+			if slices.Contains(f.Tools, tool) {
+				st.Current = false
+				st.Reason = "hooks are switched off in this project (" + f.Key + " in " + f.Path + ")"
+				return st
+			}
+		}
+		return st
+	}
 }
 
 // daemonToolGate is nodeToolGate for the running daemon: its own binary and
@@ -234,7 +282,11 @@ func hookBlockTools() []string {
 // tool: does hook_block hold on this node, and if not, what the tool falls
 // back to and why. A tool that is not installed is informational (OK); an
 // installed tool whose hook does not hold is a WARN with the remedy.
-func toolGateEnforcementChecks(gate func(string) nodeToolGateState) []diag.Check {
+// sandboxAvailable is this node's real sandbox availability (doctor's own
+// probe, sandboxDoctorSection), never assumed: the fallback is
+// sandbox_enforce only where a sandbox can be built, else recorded
+// acceptance (live check macOS 2026-10-22, D2).
+func toolGateEnforcementChecks(sandboxAvailable bool, gate func(string) nodeToolGateState) []diag.Check {
 	var out []diag.Check
 	for _, tool := range hookBlockTools() {
 		c, _ := integration.For(tool)
@@ -245,7 +297,7 @@ func toolGateEnforcementChecks(gate func(string) nodeToolGateState) []diag.Check
 			out = append(out, ck)
 			continue
 		}
-		fallback := c.NodeEnforcement(false, true)
+		fallback := c.NodeEnforcement(false, sandboxAvailable)
 		ck.Message = fmt.Sprintf("%s: %s on this node, not hook_block: %s", tool, fallback, st.Reason)
 		if st.Installed {
 			ck.Status = diag.StatusWarn

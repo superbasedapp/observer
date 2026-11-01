@@ -33,7 +33,9 @@ func (c *Client) RequestContextShipsRaw(ctx context.Context) bool {
 	if err != nil || enr == nil {
 		return false
 	}
-	return enr.IsManaged() || c.shareOptions().ShipsRawContent()
+	// Managed by enrolment or by its org's switch to enterprise (P-204).
+	managed, merr := NodeManagedFor(ctx, c.store, enr)
+	return (merr == nil && managed) || c.shareOptions().ShipsRawContent()
 }
 
 // PrepareAccessRequest returns the request exactly as it will be sent:
@@ -76,7 +78,10 @@ func (c *Client) PrepareAccessRequest(ctx context.Context, in orgcontract.Access
 	if in.Context != nil {
 		shaped := accessgrant.ShapeContext(*in.Context, c.RequestContextShipsRaw(ctx), optInExcerpt)
 		shaped.TargetExcerpt = sc.String(shaped.TargetExcerpt)
-		if enr.IsManaged() {
+		// The tenancy the request declares: a managed enrolment, or one
+		// whose org switched it to enterprise (P-205), which the org
+		// server now serves as managed too.
+		if managed, merr := NodeManagedFor(ctx, c.store, enr); merr == nil && managed {
 			shaped.Tenancy = orgcontract.TenancyManaged
 		} else {
 			shaped.Tenancy = orgcontract.TenancyIndividual

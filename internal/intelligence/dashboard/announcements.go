@@ -48,8 +48,10 @@ func (s *Server) handleAnnouncements(w http.ResponseWriter, r *http.Request) {
 		releaseAnnouncementSource(),
 		s.orgAnnouncements(r.Context()),
 	}
+	// An announcement whose fixed_in this node has reached is no news here
+	// (WINNODE2 16b).
 	writeJSON(w, announcementsResponse{
-		Announcements: announce.Merge(announcementNow(), sources...),
+		Announcements: announce.ForVersion(announce.Merge(announcementNow(), sources...), s.opts.Version),
 	})
 }
 

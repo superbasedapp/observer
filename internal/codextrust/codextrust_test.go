@@ -35,6 +35,61 @@ func TestHashReproducesLiveCodexTrust(t *testing.T) {
 	}
 }
 
+// TestClassifyNormalizesWindowsTrustKeys: a Windows Codex keys trust with
+// its own spelling of the hooks.json path (drive letter, backslashes, maybe
+// the \\?\ prefix, any case); with NormalizePath the entry a WSL daemon
+// reads through /mnt/c classifies as trusted, and without it as untrusted
+// (the pre-fix behaviour, kept for a nil normalizer).
+func TestClassifyNormalizesWindowsTrustKeys(t *testing.T) {
+	norm := func(p string) string {
+		p = strings.ReplaceAll(strings.TrimPrefix(p, `\\?\`), `\`, "/")
+		if len(p) > 2 && p[1] == ':' {
+			p = "/mnt/" + strings.ToLower(p[:1]) + p[2:]
+		}
+		return strings.ToLower(p)
+	}
+	star := "*"
+	hash := Hash("pre_tool_use", &star, fmt.Sprintf(liveCmd, "PreToolUse"), 600, false, nil)
+	for _, winPath := range []string{`C:\Users\Op\.codex\hooks.json`, `\\?\C:\Users\op\.codex\hooks.json`} {
+		cfg := fmt.Sprintf("[hooks.state.%s]\ntrusted_hash = %q\n", strconv.Quote(winPath+":pre_tool_use:0:0"), hash)
+		in := Input{
+			HooksPath: "/mnt/c/Users/op/.codex/hooks.json", HooksJSON: fixture([]string{"PreToolUse"}, false),
+			ConfigTOML: []byte(cfg), Expected: []string{"PreToolUse"},
+			Owned: func(c string) bool { return strings.Contains(c, " hook codex ") },
+		}
+		rep, err := Classify(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := rep.Entries[0].State; got != StateUntrusted {
+			t.Errorf("%s without a normalizer: state %s, want untrusted (byte-exact keys)", winPath, got)
+		}
+		in.NormalizePath = norm
+		rep, err = Classify(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := rep.Entries[0].State; got != StateTrusted || !rep.HashVerified {
+			t.Errorf("%s with a normalizer: state %s verified %v, want trusted and verified", winPath, got, rep.HashVerified)
+		}
+	}
+}
+
+func TestSplitStateKey(t *testing.T) {
+	for k, want := range map[string][2]string{
+		`C:\Users\u\.codex\hooks.json:pre_tool_use:0:0`: {`C:\Users\u\.codex\hooks.json`, ":pre_tool_use:0:0"},
+		"/home/u/.codex/hooks.json:stop:1:2":            {"/home/u/.codex/hooks.json", ":stop:1:2"},
+	} {
+		p, tail, ok := splitStateKey(k)
+		if !ok || p != want[0] || tail != want[1] {
+			t.Errorf("splitStateKey(%q) = %q, %q, %v", k, p, tail, ok)
+		}
+	}
+	if _, _, ok := splitStateKey("no-colons"); ok {
+		t.Error("splitStateKey accepted a key without the event tail")
+	}
+}
+
 func TestCamelToSnake(t *testing.T) {
 	for in, want := range map[string]string{
 		"PreToolUse": "pre_tool_use", "Stop": "stop", "UserPromptSubmit": "user_prompt_submit",

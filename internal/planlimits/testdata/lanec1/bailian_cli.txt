@@ -1,0 +1,2 @@
+Using profile default
+{"per5HourPercentage":0.25,"per5HourResetTime":1790000400000,"per1WeekPercentage":0.7,"per1WeekResetTime":1790100000000,"per1MonthPercentage":0.1,"per1MonthResetTime":1791000000000}

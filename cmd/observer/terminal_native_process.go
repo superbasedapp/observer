@@ -85,20 +85,3 @@ func terminalScriptBinding(path string) (string, string) {
 	}
 	return real, interpreter
 }
-
-func (b terminalProcessBinding) native(base string) bool {
-	if len(b.paths) == 0 {
-		return false
-	}
-	current, err := os.Stat(filepath.Join(base, "exe"))
-	if err != nil {
-		return false
-	}
-	for _, path := range b.paths {
-		installed, err := os.Stat(path)
-		if err == nil && os.SameFile(current, installed) {
-			return true
-		}
-	}
-	return false
-}

@@ -70,7 +70,7 @@ const EMPTY: readonly string[] = [];
  * reachable even while the posture is unknown, so a developer can always see
  * what their organization configured and manage their enrolment.
  */
-export const FLOOR_NAV_IDS: readonly string[] = ["settings", "privacy", "requests"];
+export const FLOOR_NAV_IDS: readonly string[] = ["settings", "privacy", "requests", "messages"];
 export const FLOOR_SETTINGS_IDS: readonly string[] = ["enrolment", "org"];
 
 /**

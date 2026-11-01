@@ -68,7 +68,7 @@ Command-scoped rules imply `applies_to = ["shell_exec"]`.
 | `mcp_server` | string | MCP server name parsed from the call target | mcp_call |
 | `mcp_tool` | string | MCP tool-name suffix match | mcp_call |
 | `event_kind` | []string | the event's kind is in the list | the listed kinds |
-| `sink` | string | one of `shell_exec` \| `git_push` \| `out_of_project_write` \| `mcp_call` (§4.5 sinks) | the sink's kinds |
+| `sink` | string | one of `shell_exec` \| `git_push` \| `git_commit` \| `out_of_project_write` \| `mcp_call` (§4.5 sinks). `git_commit` matches anything that records, moves or merges a commit (`git commit`, `commit-tree`, `update-ref`, `merge`, `cherry-pick`, `am`, `rebase` including `--exec`, `revert`, `gh pr merge`, the content-writing `gh api` routes, and the MCP tools `git_commit`, `push_files`, `create_or_update_file`, `merge_pull_request`, `delete_file`); it reads only the command, decides on the parsed git subcommand and flags, and never matches a push, `git stash` or an opaque `python3 -c` / `npm run` line | the sink's kinds (`git_commit`: `shell_exec` and `mcp_call`) |
 | `taint_source` | string | session carries an active taint mark from this source | **none — pure condition** |
 | `session_cost_usd_gt` | float | guard-stamped session spend strictly exceeds the value | **none — pure condition** |
 | `repeat_count_gt` | int | consecutive-identical-action run length strictly exceeds the value | **none — pure condition** |
@@ -290,6 +290,211 @@ identity (the verified bearer's user id); a node never names itself.
   (publish replacement team or org-wide bundles, then retire the member
   bundles with Remove from audience). See `teams-operations.md` "Rolling
   the server back".
+
+## Project audience
+
+A bundle can also be scoped to **org projects** (security plan section
+7.11): the projects of the resolver's project directory (Projects page),
+picked by their org project id. A project is an AND over the other two
+dimensions, which stay a union among themselves:
+
+| Bundle selector | Applies to |
+|---|---|
+| org-wide (empty) | everyone, everywhere (the floor) |
+| teams = [A] | members of team A, in every project |
+| projects = [X] | everyone, in project X only |
+| projects = [X], teams = [A] | members of team A, in project X only (not team A everywhere) |
+| projects = [X], members = [m] | member m, in project X only |
+
+Publish one from the dashboard (below) or with `observer-org policy
+publish --file x.toml --project <org project id>` (repeatable, combinable
+with `--team` and `--member`). An id that names no org project is refused
+(`unknown project`), never stored as typed. The Guard version history
+shows such a row as `Projects: Billing; Teams: Apps` and offers no
+per-entry removal for it: to retire a project bundle, publish an empty one
+for the same projects (and teams or members).
+
+### Editing project sections in the dashboard
+
+Policies > Guard (web2) edits project sections with the same editor as
+every other bundle (lane sec-p2b):
+
+- **The project picker.** Under "Applies to", the Projects picker lists the
+  org's projects (the resolver's project directory, the Projects page),
+  picked, never typed. Empty means every project, exactly as before. With a
+  project picked, the bundle applies only inside it, to the teams and
+  members picked above it, or to everyone there when none is. The armed
+  Publish step says so, and that the rules reach only machines whose
+  repository the organization mapped to the project and that run an
+  Observer version that takes project rules. An org with no project sees an
+  empty picker and nothing else changes.
+- **Edit as new version** on a project row loads its rules, teams, members
+  and projects, so the next version keeps targeting the same people in the
+  same projects. The editor's "the rules in force are not loaded" warning
+  is per audience, projects included. Rolling a project section back is
+  this: load the older row and publish it again.
+- **Check (lint) shows conflicts.** For a draft with projects, Check also
+  lists every rule the draft sets differently from the published project
+  sections it would compose with inside those projects (a project section
+  for everyone there and one for a team or member meet; two different
+  members never do). Each conflict names who sets what and the value in
+  force: the strictest wins (deny over ask over flag, enforce on wins,
+  "can be overridden" off wins). A conflict is not an error; publishing is
+  still allowed. A section the draft replaces (the same projects and
+  audience) is not a conflict.
+- **Preview a developer in a project.** "Preview a developer's rules"
+  takes an optional project. The preview then also shows the project rules
+  that developer gets inside that project (the envelope delivery would
+  serve, composed by the delivery code itself), which sections they come
+  from, the conflicts between those sections, and how many repositories
+  are mapped to the project. With none mapped, no machine can match it. If
+  no org-wide, team or member rules reach that developer, the preview says
+  so: their machine receives only the project rules (an org whose only
+  rules are project rules still delivers them; a machine on an observer
+  version older than project rules receives none).
+- **Status per section (Fleet state).** A node that holds project rules
+  reports, per project in its signed mapping, one of **applied** (a
+  repository on that machine matched the project and its rules verified),
+  **not matched** (no repository there matched it), **unknown** (the
+  mapping is missing or out of date, or the rules did not verify) or **not
+  delivered** (the project is mapped but its rules never arrived). Applied
+  and not matched are an ACK (the machine holds the section); unknown and
+  not delivered are a NACK, and a NACK is never shown as matching what you
+  published. Open a computer's guard cell in Fleet state to see its project
+  sections. Only org project ids and these words travel: which folder
+  matched stays on the machine. An older node or server reports nothing
+  per section (the generation ladder drops the field). A machine that
+  holds more project rules than one report can list (200) sends the first
+  200 by project id and says the list is partial; Fleet state shows that
+  and never reads such a row as matching what you published.
+- **New Terminal.** On a machine that holds project rules, the New
+  Terminal dialog shows one line for the chosen folder: "Project policy:
+  applied (N projects)", "Project policy: not matched" or "Project policy:
+  unknown". Every other machine shows no line.
+- **Audit.** A dashboard publish scoped to projects is audited with the
+  project names and ids (`v12 for Projects: Billing [projects: X]`); a
+  rule-less one also says it retires the older project rules.
+- **The assistant.** `publish_guard_bundle` takes `projects` (ids or
+  names, resolved to ids before anything is proposed; an unknown or
+  ambiguous name refuses the proposal), and the guard read view's
+  `guard/policy/effective` takes an optional `project_id`.
+
+How it reaches a node:
+
+- **Never in the composed bundle.** A project bundle is not part of the
+  org-wide + team + member composition a node receives. It rides its own
+  envelope, one per project, composed strictest-wins from the project
+  bundles that reach that developer there (the newest bundle per audience
+  key still supersedes older ones, as for teams).
+- **Only to nodes that can take it.** A node built with this release asks
+  for the project audience (`policy_caps=binding-v3`). Once the org has
+  published any project bundle it receives the composed bundle signed over
+  the v3 message (org, member, the org's assignment epoch and the digest of
+  a signed project mapping), the mapping, and the envelopes. An org with no
+  project bundle serves exactly the bytes it did before. An older node gets
+  the composed bundle only, and the fleet view says its project sections
+  are **not delivered**, never that it is up to date.
+- **The node matches; it never claims.** The mapping lists, for each
+  project whose sections reach the developer (at most 200), the remote,
+  upstream remote and root commit hashes of its repositories (no owner
+  hashes). A repository placed automatically below the org's auto-apply
+  confidence (Settings > Identity, 0.90 by default) and not placed by an
+  admin or a rule is left out; an accepted resolver suggestion is not
+  "placed by people" and needs that confidence too. The node computes its own hashes from the
+  repository's git files (a linked worktree counts as its main repository)
+  and the root commit the store already cached, and loads only the matched
+  projects' envelopes. A new clone of a known repository matches before its
+  first session. Several matches (a fork, a monorepo in two projects) take
+  the strictest of all.
+- **Org-signed, escalate-only.** A project section is as trusted as a team
+  bundle, never the in-repository project file. It can add rules and
+  tighten decisions; a relaxing override, `overridable` and
+  `enforce = false` in a project section are dropped with a load issue,
+  and a project rule may not reuse an id the org layer defines. On an
+  individual node a rule a project section names is org-locked inside that
+  project, as a rule the org-wide bundle names is everywhere: a local
+  approval does not pass it there.
+- **A missing envelope is reported.** A project the signed mapping lists
+  whose envelope file is missing on the node is a load issue (on the hook
+  path, and in `observer guard status`), the next poll fetches in full, and
+  the other matched projects still load. If the server cannot compose a
+  member's envelope it keeps the project in the mapping with no envelope,
+  logs it, and the fleet view shows that developer's project sections as
+  **compose_failed**.
+- **Not matched is not exempt.** An unmatched directory (no remote, a
+  repository the org has not seen, a rewritten `remote.origin.url`) keeps
+  the org-wide, team and member layers. Project sections are a scoping aid,
+  not a security boundary (ledger SECP-20).
+- **Reassignment and replay.** When a repository moves between projects
+  the org's assignment epoch rises and every node gets a new version. A
+  node refuses an envelope or mapping of a lower epoch, a mapping whose
+  digest differs from the signed one, and, once it held the project
+  audience, a bundle without it.
+- **Case and Azure DevOps shapes.** On a host whose paths are
+  case-insensitive (github.com, gitlab.com, bitbucket.org, Azure DevOps)
+  the mapping also lists the hash of the lowercased path, and every Azure
+  DevOps URL shape (https, ssh, `<org>.visualstudio.com` with or without
+  `DefaultCollection`, `vs-ssh.visualstudio.com`) is also listed under one
+  canonical `dev.azure.com/<org>/<project>/_git/<repo>` form, so a clone
+  whose owner or repository name differs in case, or an ssh clone of a
+  repository the org learned over https, matches. The node computes the
+  same forms of its own remote; the hashes nodes ship are unchanged. The
+  server can publish these forms only for a repository whose raw remote it
+  holds (a node that ships full content); for one known by hash alone the
+  exact hash is still the only one.
+- **Forks, mirrors and copies.** A repository only its root commit can
+  identify (a fork with no upstream remote, a mirror on another host, a
+  copy with its remote removed) matches once the root commit is known. An
+  `observer <tool>` launch runs `git rev-list --max-parents=0 HEAD` once
+  for such a repository (2 seconds at most, cached on the node, retried at
+  most weekly when it fails); the daemon never runs git for this.
+- **The resolve call.** For a repository the mapping does not match, the
+  launch (and the daemon, when a session starts there) asks the org server
+  (`POST /api/agent/project/resolve`) with the repository's hashes. The
+  answer is signed under its own domain and bound to the org, the
+  developer, the assignment epoch, the bundle version, the request and a
+  fresh nonce, and expires after an hour; it carries the matched projects'
+  envelopes. It covers every project whose sections reach the developer, so
+  a developer above the 200-project mapping cap is still matched. It is
+  asked at most once per repository while its answer is current, never from
+  a hook, and is rate-limited per developer on the server.
+- **Offline and unknown.** The node keeps using its mapping for 7 days
+  after the org last confirmed it (every poll confirms it); past that the
+  project layer is unknown. It is also unknown above the cap when no
+  resolve answer is held (or the call failed), and for a matched project
+  whose envelope is missing or does not verify. The org, team and member
+  layers apply either way, plus the org's `project_unknown` decision:
+
+  ```toml
+  # in the ORG-WIDE bundle only
+  [project_audience]
+  unknown = "ask"   # "none" (the default) or "ask"
+  ```
+
+  With `"ask"`, a shell command, MCP or tool call, or file write in a
+  repository whose project layer is unknown is asked about on an individual
+  node and blocked on a managed node (a host that cannot ask blocks too);
+  a stricter rule verdict is never lowered and no local approval softens
+  it. File reads are not affected. The table is refused in any developer
+  policy file and ignored, with a load issue, in a project bundle;
+  composing several bundles keeps the strictest value.
+- **Rolling the org server back** to a build older than the project
+  audience is refused by `observer-org upgrade preflight --rollback-to`
+  while a project bundle is in force: an older server reads a project and
+  team bundle as a team bundle everywhere, and a projects-only bundle as
+  reaching nobody. A project bundle that names teams or members counts
+  even when it is empty, if it is newer than the plain bundle for the same
+  team or member (the older server would read it as retiring that team's
+  or member's bundle); publish the replacement team or member bundle after
+  it to clear the row.
+- **Code security floors per project** (lane SEC-P3): a `security.scanning`
+  floor published for projects rides the same project envelopes as these
+  sections, as a signed family member next to the rules, and is merged
+  raise-only over the org-wide floor in a matched directory. It is
+  published from the Code security floors card, not this editor, and is
+  delivered only to an Observer version that takes project floors (an older
+  node is mapped exactly as before, so the `project_unknown` floor never
+  fires on a project only a floor reaches).
 
 ## Cookbook — worked recipes
 

@@ -1,6 +1,9 @@
 package policy
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // EventKind classifies the surface a policy Event originated from.
 // Rules declare which kinds they apply to (Rule.AppliesTo); the engine
@@ -64,6 +67,40 @@ const (
 	// DialectCmd covers cmd.exe command lines.
 	DialectCmd Dialect = "cmd"
 )
+
+// normDialect maps the empty Dialect to DialectPosix, so two hints can be
+// compared.
+func normDialect(d Dialect) Dialect {
+	if d == "" {
+		return DialectPosix
+	}
+	return d
+}
+
+// UnstatedShellAltDialect is the second reading (Event.AltDialect) a shell
+// event gets when its boundary does not state which shell runs the command
+// (dialect is empty: a generic shell tool such as `Bash` or `shell`, or a dry
+// run that names no shell) and the working directory is a Windows one (a
+// drive-letter or UNC prefix): the command may have run under Windows
+// PowerShell. Codex and Copilot CLI ran every command through PowerShell 5.1
+// on Windows while Codex still named the tool `Bash` (JSP-6 live half,
+// 2026-10-20). Decided on the event's shape (shell kind, unstated dialect,
+// Windows-shaped directory), never on the tool. Empty means one reading.
+func UnstatedShellAltDialect(kind EventKind, dialect Dialect, cwd string) Dialect {
+	if kind != KindShellExec || dialect != "" || !windowsShapedDir(cwd) {
+		return ""
+	}
+	return DialectPowerShell
+}
+
+// windowsShapedDir reports a Windows directory: a drive-letter prefix
+// ("C:\", "C:/") or a UNC prefix.
+func windowsShapedDir(p string) bool {
+	if len(p) >= 3 && p[1] == ':' && (p[2] == '\\' || p[2] == '/') {
+		return isASCIILetter(p[0])
+	}
+	return strings.HasPrefix(p, uncPrefix)
+}
 
 // Capabilities describes what the originating channel can do, resolved
 // at the boundary (hook receiver / adapter / proxy) per client+OS.
@@ -142,6 +179,35 @@ func (t TaintState) HasSource(source string) bool {
 	return false
 }
 
+// EditKind says how a ProposedEdit applies to the file it targets.
+type EditKind int
+
+const (
+	// EditFragment carries removed (Old) and added (New) text a patch
+	// envelope names, which cannot be replayed onto the file: only the
+	// text itself is judged. The zero value, the least-assuming kind.
+	EditFragment EditKind = iota
+	// EditWhole carries the file's whole new content in New (a Write, or
+	// a patch that adds a file).
+	EditWhole
+	// EditReplace replaces Old with New in the current file (the first
+	// occurrence, or every one when All is set), as an Edit tool does.
+	EditReplace
+)
+
+// ProposedEdit is one proposed change of a file write or edit, in the
+// order the tool applies them (a MultiEdit is several).
+type ProposedEdit struct {
+	// Kind says how Old and New apply.
+	Kind EditKind
+	// Old is the text replaced ("" for EditWhole).
+	Old string
+	// New is the replacement text, or the whole new content.
+	New string
+	// All replaces every occurrence of Old (an edit's replace_all).
+	All bool
+}
+
 // Event is one normalized agent action presented for evaluation — the
 // only input type that crosses the seam (spec §3.4). Boundaries (hook
 // receiver, proxy, ingest) build an Event and call Engine.Evaluate;
@@ -178,6 +244,12 @@ type Event struct {
 	// Target is the path / URL / command string the action operates
 	// on.
 	Target string
+	// Edits is the proposed new content of a file write or edit, when the
+	// boundary has it (a pre-tool hook payload carries a Write's content
+	// and an Edit's old and new strings). Empty when the boundary does not
+	// know it, and on every event that is not a write. The R-162 rows
+	// read it; it is in-memory only and never persists.
+	Edits []ProposedEdit
 	// Args is the pre-split argv when the boundary already has one
 	// (some hook payloads deliver argv rather than a command
 	// string). When empty, shell events are parsed from Target.
@@ -185,6 +257,15 @@ type Event struct {
 	// Dialect is the shell dialect hint for Target/Args (approved
 	// deviation 1). Empty means DialectPosix.
 	Dialect Dialect
+	// AltDialect is a second dialect the command may have run under,
+	// resolved at the boundary when the channel does not say which shell
+	// runs its shell tool: a generic shell tool on a Windows working
+	// directory may be Windows PowerShell (Codex and Copilot CLI ran every
+	// command through PowerShell 5.1 there, JSP-6 live half). When set and
+	// different from Dialect, the engine analyses Target under both
+	// dialects and a hit in either reading counts (the safe direction).
+	// Empty means one reading. Ignored when Args is set.
+	AltDialect Dialect
 	// Cwd is the working directory the action runs in, when the
 	// boundary knows it (hook payloads carry it). Relative path
 	// targets resolve against Cwd, falling back to ProjectRoot.
@@ -195,6 +276,26 @@ type Event struct {
 	// ProjectRoot is the resolved project root (internal/git
 	// resolution, done by the caller — never here).
 	ProjectRoot string
+	// ProjectLookupRoot is the project root a boundary derived for an event
+	// whose payload names none (a pre-tool hook carries only cwd): the
+	// identity root of the working directory (the repository root, the main
+	// repository for a linked worktree; plans decision log P-041). Only the
+	// guard's project layer lookup and its project_unknown floor read it,
+	// never a rule, so the boundary rules that read ProjectRoot keep their
+	// documented empty-root behaviour on the hook path (lane sec-p2a audit
+	// finding 1). Empty means the lookup uses ProjectRoot.
+	ProjectLookupRoot string
+	// RepoRoot is the git checkout that contains Cwd (a linked worktree's
+	// own top level, not its main repository), derived at the
+	// hook boundary for an event whose payload names no project root
+	// (D-MU10): a Claude Code pre-tool event carries only cwd, so R-101's
+	// outside-the-project arm never applied to it. Only R-101's recursive
+	// delete classification reads it, as the root it judges "outside the
+	// project" against when ProjectRoot is empty; every other rule keeps
+	// reading ProjectRoot, so the boundary rules keep their documented
+	// empty-root hook behaviour. Empty when Cwd is in no working tree (the
+	// cwd itself is never used as a root).
+	RepoRoot string
 	// SessionID identifies the agent session for reporting and
 	// session-scoped state lookups.
 	SessionID string
@@ -260,6 +361,14 @@ type Event struct {
 	// R-204 row consumes them; this package never reads native
 	// client configs itself.
 	PostureFindings []PostureFinding
+	// Security is the security pillar's facts about this event (security
+	// pillar plan section 4.7 item 2; security.go): the project's posture
+	// state, the in-hook detector hits, the quick-scan answer, the
+	// repository trust and install verdicts and the project match. Filled
+	// only through the hook context seam (internal/hookctx); nil when the
+	// security module is inactive, and then no rule reads it. The pillar's
+	// S-7xx rules read it; this package never computes it.
+	Security *Security
 	// SessionCostUSD / DailyCostUSD are the spend-so-far stamps for
 	// the §12.1 budget rules and the §4.4 session_cost_usd_gt user
 	// matcher, stamped by the guard layer's TTL-cached budget lookup
@@ -355,6 +464,15 @@ type Event struct {
 	// signal and the §4.4 repeat_count_gt user matcher). 0 means
 	// untracked (hook path, proxy path).
 	RepeatCount int
+	// EvasionOf and EvasionShapes are the A-613 policy-evasion stamp:
+	// after rule EvasionOf denied (or asked about) an action in this
+	// session, EvasionShapes other differently-shaped actions hit the same
+	// rule within the evasion window. Stamped by the guard layer's
+	// evasion tracker on the watcher ingest path only, and only while
+	// [guard.rules].evasion_window_seconds is set; "" and 0 mean
+	// untracked, and the A-613 row is then inert.
+	EvasionOf     string
+	EvasionShapes int
 	// Now is the evaluation timestamp, injected for determinism.
 	Now time.Time
 }

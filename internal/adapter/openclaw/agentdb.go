@@ -2,13 +2,10 @@ package openclaw
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -437,84 +434,28 @@ func agentTableExists(ctx context.Context, db *sql.DB, name string) bool {
 	return n > 0
 }
 
-// stageMirrorIfForeign returns srcDB unchanged when it's native. For a
-// foreign-mount source (e.g. /mnt/c/Users/<u>/.openclaw/agents/main/
-// agent/openclaw-agent.sqlite read by a WSL2 observer) it stages a local
-// mirror — copying the SQLite trio (main + -wal + -shm) into a
-// per-source cache dir and returning the mirrored path.
-// modernc.org/sqlite hits SQLITE_IOERR against /mnt/c paths while the
-// OpenClaw gateway holds the WAL open; the mirror avoids the DrvFs
-// bridge by reading bytes once via os.ReadFile (which DOES work) then
-// opening the in-tmp copy. Same pattern kirocli / clinecli / opencode
-// adopt. Native paths pass through with no overhead.
+// stageMirrorIfForeign returns srcDB unchanged when it is native. A foreign-mount
+// store (a Windows-side store read by a WSL observer over /mnt/c, or
+// the reverse), which modernc.org/sqlite cannot open in place while the
+// vendor process writes its WAL, is read through a filtered local
+// mirror built by mirrorbase.Stage: only the tables in mirrorSpec are
+// kept, so the store's other tables (credentials included) never leave
+// the vendor's file.
 func stageMirrorIfForeign(srcDB string) (string, error) {
 	if !isForeignMountPath(srcDB) {
 		return srcDB, nil
 	}
-	base, err := mirrorbase.Base()
-	if err != nil || base == "" {
-		base = filepath.Join(os.TempDir(), "superbased-observer")
-	}
-	sum := sha256.Sum256([]byte(srcDB))
-	mirrorDir := filepath.Join(base, "openclaw-mirror", hex.EncodeToString(sum[:8]))
-	if err := os.MkdirAll(mirrorDir, 0o700); err != nil {
-		return "", fmt.Errorf("openclaw.stageMirror: mkdir %s: %w", mirrorDir, err)
-	}
-	dstDB := filepath.Join(mirrorDir, agentDBBase)
-	if mirrorUpToDate(srcDB, dstDB) {
-		return dstDB, nil
-	}
-	for _, suffix := range []string{"", "-wal", "-shm"} {
-		src := srcDB + suffix
-		dst := dstDB + suffix
-		data, err := os.ReadFile(src) //nolint:gosec // src derives from validated watch roots
-		if err != nil {
-			if os.IsNotExist(err) {
-				_ = os.Remove(dst)
-				continue
-			}
-			return "", fmt.Errorf("openclaw.stageMirror: read %s: %w", src, err)
-		}
-		if err := os.WriteFile(dst, data, 0o600); err != nil { //nolint:gosec // G703: dst is a private staging copy under the adapter's own temp dir
-			return "", fmt.Errorf("openclaw.stageMirror: write %s: %w", dst, err)
-		}
-	}
-	return dstDB, nil
+	return mirrorbase.Stage(context.Background(), srcDB, mirrorSpec)
 }
 
-// mirrorUpToDate reports whether the mirror trio is at least as fresh as
-// the source. Uses (size, mtime) per sibling; the size guard catches an
-// in-flight truncate/realloc that mtime alone misses. Returns false on
-// any stat error so a fresh copy gets attempted.
-func mirrorUpToDate(srcDB, dstDB string) bool {
-	if !filesMatch(srcDB, dstDB) {
-		return false
-	}
-	if sw, err := os.Stat(srcDB + "-wal"); err == nil {
-		if !filesMatchInfo(sw, dstDB+"-wal") {
-			return false
-		}
-	}
-	return true
-}
-
-func filesMatch(src, dst string) bool {
-	s, err := os.Stat(src)
-	if err != nil {
-		return false
-	}
-	return filesMatchInfo(s, dst)
-}
-
-func filesMatchInfo(srcInfo os.FileInfo, dst string) bool {
-	d, err := os.Stat(dst)
-	if err != nil {
-		return false
-	}
-	if srcInfo.Size() != d.Size() {
-		return false
-	}
-	return !srcInfo.ModTime().After(d.ModTime())
+// mirrorSpec is the allow-list mirror of the OpenClaw per-agent store (openclaw-agent.sqlite): every table this
+// package queries and nothing else. A query on a new table must add it
+// here, or the foreign-mount mirror silently lacks it;
+// mirrortest.AssertSpecCoversQueries pins that.
+var mirrorSpec = mirrorbase.Spec{
+	Dir:    "openclaw-mirror",
+	File:   agentDBBase,
+	Tables: []string{"transcript_events", "session_windows", "session_nodes"},
 }
 
 // isForeignMountPath reports whether path lives under a crossmount-

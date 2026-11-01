@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -51,6 +52,12 @@ type UpdateStateRow struct {
 	// a restarted daemon can resume without a fetch. It is the org's own
 	// signed document coming back, never node data going out.
 	ManifestJSON string
+	// PreviousAppliedSteps is db.AppliedSteps recorded BEFORE the swap,
+	// beside PreviousSchemaVersion. A rollback compares it with the count
+	// now: a target that ran any migration step, including a late one that
+	// leaves the version unchanged, changed the schema (T-979). It lives in
+	// schema_meta under updatePreviousAppliedStepsKey, so it needs no column.
+	PreviousAppliedSteps int
 	// CurrentDistro, ComponentsDigest and DistroEpochs are the distro facts
 	// of agent migration 161 (modular packaging plan 5.6.1): the distro and
 	// compiled-set digest the last successful apply installed, and the
@@ -121,7 +128,40 @@ SELECT channel, last_manifest_version, last_manifest_json, last_manifest_seen_at
 		row.State = updatespec.StateIdle
 	}
 	s.loadDistroState(ctx, &row)
+	row.PreviousAppliedSteps = s.loadPreviousAppliedSteps(ctx)
 	return row, nil
+}
+
+// updatePreviousAppliedStepsKey is the schema_meta key holding
+// UpdateStateRow.PreviousAppliedSteps. schema_meta is the node-local
+// key-value store; this file is the one writer of this key.
+const updatePreviousAppliedStepsKey = "update_previous_applied_steps"
+
+// loadPreviousAppliedSteps reads PreviousAppliedSteps; absent or unreadable
+// reads as 0, the value a node that never staged an apply has.
+func (s *Store) loadPreviousAppliedSteps(ctx context.Context) int {
+	var raw string
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT value FROM schema_meta WHERE key = ?`, updatePreviousAppliedStepsKey).Scan(&raw); err != nil {
+		return 0
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// AppliedMigrationSteps reports db.AppliedSteps for the agent DB: how many
+// migration steps a runner has executed on it. The update apply records it
+// before the swap and a rollback compares it, because the schema version
+// alone misses a late lower-numbered step (T-979).
+func (s *Store) AppliedMigrationSteps(ctx context.Context) (int, error) {
+	n, err := db.AppliedSteps(ctx, s.db)
+	if err != nil {
+		return 0, fmt.Errorf("store.AppliedMigrationSteps: %w", err)
+	}
+	return n, nil
 }
 
 // loadDistroState fills the migration-161 columns, falling back to the
@@ -218,6 +258,12 @@ WHERE id = 1`
 		); err != nil {
 			return fmt.Errorf("store.SaveUpdateState: %w", err)
 		}
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO schema_meta(key, value) VALUES (?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+		updatePreviousAppliedStepsKey, strconv.Itoa(row.PreviousAppliedSteps)); err != nil {
+		return fmt.Errorf("store.SaveUpdateState: previous applied steps: %w", err)
 	}
 	return s.saveDistroState(ctx, row)
 }

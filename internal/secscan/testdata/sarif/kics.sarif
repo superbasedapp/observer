@@ -1,0 +1,2 @@
+{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"KICS","version":"2.1.0","rules":[{"id":"a227ec01-f97a-4084-91a4-47b350c1db54","shortDescription":{"text":"Privileged container"}}]}},
+ "results":[{"ruleId":"a227ec01-f97a-4084-91a4-47b350c1db54","level":"error","message":{"text":"privileged: true"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"deploy/pod.yaml"},"region":{"startLine":9}}}]}]}]}

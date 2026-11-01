@@ -198,3 +198,23 @@ func TestLocalOverlaysArePersonal(t *testing.T) {
 		t.Fatal("claude-code CLAUDE.local.md must be a Personal rule")
 	}
 }
+
+// TestBorrowedRootsAreMarked pins Rule.Borrowed: a rule whose glob sits
+// under a root another tool owns (or no tool owns, borrowedRoots) is
+// borrowed, and a rule under the root its own tool owns is not. A borrowed
+// directory must never count as install evidence (agentconfigsvc).
+func TestBorrowedRootsAreMarked(t *testing.T) {
+	var sawBorrowed bool
+	for _, r := range Rules() {
+		root := strings.SplitN(strings.TrimPrefix(r.Glob, "~/"), "/", 2)[0]
+		owner, shared := borrowedRoots[root]
+		want := shared && owner != r.Tool
+		if r.Borrowed != want {
+			t.Errorf("%s %s: Borrowed = %v, want %v (root %q owner %q)", r.Tool, r.Glob, r.Borrowed, want, root, owner)
+		}
+		sawBorrowed = sawBorrowed || r.Borrowed
+	}
+	if !sawBorrowed {
+		t.Fatal("no borrowed rule: ibm-bob reads ~/.claude/skills")
+	}
+}

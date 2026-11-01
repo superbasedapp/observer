@@ -151,6 +151,20 @@
   --tool-junie: #6eea72;
   --tool-poolside: #947ed2;
   --tool-zed: #5a9df5;
+  /* 2026-10-21 capture-only wave: ten new CLI agents. Greedy CIE76 ΔE
+     maximin from each brand-evocative hue (nudged <= 30 deg in HSL hue),
+     run against every existing tool hue in this theme and each other:
+     every new hue clears ΔE 17.4 (the 15.0 floor of the 2026-09 wave). */
+  --tool-autohand: #d8a864;
+  --tool-ibm-bob: #add3eb;
+  --tool-cortex-code: #47f5f5;
+  --tool-codebuddy: #47f5b2;
+  --tool-deepagents-code: #adebca;
+  --tool-dimcode: #ee9efa;
+  --tool-dirac: #e3b5d4;
+  --tool-kimchi: #f55547;
+  --tool-stakpak: #9eca72;
+  --tool-vtcode: #6447f5;
   --tool-other: #64748b;
 
   /* Action-type category colors. One var per canonical category in
@@ -272,6 +286,16 @@
   --mascot-lost-body-shade: #b68a31;
   --mascot-lost-cape: #8096e7;
   --mascot-lost-cape-lining: #556ac2;
+
+  /* Flight scenery (Obs takes flight, D-665..D-669; shared/lib/obsFlight.ts):
+     the sky behind a flying Obs, two cloud layers and the speed streaks.
+     Background only, never text. The boot screens inline these values
+     (shared/lib/bootScreen.ts, pinned by web/src/lib/bootScreen.test.ts). */
+  --flight-sky-top: #0b1030;
+  --flight-sky-bottom: #171c3c;
+  --flight-cloud: #2a3366;
+  --flight-cloud-far: #1d2450;
+  --flight-speed: rgba(124, 152, 255, 0.38);
 }
 
 :root[data-theme="light"],
@@ -366,6 +390,17 @@
   --tool-junie: #31971f;
   --tool-poolside: #202fe5;
   --tool-zed: #565dcc;
+  /* 2026-10-21 capture-only wave, light-theme variants (same check). */
+  --tool-autohand: #604724;
+  --tool-ibm-bob: #244360;
+  --tool-cortex-code: #1b5e6a;
+  --tool-codebuddy: #24604c;
+  --tool-deepagents-code: #0bcb95;
+  --tool-dimcode: #4c2460;
+  --tool-dirac: #6a1b50;
+  --tool-kimchi: #602924;
+  --tool-stakpak: #426024;
+  --tool-vtcode: #6d3b9b;
   --tool-other: #475569;
 
   --act-file: #2563eb;
@@ -423,6 +458,13 @@
   --mascot-lost-body-shade: #4055b5;
   --mascot-lost-cape: #e7ae30;
   --mascot-lost-cape-lining: #be8e37;
+
+  /* Flight scenery, light theme. */
+  --flight-sky-top: #d7e3ff;
+  --flight-sky-bottom: #f1f5ff;
+  --flight-cloud: #ffffff;
+  --flight-cloud-far: #e9efff;
+  --flight-speed: rgba(38, 71, 232, 0.3);
 }
 
 /* Density (2026-09-29) - the per-browser "comfortable / compact" preference

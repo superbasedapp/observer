@@ -35,13 +35,55 @@ func AdvertisedCapability(tool string) (c integration.Capability, isWindows bool
 // HookSupported reports whether the hook registry can write tool's hooks AND
 // the registry row says Observer auto-wires them. A mechanism with no
 // registry writer (Hermes' plugin, the Cline CLI tailer, the browser
-// extension) and a manual registration (AutoWired false) both answer false.
+// extension), a manual registration (AutoWired false) and a writer switched
+// off behind a live check (HookSpec.LiveGate, DEC-12) all answer false.
+//
+// A target in another home of the same tool (hook.HomeTargetBase: an Xcode
+// agent home "claude-code-xcode", FU-145, or a WSL distro home reached from
+// Windows "cursor-wsl", FU-197) answers for its base tool's hook capability,
+// and only while the target itself is switched on (hook.LiveCheckGate;
+// gemini-cli-xcode stays off on LCR-91's finding: Xcode's Gemini runs no
+// BeforeTool, FU-195; every twin but cursor-wsl waits on WSL-4). It is a
+// hook target only: AdvertisedCapability does not resolve it, so the MCP,
+// route and telemetry predicates answer false for it. Whether its home
+// exists here (macOS for Xcode; a Windows host's running WSL distros for a
+// twin) is hook.Registry.Installed's answer, which every caller reads first.
 func HookSupported(tool string) bool {
+	if base, ok := hook.HomeTargetBase(tool); ok {
+		if _, gated := hook.LiveCheckGate(tool); gated {
+			return false
+		}
+		c, _, ok := AdvertisedCapability(base)
+		return ok && c.Hook.AutoWiredNow() && hookRegistryWrites(c, false)
+	}
 	c, isWindows, ok := AdvertisedCapability(tool)
-	if !ok || !c.Hook.AutoWired {
+	if !ok || !c.Hook.AutoWiredNow() {
 		return false
 	}
 	return hookRegistryWrites(c, isWindows)
+}
+
+// HookTargetCapability is the registry row a hook registration target
+// answers for: AdvertisedCapability's (the "-windows" bridge resolves to its
+// base), and for an other-home target (Xcode agent home, WSL twin) its base
+// tool's row. ok is false for an unknown or unadvertised tool.
+func HookTargetCapability(tool string) (integration.Capability, bool) {
+	if base, ok := hook.HomeTargetBase(tool); ok {
+		tool = base
+	}
+	c, _, ok := AdvertisedCapability(tool)
+	return c, ok
+}
+
+// HookTargetBase is the adapter a hook registration target belongs to: the
+// "-windows" bridge's base, an other-home target's base tool (Xcode agent
+// home, WSL twin), else the target itself. Component gates and per-tool
+// tables key on it.
+func HookTargetBase(tool string) string {
+	if base, ok := hook.HomeTargetBase(tool); ok {
+		return base
+	}
+	return strings.TrimSuffix(tool, WindowsSuffix)
 }
 
 // HookRemovable reports whether a removal should ask the hook registry to
@@ -49,7 +91,15 @@ func HookSupported(tool string) bool {
 // mechanism has a registry writer but is no longer AUTO-WIRED (a retired
 // registration an earlier version wrote). Unregister removes only Observer's
 // own entries, so asking for a tool that was never registered is a no-op.
+//
+// An other-home target (Xcode agent home, WSL twin) is removable whenever
+// its base tool's mechanism has a registry writer (Unregister is never
+// gated).
 func HookRemovable(tool string) bool {
+	if base, ok := hook.HomeTargetBase(tool); ok {
+		c, _, ok := AdvertisedCapability(base)
+		return ok && hookRegistryWrites(c, false)
+	}
 	c, isWindows, ok := AdvertisedCapability(tool)
 	if !ok {
 		return false
@@ -121,7 +171,7 @@ func RouteSupported(tool string) bool {
 // An unknown or unadvertised tool answers true: the registry's own refusal
 // is the honest answer there.
 func HookRegistrationWanted(tool string, promptLaneEnabled bool, skip func(tool, event string) bool) bool {
-	c, _, ok := AdvertisedCapability(tool)
+	c, ok := HookTargetCapability(tool)
 	if !ok {
 		return true
 	}

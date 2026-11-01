@@ -1,0 +1,17 @@
+{
+ "sha": "59e9f78eacdf2554f8534d166808c3e9b8c7ebcb",
+ "parents": [
+  {
+   "sha": "982d09f66295f253d8cf7f0b1fd3f10f77d00e59"
+  },
+  {
+   "sha": "1b0eb4096d53d0c8c35f76cf2aad62529083d93d"
+  }
+ ],
+ "commit": {
+  "message": "Merge pull request #14706 from cli/dependabot/github_actions/actions/create-github-app-token-3.3.0",
+  "committer": {
+   "date": "2026-10-15T15:15:11Z"
+  }
+ }
+}

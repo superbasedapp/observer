@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -30,15 +31,60 @@ func registrationCommand(binary string) string {
 	return registrationDecision(binary).Command
 }
 
-// registrationDecision is installshape.Decide with the file system and PATH
-// as its inputs.
-func registrationDecision(binary string) installshape.Decision {
-	return installshape.Decide(installshape.Input{
+// registrationWSLTwinBinary is the Windows observer.exe a "-wsl" hook twin
+// runs through WSL interop (hook.Options.WSLTwinBinaryPath): the running
+// binary itself, binary (absolute, symlink-resolved). On an npm or pip
+// install registrationCommand names the package manager's launcher, a
+// cmd.exe script interop cannot run; binary is the observer.exe that
+// launcher started (FU-214, operator ruling option 1). Every caller that
+// registers passes it on every run, so after an upgrade moves the
+// observer.exe the next `observer start` re-points the twin.
+func registrationWSLTwinBinary(binary string) string { return binary }
+
+// mcpRegistrationCommand is registrationCommand for an MCP server entry.
+// With stable set (registrationStableMCPCommand) it is the bare `observer`
+// when PATH resolves that name to this same install (installshape.PathName,
+// surface-gap FU-24), so the managed allowlist entry `observer org
+// emit-managed-settings` writes (serverCommand ["observer", "serve"])
+// matches every node, whatever path each one was installed at. Otherwise it
+// is today's command.
+func mcpRegistrationCommand(binary string, stable bool) string {
+	d := registrationDecision(binary)
+	if !stable {
+		return d.Command
+	}
+	d, _ = installshape.PathName(registrationInput(binary), d)
+	return d.Command
+}
+
+// registrationStableMCPCommand reports whether the node at configPath
+// registers the stable bare MCP command: only when the operator opted in
+// ([observer.mcp] stable_command = true, off by default while the live
+// check is owed) AND the node holds a managed (org) enrolment. It reads the
+// database only when both the opt-in and the org client are on, so an
+// individual node (and a test home) never opens it.
+func registrationStableMCPCommand(configPath string) bool {
+	cfg, err := config.Load(config.LoadOptions{GlobalPath: configPath})
+	if err != nil || !cfg.Observer.MCP.StableCommand || !cfg.OrgClient.Enabled {
+		return false
+	}
+	return launcherManagedNode(context.Background(), configPath)
+}
+
+// registrationInput is the installshape input for binary on this host.
+func registrationInput(binary string) installshape.Input {
+	return installshape.Input{
 		GOOS:           runtime.GOOS,
 		Binary:         binary,
 		PathCandidates: pathObserverCandidates(os.Getenv("PATH")),
 		Resolve:        resolveRegularFile,
-	})
+	}
+}
+
+// registrationDecision is installshape.Decide with the file system and PATH
+// as its inputs.
+func registrationDecision(binary string) installshape.Decision {
+	return installshape.Decide(registrationInput(binary))
 }
 
 // pathObserverCandidates lists every `observer` launcher on PATH, in order.
@@ -70,7 +116,7 @@ func resolveRegularFile(p string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	fi, err := os.Stat(abs)
+	fi, err := os.Stat(abs) //nolint:gosec // G703: a metadata read of the user's own local path; no privilege boundary is crossed
 	if err != nil || !fi.Mode().IsRegular() {
 		return "", false
 	}

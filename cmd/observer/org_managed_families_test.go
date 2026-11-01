@@ -32,7 +32,10 @@ func loadPolicyLists(t *testing.T, cfgPath string) ([]string, []string) {
 		body, _ := os.ReadFile(cfgPath)
 		t.Fatalf("config.Load: %v\n%s", err, body)
 	}
-	return cfg.OrgClient.Policy.AcceptFamilies, cfg.OrgClient.Policy.PreauthorizeEnforce
+	// The union with the module twins, as every product reader reads it
+	// (config.OrgClientPolicyConfig.AcceptedFamilies): a family a released
+	// binary does not know is written to accept_module_families.
+	return cfg.OrgClient.Policy.AcceptedFamilies(), cfg.OrgClient.Policy.PreauthorizedFamilies()
 }
 
 func hasFamily(list []string, f string) bool {
@@ -58,7 +61,7 @@ func TestBackfillManagedPolicyFamilies_PreFixNode(t *testing.T) {
 	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
 
 	acc, pre := loadPolicyLists(t, cfgPath)
-	res, err := backfillManagedPolicyFamilies(cfgPath, recPath, facts, acc, pre, now)
+	res, err := backfillManagedPolicyFamilies(cfgPath, recPath, facts, config.OrgClientPolicyConfig{AcceptFamilies: acc, PreauthorizeEnforce: pre}, now)
 	if err != nil {
 		t.Fatalf("backfill: %v", err)
 	}
@@ -77,7 +80,7 @@ func TestBackfillManagedPolicyFamilies_PreFixNode(t *testing.T) {
 
 	// Idempotent: the second start writes nothing.
 	before, _ := os.ReadFile(cfgPath)
-	res, err = backfillManagedPolicyFamilies(cfgPath, recPath, facts, acc, pre, now)
+	res, err = backfillManagedPolicyFamilies(cfgPath, recPath, facts, config.OrgClientPolicyConfig{AcceptFamilies: acc, PreauthorizeEnforce: pre}, now)
 	if err != nil || len(res.Added) != 0 || res.RecordWritten {
 		t.Fatalf("second run = %+v, %v; want a no-op", res, err)
 	}
@@ -96,14 +99,14 @@ func TestBackfillManagedPolicyFamilies_PreFixNode(t *testing.T) {
 	if hasFamily(acc, "node.features") {
 		t.Fatalf("test setup: removal did not take, %v", acc)
 	}
-	res, err = backfillManagedPolicyFamilies(cfgPath, recPath, facts, acc, pre, now)
+	res, err = backfillManagedPolicyFamilies(cfgPath, recPath, facts, config.OrgClientPolicyConfig{AcceptFamilies: acc, PreauthorizeEnforce: pre}, now)
 	if err != nil || len(res.Added) != 0 {
 		t.Fatalf("after a developer removal = %+v, %v; want nothing re-added", res, err)
 	}
 
 	// A re-enrolment (new generation) is a fresh offer.
 	facts.Generation = 4
-	res, err = backfillManagedPolicyFamilies(cfgPath, recPath, facts, acc, pre, now)
+	res, err = backfillManagedPolicyFamilies(cfgPath, recPath, facts, config.OrgClientPolicyConfig{AcceptFamilies: acc, PreauthorizeEnforce: pre}, now)
 	if err != nil || !hasFamily(res.Added, "node.features") {
 		t.Fatalf("new generation = %+v, %v; want node.features offered again", res, err)
 	}
@@ -125,7 +128,7 @@ func TestAddManagedPolicyFamilies_Shapes(t *testing.T) {
 				t.Fatal(err)
 			}
 			acc, pre := loadPolicyLists(t, cfgPath)
-			if err := addManagedPolicyFamilies(cfgPath, acc, pre, []string{"node.features"}); err != nil {
+			if err := addManagedPolicyFamilies(cfgPath, config.OrgClientPolicyConfig{AcceptFamilies: acc, PreauthorizeEnforce: pre}, []string{"node.features"}); err != nil {
 				t.Fatalf("add: %v", err)
 			}
 			acc2, pre2 := loadPolicyLists(t, cfgPath)

@@ -148,6 +148,9 @@ func conformanceHookRows() []ConformanceEntry {
 	var rows []ConformanceEntry
 	for _, c := range caps {
 		for _, b := range c.Hook.Bindings {
+			if sameChannelReplay(c, b) {
+				continue
+			}
 			for _, r := range conformanceRowRules {
 				if !r.match(c, b) {
 					continue
@@ -184,6 +187,16 @@ func conformanceHookRows() []ConformanceEntry {
 	return rows
 }
 
+// sameChannelReplay reports a replay binding that stands in for the tool's
+// own registered gate on the SAME native event (cursor's preToolUse reached
+// through Observer's Claude Code hooks, FU-122): one channel, whose row is the
+// registered gate's, so the fallback adds no second row of the same name. A
+// replay on an event of its own (copilot-cli's Claude-shaped PreToolUse) keeps
+// its row.
+func sameChannelReplay(c integration.Capability, b integration.HookBinding) bool {
+	return c.Hook.ReplayFallback(b) && b.NativeEvent == b.StandsInFor
+}
+
 // conformanceDisplayOrder is the order the hook rows were rendered in
 // before the matrix was generated. `observer guard status`, the guard
 // export and /api/guard/conformance all render the matrix in returned
@@ -198,7 +211,6 @@ var conformanceDisplayOrder = []string{
 	models.ToolCursor + " hook:beforeSubmitPrompt",
 	models.ToolGeminiCLI + " hook:BeforeAgent",
 	models.ToolKimiCode + " hook:UserPromptSubmit",
-	models.ToolKiroCLI + " hook:userPromptSubmit",
 	models.ToolCline + " hook:UserPromptSubmit",
 	models.ToolQoder + " hook:UserPromptSubmit",
 	models.ToolPoolside + " hook:UserPromptSubmit",
@@ -284,6 +296,22 @@ var conformanceWatcherClients = []string{
 	// with no hook mechanism grounded), so the post-hoc watcher row
 	// is its only guard surface.
 	models.ToolZed,
+	// The 2026-10-21 wave: every one is a watcher-path adapter, so the
+	// post-hoc watcher row is the backstop beside its pre-execution hook
+	// rows (generated from the registry's wired gate bindings):
+	//   autohand (JSONL tail + metadata.json re-read), ibm-bob (WAL SQLite
+	//   bob.db re-read by tasks.updated_at watermark), codebuddy (JSONL
+	//   tail), deepagents-code (LangGraph SQLite checkpointer), dimcode
+	//   (WAL SQLite re-read), dirac (op-log JSONL tail), kimchi (pi-mono v3
+	//   JSONL tail; its user-level bash pre-gate and the claude-code
+	//   receiver's reroute are its hook rows), vtcode (events.jsonl tail),
+	//   cortex-code (JSONL tail + whole-file metadata re-read; gated
+	//   through the claude-code receiver's reroute, foreignhost.go) and
+	//   stakpak (WAL SQLite checkpoint delta re-read; no hooks in 0.3.88,
+	//   so the watcher row is its only guard surface).
+	models.ToolAutohand, models.ToolIBMBob, models.ToolCortexCode,
+	models.ToolCodeBuddy, models.ToolDeepAgentsCode, models.ToolDimCode,
+	models.ToolDirac, models.ToolKimchi, models.ToolStakpak, models.ToolVTCode,
 }
 
 // CapabilitiesFor looks up one adapter×channel row. ok=false means

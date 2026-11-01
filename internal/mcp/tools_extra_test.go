@@ -383,29 +383,33 @@ func TestTool_GetRedundancyReport(t *testing.T) {
 	}
 }
 
-// Smoke test: tools/list now returns 23 tools (12 spec §11.2 + the
-// G33 list_actions_around tool added in v1.4.43+ for three-layer
-// progressive disclosure + get_suggestions, the advisor's in-session
-// surface added with §15.7 Phase 3 + get_model_recommendation and
-// get_routing_status, the model-routing P0 advisory pair per
-// model-routing spec §R17.5 + cache_status, the cache-expiry warning
-// surface — docs/plans/cache-expiry-warning-and-keepwarm-plan-2026-06-25.md
-// + search_symbols, the codeintel Tier-C project-wide symbol search
-// + get_output_composition, the Output Composition (Verbosity) session
-// read tool — docs/plans/output-composition-verbosity-plan-2026-06-30.md
-// + continue_session, the session-handoff MCP lane, and
-// get_session_message, the message-addressable handoff pull —
-// docs/session-handoff.md + get_session_tasks, the Phase-2 task rollup
-// + get_project_guidance, the agent-guidance-file inventory).
-func TestServer_ToolsListReturnsTwentyThree(t *testing.T) {
-	// 23 always-on tools as of get_project_guidance (the agent-guidance
-	// inventory) — was 22 at get_session_tasks; conditional tools
-	// (get_file/get_symbols/get_relations/retrieve_stashed) are separate
-	// and untouched.
+// TestServer_ToolsListIsTheUngatedContractSet: a server built with no
+// optional features lists exactly the contract rows that are not
+// config-gated, no more and no less. It replaces a literal tool count
+// that needed a bump (and a history line) for every new tool; the contract
+// table (internal/mcp/contract.go) is the one place a tool is declared, and
+// TestContractCoversEveryRegisteredTool pins the gated tools with every
+// option on.
+func TestServer_ToolsListIsTheUngatedContractSet(t *testing.T) {
 	s, _, _ := testServer(t)
-	resp := rpcCall(t, s, "tools/list", 1, nil)
-	tools := resp["result"].(map[string]any)["tools"].([]any)
-	if len(tools) != 23 {
-		t.Errorf("tools count: %d (want 23)", len(tools))
+	listed := listToolNames(t, s)
+	want := map[string]bool{}
+	for _, row := range ContractTools() {
+		if !row.ConfigGated {
+			want[row.Name] = true
+		}
+	}
+	if len(want) == 0 {
+		t.Fatal("the contract table has no ungated tool")
+	}
+	for name := range listed {
+		if !want[name] {
+			t.Errorf("tools/list on a default server includes %q, which the contract table marks config-gated or does not list", name)
+		}
+	}
+	for name := range want {
+		if !listed[name] {
+			t.Errorf("tools/list on a default server is missing the always-on contract tool %q", name)
+		}
 	}
 }

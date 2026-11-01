@@ -1,0 +1,1 @@
+[{"templateID":"base","alias":"base","sandboxID":"i1a2b3c4d5e6f7g8h9","clientID":"6532622b","startedAt":"2026-10-22T12:00:00Z","endAt":"2026-10-22T13:00:00Z","cpuCount":2,"memoryMB":512,"diskSizeMB":10240,"metadata":{"observer-run":"run1"},"state":"running","envdVersion":"0.2.4"}]

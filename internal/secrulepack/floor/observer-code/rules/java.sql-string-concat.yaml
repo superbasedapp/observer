@@ -1,0 +1,72 @@
+rules:
+  - id: java.sql-string-concat
+    languages: [java]
+    severity: ERROR
+    message: Web request input is pasted into SQL text; use a PreparedStatement with ? parameters or named parameters instead.
+    metadata:
+      category: code_vuln
+      cwe: CWE-89
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern: (HttpServletRequest $R).$M(...)
+          - metavariable-regex:
+              metavariable: $M
+              regex: ^(getParameter|getParameterValues|getParameterMap|getHeader|getHeaders|getQueryString|getCookies|getPathInfo|getRequestURI|getInputStream|getReader)$
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $RT $FN(..., @$A $T $P, ...) { ... }
+              - pattern-inside: |
+                  $RT $FN(..., @$A(...) $T $P, ...) { ... }
+          - pattern: $P
+          - metavariable-regex:
+              metavariable: $A
+              regex: ^(RequestParam|PathVariable|RequestBody|RequestHeader|CookieValue|QueryParam|PathParam|FormParam)$
+          # Pack 1.3.1: only text-carrying parameters (a String, a list or
+          # array of them); a number, an id or a request DTO is not SQL text.
+          - metavariable-regex:
+              metavariable: $T
+              regex: ^(String|String\[\]|List<String>|Collection<String>|Set<String>|Optional<String>|CharSequence)$
+    pattern-sanitizers:
+      - pattern: Integer.parseInt(...)
+      - pattern: Long.parseLong(...)
+      - pattern: Integer.valueOf(...)
+      - pattern: Long.valueOf(...)
+      - pattern: UUID.fromString(...)
+    pattern-sinks:
+      # Pack 1.3.1: the receiver is a SQL API (JDBC, Spring JDBC, JPA,
+      # Hibernate), by its declared type or its conventional name, and the
+      # argument is SQL text (a concatenation, a format call or a String
+      # value); a service's own update(dto) or query(page, ...) and a URI
+      # builder's query(...) are not SQL.
+      - patterns:
+          - pattern-either:
+              - pattern: (Statement $DB).$Q($SQL, ...)
+              - pattern: (PreparedStatement $DB).$Q($SQL, ...)
+              - pattern: (CallableStatement $DB).$Q($SQL, ...)
+              - pattern: (Connection $DB).$Q($SQL, ...)
+              - pattern: (JdbcTemplate $DB).$Q($SQL, ...)
+              - pattern: (JdbcOperations $DB).$Q($SQL, ...)
+              - pattern: (NamedParameterJdbcTemplate $DB).$Q($SQL, ...)
+              - pattern: (EntityManager $DB).$Q($SQL, ...)
+              - pattern: (Session $DB).$Q($SQL, ...)
+              - patterns:
+                  - pattern: $DB.$Q($SQL, ...)
+                  - metavariable-regex:
+                      metavariable: $DB
+                      regex: ^(this\.)?(st|stmt|statement|ps|pstmt|conn|connection|con|db|jdbc|jdbcTemplate|jdbcOperations|namedJdbc|namedParameterJdbcTemplate|em|entityManager|hibernateSession)$
+          - metavariable-regex:
+              metavariable: $Q
+              regex: ^(executeQuery|executeUpdate|execute|executeLargeUpdate|prepareStatement|prepareCall|addBatch|createQuery|createNativeQuery|createSQLQuery|queryForObject|queryForList|queryForMap|queryForRowSet|query|update|batchUpdate)$
+          - metavariable-pattern:
+              metavariable: $SQL
+              patterns:
+                - pattern-either:
+                    - pattern: $X + $Y
+                    - pattern: String.format(...)
+                    - pattern: $S.formatted(...)
+                    - pattern: $S.concat(...)
+                    - pattern: $B.toString()
+                    - pattern: (String $V)
+          - focus-metavariable: $SQL

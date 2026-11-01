@@ -1,4 +1,4 @@
-//go:build !linux && !sbo_omit_terminals_sandbox && !sbo_omit_terminals
+//go:build !linux && !sbo_omit_terminals_sandbox && !sbo_omit_isolation && !sbo_omit_terminals
 
 package main
 

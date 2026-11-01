@@ -19,7 +19,9 @@ func TestBuildProcessSeeds(t *testing.T) {
 	allHomesFunc = func() []crossmount.HomeRoot {
 		return []crossmount.HomeRoot{
 			{Path: "/home/me", OS: crossmount.OSLinux, Origin: "native"},
-			{Path: "/mnt/c/Users/me", OS: crossmount.OSWindows, Origin: "wsl-mnt:c"},
+			// Host-native spelling, as crossmount reports it and as the
+			// foreign db path below is built.
+			{Path: filepath.FromSlash("/mnt/c/Users/me"), OS: crossmount.OSWindows, Origin: "wsl-mnt:c"},
 		}
 	}
 

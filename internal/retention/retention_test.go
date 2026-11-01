@@ -352,6 +352,56 @@ func TestRun_ChildActionRefsNulledNotBlocked(t *testing.T) {
 	}
 }
 
+// TestRun_GuardChainSurvivesActionPrune pins GUARD-CHAIN-1 end to end:
+// pruning an action that carries a guard flag nulls the flag's action_id
+// (the FK) and the guard audit chain still verifies, because the chain
+// hashes the action_anchor column, which retention never touches.
+func TestRun_GuardChainSurvivesActionPrune(t *testing.T) {
+	dbPath, st := seed(t)
+	d := openExisting(t, dbPath)
+	ctx := context.Background()
+
+	var old, fresh int64
+	if err := d.QueryRowContext(ctx, `SELECT id FROM actions WHERE session_id='sess-a'`).Scan(&old); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.QueryRowContext(ctx, `SELECT id FROM actions WHERE session_id='sess-c'`).Scan(&fresh); err != nil {
+		t.Fatal(err)
+	}
+	flag := func(action int64, rule string, ts time.Time) store.GuardEventRow {
+		return store.GuardEventRow{
+			TS: ts, SessionID: "sess-a", ActionID: &action, Tool: models.ToolClaudeCode,
+			EventKind: "shell_exec", RuleID: rule, Decision: "flag", TargetHash: "h",
+		}
+	}
+	if _, err := st.InsertGuardEvents(ctx, []store.GuardEventRow{
+		flag(old, "R-101", fakeNow.Add(-time.Hour)),
+		flag(fresh, "R-110", fakeNow.Add(-time.Minute)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := New(d).Run(ctx, Options{MaxAgeDays: 100, DBPath: dbPath}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var actionID, anchor sql.NullInt64
+	if err := d.QueryRowContext(ctx,
+		`SELECT action_id, action_anchor FROM guard_events WHERE rule_id = 'R-101'`).Scan(&actionID, &anchor); err != nil {
+		t.Fatal(err)
+	}
+	if actionID.Valid || anchor.Int64 != old {
+		t.Fatalf("pruned flag action_id=%v action_anchor=%v, want NULL and %d", actionID, anchor, old)
+	}
+	report, err := store.New(d).VerifyGuardChain(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.OK || report.Checked != 2 {
+		t.Fatalf("VerifyGuardChain after the action prune = %+v, want OK across 2 rows", report)
+	}
+}
+
 // openExisting reopens a DB at path so we can re-create the *sql.DB after
 // the seed test cleanup. Avoids leaking handles between subtests.
 func openExisting(t *testing.T, path string) *sql.DB {

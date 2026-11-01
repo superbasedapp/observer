@@ -144,8 +144,8 @@ func TestEnforcementAuthoritiesIsTheClosedEnforceFamily(t *testing.T) {
 			t.Errorf("EnforcementAuthority(%q) is false for a family member", tok)
 		}
 	}
-	if len(fam) != 5 {
-		t.Fatalf("EnforcementAuthorities() has %d tokens, want the five siblings: %v", len(fam), fam)
+	if len(fam) != 7 {
+		t.Fatalf("EnforcementAuthorities() has %d tokens, want the seven siblings: %v", len(fam), fam)
 	}
 	if EnforcementAuthority(AuthorityExtractManaged) || EnforcementAuthority("enforce.something_new") {
 		t.Fatal("EnforcementAuthority() classifies a token outside the family")

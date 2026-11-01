@@ -19,6 +19,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/cloudcontract"
 	"github.com/marmutapp/superbased-observer/internal/cloudcred"
 	"github.com/marmutapp/superbased-observer/internal/cloudpop"
+	"github.com/marmutapp/superbased-observer/internal/keystore/keystoretest"
 )
 
 // testCred returns a hardened file-backed store rooted in a temp dir, so tests
@@ -29,8 +30,12 @@ func testCred(t *testing.T) cloudcred.Store {
 	// to guarantee the file backend in every environment we construct it via the
 	// exported Open against a temp HOME-like dir AND assert we did not silently
 	// bind a shared keychain. We cannot force the fallback through Open, so we
-	// use Open's fallback dir and accept either backend — the round-trips below
-	// exercise the interface regardless.
+	// use Open's fallback dir and accept either backend; the round-trips below
+	// exercise the interface regardless. A test binary's keychain is one
+	// in-memory map for the whole process, so the store starts on a fresh one
+	// (keystoretest.UseTestKeyring): without it a test that expects no API
+	// token read the token an earlier test stored.
+	keystoretest.UseTestKeyring(t)
 	return cloudcred.Open(t.TempDir(), nil)
 }
 

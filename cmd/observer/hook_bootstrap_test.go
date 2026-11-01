@@ -36,7 +36,7 @@ func newBootstrapEnv(t *testing.T) *bootstrapEnv {
 func newBootstrapEnvMode(t *testing.T, mode, rules string) *bootstrapEnv {
 	t.Helper()
 	dir := t.TempDir()
-	t.Setenv("HOME", filepath.Join(dir, "home"))
+	setTestHome(t, filepath.Join(dir, "home"))
 	cp := filepath.Join(dir, "config.toml")
 	writeFileT(t, cp, fmt.Sprintf("[observer]\ndb_path = %q\n[guard]\nenabled = true\nmode = %q\n%s", filepath.Join(dir, "o.db"), mode, rules))
 	return &bootstrapEnv{cp: cp}

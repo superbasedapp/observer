@@ -2,8 +2,10 @@ package commitscan
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,6 +26,14 @@ const (
 	defaultLinkWindow     = 14 * 24 * time.Hour
 	defaultMaxOutputBytes = 8 << 20 // 8 MiB
 	defaultNotRepoRecheck = 30 * time.Minute
+	defaultHistoryBudget  = 45 * time.Second
+
+	// maxTimeoutRetries bounds how many times one page is retried at a
+	// smaller size after a git timeout. Each retry can itself cost a full
+	// per-invocation timeout, so this is small, and the page shrinks by
+	// timeoutShrink each time (500 -> 125 -> 31) rather than halving.
+	maxTimeoutRetries = 2
+	timeoutShrink     = 4
 
 	// watermarkOverlap is subtracted from the stored watermark before the
 	// next incremental scan's --since, so a commit landed after the
@@ -76,6 +86,11 @@ const (
 type Root struct {
 	ProjectID int64
 	RootPath  string
+	// BoxRef is set only on a Root the OnCommit seam is handed for a commit
+	// read from a sandbox box ref (refs/observer/sandbox/<run>, or the
+	// worktree source's observer-sandbox/<run>/<label> branch; lane
+	// SEC-F2B): the ref the commit came from. Empty for HEAD's commits.
+	BoxRef string
 }
 
 // State is one project's durable scanner watermark + health — the plain
@@ -93,7 +108,28 @@ type State struct {
 	// 2026-09-29 finding 8). "" = unknown (unset, or the read failed); the
 	// store keeps the last known value rather than clearing it on "".
 	LocalAuthorHash string
+
+	// LastErrorKind classifies LastError (failure.go). KindNone on success.
+	LastErrorKind FailureKind
+	// LastSuccessAt is when a scan last completed (zero = never).
+	LastSuccessAt time.Time
+	// LastHeadSHA is the HEAD commit whose whole history is in the ledger.
+	// When set, the next scan reads only `git log <HEAD> ^<LastHeadSHA>`
+	// and skips git log entirely when HEAD has not moved. "" = unknown, so
+	// the scan falls back to the --since watermark.
+	LastHeadSHA string
+	// HistoryPending is true while a full-history walk has not finished.
+	// BackfillRev / BackfillSkip are its resume cursor: the pinned commit
+	// being walked and how many of its commits are already in. A tick
+	// walks pages until Options.HistoryBudget is spent, then pauses here.
+	HistoryPending bool
+	BackfillRev    string
+	BackfillSkip   int
 }
+
+// ErrScanInProgress is returned by ScanNow when a scan of the same root is
+// already running (a daemon tick, or another "Rescan now").
+var ErrScanInProgress = errors.New("commitscan: a scan of this project is already running")
 
 // Result is the outcome of one ScanOnce/FullScan call.
 type Result struct {
@@ -110,6 +146,12 @@ type Result struct {
 	// Subtree is the project's path prefix inside its repository ("" when
 	// the project root is the toplevel), as resolveSubtree computed it.
 	Subtree string
+	// Unchanged is true when HEAD had not moved since the last complete
+	// scan, so no git log ran at all.
+	Unchanged bool
+	// Partial is true when a full-history walk paused at its time budget;
+	// the next tick resumes it.
+	Partial bool
 }
 
 // Options wires every dependency the scanner needs. Every func field is
@@ -176,6 +218,17 @@ type Options struct {
 	// when NoCommits is nil, so the second probe never needs its own nil
 	// check.
 	NoCommits func(err error) bool
+	// Inspect extracts the structural shape of a failed git invocation
+	// (exit code, stderr, whether our own timeout killed it) for the
+	// failure classification table (failure.go). Production wires
+	// internal/gitview.InspectError. Optional: nil classifies only by the
+	// other predicates, so most failures read as KindOther.
+	Inspect func(err error) (GitFailure, bool)
+	// HistoryBudget bounds how long ONE daemon tick (ScanOnce) spends on a
+	// full-history walk before pausing it with a resume cursor, so a large
+	// repository is captured over several ticks instead of one call that
+	// runs for minutes. Default 45s. FullScan (the backfill CLI) ignores it.
+	HistoryBudget time.Duration
 	// State reads one project's durable watermark. ok=false means never
 	// scanned. Production: internal/store.CommitScanState.
 	State func(ctx context.Context, projectID int64) (State, bool, error)
@@ -208,6 +261,31 @@ type Options struct {
 	// before. It is not called by ScanOnce/FullScan themselves, so
 	// `observer backfill --commits` is unaffected.
 	AfterScan func(ctx context.Context, root Root, res Result)
+
+	// OnCommit, when set, is the per-commit observer seam (security plan
+	// 7.10, lane SEC-F2A; the change record builder is its first consumer,
+	// lane SEC-G2 may be the next): after every SUCCESSFUL daemon tick or
+	// ScanNow for a root, and after AfterScan, it is called once for each
+	// commit that scan read from git, newest first, at most MaxPerTick per
+	// scan. A commit can be offered again by a later scan (the watermark
+	// overlap re-reads the last hour), so a consumer must be idempotent.
+	// Like AfterScan it never runs for a failed scan, and FullScan (the
+	// backfill CLI) never calls it. Optional: nil leaves the scanner as
+	// before.
+	OnCommit func(ctx context.Context, root Root, c commitlog.Commit)
+
+	// BoxActive and OnBoxCommit are the box ref half of the commit seam
+	// (boxrefs.go; lane SEC-F2B audit finding 4). The box refs are listed
+	// (one `git for-each-ref` per root) only while BoxActive answers true
+	// (cmd/observer: while the security.provenance loop runs), so an install
+	// without it never pays the listing. OnBoxCommit is offered each commit
+	// a moved box ref has that HEAD does not, with Root.BoxRef set, and
+	// answers whether it decided the commit (its record written or already
+	// there, or none owed); a box ref's tip is remembered only when every
+	// commit offered was decided, so a seam that was off or failed offers
+	// them again on the next scan. Either nil: no box ref is walked.
+	BoxActive   func() bool
+	OnBoxCommit func(ctx context.Context, root Root, c commitlog.Commit) bool
 
 	// Interval between ticks. Default 120s.
 	Interval time.Duration
@@ -247,7 +325,70 @@ type Scanner struct {
 	// so each is logged once per process however often it is re-probed.
 	notRepoUntil  sync.Map
 	notRepoLogged sync.Map
+	// inflight holds the roots a scan is running for right now, so a daemon
+	// tick and a "Rescan now" never scan the same root at once.
+	inflight sync.Map
+	// boxTips maps root + "\x00" + box ref to the tip whose commits the
+	// OnBoxCommit seam last decided, so an unchanged box ref is not read
+	// again.
+	boxTips sync.Map
 }
+
+// seenKey carries a scan's commit collector through the scan's context,
+// so scanPage can hand the commits it read to the OnCommit seam without
+// threading a new parameter through every scan path.
+type seenKey struct{}
+
+// seenCommits collects the commits one scan read.
+type seenCommits struct {
+	mu      sync.Mutex
+	commits []commitlog.Commit
+	max     int
+}
+
+func (c *seenCommits) add(cs []commitlog.Commit) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, x := range cs {
+		if len(c.commits) >= c.max {
+			return
+		}
+		c.commits = append(c.commits, x)
+	}
+}
+
+// withSeen returns ctx with a collector when the OnCommit seam is wired.
+func (s *Scanner) withSeen(ctx context.Context) (context.Context, *seenCommits) {
+	if s.opts.OnCommit == nil {
+		return ctx, nil
+	}
+	c := &seenCommits{max: s.opts.MaxPerTick}
+	return context.WithValue(ctx, seenKey{}, c), c
+}
+
+// notifyCommits runs the OnCommit seam over what a successful scan read.
+func (s *Scanner) notifyCommits(ctx context.Context, root Root, c *seenCommits) {
+	if c == nil || s.opts.OnCommit == nil {
+		return
+	}
+	c.mu.Lock()
+	cs := append([]commitlog.Commit(nil), c.commits...)
+	c.mu.Unlock()
+	for _, x := range cs {
+		if ctx.Err() != nil {
+			return
+		}
+		s.opts.OnCommit(ctx, root, x)
+	}
+}
+
+// acquire marks root as being scanned; false when it already is.
+func (s *Scanner) acquire(root string) bool {
+	_, busy := s.inflight.LoadOrStore(root, struct{}{})
+	return !busy
+}
+
+func (s *Scanner) release(root string) { s.inflight.Delete(root) }
 
 // New builds a Scanner, filling every zero-valued numeric/duration Options
 // field with its documented default.
@@ -269,6 +410,9 @@ func New(opts Options) *Scanner {
 	}
 	if opts.NotRepoRecheck <= 0 {
 		opts.NotRepoRecheck = defaultNotRepoRecheck
+	}
+	if opts.HistoryBudget <= 0 {
+		opts.HistoryBudget = defaultHistoryBudget
 	}
 	if opts.Now == nil {
 		opts.Now = time.Now
@@ -316,13 +460,17 @@ func (s *Scanner) runPass(ctx context.Context) {
 
 	var due []Root
 	for _, r := range roots {
-		if s.opts.Scannable != nil && !s.opts.Scannable(r.RootPath) {
+		if !s.scannable(r.RootPath) {
 			if _, seen := s.skipped.LoadOrStore(r.RootPath, struct{}{}); !seen && s.opts.Logger != nil {
 				s.opts.Logger.Info("commitscan: root is not a directory - skipping (placeholder or unmounted project root)",
 					"project_id", r.ProjectID, "root", r.RootPath)
 			}
+			s.markRootGone(ctx, r)
 			continue
 		}
+		// A root that came back (remounted, re-created) is logged again
+		// if it later disappears.
+		s.skipped.Delete(r.RootPath)
 		if until, ok := s.notRepoUntil.Load(r.RootPath); ok && s.opts.Now().Before(until.(time.Time)) {
 			continue
 		}
@@ -356,12 +504,19 @@ func (s *Scanner) runPass(ctx context.Context) {
 // scanRootTick runs one incremental ScanOnce for root and reacts to a
 // git-unavailable classification by latching the scanner idle.
 func (s *Scanner) scanRootTick(ctx context.Context, root Root) {
-	res, err := s.ScanOnce(ctx, root)
+	if !s.acquire(root.RootPath) {
+		return // a "Rescan now" of this root is running; the next tick catches up
+	}
+	defer s.release(root.RootPath)
+	sctx, seen := s.withSeen(ctx)
+	res, err := s.ScanOnce(sctx, root)
 	if err == nil {
 		s.notRepoUntil.Delete(root.RootPath)
 		if s.opts.AfterScan != nil {
 			s.opts.AfterScan(ctx, root, res)
 		}
+		s.notifyCommits(ctx, root, seen)
+		s.notifyBoxCommits(ctx, root, res)
 		return
 	}
 	if s.opts.Unavailable != nil && s.opts.Unavailable(err) {
@@ -380,7 +535,101 @@ func (s *Scanner) scanRootTick(ctx context.Context, root Root) {
 		}
 		return
 	}
-	s.warn("commitscan: scan failed", "project_id", root.ProjectID, "root", root.RootPath, "error", err)
+	s.warn("commitscan: scan failed", "project_id", root.ProjectID, "root", root.RootPath,
+		"kind", string(s.classify(err)), "error", err)
+}
+
+// ScanNow scans one root immediately, on demand (the Projects page's
+// "Rescan now" action, POST /api/project/{id}/commit-scan). It ignores the
+// failure backoff and the not-a-repository recheck delay, but never runs
+// alongside another scan of the same root (ErrScanInProgress). A root that
+// is not a folder is recorded as such (KindNoFolder / KindRootMissing) and
+// reported as a *RootError. On success the AfterScan step runs, exactly as
+// on a daemon tick.
+func (s *Scanner) ScanNow(ctx context.Context, root Root) (Result, error) {
+	res := Result{ProjectID: root.ProjectID, RootPath: root.RootPath}
+	if s.gitUnavailable.Load() {
+		return res, errors.New(gitNotFoundError)
+	}
+	if !s.scannable(root.RootPath) {
+		s.markRootGone(ctx, root)
+		return res, &RootError{Kind: rootKind(root.RootPath), Root: root.RootPath}
+	}
+	if !s.acquire(root.RootPath) {
+		return res, ErrScanInProgress
+	}
+	defer s.release(root.RootPath)
+	s.notRepoUntil.Delete(root.RootPath)
+	sctx, seen := s.withSeen(ctx)
+	res, err := s.ScanOnce(sctx, root)
+	if err != nil {
+		if s.opts.Unavailable != nil && s.opts.Unavailable(err) {
+			s.gitUnavailable.Store(true)
+		}
+		return res, err
+	}
+	if s.opts.AfterScan != nil {
+		s.opts.AfterScan(ctx, root, res)
+	}
+	s.notifyCommits(ctx, root, seen)
+	s.notifyBoxCommits(ctx, root, res)
+	return res, nil
+}
+
+// scannable reports whether root is a folder the scanner may run git in: a
+// path rooted on this host (hostRooted; a root that is not, such as
+// FU-193's "Xcode (project unknown)" or a placeholder, would otherwise be
+// stat'ed and run relative to the daemon's working directory, audit row 8)
+// and, when the caller set one, Options.Scannable's answer.
+func (s *Scanner) scannable(root string) bool {
+	if !hostRooted(root) {
+		return false
+	}
+	return s.opts.Scannable == nil || s.opts.Scannable(root)
+}
+
+// hostRooted reports whether p names a place on this host without the
+// working directory: absolute, or (Windows) rooted on the current drive.
+// A relative name, and on a POSIX host a Windows drive or UNC spelling, is
+// not: opening it would resolve against the daemon's working directory.
+func hostRooted(p string) bool {
+	return filepath.IsAbs(p) || strings.HasPrefix(filepath.ToSlash(p), "/")
+}
+
+// RootError reports that a project's root is not a folder the scanner can
+// run git in: Kind is KindNoFolder (a placeholder such as "[cursor]") or
+// KindRootMissing (deleted, moved or unmounted).
+type RootError struct {
+	Kind FailureKind
+	Root string
+}
+
+func (e *RootError) Error() string {
+	if e.Kind == KindNoFolder {
+		return fmt.Sprintf("this project has no folder on disk (its sessions were filed under %q)", e.Root)
+	}
+	return fmt.Sprintf("project folder not found: %s (deleted, moved or not mounted)", e.Root)
+}
+
+// markRootGone records, once per change, that a project's root is not a
+// folder: the failure kind says which (no folder at all, or a folder that
+// is gone), the count is pinned at 1 (nothing will clear it except the
+// folder coming back, which the next tick's Scannable check notices), and
+// the stored watermark and ledger are kept. Before 2026-10-15 such a root
+// was skipped without any state write, so whatever error its last real scan
+// recorded stayed on the Projects page forever.
+func (s *Scanner) markRootGone(ctx context.Context, root Root) {
+	kind := rootKind(root.RootPath)
+	st, ok, err := s.opts.State(ctx, root.ProjectID)
+	if err != nil {
+		s.warn("commitscan: read state failed", "project_id", root.ProjectID, "error", err)
+		return
+	}
+	re := &RootError{Kind: kind, Root: root.RootPath}
+	if ok && st.LastErrorKind == kind && st.LastError == re.Error() && st.ConsecutiveFailures > 0 {
+		return // already recorded; no write per tick
+	}
+	s.recordFailureKind(ctx, root.ProjectID, s.opts.Now(), kind, re.Error())
 }
 
 // dueForScan reports whether a root with the given stored state should be
@@ -436,18 +685,199 @@ func backoffDuration(consecutiveFailures int, interval time.Duration) time.Durat
 // are ever mid-backfill together, and every OTHER due root is merely
 // delayed to a later tick, never skipped or starved.
 func (s *Scanner) ScanOnce(ctx context.Context, root Root) (Result, error) {
+	if !hostRooted(root.RootPath) {
+		return Result{ProjectID: root.ProjectID, RootPath: root.RootPath}, &RootError{Kind: rootKind(root.RootPath), Root: root.RootPath}
+	}
 	st, ok, err := s.opts.State(ctx, root.ProjectID)
 	if err != nil {
 		return Result{ProjectID: root.ProjectID, RootPath: root.RootPath}, err
 	}
-	if !ok || st.LastCommittedAt.IsZero() {
-		return s.FullScan(ctx, root, time.Time{}, 0)
+	switch {
+	case !ok || st.HistoryPending || (st.LastCommittedAt.IsZero() && st.LastHeadSHA == ""):
+		// No completed history walk yet (or one in progress): walk it,
+		// bounded by HistoryBudget per tick and resumable (2026-10-15).
+		return s.historyScan(ctx, root, st, ok)
+	case st.LastHeadSHA != "":
+		// The ledger holds HEAD's whole history up to LastHeadSHA: read
+		// only what HEAD gained since, or nothing if HEAD has not moved.
+		return s.rangeScan(ctx, root, st)
 	}
 	since := st.LastCommittedAt.Add(-watermarkOverlap).UTC().Format(time.RFC3339)
 	// bounded=false: an incremental tick must COMPLETE the range back to
 	// the watermark before advancing it (2026-09-22 review finding S2) —
 	// see scan's doc comment.
 	return s.scan(ctx, root, since, s.opts.MaxPerTick, false)
+}
+
+// historyScan walks the full history of HEAD in pages, newest first, the
+// way FullScan does, but stops once Options.HistoryBudget is spent and
+// persists a resume cursor (the pinned commit and how many of its commits
+// are in) instead of running for as long as the repository needs. The
+// next tick resumes from the cursor. Pages already sunk stay sunk, so a
+// large repository makes visible progress every tick; newest commits land
+// first, which is what the attribution window needs.
+//
+// The walk pins the commit it walks: a resumed walk continues the SAME
+// commit's history (commits never change), and when it completes the
+// ledger is complete up to that commit, recorded as LastHeadSHA, so the
+// next tick's rangeScan picks up whatever HEAD gained meanwhile. If the
+// pinned commit disappeared (a rebase plus garbage collection), the cursor
+// is dropped and the next tick starts a fresh walk at the current HEAD.
+func (s *Scanner) historyScan(ctx context.Context, root Root, prev State, havePrev bool) (Result, error) {
+	res := Result{ProjectID: root.ProjectID, RootPath: root.RootPath}
+	now := s.opts.Now()
+	subtree, rev, noCommits, err := s.resolveScanTarget(ctx, root, now)
+	if err != nil {
+		return res, err
+	}
+	res.HeadSHA, res.Subtree = rev, subtree
+	if noCommits {
+		s.finishEmptyScan(ctx, root, now, &res)
+		return res, nil
+	}
+
+	walkRev, skip := rev, 0
+	resuming := havePrev && prev.HistoryPending && prev.BackfillRev != ""
+	if resuming {
+		walkRev, skip = prev.BackfillRev, prev.BackfillSkip
+	}
+	pageSize := s.opts.MaxPerTick
+	var newest []commitlog.Commit
+	for {
+		if err := ctx.Err(); err != nil {
+			s.recordFailure(ctx, root.ProjectID, now, err)
+			return res, err
+		}
+		commits, overflow, inserted, usedMax, perr := s.scanPage(ctx, root, walkRev, "", "", pageSize, skip, subtree, now)
+		if perr != nil {
+			if resuming && s.classify(perr) == KindRepoUnreadable {
+				s.dropHistoryCursor(ctx, root.ProjectID)
+			}
+			return res, perr
+		}
+		res.CommitsSeen += len(commits)
+		res.Inserted += inserted
+		res.Overflow = res.Overflow || overflow
+		if skip == 0 {
+			newest = commits
+		}
+		if len(commits) < usedMax {
+			break
+		}
+		skip += usedMax
+		pageSize = usedMax
+		if s.opts.Now().Sub(now) >= s.opts.HistoryBudget {
+			s.pauseHistory(ctx, root, now, prev, newest, walkRev, skip)
+			res.Partial = true
+			return res, nil
+		}
+	}
+	s.finishScan(ctx, root, now, newest, subtree, rev, walkRev, &res)
+	return res, nil
+}
+
+// pauseHistory persists a paused full-history walk: a successful tick (no
+// error), the resume cursor, and the newest commit seen so far as the
+// watermark.
+func (s *Scanner) pauseHistory(ctx context.Context, root Root, now time.Time, prev State, newest []commitlog.Commit, walkRev string, skip int) {
+	next := State{
+		ProjectID:       root.ProjectID,
+		LastSHA:         prev.LastSHA,
+		LastCommittedAt: prev.LastCommittedAt,
+		LastScanAt:      now,
+		LastSuccessAt:   now,
+		LastHeadSHA:     prev.LastHeadSHA,
+		HistoryPending:  true,
+		BackfillRev:     walkRev,
+		BackfillSkip:    skip,
+	}
+	if sha, at, ok := newestCommit(newest); ok {
+		next.LastSHA, next.LastCommittedAt = sha, at
+	}
+	if err := s.opts.SetState(ctx, next); err != nil {
+		s.warn("commitscan: persist state failed", "project_id", root.ProjectID, "error", err)
+	}
+}
+
+// dropHistoryCursor forgets a paused walk whose pinned commit no longer
+// exists, so the next tick restarts the walk at the current HEAD.
+func (s *Scanner) dropHistoryCursor(ctx context.Context, projectID int64) {
+	st, ok, err := s.opts.State(ctx, projectID)
+	if err != nil || !ok {
+		return
+	}
+	st.BackfillRev, st.BackfillSkip, st.HistoryPending = "", 0, true
+	if err := s.opts.SetState(ctx, st); err != nil {
+		s.warn("commitscan: persist state failed", "project_id", projectID, "error", err)
+	}
+}
+
+// rangeScan is the incremental tick once the ledger holds HEAD's history
+// up to prev.LastHeadSHA. When HEAD has not moved it runs no git log and
+// no reachability walk at all (the two probes resolveScanTarget runs are
+// the whole cost). Otherwise it reads `git log <HEAD> ^<LastHeadSHA>`:
+// exactly the commits HEAD gained, whatever their dates. This replaces
+// the --since watermark for this case, which missed a pulled commit whose
+// committer date is older than the newest commit already seen. If
+// LastHeadSHA is no longer in the repository (a rebase plus garbage
+// collection), it falls back to the --since scan.
+func (s *Scanner) rangeScan(ctx context.Context, root Root, prev State) (Result, error) {
+	res := Result{ProjectID: root.ProjectID, RootPath: root.RootPath}
+	now := s.opts.Now()
+	subtree, rev, noCommits, err := s.resolveScanTarget(ctx, root, now)
+	if err != nil {
+		return res, err
+	}
+	res.HeadSHA, res.Subtree = rev, subtree
+	if noCommits {
+		s.finishEmptyScan(ctx, root, now, &res)
+		return res, nil
+	}
+	if rev == prev.LastHeadSHA {
+		res.Unchanged = true
+		next := prev
+		next.LastScanAt, next.LastSuccessAt = now, now
+		next.LastError, next.LastErrorKind, next.ConsecutiveFailures = "", KindNone, 0
+		next.LocalAuthorHash = "" // the store keeps the last known identity
+		if err := s.opts.SetState(ctx, next); err != nil {
+			s.warn("commitscan: persist state failed", "project_id", root.ProjectID, "error", err)
+		}
+		return res, nil
+	}
+
+	var newest []commitlog.Commit
+	pageSize := s.opts.MaxPerTick
+	for skip := 0; ; {
+		if err := ctx.Err(); err != nil {
+			s.recordFailure(ctx, root.ProjectID, now, err)
+			return res, err
+		}
+		commits, overflow, inserted, usedMax, perr := s.scanPage(ctx, root, rev, prev.LastHeadSHA, "", pageSize, skip, subtree, now)
+		if perr != nil {
+			if s.classify(perr) == KindRepoUnreadable && prev.LastHeadSHA != "" {
+				// The excluded commit is gone: fall back to the watermark.
+				since := ""
+				if !prev.LastCommittedAt.IsZero() {
+					since = prev.LastCommittedAt.Add(-watermarkOverlap).UTC().Format(time.RFC3339)
+				}
+				return s.scan(ctx, root, since, s.opts.MaxPerTick, false)
+			}
+			return res, perr
+		}
+		res.CommitsSeen += len(commits)
+		res.Inserted += inserted
+		res.Overflow = res.Overflow || overflow
+		if skip == 0 {
+			newest = commits
+		}
+		if len(commits) < usedMax {
+			break
+		}
+		skip += usedMax
+		pageSize = usedMax
+	}
+	s.finishScan(ctx, root, now, newest, subtree, rev, rev, &res)
+	return res, nil
 }
 
 // FullScan runs an UNBOUNDED-by-watermark scan of root — `observer
@@ -479,6 +909,9 @@ func (s *Scanner) ScanOnce(ctx context.Context, root Root) (Result, error) {
 // later page to walk a different history than the first page already
 // committed to.
 func (s *Scanner) FullScan(ctx context.Context, root Root, since time.Time, max int) (Result, error) {
+	if !hostRooted(root.RootPath) {
+		return Result{ProjectID: root.ProjectID, RootPath: root.RootPath}, &RootError{Kind: rootKind(root.RootPath), Root: root.RootPath}
+	}
 	sinceStr := ""
 	if !since.IsZero() {
 		sinceStr = since.UTC().Format(time.RFC3339)
@@ -508,7 +941,7 @@ func (s *Scanner) FullScan(ctx context.Context, root Root, since time.Time, max 
 			s.recordFailure(ctx, root.ProjectID, now, err)
 			return res, err
 		}
-		commits, overflow, inserted, usedMax, err := s.scanPage(ctx, root, rev, sinceStr, pageSize, skip, subtree, now)
+		commits, overflow, inserted, usedMax, err := s.scanPage(ctx, root, rev, "", sinceStr, pageSize, skip, subtree, now)
 		if err != nil {
 			return res, err
 		}
@@ -523,7 +956,13 @@ func (s *Scanner) FullScan(ctx context.Context, root Root, since time.Time, max 
 		}
 		skip += usedMax
 	}
-	s.finishScan(ctx, root, now, newest, subtree, rev, &res)
+	// A whole-history walk (no --since cut) leaves the ledger complete up
+	// to rev; a --since-bounded one does not.
+	complete := ""
+	if sinceStr == "" {
+		complete = rev
+	}
+	s.finishScan(ctx, root, now, newest, subtree, rev, complete, &res)
 	return res, nil
 }
 
@@ -579,7 +1018,7 @@ func (s *Scanner) scan(ctx context.Context, root Root, since string, max int, bo
 			s.recordFailure(ctx, root.ProjectID, now, err)
 			return res, err
 		}
-		commits, overflow, inserted, usedMax, perr := s.scanPage(ctx, root, rev, since, pageSize, skip, subtree, now)
+		commits, overflow, inserted, usedMax, perr := s.scanPage(ctx, root, rev, "", since, pageSize, skip, subtree, now)
 		if perr != nil {
 			return res, perr
 		}
@@ -604,7 +1043,14 @@ func (s *Scanner) scan(ctx context.Context, root Root, since string, max int, bo
 		skip += usedMax
 		pageSize = usedMax
 	}
-	s.finishScan(ctx, root, now, newest, subtree, rev, &res)
+	// An unbounded incremental tick has completed its range, so the ledger
+	// now holds HEAD's history up to rev and the next tick can switch to
+	// rangeScan. A caller-bounded page establishes nothing of the kind.
+	complete := ""
+	if !bounded {
+		complete = rev
+	}
+	s.finishScan(ctx, root, now, newest, subtree, rev, complete, &res)
 	return res, nil
 }
 
@@ -833,20 +1279,47 @@ func rebaseSubtree(commits []commitlog.Commit, subtree string) ([]commitlog.Comm
 // an overflow retry shrank it), which the caller needs to advance a
 // multi-page walk's `skip` correctly instead of assuming every page was
 // the nominal size.
-func (s *Scanner) scanPage(ctx context.Context, root Root, rev, since string, max, skip int, subtree string, now time.Time) (commits []commitlog.Commit, overflow bool, inserted, usedMax int, err error) {
+//
+// exclude, when set, makes the page a RANGE (`<rev> ^<exclude>`: only the
+// commits rev has that exclude does not), the rangeScan case.
+//
+// A page whose git invocation TIMES OUT is retried at a quarter of its
+// size, at most maxTimeoutRetries times (2026-10-15): a large repository
+// on a slow mount (/mnt/c from WSL) can need longer than the per-call
+// limit for 500 commits' worth of --numstat, but not for 31. Still timing
+// out after that is a recorded KindTimeout failure.
+func (s *Scanner) scanPage(ctx context.Context, root Root, rev, exclude, since string, max, skip int, subtree string, now time.Time) (commits []commitlog.Commit, overflow bool, inserted, usedMax int, err error) {
 	pageMax := max
+	timeoutRetries := 0
 	for {
-		out, of, execErr := s.opts.Exec(ctx, root.RootPath, s.opts.MaxOutputBytes,
-			commitlog.PageArgsRev(rev, since, pageMax, skip, subtreePathspec(subtree))...)
+		args := commitlog.PageArgsRev(rev, since, pageMax, skip, subtreePathspec(subtree))
+		if exclude != "" {
+			args = commitlog.PageArgsRange(rev, exclude, pageMax, skip, subtreePathspec(subtree))
+		}
+		out, of, execErr := s.opts.Exec(ctx, root.RootPath, s.opts.MaxOutputBytes, args...)
 		if execErr != nil {
+			if ctx.Err() == nil && s.isTimeout(execErr) {
+				if timeoutRetries < maxTimeoutRetries && pageMax > minPageCommits {
+					timeoutRetries++
+					next := pageMax / timeoutShrink
+					if next < minPageCommits {
+						next = minPageCommits
+					}
+					s.warn("commitscan: git log page timed out, retrying at a smaller page size",
+						"project_id", root.ProjectID, "from", pageMax, "to", next)
+					pageMax = next
+					continue
+				}
+				execErr = fmt.Errorf("%w at %d commit(s) per page after %d smaller retries: %w", errPageTimeout, pageMax, timeoutRetries, execErr)
+			}
 			s.recordFailure(ctx, root.ProjectID, now, execErr)
 			return nil, overflow, 0, pageMax, execErr
 		}
 		if of {
 			overflow = true
 			if pageMax <= minPageCommits {
-				ovErr := fmt.Errorf("commitscan: git log page still overflows %d bytes at the minimum page size (%d commit(s)); raise the byte cap or investigate an oversized single-commit diff",
-					s.opts.MaxOutputBytes, pageMax)
+				ovErr := fmt.Errorf("%w: git log page still overflows %d bytes at the minimum page size (%d commit(s)); raise the byte cap or investigate an oversized single-commit diff",
+					errPageTooLarge, s.opts.MaxOutputBytes, pageMax)
 				s.recordFailure(ctx, root.ProjectID, now, ovErr)
 				return nil, overflow, 0, pageMax, ovErr
 			}
@@ -874,6 +1347,9 @@ func (s *Scanner) scanPage(ctx context.Context, root Root, rev, since string, ma
 			s.recordFailure(ctx, root.ProjectID, now, serr)
 			return nil, overflow, 0, pageMax, serr
 		}
+		if seen, ok := ctx.Value(seenKey{}).(*seenCommits); ok {
+			seen.add(parsed)
+		}
 		return parsed, overflow, ins, pageMax, nil
 	}
 }
@@ -882,7 +1358,12 @@ func (s *Scanner) scanPage(ctx context.Context, root Root, rev, since string, ma
 // revalidation (best-effort) and the persisted watermark, derived from
 // the newest commit among `commits` (the first page of a full scan) or
 // carried over from the previous state when nothing new was seen.
-func (s *Scanner) finishScan(ctx context.Context, root Root, now time.Time, commits []commitlog.Commit, subtree, rev string, res *Result) {
+//
+// completeHead is the commit whose WHOLE history the ledger now holds (it
+// becomes LastHeadSHA and clears any paused history walk). "" means this
+// call did not establish that (a caller-bounded FullScan page), so the
+// previous LastHeadSHA and walk cursor are kept as they were.
+func (s *Scanner) finishScan(ctx context.Context, root Root, now time.Time, commits []commitlog.Commit, subtree, rev, completeHead string, res *Result) {
 	// The local identity read (review 2026-09-29 finding 8) is best-effort
 	// and runs before the reachability pass, so that pass stays the scan's
 	// last invocation.
@@ -892,11 +1373,18 @@ func (s *Scanner) finishScan(ctx context.Context, root Root, now time.Time, comm
 	// here never fails the scan that already landed new commits.
 	res.Reachability = s.revalidateReachability(ctx, root, now, subtree, rev)
 
-	newState := State{ProjectID: root.ProjectID, LastScanAt: now, LocalAuthorHash: localAuthor}
+	newState := State{ProjectID: root.ProjectID, LastScanAt: now, LastSuccessAt: now, LocalAuthorHash: localAuthor}
+	prev, havePrev, _ := s.opts.State(ctx, root.ProjectID)
 	if maxSHA, maxAt, ok := newestCommit(commits); ok {
 		newState.LastSHA, newState.LastCommittedAt = maxSHA, maxAt
-	} else if prev, ok, _ := s.opts.State(ctx, root.ProjectID); ok {
+	} else if havePrev {
 		newState.LastSHA, newState.LastCommittedAt = prev.LastSHA, prev.LastCommittedAt
+	}
+	if completeHead != "" {
+		newState.LastHeadSHA = completeHead
+	} else if havePrev {
+		newState.LastHeadSHA = prev.LastHeadSHA
+		newState.HistoryPending, newState.BackfillRev, newState.BackfillSkip = prev.HistoryPending, prev.BackfillRev, prev.BackfillSkip
 	}
 	if err := s.opts.SetState(ctx, newState); err != nil {
 		s.warn("commitscan: persist state failed", "project_id", root.ProjectID, "error", err)
@@ -933,7 +1421,7 @@ func (s *Scanner) resolveLocalAuthorHash(ctx context.Context, root Root) string 
 // every other successful scan, ConsecutiveFailures/LastError reset to
 // their zero value.
 func (s *Scanner) finishEmptyScan(ctx context.Context, root Root, now time.Time, res *Result) {
-	newState := State{ProjectID: root.ProjectID, LastScanAt: now}
+	newState := State{ProjectID: root.ProjectID, LastScanAt: now, LastSuccessAt: now}
 	if prev, ok, _ := s.opts.State(ctx, root.ProjectID); ok {
 		newState.LastSHA, newState.LastCommittedAt = prev.LastSHA, prev.LastCommittedAt
 	}
@@ -1057,24 +1545,34 @@ func (s *Scanner) revalidateReachability(ctx context.Context, root Root, now tim
 // count is pinned at 1 rather than incremented: the in-memory
 // NotRepoRecheck skip governs how often such a root is re-probed, and an
 // ever-growing backoff would otherwise delay picking up a later `git init`.
+//
+// Every failure is also classified (failure.go) into State.LastErrorKind,
+// so the surfaces can say which cause it was. A STRUCTURAL kind (no folder,
+// folder gone, not a repository) pins the count at 1 the same way.
 func (s *Scanner) recordFailure(ctx context.Context, projectID int64, now time.Time, err error) {
-	prev, _, _ := s.opts.State(ctx, projectID)
 	msg := err.Error()
 	if s.opts.Unavailable != nil && s.opts.Unavailable(err) {
 		msg = gitNotFoundError
 	}
+	s.recordFailureKind(ctx, projectID, now, s.classify(err), msg)
+}
+
+// recordFailureKind is recordFailure's persistence half, shared with
+// markRootGone (which has no error from git to classify). Everything the
+// previous state knew (watermark, last success, history cursor) is kept.
+func (s *Scanner) recordFailureKind(ctx context.Context, projectID int64, now time.Time, kind FailureKind, msg string) {
+	prev, _, _ := s.opts.State(ctx, projectID)
 	failures := prev.ConsecutiveFailures + 1
-	if s.isNotRepo(err) {
+	if isStructural(kind) {
 		failures = 1
 	}
-	next := State{
-		ProjectID:           projectID,
-		LastSHA:             prev.LastSHA,
-		LastCommittedAt:     prev.LastCommittedAt,
-		LastScanAt:          now,
-		LastError:           msg,
-		ConsecutiveFailures: failures,
-	}
+	next := prev
+	next.ProjectID = projectID
+	next.LastScanAt = now
+	next.LastError = msg
+	next.LastErrorKind = kind
+	next.ConsecutiveFailures = failures
+	next.LocalAuthorHash = "" // the store keeps the last known identity
 	if serr := s.opts.SetState(ctx, next); serr != nil {
 		s.warn("commitscan: persist failure state failed", "project_id", projectID, "error", serr)
 	}

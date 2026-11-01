@@ -1,6 +1,8 @@
 package components
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"strings"
 	"testing"
 )
@@ -30,14 +32,22 @@ func TestCatalogShape(t *testing.T) {
 			feature++
 		}
 	}
-	if adapter != 45 {
-		t.Errorf("adapter rows = %d, want 45 (one per integration registry tool)", adapter)
+	if adapter != 55 {
+		t.Errorf("adapter rows = %d, want 55 (one per integration registry tool)", adapter)
 	}
 	if core != 2 {
 		t.Errorf("core rows = %d, want 2 (node core and org.core)", core)
 	}
-	if got := feature + integration; got < 38 || got > 45 {
-		t.Errorf("optional node rows = %d, want about 40", got)
+	// The upper bound leaves room for the security pillar's children
+	// (security.trust, security.secrets, security.code, then deps, the
+	// scanner drivers, the code-rules driver and the feedback) and the
+	// sandbox rows (the oci, mxc, Seatbelt and Apple container drivers each
+	// have their own row: 57 after lanes SBX-P5 and SBX-P6 merged; lane
+	// SBX-P7 adds the e2b, modal and vercel hosted drivers; lane GATES-SBX
+	// adds readopt, credentials, mxc.appcontainer, wslc and hcs; lane GATES-SEC
+	// the trivy and kics drivers and isolation.seal).
+	if got := feature + integration; got < 38 || got > 76 {
+		t.Errorf("optional node rows = %d, want 38 to 76", got)
 	}
 	if server < 21 {
 		t.Errorf("server rows = %d, want at least 21", server)
@@ -228,5 +238,23 @@ func TestImages(t *testing.T) {
 		if !want[id] {
 			t.Fatalf("core image has %s", id)
 		}
+	}
+}
+
+// TestDigestMixesCatalogVersion pins the digest to the catalog version
+// (3 since lane SEC-F2B, 4 since lane GATES-SEC): a version bump changes every binary's
+// components digest once, the release-note line.
+func TestDigestMixesCatalogVersion(t *testing.T) {
+	if CatalogVersion != 4 {
+		t.Fatalf("CatalogVersion = %d; the wave-6 bump is 4", CatalogVersion)
+	}
+	ids := []string{"core", "security", "security.provenance"}
+	h := sha256.Sum256([]byte("sbo-components-v4\ncore\nsecurity\nsecurity.provenance"))
+	if got := Digest(ids); got != hex.EncodeToString(h[:]) {
+		t.Fatalf("digest %s does not mix in catalog v4", got)
+	}
+	v3 := sha256.Sum256([]byte("sbo-components-v3\ncore\nsecurity\nsecurity.provenance"))
+	if Digest(ids) == hex.EncodeToString(v3[:]) {
+		t.Fatal("the digest still reads as catalog v3")
 	}
 }

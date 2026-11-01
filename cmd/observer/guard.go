@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -44,6 +45,9 @@ func newGuardCmd() *cobra.Command {
 	cmd.AddCommand(newGuardTestCmd())
 	cmd.AddCommand(newGuardLintCmd())
 	cmd.AddCommand(newGuardVerifyAuditCmd())
+	cmd.AddCommand(newGuardDedupEventsCmd())
+	cmd.AddCommand(newGuardRepairAnchorsCmd())
+	cmd.AddCommand(newGuardRelinkGapsCmd())
 	cmd.AddCommand(newGuardMCPCmd())
 	cmd.AddCommand(newGuardCompileCmd())
 	cmd.AddCommand(newGuardExportCmd())
@@ -92,6 +96,12 @@ func newGuardStatusCmd() *cobra.Command {
 			fmt.Fprintf(out, "Rules:        %d active rows\n", g.RuleCount())
 			fmt.Fprintf(out, "Taint:        %s (decay %d turns)\n", onOff(cfg.Guard.Taint.Enabled), cfg.Guard.Taint.DecayTurns)
 			fmt.Fprintf(out, "Alerts:       desktop=%s min_severity=%s\n", onOff(cfg.Guard.Alerts.Desktop), cfg.Guard.Alerts.MinSeverity)
+			// D-672: the managed-node floor and the org bundle state are
+			// visible where the developer looks (empty on a node with no
+			// org lock).
+			for _, line := range guardOrgLockLines(cfg.Guard.Lock, g.OrgLockStatus()) {
+				fmt.Fprintln(out, line)
+			}
 			for _, ps := range g.PolicyStates() {
 				fmt.Fprintf(out, "Policy layer: %-7s %s (sha256 %.12s…)\n", ps.Layer, ps.Path, ps.ContentHash)
 				// Non-fatal parse notes (org-bundle keys this binary
@@ -102,6 +112,16 @@ func newGuardStatusCmd() *cobra.Command {
 				}
 			}
 			for _, issue := range g.LoadIssues() {
+				fmt.Fprintf(out, "LOAD ISSUE:   %s\n", issue)
+			}
+			// The org's project_unknown decision, while its bundle carries
+			// the project audience (lane sec-p2a).
+			if v, ok := g.OrgProjectUnknown(); ok {
+				fmt.Fprintf(out, "Project floor: project_unknown = %q (the org bundle's [project_audience]; where a project bundle reaches you and its policy cannot be confirmed, ask asks on an individual node and blocks on a managed one)\n", v)
+			}
+			// The project half of the org bundle cache (lane sec-p, audit
+			// finding 4): a mapped project with no envelope file.
+			for _, issue := range g.OrgProjectCacheIssues() {
 				fmt.Fprintf(out, "LOAD ISSUE:   %s\n", issue)
 			}
 			// Coverage summary from the §6.5 conformance matrix: which
@@ -254,6 +274,48 @@ func newGuardRulesCmd() *cobra.Command {
 	return cmd
 }
 
+// shellDialectNote is the catalog's note on which shell a command is read
+// as (PSRULES lane: the git hook bypass rules met PowerShell on Windows,
+// JSP-6 live half).
+const shellDialectNote = "\n## Shell dialects\n\n" +
+	"Shell rules read a command the way the shell that runs it reads it.\n" +
+	"A shell tool named PowerShell or pwsh (Claude Code's PowerShell tool on\n" +
+	"Windows, for one) is read as PowerShell. A shell tool with a generic\n" +
+	"name (Bash, shell) whose working directory is a Windows one (a drive\n" +
+	"letter or UNC path) is read both ways, POSIX and PowerShell, and a hit\n" +
+	"in either reading counts: Codex and Copilot CLI ran every command\n" +
+	"through Windows PowerShell 5.1 on Windows. The PowerShell reading knows\n" +
+	"single, double and here-string (`@'...'@`, `@\"...\"@`) quoting,\n" +
+	"backtick escapes and line continuations, comments (`#`, `<# #>`), `;`\n" +
+	"and pipelines, the `&` call operator, environment changes (`$env:NAME =`,\n" +
+	"`Set-Item env:`, `New-Item -Path Env:`,\n" +
+	"`[Environment]::SetEnvironmentVariable`) and `NUL` as the null device.\n" +
+	"Nested `cmd /c`, `powershell -Command` / `-EncodedCommand`, `pwsh -c`,\n" +
+	"`Invoke-Expression`, script blocks and `Start-Process -ArgumentList`\n" +
+	"payloads are read too, to a bounded depth. A line past the parser's\n" +
+	"bounds is marked unanalyzed and held by R-157, as on the POSIX path;\n" +
+	"it is never silently allowed. R-112, R-113, R-114 and R-165 carry\n" +
+	"PowerShell rows, including the commands captured live on Windows, in\n" +
+	"their test corpus.\n\n" +
+	"When a command is read both ways, a rule's reason quotes the PowerShell\n" +
+	"reading, which keeps a Windows path's backslashes (the POSIX reading of\n" +
+	"`C:\\Users\\dev` is `C:Usersdev`); a hit in either reading still counts.\n" +
+	"`observer guard test` reads a command the same way: on a Windows\n" +
+	"directory both ways, and `--shell posix|powershell|cmd` names one shell.\n" +
+	"A UNC path (`\\\\server\\share\\x`) is a Windows path of its own: it is\n" +
+	"outside every drive or POSIX project, a bare share is a filesystem root,\n" +
+	"and it compares case-sensitively with another UNC path.\n"
+
+// guardPackCatalogMarkdown renders the rows of the rule packs this build
+// carries beyond the built-in catalog (the install gate's S-741 to S-749,
+// set by security_deps.go); "" when none.
+var guardPackCatalogMarkdown = func() string { return "" }
+
+// guardCommitGateCatalogMarkdown renders the commit gate's section (S-791
+// to S-794, set by security_gate_doc.go); "" when the build has no
+// security module.
+var guardCommitGateCatalogMarkdown = func() string { return "" }
+
 // renderRuleCatalogMarkdown renders the rule catalog as the
 // docs/guard-rules.md body. The committed doc is GENERATED from this
 // — TestGuardRulesDocInSync is the drift gate, so a rule change that
@@ -276,10 +338,13 @@ func renderRuleCatalogMarkdown(infos []policy.RuleInfo) string {
 			r.ID, r.Category, r.Severity, r.Observe, r.Enforce,
 			strings.ReplaceAll(r.Doc, "|", "\\|"))
 	}
+	b.WriteString(guardPackCatalogMarkdown())
+	b.WriteString(guardCommitGateCatalogMarkdown())
 	b.WriteString("\nTune rules without redefining them via `[[override]]` entries in\n")
 	b.WriteString("`~/.observer/guard-policy.toml` (guard spec §4.4); disable IDs via\n")
 	b.WriteString("`[guard.rules] disable`. Project policy files may only escalate\n")
 	b.WriteString("(§4.6 one-way layering).\n")
+	b.WriteString(shellDialectNote)
 	return b.String()
 }
 
@@ -291,6 +356,7 @@ func newGuardTestCmd() *cobra.Command {
 		configPath string
 		filePath   string
 		eventJSON  string
+		shell      string
 		jsonOut    bool
 	)
 	cmd := &cobra.Command{
@@ -301,14 +367,21 @@ func newGuardTestCmd() *cobra.Command {
 			"  observer guard test --file ~/.ssh/config  # file write\n" +
 			"  observer guard test --event '{\"kind\":\"shell_exec\",\"target\":\"git push -f\"}'\n\n" +
 			"The project root resolves from the current directory's git root,\n" +
-			"so boundary rules behave as they would for a session in this repo.",
+			"so boundary rules behave as they would for a session in this repo.\n\n" +
+			"A command is read as POSIX, and in a Windows directory also as\n" +
+			"PowerShell, as a hook reads a generic shell tool there; --shell\n" +
+			"posix|powershell|cmd reads it under that shell only.",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load(config.LoadOptions{GlobalPath: configPath})
 			if err != nil {
 				return fmt.Errorf("load config: %w", err)
 			}
-			ev, err := buildTestEvent(args, filePath, eventJSON)
+			dialect, ok := guardtest.ShellDialect(shell)
+			if !ok {
+				return fmt.Errorf("--shell %q: want posix, powershell or cmd", shell)
+			}
+			ev, err := buildTestEvent(args, filePath, eventJSON, dialect)
 			if err != nil {
 				return err
 			}
@@ -335,6 +408,7 @@ func newGuardTestCmd() *cobra.Command {
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml")
 	cmd.Flags().StringVar(&filePath, "file", "", "dry-run a file WRITE to this path instead of a command")
 	cmd.Flags().StringVar(&eventJSON, "event", "", `dry-run a raw event: {"kind","target","action_type","session_id"}`)
+	cmd.Flags().StringVar(&shell, "shell", "", "read the command under this shell only: posix, powershell or cmd")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit JSON")
 	return cmd
 }
@@ -343,7 +417,7 @@ func newGuardTestCmd() *cobra.Command {
 // three input forms. The project root resolves from the cwd's git
 // root (falling back to the cwd itself) so boundary rules behave as
 // they would for a real session here.
-func buildTestEvent(args []string, filePath, eventJSON string) (policy.Event, error) {
+func buildTestEvent(args []string, filePath, eventJSON string, dialect policy.Dialect) (policy.Event, error) {
 	cwd, _ := os.Getwd()
 	root := cwd
 	if r, ok := git.FindRoot(cwd); ok {
@@ -381,7 +455,7 @@ func buildTestEvent(args []string, filePath, eventJSON string) (policy.Event, er
 		}
 		return guardtest.Raw(base, raw.Kind, raw.Target, raw.ActionType, raw.SessionID), nil
 	default:
-		return guardtest.Command(base, args[0]), nil
+		return guardtest.CommandIn(base, args[0], dialect), nil
 	}
 }
 
@@ -535,10 +609,240 @@ func newGuardVerifyAuditCmd() *cobra.Command {
 			}
 			fmt.Fprintf(out, "audit chain BROKEN - first divergence at id %d (%d row(s) walked)\n%s\n",
 				report.FirstDivergenceID, report.Checked, report.Detail)
+			fmt.Fprintln(out, formatGuardBreaks(report.Breaks))
 			return errors.New("guard verify-audit: chain divergence")
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml")
+	return cmd
+}
+
+// formatGuardBreaks renders a verify report's per-class break counts, in a
+// stable order.
+func formatGuardBreaks(breaks map[string]int) string {
+	classes := make([]string, 0, len(breaks))
+	for class := range breaks {
+		classes = append(classes, class)
+	}
+	sort.Strings(classes)
+	parts := make([]string, 0, len(classes))
+	for _, class := range classes {
+		parts = append(parts, fmt.Sprintf("%s %d", class, breaks[class]))
+	}
+	return "failing rows by class: " + strings.Join(parts, ", ")
+}
+
+// newGuardDedupEventsCmd builds `observer guard dedup-events`: remove the
+// repeated watcher-path guard_events rows a re-parse wrote before the
+// insertSingleAction fix (2026-10-21) and re-hash the chain after them.
+// Reports only, unless --apply.
+func newGuardDedupEventsCmd() *cobra.Command {
+	var (
+		configPath string
+		apply      bool
+		keepHashes bool
+	)
+	cmd := &cobra.Command{
+		Use:   "dedup-events",
+		Short: "Remove repeated guard audit rows written by transcript re-parses",
+		Long: "Finds guard_events rows that repeat an earlier row for the same\n" +
+			"stored action (same rule, kind, decision and target): copies a\n" +
+			"re-parse wrote before the 2026-10-21 fix. Hook rows are never\n" +
+			"touched. With --apply it deletes them and re-hashes the audit chain\n" +
+			"from the first one on, in one transaction; it refuses when a row in\n" +
+			"that range already fails verification, so no existing break is\n" +
+			"hidden. --keep-hashes deletes them and rewrites no hash instead:\n" +
+			"each deletion becomes a broken link verify-audit reports, for a\n" +
+			"chain that is already broken inside that range. Rows already\n" +
+			"pushed to an org server stay there. Without --apply it only reports.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cfg, err := config.Load(config.LoadOptions{GlobalPath: configPath})
+			if err != nil {
+				return fmt.Errorf("load config: %w", err)
+			}
+			database, err := db.Open(cmd.Context(), db.Options{Path: cfg.Observer.DBPath})
+			if err != nil {
+				return fmt.Errorf("open db: %w", err)
+			}
+			defer database.Close()
+			report, err := store.New(database).DedupGuardEvents(cmd.Context(), store.GuardDedupOptions{
+				Apply: apply, KeepHashes: keepHashes,
+			})
+			if err != nil {
+				return fmt.Errorf("dedup: %w", err)
+			}
+			out := cmd.OutOrStdout()
+			if report.Duplicates == 0 {
+				fmt.Fprintln(out, "no repeated guard rows")
+				return nil
+			}
+			tools := make([]string, 0, len(report.ByTool))
+			for tool := range report.ByTool {
+				tools = append(tools, tool)
+			}
+			sort.Strings(tools)
+			fmt.Fprintf(out, "%d repeated guard row(s), the first at id %d:\n", report.Duplicates, report.FirstDuplicateID)
+			for _, tool := range tools {
+				fmt.Fprintf(out, "  %-20s %d\n", tool, report.ByTool[tool])
+			}
+			switch {
+			case report.Refused != "":
+				fmt.Fprintf(out, "refused: %s\n", report.Refused)
+				return errors.New("guard dedup-events: refused")
+			case report.Applied && report.KeptHashes:
+				fmt.Fprintf(out, "removed %d row(s); no hash rewritten (verify-audit reports each removal as a broken link)\n", report.Duplicates)
+			case report.Applied:
+				fmt.Fprintf(out, "removed %d row(s); re-hashed %d chain link(s)\n", report.Duplicates, report.Rehashed)
+			default:
+				fmt.Fprintln(out, "dry run: pass --apply to remove them")
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml")
+	cmd.Flags().BoolVar(&apply, "apply", false, "Delete the repeated rows and re-hash the chain (default: report only)")
+	cmd.Flags().BoolVar(&keepHashes, "keep-hashes", false, "Delete without re-hashing: no stored hash changes and no verification is required")
+	return cmd
+}
+
+// newGuardRepairAnchorsCmd builds `observer guard repair-anchors`: restore
+// the action id of guard_events rows that action maintenance cleared before
+// agent migration 197 (GUARD-CHAIN-1), where the row's stored hash proves
+// the id. Reports only, unless --apply.
+func newGuardRepairAnchorsCmd() *cobra.Command {
+	var (
+		configPath string
+		apply      bool
+		ceiling    int64
+	)
+	cmd := &cobra.Command{
+		Use:   "repair-anchors",
+		Short: "Restore guard audit rows whose action id old maintenance cleared",
+		Long: "Before agent migration 197, action retention, component purge and\n" +
+			"migration 079 set guard_events.action_id to NULL when they removed\n" +
+			"the action, and action_id was hashed, so verify-audit reported those\n" +
+			"rows as rewritten. For every row that fails that way and has no\n" +
+			"action id left, this tries action ids and accepts one only when the\n" +
+			"row, with that id and every other column as stored, reproduces its\n" +
+			"stored hash. That is a proof, not a guess: a row edited in any other\n" +
+			"way matches no id and stays reported. No hash is rewritten, so a\n" +
+			"deleted row stays a broken link. With --apply it writes the proven\n" +
+			"ids to action_anchor; without it it only reports.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cfg, err := config.Load(config.LoadOptions{GlobalPath: configPath})
+			if err != nil {
+				return fmt.Errorf("load config: %w", err)
+			}
+			database, err := db.Open(cmd.Context(), db.Options{Path: cfg.Observer.DBPath})
+			if err != nil {
+				return fmt.Errorf("open db: %w", err)
+			}
+			defer database.Close()
+			st := store.New(database)
+			report, err := st.RepairGuardAnchors(cmd.Context(), store.GuardAnchorRepairOptions{
+				Apply: apply, Ceiling: ceiling,
+			})
+			if err != nil {
+				return fmt.Errorf("repair: %w", err)
+			}
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "%d row(s) fail as rewritten with no action id; %d proven (action ids 1-%d, %d hash(es) tried)\n",
+				report.Candidates, report.Proven, report.Ceiling, report.Tries)
+			if report.UnprovenCount > 0 {
+				fmt.Fprintf(out, "%d not proven (left as reported), the first: %v\n", report.UnprovenCount, report.Unproven)
+			}
+			if !report.Applied {
+				if report.Proven > 0 {
+					fmt.Fprintln(out, "dry run: pass --apply to write the proven ids")
+				}
+				return nil
+			}
+			fmt.Fprintf(out, "restored %d action id(s)\n", report.Repaired)
+			chain, err := st.VerifyGuardChain(cmd.Context())
+			if err != nil {
+				return fmt.Errorf("verify: %w", err)
+			}
+			if chain.OK {
+				fmt.Fprintf(out, "audit chain OK - %d row(s) verified\n", chain.Checked)
+			} else {
+				fmt.Fprintf(out, "audit chain still broken - %s\n%s\n", chain.Detail, formatGuardBreaks(chain.Breaks))
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml")
+	cmd.Flags().BoolVar(&apply, "apply", false, "Write the proven action ids (default: report only)")
+	cmd.Flags().Int64Var(&ceiling, "ceiling", 0, "Highest action id to try (default: the highest id the node ever issued)")
+	return cmd
+}
+
+// newGuardRelinkGapsCmd builds `observer guard relink-gaps`: re-link the
+// audit chain over the deletion gaps `dedup-events --keep-hashes` leaves,
+// recording the rewrite as a guard_rechain row. Reports only, unless --apply.
+func newGuardRelinkGapsCmd() *cobra.Command {
+	var (
+		configPath string
+		apply      bool
+	)
+	cmd := &cobra.Command{
+		Use:   "relink-gaps",
+		Short: "Re-link the guard audit chain over rows deleted by dedup-events",
+		Long: "Finds rows whose link fails only because the row before them was\n" +
+			"deleted (what `dedup-events --keep-hashes` leaves): the id below is\n" +
+			"absent and the row's own content still matches its stored hash.\n" +
+			"With --apply it recomputes every link from the first such row and\n" +
+			"appends a guard_rechain row recording the gap count and the old\n" +
+			"tail hash, in one transaction. Any other kind of break refuses the\n" +
+			"whole run, so an edited row is never hidden. Rows already pushed\n" +
+			"to an org server keep their old hashes there; a later full re-push\n" +
+			"(`backfill --all --confirm`) would send the re-linked rows again.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cfg, err := config.Load(config.LoadOptions{GlobalPath: configPath})
+			if err != nil {
+				return fmt.Errorf("load config: %w", err)
+			}
+			database, err := db.Open(cmd.Context(), db.Options{Path: cfg.Observer.DBPath})
+			if err != nil {
+				return fmt.Errorf("open db: %w", err)
+			}
+			defer database.Close()
+			st := store.New(database)
+			report, err := st.RechainGuardGaps(cmd.Context(), apply, time.Now().UTC())
+			if err != nil {
+				return fmt.Errorf("relink: %w", err)
+			}
+			out := cmd.OutOrStdout()
+			switch {
+			case report.Refused != "":
+				fmt.Fprintf(out, "refused: %s\n", report.Refused)
+				return errors.New("guard relink-gaps: refused")
+			case report.Gaps == 0:
+				fmt.Fprintln(out, "no deletion gaps")
+				return nil
+			case !report.Applied:
+				fmt.Fprintf(out, "%d deletion gap(s), the first at id %d\ndry run: pass --apply to re-link them\n",
+					report.Gaps, report.FirstGapID)
+				return nil
+			}
+			fmt.Fprintf(out, "re-linked %d deletion gap(s) from id %d: %d link(s) rewritten; marker row %d records the old tail hash %s\n",
+				report.Gaps, report.FirstGapID, report.Rehashed, report.MarkerID, report.OldTailHash)
+			chain, err := st.VerifyGuardChain(cmd.Context())
+			if err != nil {
+				return fmt.Errorf("verify: %w", err)
+			}
+			if chain.OK {
+				fmt.Fprintf(out, "audit chain OK - %d row(s) verified\n", chain.Checked)
+			} else {
+				fmt.Fprintf(out, "audit chain still broken - %s\n%s\n", chain.Detail, formatGuardBreaks(chain.Breaks))
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml")
+	cmd.Flags().BoolVar(&apply, "apply", false, "Re-link the chain and add the marker row (default: report only)")
 	return cmd
 }
 
@@ -581,10 +885,15 @@ func expandUserPolicyPath(p, home string) string {
 // out of scope here) and the daemon's own rendering path never calls this
 // function, so it is byte-identical.
 func orgBudgetCLILine(ctx context.Context, cfg config.Config, database *sql.DB) string {
-	line := guardBudgetPostureLine(ctx, cfg, database)
 	if database == nil {
-		return line
+		return guardBudgetPostureLine(ctx, cfg, database)
 	}
+	granted := budgetEnforcementGranted(ctx, cfg, database, slog.Default())
+	line := guardBudgetPostureLineWithGrant(ctx, cfg, database, granted)
+	// WINNODE item 8: coverage=proxy_only is the guard's own scan, and stays
+	// the wire value; on a managed node the hook-path stop (T-519) also stops
+	// direct-provider sessions of tools whose pre-send hooks run here.
+	line += budgetHookStopClause(granted, recentHookTools(ctx, database, time.Now()))
 	// WHICH OF THIS DEVELOPER'S USAGE THE ORG'S RATES ACTUALLY PRICED (ruling
 	// A3). Appended rather than folded into the composed posture because the
 	// posture answers "is a cap in force" and this answers "in whose dollars";

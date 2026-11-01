@@ -24,7 +24,7 @@ import (
 func TestShellWrapLaunchEnvTable(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.toml")
-	if err := os.WriteFile(cfgPath, []byte("[proxy]\nport = 18821\n[observer]\ndb_path = \""+filepath.Join(dir, "o.db")+"\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("[proxy]\nport = 18821\n[observer]\ndb_path = \""+filepath.ToSlash(filepath.Join(dir, "o.db"))+"\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	const url = "http://127.0.0.1:18821"

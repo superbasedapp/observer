@@ -3,6 +3,7 @@ package integration
 import (
 	"reflect"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -229,6 +230,9 @@ func TestWrappedCommandFor(t *testing.T) {
 		wantProven bool
 	}{
 		{"claude-code", true, LaunchKindTerminal, []string{"claude"}, true, true},
+		// CLI-1c: an opt-in --proxy route does not ride the bare verb.
+		{"grok", true, LaunchKindTerminal, []string{"grok"}, false, false},
+		{"goose", true, LaunchKindTerminal, []string{"goose"}, false, false},
 		{"vscode", true, LaunchKindGUI, []string{GUILaunchVerb, "vscode"}, true, false},
 		{"cursor-ide", true, LaunchKindGUI, []string{GUILaunchVerb, "cursor-ide"}, false, false},
 		{"zed-ide", true, LaunchKindGUI, []string{GUILaunchVerb, "zed-ide"}, false, false}, // D-177, WrapNone
@@ -254,6 +258,38 @@ func TestWrappedCommandFor(t *testing.T) {
 				t.Errorf("Replaces is empty - the wrapped form must name the vendor spelling it stands in for")
 			}
 		})
+	}
+}
+
+// TestWrappedCommandHonoursLaunchFlag (CLI-1c, surface-gap arc lane w2-c):
+// every launchable CLI row's wrapped form claims a route only when its proxy
+// route applies to the bare verb. A Launcher spelling that carries arguments
+// after the verb must declare them as the LaunchFlag, so a new opt-in route
+// cannot slip past this.
+func TestWrappedCommandHonoursLaunchFlag(t *testing.T) {
+	for _, c := range Capabilities() {
+		if c.Proxy == nil {
+			continue
+		}
+		if fields := strings.Fields(c.Proxy.Launcher); len(fields) > 2 {
+			if got := strings.Join(fields[2:], " "); got != c.Proxy.LaunchFlag {
+				t.Errorf("%s: Launcher %q carries %q after the verb but LaunchFlag = %q", c.Tool, c.Proxy.Launcher, got, c.Proxy.LaunchFlag)
+			}
+		} else if c.Proxy.LaunchFlag != "" {
+			t.Errorf("%s: LaunchFlag %q but Launcher %q does not name it", c.Tool, c.Proxy.LaunchFlag, c.Proxy.Launcher)
+		}
+		w, ok := WrappedCommandFor(c.Tool)
+		if !ok {
+			continue
+		}
+		wantRoutes := c.Proxy.LaunchFlag == ""
+		if w.Routes != wantRoutes || w.TrafficProven != wantRoutes || w.RouteFlag != c.Proxy.LaunchFlag {
+			t.Errorf("%s: wrapped Routes=%v TrafficProven=%v RouteFlag=%q, want %v %v %q",
+				c.Tool, w.Routes, w.TrafficProven, w.RouteFlag, wantRoutes, wantRoutes, c.Proxy.LaunchFlag)
+		}
+		if w.RouteConditional && !w.Routes {
+			t.Errorf("%s: RouteConditional without Routes", c.Tool)
+		}
 	}
 }
 
@@ -287,19 +323,23 @@ func TestDocumentedIDEHostMatrix(t *testing.T) {
 	want := map[string]map[string]HostedRoute{
 		"vscode": {
 			"claude-code": HostedRoutePersisted, "codex": HostedRoutePersisted,
-			"cline": HostedRouteManual, "kilo-code": HostedRouteManual,
-			"kilo-code-cli": HostedRouteNotRoutable, "copilot": HostedRouteUnproven,
+			"cline": HostedRouteUnproven, "kilo-code": HostedRouteUnproven,
+			"kilo-code-cli": HostedRouteUnproven, "copilot": HostedRouteUnproven,
 			"gemini-cli": HostedRouteLaunchEnv, "qwen-code": HostedRoutePersisted,
 			"kimi-code": HostedRoutePersisted, "mistral-code": HostedRouteUnproven,
 			"droid": HostedRouteUnproven, "opencode": HostedRouteLaunchEnv,
-			"command-code": HostedRouteUnproven,
+			"command-code": HostedRouteUnproven, "goose": HostedRouteLauncherOnly,
+			"poolside": HostedRouteUnproven, "antigravity": HostedRouteNotRoutable,
 		},
 		"jetbrains-idea": {
 			"junie": HostedRouteUnproven, "claude-code": HostedRoutePersisted,
 			"codex": HostedRoutePersisted, "kimi-code": HostedRoutePersisted,
 			"qwen-code": HostedRoutePersisted, "mistral-code": HostedRouteUnproven,
 			"droid": HostedRouteUnproven, "grok": HostedRouteLauncherOnly,
-			"copilot-cli": HostedRouteLauncherOnly,
+			"copilot-cli": HostedRouteLauncherOnly, "cline-cli": HostedRoutePersisted,
+			"kilo-code-cli": HostedRouteUnproven, "devin": HostedRouteNotRoutable,
+			"opencode": HostedRouteLaunchEnv, "poolside": HostedRouteUnproven,
+			"antigravity-cli": HostedRouteUnproven,
 		},
 	}
 	for id, cells := range want {

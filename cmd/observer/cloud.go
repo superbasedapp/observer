@@ -209,6 +209,36 @@ func cloudHostKey(resolved string) string {
 	return strings.ToLower(u.Host)
 }
 
+// cloudResetResultCursor clears the node's results-pull cursor after a
+// sign-in, a sign-out or an account deletion (T-962). The hosted cursor
+// ("v2:<n>") is a per-ACCOUNT sequence and the node cannot see which account
+// a token belongs to, so a cursor kept across any of those events could skip
+// the first n results of the next account (seen live: v2:13 against a fresh
+// server). Clearing it makes the next sync pull from the beginning, which is
+// idempotent (already-stored results update in place).
+//
+// allHosts clears every host's cursor (the full local wipe); otherwise only the
+// host resolved names (an empty value selects the legacy bare key). It is
+// best-effort: a database that cannot be opened prints one warning line and
+// never fails the command, because signing out must always work.
+func cloudResetResultCursor(ctx context.Context, w io.Writer, configPath, resolved string, allHosts bool) {
+	_, database, cleanup, err := loadConfigAndDB(ctx, configPath)
+	if err != nil {
+		fmt.Fprintf(w, "Warning: could not reset the results position (%v). The next sync may skip results until it is reset.\n", err)
+		return
+	}
+	defer cleanup()
+	st := store.New(database)
+	if allHosts {
+		err = st.ClearAllCloudResultCursors(ctx)
+	} else {
+		err = st.ClearCloudResultCursor(ctx, cloudHostKey(resolved))
+	}
+	if err != nil {
+		fmt.Fprintf(w, "Warning: could not reset the results position (%v). The next sync may skip results until it is reset.\n", err)
+	}
+}
+
 // requireCloudBaseURL returns the resolved base URL or the honest "how to set
 // it" error. It is the one place that copy lives.
 func requireCloudBaseURL(resolved string) error {
@@ -335,9 +365,15 @@ func buildPlaneEnvelope(ctx context.Context, st *store.Store, ep envelopePlane, 
 	// build is the true last one however deep the session is — and `failures`
 	// every recorded failure, so the error classes describe the session rather
 	// than a window of it.
+	//
+	// `harness` sees the opening of every user_prompt row, so the activity mix
+	// counts a harness-written message (a background task notification, another
+	// agent's hand-back, a system reminder) as what it is, never as the
+	// developer's prompt (T-966).
 	var (
 		outcomes cloudevidence.OutcomeTally
 		failures cloudevidence.ErrorClassTally
+		harness  cloudevidence.HarnessPromptTally
 	)
 	req := store.CloudEvidenceRequest{
 		MaxActions:         cloudcontract.MaxActions,
@@ -345,6 +381,7 @@ func buildPlaneEnvelope(ctx context.Context, st *store.Store, ep envelopePlane, 
 		IncludeTexts:       wantText,
 		IncludeFirstPrompt: wantFirstPrompt,
 		Commands:           outcomes.AddCommand,
+		PromptHeads:        harness.Add,
 	}
 	if settings != nil {
 		req.MaxActions = max(1, settings.ActionSummaries)
@@ -403,7 +440,7 @@ func buildPlaneEnvelope(ctx context.Context, st *store.Store, ep envelopePlane, 
 		ActionsTotal:    facts.ActionCount,
 		Milestones:      cloudevidence.DeriveMilestones(milestoneRows),
 		Outcomes:        outcomes.Outcomes(),
-		ActivityMix:     cloudActivityMix(facts.ActivityMix),
+		ActivityMix:     harness.Reclassify(cloudActivityMix(facts.ActivityMix)),
 		Authority:       auth,
 	}
 
@@ -490,6 +527,8 @@ func cloudRawActions(in []store.CloudActionFact, start time.Time) []cloudevidenc
 		if kind == "" {
 			kind = "action"
 		}
+		// A harness-written "user prompt" is sampled as what it is (T-966).
+		kind = cloudevidence.ReclassifyPromptKind(kind, a.Target)
 		out = append(out, cloudevidence.RawAction{
 			Ref:            a.Ref,
 			Kind:           kind,
@@ -529,6 +568,7 @@ func cloudMetrics(f store.CloudSessionFacts, pricer *cost.Engine) cloudevidence.
 		DeterministicScore: clampFloat(m.QualityScore, 0, 100),
 		RedundancyRatio:    clampFloat(m.RedundancyRatio, 0, 1),
 		ErrorRate:          clampFloat(m.ErrorRate, 0, 1),
+		Usage:              cloudUsagePresence(m),
 	}
 	if out.ErrorRate == 0 && f.ActionCount > 0 {
 		out.ErrorRate = clampFloat(float64(f.FailedActions)/float64(f.ActionCount), 0, 1)
@@ -539,6 +579,21 @@ func cloudMetrics(f store.CloudSessionFacts, pricer *cost.Engine) cloudevidence.
 		}
 	}
 	return out
+}
+
+// cloudUsagePresence states whether ANY counted token row fed the metrics
+// (D-866). A session captured by hooks alone (no watcher, no proxy) has actions
+// but no token rows, and its zeros must upload as "not measured", not as a free
+// session. Presence is read from the rows, never from the sums being zero: a
+// measured session can total zero. Non-zero sums can only come from rows, so
+// they count as captured too (a defensive guard for a caller that filled the
+// sums without the row count).
+func cloudUsagePresence(m store.CloudSessionMetrics) cloudevidence.UsagePresence {
+	if m.RecordedRows > 0 || len(m.Turns) > 0 || len(m.ProxyTurns) > 0 ||
+		m.TokensIn > 0 || m.TokensOut > 0 || m.CacheReadTokens > 0 || m.CostUSD > 0 {
+		return cloudevidence.UsageCaptured
+	}
+	return cloudevidence.UsageNotCaptured
 }
 
 // cloudPricedCost prices the session PER TOKEN ROW and sums the money. Rows are
@@ -930,6 +985,9 @@ func newCloudLoginCmd() *cobra.Command {
 					return fmt.Errorf("exchange: %w", err)
 				}
 				fmt.Fprintln(w, "Signed in - device-bound API token stored. (dev token was not persisted)")
+				// The token may belong to a different account than the one the
+				// stored cursor was minted under (T-962).
+				cloudResetResultCursor(cmd.Context(), w, configPath, resolved, false)
 				return nil
 			}
 			// Production: WorkOS PKCE loopback sign-in.
@@ -938,7 +996,11 @@ func newCloudLoginCmd() *cobra.Command {
 				fmt.Fprintf(w, "%s\n", cloudWorkOSClientIDMissingHint)
 				return nil
 			}
-			return runWorkOSLogin(cmd.Context(), w, cfg, baseURL, clientID)
+			if err := runWorkOSLogin(cmd.Context(), w, cfg, baseURL, clientID); err != nil {
+				return err
+			}
+			cloudResetResultCursor(cmd.Context(), w, configPath, resolveCloudBaseURL(baseURL, cfg), false)
+			return nil
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml)")
@@ -1166,9 +1228,14 @@ func cloudPrintEnvelopeSummary(w io.Writer, res cloudEnvelopeResult) {
 	}
 	fmt.Fprintln(w, "----")
 	fmt.Fprintf(w, "duration:                %d s\n", env.DurationSeconds)
-	fmt.Fprintf(w, "metrics:                 tokens in %d / out %d, cache read %d, cost $%.4f, error rate %.3f\n",
-		env.Metrics.TokensIn, env.Metrics.TokensOut, env.Metrics.CacheReadTokens,
-		env.Metrics.CostUSD, env.Metrics.ErrorRate)
+	if env.Metrics.ResolvedUsage() == cloudcontract.UsageNotMeasured {
+		fmt.Fprintf(w, "metrics:                 tokens and cost not measured (no token usage captured for this session), error rate %.3f\n",
+			env.Metrics.ErrorRate)
+	} else {
+		fmt.Fprintf(w, "metrics:                 tokens in %d / out %d, cache read %d, cost $%.4f, error rate %.3f\n",
+			env.Metrics.TokensIn, env.Metrics.TokensOut, env.Metrics.CacheReadTokens,
+			env.Metrics.CostUSD, env.Metrics.ErrorRate)
+	}
 	if len(env.ActivityMix) > 0 {
 		parts := make([]string, 0, len(env.ActivityMix))
 		for _, e := range env.ActivityMix {
@@ -2184,6 +2251,14 @@ func cloudAssociateSessionResult(ctx context.Context, st *store.Store, rec cloud
 		return false, fmt.Errorf("cloudAssociateResult: marshal result: %w", err)
 	}
 
+	// A result already stored is a re-pull (the cursor is reset at sign-in and
+	// sign-out): refresh the row in place but do not re-merge its tags, which
+	// the user may have removed since the first pull.
+	repull, err := st.HasCloudResult(ctx, rec.ResultID)
+	if err != nil {
+		return false, fmt.Errorf("cloudAssociateResult: %w", err)
+	}
+
 	if _, err := st.UpsertCloudResult(ctx, store.CloudResult{
 		ID:            rec.ResultID,
 		SessionID:     localSessionID,
@@ -2218,7 +2293,7 @@ func cloudAssociateSessionResult(ctx context.Context, st *store.Store, rec cloud
 	// session_tags would corrupt their tag space with an unexplained label. Off
 	// vocabulary slugs are DROPPED here — they remain visible on the result
 	// itself, which is where an un-vocabularized suggestion belongs.
-	if merged := cloudStandardTaxonomyTags(rec.Result.TaxonomyTags); len(merged) > 0 {
+	if merged := cloudStandardTaxonomyTags(rec.Result.TaxonomyTags); !repull && len(merged) > 0 {
 		if mErr := st.MutateSessionTags(ctx, localSessionID, merged, nil); mErr != nil {
 			_ = mErr // best-effort: see comment above.
 		}
@@ -2378,12 +2453,14 @@ func newCloudLogoutCmd() *cobra.Command {
 				if err := all.ClearCredentials(); err != nil {
 					return fmt.Errorf("clear credentials (all hosts): %w", err)
 				}
+				cloudResetResultCursor(cmd.Context(), cmd.OutOrStdout(), configPath, "", true)
 				fmt.Fprintln(cmd.OutOrStdout(), "Logged out - credentials for every cloud host cleared. Local enrichment results are kept.")
 				return nil
 			}
 			if err := gw.ClearCredentials(); err != nil {
 				return fmt.Errorf("clear credentials: %w", err)
 			}
+			cloudResetResultCursor(cmd.Context(), cmd.OutOrStdout(), configPath, resolveCloudBaseURL(baseURL, cfg), false)
 			fmt.Fprintln(cmd.OutOrStdout(), "Logged out - credentials cleared. Local enrichment results are kept.")
 			return nil
 		},
@@ -2454,6 +2531,9 @@ func newCloudDeleteAccountCmd() *cobra.Command {
 				if err := gw.ClearCredentials(); err != nil {
 					return fmt.Errorf("clear credentials: %w", err)
 				}
+				// The host-less gateway's Clear is the full local wipe, so every
+				// host's results cursor goes with it (T-962).
+				cloudResetResultCursor(cmd.Context(), w, configPath, "", true)
 				fmt.Fprintln(w, "Local credentials cleared. No server request was made (--local-only).")
 				return nil
 			}
@@ -2483,6 +2563,9 @@ func newCloudDeleteAccountCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("request account deletion: %w", err)
 			}
+			// The deleted account's sequence will never be pulled again; a later
+			// account on this host starts its own from the beginning (T-962).
+			cloudResetResultCursor(cmd.Context(), w, configPath, resolved, false)
 			fmt.Fprintf(w, "Server-side deletion requested (request %s, state %q).\n", resp.ID, resp.State)
 			fmt.Fprintln(w, "Run `observer cloud delete-account --local-only` to also clear this device's credentials.")
 			return nil

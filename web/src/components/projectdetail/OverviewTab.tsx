@@ -3,8 +3,7 @@ import { HelpInd } from "@/components/HelpInd";
 import { TruncationBanner } from "@/components/projectdetail/TruncationBanner";
 import { costLabel, dollarsShown, fmtInt, fmtPct, fmtUSD, withoutDollars } from "@/lib/format";
 import type { ProjectDetail, ProjectRoiTile } from "@/lib/types";
-import { COMMIT_CAPTURE } from "@/lib/vocabTones";
-import { VocabPill } from "@shared/lib/vocabPill";
+import { CommitCaptureBanner } from "@/components/projectdetail/CommitCaptureBanner";
 import { MetricIcon } from "@/components/MetricIcon";
 import { CodeCommentSplit } from "@shared/primitives/CodeCommentSplit";
 
@@ -14,7 +13,7 @@ import { CodeCommentSplit } from "@shared/primitives/CodeCommentSplit";
 // ungraded and uncoloured — these are proxies for delivered value, not a
 // score, so no tile uses a warn/danger tone to imply "bad".
 
-export function OverviewTab({ d }: { d: ProjectDetail }) {
+export function OverviewTab({ d, onReload }: { d: ProjectDetail; onReload?: () => void }) {
   const aiLines = d.loc.ai_added + d.loc.ai_modified;
   const captureNotOk = d.capture.commits !== "ok";
   // A dollar-denominated proxy (usd, usd_per_line, usd_per_commit) has no
@@ -23,7 +22,7 @@ export function OverviewTab({ d }: { d: ProjectDetail }) {
 
   return (
     <div className="space-y-5">
-      {captureNotOk && <CaptureBanner capture={d.capture} />}
+      {captureNotOk && <CommitCaptureBanner projectId={d.project.id} capture={d.capture} onRescanned={onReload} />}
       {d.truncated && (
         <TruncationBanner>
           {costLabel(
@@ -98,18 +97,6 @@ export function OverviewTab({ d }: { d: ProjectDetail }) {
       <p className="text-[10.5px] text-fg-4">
         Commits reflect the checked-out branch (HEAD) of each project at scan time.
       </p>
-    </div>
-  );
-}
-
-function CaptureBanner({ capture }: { capture: ProjectDetail["capture"] }) {
-  const reason = COMMIT_CAPTURE[capture.commits].banner;
-  return (
-    <div className="flex items-start gap-2 rounded-3 border border-warn/30 bg-warn-soft/60 px-3 py-2.5 text-[11.5px] text-fg-2">
-      <VocabPill vocab="commitCapture" value={capture.commits} tone="warn">
-        commit capture unavailable
-      </VocabPill>
-      <span>{reason}</span>
     </div>
   );
 }

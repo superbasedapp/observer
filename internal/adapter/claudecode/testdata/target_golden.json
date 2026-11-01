@@ -1,0 +1,107 @@
+{
+  "api-error.jsonl": [
+    "u1\thello",
+    "u2\treq_011CaZnwqf6Cw5zQpQq7VUAp",
+    "u3\treq_011rate",
+    "u4\treq_011deeplynest"
+  ],
+  "concatenated-records.jsonl": [
+    "toolu_first\tfirst.go",
+    "toolu_recovered\tls -la",
+    "toolu_after\t*.go"
+  ],
+  "gen-timing-deferred.jsonl": [
+    "u1\tDo the thing.",
+    "toolu_1\t[external]//tmp/x",
+    "bB1:text:0\tdone",
+    "u2\tNow another.",
+    "bC1:text:0\tsure",
+    "bC2:text:0\tmore",
+    "u3\tAnd one more.",
+    "bD1:text:0\tok"
+  ],
+  "gen-timing-real.jsonl": [
+    "permission-mode:auto\tauto",
+    "83944b3f-285e-4fc4-a363-ab244e1b3c45\tredacted",
+    "b14de1c4-4d97-43b3-b774-ebc343e8a4fe\tredacted",
+    "c16c63f9-f115-4d0c-be14-7c837bd7571d\tredacted",
+    "8aaa96d3-cecc-460a-bf3d-27af06291c81\tredacted",
+    "ad240c2c-c04a-4ec3-9271-0458ae36abee:text:0\tredacted",
+    "toolu_018otKUj9f2Ds1B4LvE2BssU\t",
+    "toolu_01Si1nuTbRf9GEfkR1BPMpsu\t",
+    "toolu_01MWdGgjk3TfiKq49cqrheDu\t",
+    "toolu_01U62G97MyQkAxXiDDgdJ2M8\t",
+    "toolu_01Wscxryb9F2J8Ydm5WArJfH\t",
+    "toolu_01K7YchSxP9SZyDHfnfkqBPQ\t",
+    "toolu_01KxHPANxGzK5uJH8QvZCGD3\t",
+    "toolu_01FQFGKqs9U8es8Q5Ca8dMA8\t",
+    "toolu_018ycinL62NsEH5roVnYxMwG\t",
+    "toolu_01QMLVhDfGBxGBuJ13taDG9Q\t",
+    "toolu_01Fk1nwf4YbTHQrQoGZNq4kU\t",
+    "toolu_011Z3UC4kWkQ1YAaq7jHh5nB\t",
+    "toolu_01JZuZaqL2UXX7MoJNaCxDNZ\t",
+    "toolu_01AUsaWMt7K7GbZ9RwBna39y\t",
+    "toolu_01H9zHLnnuexKPTDhBuYbibX\t",
+    "toolu_014ZQK1MshYSm8JFJmeEvaH7\t",
+    "ee9302d7-7310-49ee-901f-fddf01e2c3f0:text:0\tredacted",
+    "toolu_01HUZfGrnjD5UcnNWEAkSFEM\t",
+    "toolu_01NSd3qXP66sACEFwU7hTnjy\t",
+    "toolu_01Y1FXPp2Z73txAKMq9L6cvM\t",
+    "f0d8f3d7-3c6b-48a1-bd26-200102ec6fd3:text:0\tredacted",
+    "toolu_01RkExVD4EaR53XhnbAYs8uD\t",
+    "toolu_016HYUmi9kzFdAM7gkALv7ua\t",
+    "toolu_01CuXsjppVq7DtJwBbe176r9\t",
+    "toolu_01TpfduA8a4PNBg8RbdRirnA\t",
+    "toolu_01CUB4WLNsL9WU6TsfHWBpxH\t",
+    "toolu_016FMoytY7W5NURPPxaNC2tD\t",
+    "toolu_013SGsbjiLAhhB4kF2rTjzyy\t",
+    "toolu_01EBqyyB3DzgSk6SK8j6gk86\t",
+    "toolu_01Smx7Q4d8PBBfoKXk2u5peQ\t",
+    "toolu_01RGXmNtmtaNkms7efPT4Poq\t",
+    "toolu_01KKp7bYPuhAupWLNbi2Pa6m\t",
+    "toolu_01LDXyfPuq1L7tdrFcsfZyAn\t",
+    "toolu_01UG4JFrY7qzRMwafaphmbpu\t",
+    "toolu_01Qasfypqi6VJwTmdMSUCTtB\t",
+    "toolu_01LZ77vTYu5fwS8HkvtE3NMB\t",
+    "toolu_01Du3wWPi6cq7n1QW9y4RwKa\t",
+    "toolu_013JAafNJx4y8EVNF8mBJbXN\t",
+    "toolu_01QL7bq4Tcos6jKYXPYJSFKE\t",
+    "toolu_01JAv4bgzLbpakmhRGUeYKCL\t",
+    "toolu_01AvnTgRzPff9cfMxpAek5YV\t",
+    "toolu_01EZHvbbJvUiTEbFUdLxA2a5\t",
+    "toolu_01RDiVzcergQaQ2ygMzhFodj\t"
+  ],
+  "gen-timing.jsonl": [
+    "u1\tDo the thing.",
+    "toolu_1\t[external]//tmp/x",
+    "sS1:text:0\tsidechain",
+    "toolu_2\t[external]//tmp/y",
+    "bB1:text:0\tdone",
+    "u2\tNow another.",
+    "bC1:text:0\tsure"
+  ],
+  "malformed-line.jsonl": [
+    "tu_ok\tREADME.md",
+    "tu_ok2\tls -la"
+  ],
+  "multi-block-dedup.jsonl": [
+    "u-prompt\tRun two greps and a tool call.",
+    "u-block-1:text:0\tDoing two greps.",
+    "toolu_dd1\tfoo",
+    "toolu_dd2\tbar",
+    "toolu_dd3\tbaz",
+    "u-no-msg-id:text:0\tCompaction-style assistant event without msg.id."
+  ],
+  "multi-tool-turn.jsonl": [
+    "mm-001:text:0\tSearching in parallel",
+    "tu_p1\tfunc Handle",
+    "tu_p2\t**/*.go",
+    "tu_p3\tgo context cancellation"
+  ],
+  "simple-session.jsonl": [
+    "msg-001\tPlease show me the main.go file",
+    "msg-002:text:0\tI'll read main.go for you.",
+    "toolu_01\tmain.go",
+    "toolu_02\tgo test ./... \u0026\u0026 echo done"
+  ]
+}

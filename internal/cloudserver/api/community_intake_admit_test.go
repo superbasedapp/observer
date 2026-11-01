@@ -79,7 +79,10 @@ func TestCommunityContributionCrossDeviceConflictHTTP(t *testing.T) {
 	if len(body.OwnerDeviceHint) != 8 {
 		t.Fatalf("owner_device_hint=%q, want an 8-char hint", body.OwnerDeviceHint)
 	}
-	if want := time.Now().UTC().AddDate(0, 1, 0).Format("2006-01"); body.NextWindow != want {
+	// From the first of the month: AddDate on the 31st skips a month
+	// (October 31 plus one month is December 1).
+	now := time.Now().UTC()
+	if want := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, 1, 0).Format("2006-01"); body.NextWindow != want {
 		t.Fatalf("next_window=%q, want %q", body.NextWindow, want)
 	}
 	if body.Error == "" {

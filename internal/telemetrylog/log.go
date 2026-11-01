@@ -166,6 +166,11 @@ type StreamStats struct {
 	// FirstSequence / LastSequence bound the retained range (0 when empty).
 	FirstSequence uint64
 	LastSequence  uint64
+	// MaxBytes is the stream's configured storage cap, the disk safety valve
+	// at which Publish answers ErrFull: 0 when the engine did not report one,
+	// -1 when the stream is unlimited (T-823). Additive: an adapter that does
+	// not fill it reports 0, which readers treat as "unknown".
+	MaxBytes int64
 	// Consumers is the per-durable-consumer backlog: records delivered but
 	// not yet acked plus records not yet delivered.
 	Consumers []ConsumerStats
@@ -180,6 +185,14 @@ type ConsumerStats struct {
 	AckPending uint64
 	// Redelivered is the number of records currently in a redelivery cycle.
 	Redelivered uint64
+	// AckFloor is the highest stream sequence at or below which every record
+	// this consumer was ever delivered has been acked (or terminated). 0 when
+	// the engine has no such notion or nothing was acked yet (T-823).
+	AckFloor uint64
+	// OldestPendingAt is the publish time of the oldest record this consumer
+	// has not yet acked (the freshness edge, T-813). Zero when nothing is
+	// pending or the engine cannot report it.
+	OldestPendingAt time.Time
 }
 
 // Report is the doctor / health probe result for one log engine, the

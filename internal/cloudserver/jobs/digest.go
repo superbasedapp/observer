@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/cloudcontract"
-	"github.com/marmutapp/superbased-observer/internal/cloudserver/foundry"
+	"github.com/marmutapp/superbased-observer/internal/cloudserver/inference"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/store"
 )
 
@@ -32,7 +32,7 @@ STRICT RULES:
 - Never invent a session, a cost figure, or an error class the evidence does not support. When the evidence is thin (for example, only titles and tags with no descriptions), say so plainly in limitations rather than filling in a confident-sounding gap.
 - Keep every text field concise and free of control characters.
 
-HOW TO READ THE EVIDENCE. Each entry in "sessions" is one already-enriched session for this project: its own title, description (may be absent), taxonomy_tags, limitations, and a content-free metrics snapshot (tokens, cost, error_rate, duration, an activity_mix histogram, and outcomes) - never raw prompts, excerpts, file paths, or command text.
+HOW TO READ THE EVIDENCE. Each entry in "sessions" is one already-enriched session for this project: its own title, description (may be absent), taxonomy_tags, limitations, and a content-free metrics snapshot (tokens, cost, error_rate, duration, an activity_mix histogram, and outcomes) - never raw prompts, excerpts, file paths, or command text. A snapshot whose "usage_status" is "not_measured" carries no token or cost figures because none were captured on the developer's machine: that session's usage is UNKNOWN, not zero. Leave such sessions out of any token or cost reasoning, and when they make a cost trend unreliable, say so in limitations.
 
 HOW TO WRITE THE RESULT.
 - headline: name the single most important thing that happened on this project this week, grounded in the sessions shown.
@@ -95,13 +95,13 @@ func BuildDigestPrompt(evidence []byte) (LunaPrompt, error) {
 
 // BuildDigestRequest assembles the bounded, non-agentic Foundry request for a
 // resolved route + credential + prompt (mirrors BuildLunaRequest).
-func BuildDigestRequest(route store.RouteInfo, apiKey string, p LunaPrompt) foundry.Request {
-	return foundry.Request{
+func BuildDigestRequest(route store.RouteInfo, apiKey string, p LunaPrompt) inference.Request {
+	return inference.Request{
 		Endpoint:        route.Endpoint,
 		Deployment:      route.Deployment,
 		APIVersion:      route.APIVersion,
 		APIKey:          apiKey,
-		Dialect:         foundry.Dialect(route.Dialect),
+		Dialect:         inference.Dialect(route.Dialect),
 		System:          p.System,
 		User:            p.User,
 		SchemaName:      digestResultSchemaName,
@@ -173,19 +173,26 @@ func scrubNormalizedDigest(nr cloudcontract.NormalizedDigestResult) (cloudcontra
 // DigestExecutor is the CI-P4-style Foundry inference executor for the
 // project_digest feature (W5). One bounded, non-agentic call per attempt: it
 // reads the encrypted DigestEvidence bytes under the lease, builds the
-// evidence-as-data prompt, calls Foundry, validates the strict structured
+// evidence-as-data prompt, calls the route's provider, validates the strict structured
 // output, scrubs derived text, and settles the result + reservation
 // atomically via CompleteDigestJobWithResult. It NEVER retries internally —
 // the worker owns the attempt loop.
 type DigestExecutor struct {
 	store    *store.Store
 	blobs    store.BlobStore
-	provider foundry.Provider
+	provider inference.Provider
+	pricer   Pricer
 }
 
 // NewDigestExecutor builds the executor.
-func NewDigestExecutor(s *store.Store, blobs store.BlobStore, provider foundry.Provider) *DigestExecutor {
+func NewDigestExecutor(s *store.Store, blobs store.BlobStore, provider inference.Provider) *DigestExecutor {
 	return &DigestExecutor{store: s, blobs: blobs, provider: provider}
+}
+
+// WithPricer wires the pricing-table pricer and returns the executor.
+func (e *DigestExecutor) WithPricer(p Pricer) *DigestExecutor {
+	e.pricer = p
+	return e
 }
 
 var _ Executor = (*DigestExecutor)(nil)
@@ -193,7 +200,7 @@ var _ Executor = (*DigestExecutor)(nil)
 // Execute performs one provider attempt (mirrors LunaExecutor.Execute's
 // lease-read / blob-load / dispatch-seam-revalidation / dispatch /
 // parse-validate-scrub / complete pipeline, minus FE3 grounding).
-func (e *DigestExecutor) Execute(ctx context.Context, lj *store.LeasedJob, route store.RouteInfo, apiKey string, attempt int, clock func() time.Time, finalGate FinalGate) (ExecResult, error) {
+func (e *DigestExecutor) Execute(ctx context.Context, lj *store.LeasedJob, route store.RouteInfo, apiKey string, attempt int, clock func() time.Time, finalGate FinalGate) (ExecResult, error) { //nolint:staticcheck // SA4009: the dispatch deliberately uses the route the final gate re-resolves, never the earlier per-attempt one (mirrors LunaExecutor.Execute)
 	eo, err := e.store.GetEvidence(ctx, lj.AccountID, lj.EvidencePK)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -240,12 +247,12 @@ func (e *DigestExecutor) Execute(ctx context.Context, lj *store.LeasedJob, route
 		}
 		return ExecResult{ParkReason: reason}, nil
 	}
-	route = freshRoute
+	route = freshRoute //nolint:staticcheck // SA4009: see the Execute signature
 	now := dispatchNow
 
 	res, err := e.provider.Complete(ctx, BuildDigestRequest(route, freshKey, prompt))
 	if err != nil {
-		if errors.Is(err, foundry.ErrPersistenceViolation) {
+		if errors.Is(err, inference.ErrPersistenceViolation) {
 			return ExecResult{Outcome: ExecProviderError, Terminal: true, TerminalReason: store.ReasonPersistenceViolation, Detail: "store:false violated"}, nil
 		}
 		return ExecResult{Outcome: ExecProviderError, Detail: providerErrClass(err)}, nil
@@ -254,7 +261,10 @@ func (e *DigestExecutor) Execute(ctx context.Context, lj *store.LeasedJob, route
 
 	cleaned, rejection := ProcessDigestCompletion(res.Content, len(ev.Sessions), ev.PeriodStart, ev.PeriodEnd)
 	if rejection != "" {
-		return ExecResult{Outcome: ExecInvalidOutput, TokensIn: tokensIn, TokensOut: tokensOut, Detail: InvalidOutputDetail(res, rejection)}, nil
+		// The rejected call was still billed: carry its cost so the worker
+		// counts it against the pool's spend ceiling (T-946).
+		attemptCost, _ := priceCall(e.pricer, route, res, now)
+		return ExecResult{Outcome: ExecInvalidOutput, TokensIn: tokensIn, TokensOut: tokensOut, CostUSD: attemptCost, Detail: InvalidOutputDetail(res, rejection)}, nil
 	}
 
 	resultJSON, err := json.Marshal(cleaned)
@@ -262,10 +272,10 @@ func (e *DigestExecutor) Execute(ctx context.Context, lj *store.LeasedJob, route
 		return ExecResult{}, fmt.Errorf("marshal result: %w", err)
 	}
 
-	cost := tokenCost(tokensIn, tokensOut, route)
+	cost, priceVersion := priceCall(e.pricer, route, res, now)
 	prov := store.ResultProvenance{
 		ModelRouteID: route.RouteID, RouteVersion: route.RouteVersion, PromptVersion: route.PromptVersion,
-		PriceVersion: route.PriceVersion, PromptHash: prompt.PromptHash,
+		PriceVersion: priceVersion, PromptHash: prompt.PromptHash,
 		TokensIn: tokensIn, TokensOut: tokensOut, CostUSD: cost, RetryCount: attempt,
 	}
 	_, committed, err := e.store.CompleteDigestJobWithResult(ctx, lj.AccountID, lj.JobID, lj.EvidencePK, lj.ReservationID,

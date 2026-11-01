@@ -26,6 +26,12 @@ type hookInvocation struct {
 	bridge bool
 	// distro is the WSL distribution a bridge entry names.
 	distro string
+	// envPrefix is true when the command starts with `KEY=VALUE`
+	// assignments (the legacy `MSYS_NO_PATHCONV=1` bridge form).
+	envPrefix bool
+	// exitTrailer is true when the command ends with the portable
+	// bridge's `; exit $LASTEXITCODE` (bridgeExitTrailer).
+	exitTrailer bool
 	// binary is the executable the entry runs (inside the bridge, if any).
 	binary string
 	// tool and event are the `hook <tool> <event>` arguments.
@@ -40,20 +46,31 @@ type hookInvocation struct {
 // when cmd is not a `<bin> hook <tool> <event> [--config <path>]` command in
 // either the native or the bridge shape.
 func parseObserverHookCommand(cmd string) (hookInvocation, bool) {
-	if inv, ok := parseHookTokens(splitCommandTokens(cmd)); ok {
-		return inv, true
-	}
+	body, trailer := trimBridgeExitTrailer(cmd)
+	inv, ok := parseHookTokens(splitCommandTokens(body))
 	// Same retry isObserverAnyHookEntry makes: an unquoted Windows path
-	// collapses under the POSIX tokenizer's backslash rule.
-	if strings.Contains(cmd, `\`) {
-		return parseHookTokens(splitCommandTokens(strings.ReplaceAll(cmd, `\`, "/")))
+	// collapses under the POSIX tokenizer's backslash rule. It is also
+	// taken when the first parse succeeded but only because the tokenizer
+	// ate the separators of an unquoted C:\... binary path (a hook written
+	// by hand or by an older build on native Windows): that token read as
+	// "C:Users...observer", not an observer binary, so an equivalent hook
+	// was rewritten by binary-not-observer (Windows 11 Pro live run, PT-02).
+	if strings.Contains(body, `\`) {
+		if slashed, sok := parseHookTokens(splitCommandTokens(strings.ReplaceAll(body, `\`, "/"))); sok && (!ok || driveLetterPath(slashed.binary)) {
+			inv, ok = slashed, true
+		}
 	}
-	return hookInvocation{}, false
+	if !ok {
+		return hookInvocation{}, false
+	}
+	inv.exitTrailer = trailer
+	return inv, true
 }
 
 func parseHookTokens(toks []string) (hookInvocation, bool) {
 	var inv hookInvocation
 	for len(toks) > 0 && strings.Contains(toks[0], "=") && !strings.ContainsAny(toks[0], `/\`) {
+		inv.envPrefix = true
 		toks = toks[1:]
 	}
 	if len(toks) == 0 {
@@ -80,6 +97,12 @@ func parseHookTokens(toks []string) (hookInvocation, bool) {
 			continue
 		}
 		inv.extra = append(inv.extra, rest[i])
+	}
+	if inv.bridge {
+		// Inside WSL `//x` and `/x` are the same file; the doubled slash
+		// only exists to get past Git Bash (msysLiteralPath).
+		inv.binary = unMSYSLiteralPath(inv.binary)
+		inv.config = unMSYSLiteralPath(inv.config)
 	}
 	return inv, true
 }
@@ -115,6 +138,17 @@ var hookEquivalenceRules = []hookEquivalenceRule{
 		},
 	},
 	{
+		// AP-119: the legacy `MSYS_NO_PATHCONV=1 wsl.exe ...` bridge runs
+		// under Git Bash only, so an entry in a different shell form than
+		// the one observer writes now is rewritten even though it runs the
+		// same binary.
+		name:   "bridge-form",
+		reason: "the bridge entry is in an older shell form (the MSYS_NO_PATHCONV=1 prefix or the exit-code trailer differs)",
+		rewrite: func(have, want hookInvocation, _ hookEquivalenceEnv) bool {
+			return want.bridge && (have.envPrefix != want.envPrefix || have.exitTrailer != want.exitTrailer)
+		},
+	},
+	{
 		name:   "tool-event",
 		reason: "the entry names another hook tool or event",
 		rewrite: func(have, want hookInvocation, _ hookEquivalenceEnv) bool {
@@ -126,6 +160,18 @@ var hookEquivalenceRules = []hookEquivalenceRule{
 		reason: "the entry carries arguments observer does not write",
 		rewrite: func(have, _ hookInvocation, _ hookEquivalenceEnv) bool {
 			return len(have.extra) > 0
+		},
+	},
+	{
+		// T-847: a binary-path difference is kept (T-725), but only for an
+		// observer binary. `/bin/true hook claude-code pre-tool` parses as an
+		// observer hook command, its binary runs, and before this row it was
+		// KEPT as equivalent, so a developer could disable a gate with a
+		// command that always allows and `observer start` would bless it.
+		name:   foreignBinaryRule,
+		reason: foreignBinaryReason,
+		rewrite: func(have, want hookInvocation, _ hookEquivalenceEnv) bool {
+			return !observerBinaryJudged(have.binary, want.binary)
 		},
 	},
 	{
@@ -233,4 +279,14 @@ func (r *Registry) keepOrRewrite(res *RegistrationResult, event, have, want stri
 	}
 	res.Rewrites = append(res.Rewrites, Rewrite{Event: event, Rule: "refresh", Reason: "the command differs from the one this binary writes", From: have, To: want})
 	return false
+}
+
+// driveLetterPath reports whether p starts with a Windows drive ("C:/" or
+// "C:\\").
+func driveLetterPath(p string) bool {
+	if len(p) < 3 || p[1] != ':' || (p[2] != '/' && p[2] != '\\') {
+		return false
+	}
+	c := p[0] | 0x20
+	return c >= 'a' && c <= 'z'
 }

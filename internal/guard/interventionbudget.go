@@ -104,7 +104,7 @@ func (g *Guard) CheckInterventionBudget(in InterventionBudgetInput) Intervention
 // engine snapshot. Keeping the enrollment binding beside that engine prevents
 // a concurrent budget publication from tearing identity and numeric policy.
 func (g *Guard) checkInterventionBudgetWith(es *engineSet, in InterventionBudgetInput) InterventionBudgetDecision {
-	if es == nil || es.base == nil {
+	if es == nil || es.base() == nil {
 		return InterventionBudgetDecision{Deny: true, Reason: "budget policy engine is unavailable"}
 	}
 	document := es.budgetWitness
@@ -116,7 +116,7 @@ func (g *Guard) checkInterventionBudgetWith(es *engineSet, in InterventionBudget
 	// last composed engine in force (REVIEW-4 P4-01, D-521). Intervention is
 	// managed-only, so a retired engine stops nothing here; the node's own
 	// local caps are enforced on the proxy path.
-	if es.budgetBinding != "" || es.base.ManagedBudgetRequired() {
+	if es.budgetBinding != "" || es.base().ManagedBudgetRequired() {
 		if current, state, ok := g.budgetIdentity(); ok &&
 			orgBudgetLiveness(true, state, current, es.budgetBinding, g.budgetConfig().FailClosed) == budgetLiveRetired {
 			return InterventionBudgetDecision{Available: true, Revision: es.revision, DocumentWitness: document}
@@ -138,11 +138,11 @@ func (g *Guard) checkInterventionBudgetWith(es *engineSet, in InterventionBudget
 			Reason:          "organization budget is unavailable for the current enrollment",
 		}
 	}
-	if !es.base.ManagedBudgetRequired() {
+	if !es.base().ManagedBudgetRequired() {
 		return InterventionBudgetDecision{Available: true, Revision: es.revision, DocumentWitness: document}
 	}
 	out := InterventionBudgetDecision{Available: true, Required: true, Revision: es.revision, DocumentWitness: document}
-	if es.base.Mode() != policy.ModeEnforce {
+	if es.mode != policy.ModeEnforce {
 		out.Deny, out.Reason = true, "managed budget guard is not enforcing"
 		return out
 	}
@@ -188,7 +188,7 @@ func (g *Guard) checkInterventionBudgetWith(es *engineSet, in InterventionBudget
 		out.Deny, out.Reason = true, "managed budget evaluation failed"
 		return out
 	}
-	if verdict.Decision >= policy.DecisionDeny && es.base.BudgetRuleProtected(verdict.RuleID) {
+	if verdict.Decision >= policy.DecisionDeny && es.base().BudgetRuleProtected(verdict.RuleID) {
 		out.Deny, out.RuleID, out.Reason = true, verdict.RuleID, verdict.Reason
 		if interventionBudgetEvidenceUnavailable(verdict.RuleID, ev) {
 			// The rule's own reason states only that accounting is unavailable.

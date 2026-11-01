@@ -85,7 +85,7 @@ func (s *Store) ReserveAllowance(ctx context.Context, accountID, feature string,
 	var reservationID string
 	err := s.WithAccount(ctx, accountID, func(ctx context.Context, tx pgx.Tx) error {
 		var e error
-		reservationID, e = reserveAllowanceTx(ctx, tx, accountID, feature, now)
+		reservationID, e = reserveAllowanceTx(ctx, tx, accountID, feature, now, s.spendCeilings)
 		return e
 	})
 	if err != nil {
@@ -97,7 +97,7 @@ func (s *Store) ReserveAllowance(ctx context.Context, accountID, feature string,
 // reserveAllowanceTx is the reservation logic operating on an existing tenant
 // transaction, so a caller (SubmitJob) can make the reservation atomic with the
 // evidence + job insert. Its contract is identical to ReserveAllowance.
-func reserveAllowanceTx(ctx context.Context, tx pgx.Tx, accountID, feature string, now time.Time) (string, error) {
+func reserveAllowanceTx(ctx context.Context, tx pgx.Tx, accountID, feature string, now time.Time, ceilings map[string]SpendCeiling) (string, error) {
 	allow, err := resolveAllowanceTx(ctx, tx, accountID, feature, now)
 	if err != nil {
 		return "", err
@@ -105,7 +105,7 @@ func reserveAllowanceTx(ctx context.Context, tx pgx.Tx, accountID, feature strin
 	if feature == FeatureProjectDigest && !allow.Plan.DigestWeekly {
 		return "", ErrNoEntitlement
 	}
-	return reserveForAllowanceTx(ctx, tx, accountID, feature, allow, now)
+	return reserveForAllowanceTx(ctx, tx, accountID, feature, allow, now, ceilings)
 }
 
 // reserveDigestAllowanceTx reserves one FeatureProjectDigest allowance unit for
@@ -119,15 +119,17 @@ func reserveAllowanceTx(ctx context.Context, tx pgx.Tx, accountID, feature strin
 // this transaction, then draws against the SAME cycle/pool
 // machinery as every other feature, so a runaway digest volume is still
 // capped by the plan's caps and pool.
-func reserveDigestAllowanceTx(ctx context.Context, tx pgx.Tx, accountID string, now time.Time) (string, error) {
-	return reserveAllowanceTx(ctx, tx, accountID, FeatureProjectDigest, now)
+func reserveDigestAllowanceTx(ctx context.Context, tx pgx.Tx, accountID string, now time.Time, ceilings map[string]SpendCeiling) (string, error) {
+	return reserveAllowanceTx(ctx, tx, accountID, FeatureProjectDigest, now, ceilings)
 }
 
 // reserveForAllowanceTx is the reservation logic shared by
 // reserveAllowanceTx and reserveDigestAllowanceTx: given an already-resolved
 // Allowance, it enforces daily/monthly/concurrency + the plan's budget pool
-// and inserts the reservation row (Sol SD6).
-func reserveForAllowanceTx(ctx context.Context, tx pgx.Tx, accountID, feature string, allow Allowance, now time.Time) (string, error) {
+// and inserts the reservation row (Sol SD6). It also refuses the reservation
+// with ErrSpendCeiling when the pool has a USD spend ceiling (ceilings, see
+// spend.go) that its current day or month has reached.
+func reserveForAllowanceTx(ctx context.Context, tx pgx.Tx, accountID, feature string, allow Allowance, now time.Time, ceilings map[string]SpendCeiling) (string, error) {
 	daily := DailyWindowKey(now)
 	monthly := MonthlyWindowKey(now)
 
@@ -155,6 +157,9 @@ func reserveForAllowanceTx(ctx context.Context, tx pgx.Tx, accountID, feature st
 	}
 	if gUsed >= gCap {
 		return "", ErrGlobalBudget
+	}
+	if err := checkSpendCeilingTx(ctx, tx, ceilings, allow.BudgetPool, now); err != nil {
+		return "", err
 	}
 	if _, e := tx.Exec(ctx,
 		`UPDATE budget_pools SET used = used + 1, updated_at = now() WHERE pool = $1`,

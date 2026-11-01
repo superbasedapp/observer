@@ -34,7 +34,7 @@ func (f *ideFake) deps(parentEnv []string) ideDeps {
 			f.spawned, f.argv, f.dir, f.env = true, argv, dir, env
 			return os.FindProcess(os.Getpid())
 		},
-		admit: func(_ context.Context, _ string, id string, ev budgetLaunchEvidence) error {
+		admit: func(_ context.Context, _ string, id string, ev budgetLaunchEvidence, _ string) error {
 			f.admitted = append(f.admitted, id)
 			if ev.Route != budgetLaunchRouteUnknown {
 				return errors.New("GUI admission evidence must keep the route unknown")

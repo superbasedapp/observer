@@ -165,6 +165,130 @@ func TestLiveFixtures(t *testing.T) {
 			t.Errorf("copilot-cli tool calls: %+v", res.Tools)
 		}
 	})
+
+	// AP-131 (2026-10-22). IBM Bob was a real signed-in run; CodeBuddy and
+	// Kimchi ran against the loopback mock, so their usage is the mock's
+	// 1234 / 1000 / 56 / 16.
+	t.Run("ibm-bob", func(t *testing.T) {
+		var req coltracepb.ExportTraceServiceRequest
+		loadFixture(t, "ibm-bob", "traces.json", true, &req)
+		res := ParseSpans(&req)
+		// The external exporter's allow-list carries no token counts: the
+		// two LLM Generation spans must not become (zero-token, Bobcoin-
+		// priced) turns.
+		if len(res.Turns) != 0 || len(res.Contents) != 0 || len(res.Unclaimed) != 0 {
+			t.Fatalf("ibm-bob: turns=%d contents=%d unclaimed=%v, want only tool calls", len(res.Turns), len(res.Contents), res.Unclaimed)
+		}
+		checkGenTimings(t, res, nil, "") // no token row to carry it (AP-125)
+		want := []struct {
+			name string
+			ms   int64
+		}{{"read_file", 70}, {"write_file", 79}, {"execute_command", 121}}
+		if len(res.Tools) != len(want) {
+			t.Fatalf("ibm-bob tool calls: %+v", res.Tools)
+		}
+		for n, w := range want {
+			tc := res.Tools[n]
+			if tc.Name != w.name || tc.DurationMS != w.ms || !tc.SuccessKnown || !tc.Success ||
+				tc.SessionID != "0a1b2c3d4e5f60718293a4b5c6d7e8f9" || !strings.HasPrefix(tc.CallID, "otel:ibm-bob:") {
+				t.Errorf("ibm-bob tool %d = %+v, want %s %dms ok in the task's session", n, tc, w.name, w.ms)
+			}
+		}
+	})
+	t.Run("codebuddy/agentlens", func(t *testing.T) {
+		var req coltracepb.ExportTraceServiceRequest
+		loadFixture(t, "codebuddy", "traces.json", true, &req)
+		res := ParseSpans(&req)
+		// GROSS prompt, no cache or reasoning split on the wire: the turn
+		// keeps the gross input (nothing to net it against).
+		checkTurns(t, res, "codebuddy", wantTurn{
+			n: 2, session: "01a165ad-1a86-7973-8bb9-a42e9af357ad", model: "mock-model",
+			input: 1234, output: 56, cacheRead: 0, reasoning: 0, requestID: "01a165ad",
+		})
+		ttft := map[int64]bool{}
+		for _, tr := range res.Turns {
+			ttft[tr.TimeToFirstTokenMS] = true
+			if tr.DurationMS <= 0 {
+				t.Errorf("codebuddy turn %s has no duration", tr.RequestID)
+			}
+		}
+		if !ttft[39] || !ttft[16] {
+			t.Errorf("codebuddy time to first token = %v, want 39 and 16", ttft)
+		}
+		names := map[string]string{}
+		for _, tc := range res.Tools {
+			if !tc.SuccessKnown || !tc.Success || tc.SessionID != "01a165ad-1a86-7973-8bb9-a42e9af357ad" {
+				t.Errorf("codebuddy tool %+v", tc)
+			}
+			names[tc.CallID] = tc.Name
+		}
+		if len(res.Tools) != 3 || names["call_mock1"] != "Read" || names["call_mock2"] != "Bash" || names["call_mock3"] != "Write" {
+			t.Errorf("codebuddy tool calls: %+v", res.Tools)
+		}
+		// AP-131 follow-up: each model_stream span also yields the call's
+		// end-to-end generation duration keyed by request.id (the
+		// transcript's messageId): span end minus the first_token_received
+		// event, plus that event's ttft_ms (14.234 + 39 and 4.263 + 16).
+		checkGenTimings(t, res, map[string]int64{
+			"01a165ad1cf775ed99158878cfa4ee77": 53,
+			"01a165ad1ed87934a1734acbac73157b": 20,
+		}, "01a165ad-1a86-7973-8bb9-a42e9af357ad")
+	})
+	t.Run("codebuddy/default-semconv", func(t *testing.T) {
+		var req coltracepb.ExportTraceServiceRequest
+		loadFixture(t, "codebuddy", "traces-default-semconv.json", true, &req)
+		res := ParseSpans(&req)
+		// The default semconv puts usage only in events of the interaction
+		// span: no turns. Its codebuddy_code.tool spans still map, the
+		// session read from their agent.tool.* events.
+		if len(res.Turns) != 0 || len(res.Unclaimed) != 0 {
+			t.Errorf("default semconv: turns=%d unclaimed=%v", len(res.Turns), res.Unclaimed)
+		}
+		names := map[string]string{}
+		for _, tc := range res.Tools {
+			if !tc.SuccessKnown || !tc.Success || tc.SessionID != "01a165ac-f1b6-776f-b094-7e94318ef62a" || tc.DurationMS <= 0 {
+				t.Errorf("default-semconv codebuddy tool %+v", tc)
+			}
+			names[tc.CallID] = tc.Name
+		}
+		if len(res.Tools) != 3 || names["call_mock1"] != "Read" || names["call_mock2"] != "Bash" || names["call_mock3"] != "Write" {
+			t.Errorf("default-semconv codebuddy tool calls: %+v", res.Tools)
+		}
+		// No session on the default-semconv model_stream span: no timing
+		// (the join is proven only for the agentlens capture).
+		checkGenTimings(t, res, nil, "")
+	})
+	t.Run("kimchi", func(t *testing.T) {
+		var req collogspb.ExportLogsServiceRequest
+		loadFixture(t, "kimchi", "logs.json", true, &req)
+		res := ParseLogs(&req)
+		// input_tokens is already NET of cache reads; output holds the
+		// reasoning (no reasoning count on the wire).
+		checkTurns(t, res, "kimchi", wantTurn{
+			n: 2, session: "01a165b1-cd10-71bf-97ff-2e5a1ebfdeac", model: "mock-model",
+			input: 234, output: 56, cacheRead: 1000, reasoning: 0, requestID: "otel:",
+		})
+		for _, tr := range res.Turns {
+			if tr.CostUSD != 0.000446 || tr.Provider != "mock" {
+				t.Errorf("kimchi turn cost=%v provider=%q", tr.CostUSD, tr.Provider)
+			}
+		}
+		if len(res.Tools) != 3 {
+			t.Fatalf("kimchi tool calls: %+v", res.Tools)
+		}
+		for _, tc := range res.Tools {
+			if !tc.SuccessKnown || !tc.Success || tc.DurationMS <= 0 || !strings.HasPrefix(tc.CallID, "otel:kimchi:") {
+				t.Errorf("kimchi tool %+v", tc)
+			}
+		}
+		// Regression: kimchi reuses Claude Code's bare event names. Before
+		// the kimchi row claimed its resource, the Claude Code row read it
+		// and stored each tool_result / tool_decision event NAME as content.
+		checkGenTimings(t, res, nil, "") // no per-call id; native timing already on the transcript
+		if len(res.Contents) != 0 || res.Skipped != 0 {
+			t.Errorf("kimchi export misread: %d contents, %d skipped api_request", len(res.Contents), res.Skipped)
+		}
+	})
 }
 
 func contentKinds(res Result) map[string]int {

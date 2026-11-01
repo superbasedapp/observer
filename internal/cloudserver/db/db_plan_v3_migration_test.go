@@ -192,8 +192,8 @@ func TestPopulatedMigration40To41MovesAssignmentsToV3(t *testing.T) {
 	insertAssignment(ctx, t, pool, freeV1Acct, plusV1, histFrom, &histUntil) // closed history
 	insertAssignment(ctx, t, pool, freeV1Acct, freeV1, started, nil)
 
-	if err := Migrate(ctx, pool); err != nil {
-		t.Fatalf("migrate 40 -> head over populated account_plans: %v", err)
+	if err := migratePrefix(ctx, pool, 41); err != nil {
+		t.Fatalf("migrate 40 -> 41 over populated account_plans: %v", err)
 	}
 	checkV3Catalogue(ctx, t, pool)
 	checkGPT6LunaRoute(ctx, t, pool)
@@ -274,11 +274,11 @@ func TestPopulatedMigration38To41InOneTransactionLandsOnV3(t *testing.T) {
 	acct := newAccount(ctx, t, pool)
 	insertAssignment(ctx, t, pool, acct, planID(ctx, t, pool, "plus_beta", 1), time.Now().UTC().Add(-48*time.Hour), nil)
 
-	if err := Migrate(ctx, pool); err != nil {
-		t.Fatalf("migrate 38 -> head in one transaction: %v", err)
+	if err := migratePrefix(ctx, pool, 41); err != nil {
+		t.Fatalf("migrate 38 -> 41 in one transaction: %v", err)
 	}
 	if name, version := inForcePlan(ctx, t, pool, acct); name != "plus_beta" || version != 3 {
-		t.Fatalf("subscriber is on %s v%d after 38 -> head, want plus_beta v3", name, version)
+		t.Fatalf("subscriber is on %s v%d after 38 -> 41, want plus_beta v3", name, version)
 	}
 	var stale int
 	if err := pool.QueryRow(ctx,

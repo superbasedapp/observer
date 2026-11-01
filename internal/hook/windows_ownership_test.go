@@ -186,6 +186,7 @@ func TestDetectWindowsHome_NewVendorsShareTheSameGuardRails(t *testing.T) {
 		{"qoder", ".qoder", (*Registry).detectWindowsQoderHome},
 		{"poolside", filepath.Join(".config", "poolside"), (*Registry).detectWindowsPoolsideHome},
 		{"command-code", ".commandcode", (*Registry).detectWindowsCommandCodeHome},
+		{"copilot-cli", ".copilot", (*Registry).detectWindowsCopilotHome},
 	}
 	for _, c := range cases {
 		t.Run(c.name+"/owned", func(t *testing.T) {

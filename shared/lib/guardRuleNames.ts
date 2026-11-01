@@ -38,6 +38,13 @@ export const GUARD_RULE_NAMES: Readonly<Record<string, string>> = {
   "R-157": "Command the guard cannot analyse",
   "R-160": "Agent changing Observer or guard settings",
   "R-161": "Agent changing the project guard file",
+  "R-162": "Agent turning a coding tool's hooks off",
+  "R-163": "Settings file written with unseen content",
+  "R-112": "Git command skipping the repository's hooks",
+  "R-113": "Git hook manager switched off by environment",
+  "R-114": "Changing where or whether git hooks run",
+  "R-165": "Agent approving its own guard exception",
+  "R-166": "Agent writing a protected test or CI path",
   // Exfil and PII
   "R-170": "Remote script piped into a shell",
   "R-171": "Uploading file contents to a remote host",
@@ -56,6 +63,7 @@ export const GUARD_RULE_NAMES: Readonly<Record<string, string>> = {
   "R-305": "Approved MCP server's command or URL changed",
   // Anomaly
   "A-610": "Agent stuck in a loop",
+  "A-613": "Agent retrying a refused action in new shapes",
   // Taint
   "T-501": "Shell command after untrusted content",
   "T-502": "Out-of-project write after untrusted content",

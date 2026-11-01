@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/marmutapp/superbased-observer/internal/testhome"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -17,6 +19,13 @@ import (
 var fixtureDB string
 
 func TestMain(m *testing.M) {
+	// Pin the profile roots to a process temp home (surface-gap FU-102):
+	// the foreign-mount mirror tests stage a copy under os.UserCacheDir(),
+	// which was the developer's real ~/.cache/superbased-observer.
+	_, cleanupHome, err := testhome.PinProcess()
+	if err != nil {
+		panic(err)
+	}
 	dir, err := os.MkdirTemp("", "devin-fixture")
 	if err != nil {
 		panic(err)
@@ -34,6 +43,7 @@ func TestMain(m *testing.M) {
 	}
 	code := m.Run()
 	_ = os.RemoveAll(dir)
+	cleanupHome()
 	os.Exit(code)
 }
 

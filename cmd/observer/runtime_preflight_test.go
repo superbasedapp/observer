@@ -83,6 +83,7 @@ func rtEmptyConfig(t *testing.T) string {
 // is older than the registry floor, with the plain sentence, and launches
 // otherwise. One case per row of the decision.
 func TestResolveToolBinRuntimeGate(t *testing.T) {
+	skipLinuxFakeOnWindows(t)
 	cases := []struct {
 		name    string
 		shebang string
@@ -126,6 +127,7 @@ func TestResolveToolBinRuntimeGate(t *testing.T) {
 // TestResolveToolBinRuntimeIgnoresUngroundedRows: a tool with no grounded
 // requirement (opencode publishes no engines.node) is never checked.
 func TestResolveToolBinRuntimeIgnoresUngroundedRows(t *testing.T) {
+	skipLinuxFakeOnWindows(t)
 	files := map[string]fs.FileMode{"/home/u/.local/bin/opencode": exeBin, n1Node: exeBin}
 	env := fakeEnv("linux", false, "/home/u", nil, []string{"/home/u/.local/bin", "/usr/bin"}, files)
 	env.ReadHead = func(string, int) ([]byte, error) { return []byte("#!/usr/bin/env node\n"), nil }

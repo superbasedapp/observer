@@ -15,6 +15,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/guardposture"
 	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/models"
+	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/policy"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -31,6 +32,14 @@ const guardPostureInterval = 15 * time.Second
 // Sol A2-01). A nil guard (off, or not constructible) is not enforced.
 func computeGuardPosture(g config.GuardConfig, gd *guard.Guard, now time.Time) guardposture.Posture {
 	p := guardposture.Posture{Source: guardposture.SourceLocal, WrittenAt: now.UTC()}
+	if gd != nil {
+		// The tenancy anchor a hook falls back to while the org lock is
+		// being repaired (T-864 gap 1). Recorded only when this guard
+		// resolved it, so "not managed" always means "individual".
+		if in := gd.OrgLockInputs(); in.TenancyResolved {
+			p.Managed, p.TenancyRecorded = in.Managed, true
+		}
+	}
 	if gd == nil || !g.Enabled || g.Mode == "off" {
 		return p
 	}
@@ -82,6 +91,17 @@ type guardPostureWriter struct {
 	lastWrittenAt time.Time
 	// tampers are detected, not yet persisted, tamper details.
 	tampers []string
+
+	// The org lock (guardorglock_wire.go, T-839 / T-844 / T-845): the
+	// semantic encoding and exact bytes of the last lock written, the lock
+	// found on disk at the first publish (seeds the governance copy), the
+	// queued non-posture tampers and the org bundle tamper incident (the ONE
+	// record both the posture check and the policy poll consult, so one
+	// incident is one event whichever finds it first; T-869).
+	lastLock, lastLockBytes []byte
+	startLock               *guardposture.OrgLockLoaded
+	extra                   []guardTamper
+	bundle                  bundleIncident
 }
 
 // daemonGuardPosture is the process's posture writer.
@@ -105,6 +125,17 @@ func (w *guardPostureWriter) publish(configPath string, p guardposture.Posture) 
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.key == nil {
+		// The org lock as this daemon found it, read BEFORE the first
+		// posture write (which sets the posture's org_lock anchor): a lock
+		// tampered with while no daemon ran is reported, and a verified one
+		// seeds the governance copy (seedGovernanceOnce).
+		start := guardposture.LoadOrgLock(resolved)
+		w.startLock = &start
+		if start.State == guardposture.OrgLockTampered {
+			w.extra = append(w.extra, guardTamper{tamperOrgLock, "found at daemon start: " + start.Detail})
+		}
+	}
 	force, err := w.ensureKeyLocked(postPath, keyPath)
 	if err != nil {
 		return false, err
@@ -190,12 +221,12 @@ func postureTamperVerdict(detail string, at time.Time) guard.ActionVerdict {
 			Decision: policy.DecisionFlag,
 			RuleID:   guard.GuardErrorRuleID,
 			Severity: policy.SeverityHigh,
-			Reason:   "guard posture tampered: " + detail + "; the daemon restored it",
+			Reason:   guardEventReason("guard posture tampered: " + detail + "; the daemon restored it"),
 			Advice:   "Something running as this user rewrote Observer's hook enforcement posture. Check which process edits ~/.observer.",
 			Source:   policy.SourceBuiltin,
 		},
 		GuardError:   true,
-		DegradedFrom: "posture_tamper",
+		DegradedFrom: orgcontract.GuardTamperPosture,
 	}
 }
 
@@ -203,14 +234,19 @@ func postureTamperVerdict(detail string, at time.Time) guard.ActionVerdict {
 // they stay logged on failure).
 func recordPostureTampers(ctx context.Context, w *guardPostureWriter, st *store.Store, logger *slog.Logger) int {
 	details := w.takeTampers()
-	if len(details) == 0 {
+	extra := w.takeExtraTampers()
+	if len(details) == 0 && len(extra) == 0 {
 		return 0
 	}
 	now := time.Now()
-	vs := make([]guard.ActionVerdict, 0, len(details))
+	vs := make([]guard.ActionVerdict, 0, len(details)+len(extra))
 	for _, d := range details {
 		logger.Warn("guard posture: tamper detected and repaired", "detail", d)
 		vs = append(vs, postureTamperVerdict(d, now))
+	}
+	for _, t := range extra {
+		logger.Warn("guard org lock: tamper detected", "kind", t.kind, "detail", t.detail)
+		vs = append(vs, tamperVerdict(t, now))
 	}
 	if st == nil {
 		return 0
@@ -226,6 +262,17 @@ func recordPostureTampers(ctx context.Context, w *guardPostureWriter, st *store.
 // (never failing) on error.
 func publishGuardPosture(configPath string, g config.GuardConfig, gd *guard.Guard, logger *slog.Logger) {
 	p := computeGuardPosture(g, gd, time.Now())
+	// This daemon writes guard-org-lock.json (publishOrgLockState), so a
+	// missing lock reads as tampered, not as an older daemon.
+	p.OrgLock = true
+	// The security module's state, signed in so a hook reads a missing
+	// security posture file as unknown only while the module is active
+	// (security pillar plan section 4.3).
+	p.SecurityRecorded, p.SecurityActive = true, daemonSecurityActive.Load()
+	p.SecurityPacks = daemonSecurityPackSet()
+	// A managed node's commit gate floor, signed in so the hook keeps it when
+	// a project's own posture file cannot answer (audit SEC-P4 F2).
+	p.CommitGateFloorHeld = securityCommitGateFloorHeld()
 	changed, err := daemonGuardPosture.publish(configPath, p)
 	if err != nil {
 		logger.Warn("guard posture: publish failed", "err", err)
@@ -290,7 +337,7 @@ func hookFailureVerdict(r guardposture.Record) guard.ActionVerdict {
 			Decision: o.decision,
 			RuleID:   guard.GuardErrorRuleID,
 			Severity: o.severity,
-			Reason:   reason,
+			Reason:   guardEventReason(reason),
 			Advice:   advice,
 			Source:   policy.SourceBuiltin,
 		},
@@ -404,7 +451,12 @@ func (c *postureConfigWatch) check(logger *slog.Logger) postureConfigState {
 		return postureConfigCurrent
 	}
 	fresh, err := config.Load(config.LoadOptions{GlobalPath: c.configPath})
-	if err == nil && reflect.DeepEqual(fresh.Guard, c.guard) {
+	// The org-lock record (GuardConfig.Lock) is the org's runtime state, not
+	// the file's [guard] section: a lock rewrite must not read as a config
+	// change.
+	freshGuard, loaded := fresh.Guard, c.guard
+	freshGuard.Lock, loaded.Lock = config.GuardOrgLock{}, config.GuardOrgLock{}
+	if err == nil && reflect.DeepEqual(freshGuard, loaded) {
 		c.mod, c.warned = cur, false
 		return postureConfigTouched
 	}
@@ -431,15 +483,22 @@ func guardPostureLoop(ctx context.Context, configPath string) {
 	spool := guardposture.SpoolPath(resolved)
 	cfgWatch := &postureConfigWatch{path: resolved, configPath: configPath, guard: cfg.Guard, mod: fileModTime(resolved)}
 	tick := func() {
+		gd := acquireProcessGuard(ctx, cfg, st, logger)
 		switch cfgWatch.check(logger) {
 		case postureConfigCurrent:
-			publishGuardPosture(configPath, cfg.Guard, acquireProcessGuard(ctx, cfg, st, logger), logger)
+			publishGuardPosture(configPath, cfg.Guard, gd, logger)
 		case postureConfigTouched:
 			daemonGuardPosture.requestRefresh()
-			publishGuardPosture(configPath, cfg.Guard, acquireProcessGuard(ctx, cfg, st, logger), logger)
+			publishGuardPosture(configPath, cfg.Guard, gd, logger)
 		case postureConfigGuardChanged:
 			// Not published: the running guard no longer matches the file,
 			// so the posture ages out and hooks follow the file (T-050).
+		}
+		// The org lock is the ORGANIZATION's hold, not the local [guard]
+		// section, so it is written on every interval whatever the config
+		// watch says (T-839 / T-844 / T-845).
+		if err := publishOrgLockState(ctx, configPath, cfg, gd, st, daemonGuardPosture, time.Now()); err != nil {
+			logger.Warn("guard org lock: publish failed", "err", err)
 		}
 		recordPostureTampers(ctx, daemonGuardPosture, st, logger)
 		if n := drainHookFailures(ctx, spool, st, logger); n > 0 {

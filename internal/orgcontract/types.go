@@ -180,6 +180,162 @@ type ManagedIntegrityReport struct {
 	CaptureCheckVersion int      `json:"capture_check_version,omitempty"`
 	CaptureRisks        []string `json:"capture_risks,omitempty"`
 	UnknownChecks       []string `json:"unknown_checks,omitempty"`
+	// CaptureRiskItems names the tool and the hook file behind each capture
+	// risk (T-847, tamper audit rows c1-c3). Additive and optional: an older
+	// server drops the field, an older node never sends it, and the
+	// CaptureRisks label list stays the closed summary every reader already
+	// understands. See CaptureRiskItem for the content floor.
+	CaptureRiskItems []CaptureRiskItem `json:"capture_risk_items,omitempty"`
+	// CaptureRiskItemsOmitted is how many located risks the item bound left
+	// out of CaptureRiskItems (T-873), so the organization can be told the
+	// list is partial. The bound keeps the most actionable items
+	// (CaptureRiskItemLess). Additive and optional like CaptureRiskItems: an
+	// older server ignores the field (the decoder accepts unknown fields), and
+	// an older node never sends it, which reads as zero.
+	CaptureRiskItemsOmitted int `json:"capture_risk_items_omitted,omitempty"`
+	// RoutesWritten names the AI tools whose proxy route Observer's
+	// enrolment wrote for the first time within the last 24 hours (the CLI
+	// enrol, or the managed daemon's route maintenance). Informational, never
+	// a finding: a route put BACK after removal is the route_repaired capture
+	// risk instead. Same closed vocabulary as DriftedTools. Additive and
+	// optional: an older server ignores the field, an older node never sends
+	// it.
+	RoutesWritten []string `json:"routes_written,omitempty"`
+	// UnroutableTools names the AI tools that are installed on this host,
+	// not routed through the Observer proxy, and that Observer cannot route
+	// here (no unattended route in the integration registry, or a config the
+	// route writer does not cover), and that Observer never routed. It is
+	// honest coverage, never drift. Same closed vocabulary and the same
+	// additive rules as RoutesWritten.
+	UnroutableTools []string `json:"unroutable_tools,omitempty"`
+	// UnselectedTools names the AI tools that are installed on this host but
+	// that the node's policy did not select (their adapter component is
+	// available, not selected). Route maintenance never routes such a tool,
+	// so it is never drift; the organization still sees it is there
+	// ("installed, not selected by policy", T-915, D-770). Empty when the
+	// admin turned route maintenance off. Same closed vocabulary and the same
+	// additive rules as RoutesWritten: an older server ignores the field, an
+	// older node never sends it.
+	UnselectedTools []string `json:"unselected_tools,omitempty"`
+	// RoutingOff is true when the node's route writer component
+	// (integration.proxy-route) is not active, switched off by policy or not
+	// in this build at all: the daemon then keeps no routes and no tool's
+	// route is drift (T-915, D-771). RoutingOffTools names the installed AI
+	// tools so the organization can see what routing would cover. Both are
+	// false/empty when the admin turned route maintenance off. Additive like
+	// RoutesWritten: an older server ignores them, an older node never sends
+	// them.
+	RoutingOff      bool     `json:"routing_off,omitempty"`
+	RoutingOffTools []string `json:"routing_off_tools,omitempty"`
+	// SupervisorMissing is true when the daemon keeps AI tool routes through
+	// its proxy (the managed route posture is "maintain") and no process
+	// supervisor was found to restart it (internal/supervisor: the systemd,
+	// launchd or Windows service templates in deploy/supervisor/). The routes
+	// stay in the tools' configs while the daemon is down, so those tools
+	// then get ConnectionRefused until someone restarts it. A warning only:
+	// nothing is refused. Additive: an older server ignores it.
+	SupervisorMissing bool `json:"supervisor_missing,omitempty"`
+	// RouteObservationVersion says whether this report carries the node's
+	// per-surface traffic verdict (surface-gap arc Wave 1, OBS-6): 0 means
+	// not reported (an older node, or a node that could not read its own
+	// sessions), ManagedRouteObservationVersion means UnroutedSurfaces is
+	// the complete answer, so an empty list is a clean reading. Deliberately
+	// NOT omitempty, so a current node always states which one it sent; an
+	// older node never sends the key, which decodes as 0, never as clean.
+	RouteObservationVersion int `json:"route_observation_version"`
+	// UnroutedSurfaces names the routable capture surfaces this node ran
+	// sessions on, inside routeattest.ObservedWindow, that did not reach its
+	// proxy (routeattest.SurfaceVerdict.ObservedBypass: bypass_suspect or
+	// partial), as closed "tool/surface_kind" labels (UnroutedSurfaceLabel).
+	// No host, path or count crosses. Additive: an older server ignores it.
+	UnroutedSurfaces []string `json:"unrouted_surfaces,omitempty"`
+	// ConfigLayerVersion says whether this report carries the node's
+	// settings-layer reading (surface-gap arc decision DEC-7, findings CLI-5
+	// and OBS-9): 0 means not reported (an older node, or a node that could
+	// not read its project roots or run the effective-layer evaluator),
+	// ManagedConfigLayerVersion means HookDisabledTools and ConfigLayerRisks
+	// are the complete answer, so two empty lists are a clean reading.
+	// Deliberately NOT omitempty, like RouteObservationVersion: an older node
+	// never sends the key, which decodes as 0, never as clean.
+	ConfigLayerVersion int `json:"config_layer_version"`
+	// HookDisabledTools names the AI tools whose Observer hooks a vendor
+	// settings layer (user, system, managed, project or environment) switches
+	// off, read by the hook-off detection (internal/hookdisable through
+	// diag.HookSwitchInputs). A switch that only stops a host replaying
+	// another tool's hooks is not counted. Closed tool ids only
+	// (ConfigLayerTools), never a path, key or value. Additive: an older
+	// server ignores it.
+	HookDisabledTools []string `json:"hook_disabled_tools,omitempty"`
+	// ConfigLayerRisks names what the effective-layer evaluator
+	// (agentconfig.EvaluateLayers) found that weakens capture or routing, as
+	// closed "tool/finding" labels (ConfigLayerRiskLabel): a project or
+	// higher layer that outranks Observer's route, a layer that turns hooks
+	// off or replaces Observer's hook array, a sign-in mode that pins the
+	// vendor host, an inactive provider. Informational findings
+	// (hooks_off_overridden, mcp_first_file_only, provider_unverified) do not
+	// cross. No file, project, key or value crosses. Additive: an older
+	// server ignores it.
+	ConfigLayerRisks []string `json:"config_layer_risks,omitempty"`
+	// InactiveProviderTools names the AI tools whose proxy route Observer
+	// wrote is in the config file but whose active provider is another one,
+	// so their turns do not reach the proxy (proxyroute.RouteInactiveProvider,
+	// surface-gap CLI-3). Its own drift-table row, never drift. Same closed
+	// vocabulary as DriftedTools. Route coverage like UnroutableTools, with no
+	// version of its own: an older server ignores it and an older node never
+	// sends it (that node's ConfigLayerVersion 0 already reads not reported).
+	InactiveProviderTools []string `json:"inactive_provider_tools,omitempty"`
+}
+
+// ManagedRouteObservationVersion is the per-surface route observation
+// vocabulary this binary reports (ManagedIntegrityReport.
+// RouteObservationVersion). Unsupported versions read as not reported.
+const ManagedRouteObservationVersion = 1
+
+// ManagedConfigLayerVersion is the settings-layer vocabulary this binary
+// reports (ManagedIntegrityReport.ConfigLayerVersion). Unsupported versions
+// read as not reported.
+const ManagedConfigLayerVersion = 1
+
+// CaptureRiskItem is one capture risk located on a hook artifact: the closed
+// risk label, the registration target that owns the artifact and a
+// home-relative label for the file.
+//
+// Content floor: Tool is an adapter registration target id (a closed-shape
+// token such as "cursor" or "claude-code-windows"); File is a label, never an
+// absolute path: "~/" plus the path under the developer's home, "~win/" plus
+// the path under a Windows home seen from WSL, or "?/" plus the last two path
+// elements when the file sits outside any home. No user name, no value read
+// from the file. Events names the native hook events involved, when the probe
+// knows them. NormalizeLabels enforces all of it on both sides.
+//
+// At (T-886) is when an ACT happened, RFC3339 UTC: the repair time of a
+// hook_repaired item, the failure time of a hook_registration_failed one. It
+// is set only on an act label (captureRiskClasses); normalization blanks it on
+// a standing label and on a value that does not parse. The server reads a new
+// At on an item it already saw as a new occurrence of the act (OccurrenceKey),
+// so a repeat repair is a new event. Additive: an older server ignores the
+// field and an older node never sends it, which keeps the Key-only reading.
+//
+// KeptCopy (T-884) is where a hook_repaired act kept the bytes it replaced, a
+// label under the same floor as File. Like At it belongs to the act:
+// normalization blanks it on a standing label and on an invalid label, and the
+// known-risk memory drops it. Additive and optional like At, and not part of
+// Key or OccurrenceKey.
+type CaptureRiskItem struct {
+	Risk     string   `json:"risk"`
+	Tool     string   `json:"tool,omitempty"`
+	File     string   `json:"file,omitempty"`
+	Events   []string `json:"events,omitempty"`
+	At       string   `json:"at,omitempty"`
+	KeptCopy string   `json:"kept_copy,omitempty"`
+}
+
+// CaptureRiskChange is a CaptureRiskItem the SERVER first saw at FirstSeen
+// (RFC3339) on a node that had already reported. It is derived server-side by
+// comparing a report with the one before it and is never sent by a node.
+type CaptureRiskChange struct {
+	CaptureRiskItem
+	FirstSeen string `json:"first_seen"`
 }
 
 // ManagedCaptureCheckVersion is the capture-behavior check vocabulary this
@@ -200,6 +356,95 @@ const (
 	// The detail rides PushEnvelope.AgentConfigState. Additive: an older
 	// server drops the unknown label (NormalizeLabels), never the report.
 	CaptureRiskAgentConfigDrift = "agent_config_drift"
+	// The T-847 labels (tamper audit c1-c3). Additive like
+	// agent_config_drift: an older server drops a label it does not know.
+	//
+	// CaptureRiskHookRegistrationDrift: a dry run of the node's own
+	// idempotent auto-registration would add or rewrite Observer hook
+	// entries, so a registered hook is missing or weakened (an event
+	// removed, a matcher narrowed, the command changed) whatever the
+	// checksum registry says.
+	CaptureRiskHookRegistrationDrift = "hook_registration_drift"
+	// CaptureRiskHookRegistryMissing: hook_checksums.json is gone while the
+	// node has hooks it registers. Before T-847 this was only the unknown
+	// check of the same name, so deleting the registry made a node look
+	// healthier (audit c3).
+	CaptureRiskHookRegistryMissing = "hook_registry_missing"
+	// CaptureRiskHookRegistryEntryMissing: a detected registration target
+	// has no entry in hook_checksums.json.
+	CaptureRiskHookRegistryEntryMissing = "hook_registry_entry_missing"
+	// CaptureRiskHookRepaired: auto-registration re-added or rewrote a hook
+	// entry that was registered before (reported for 24 hours after the
+	// repair, so a hook removed and healed between two reports is still
+	// visible).
+	CaptureRiskHookRepaired = "hook_repaired"
+	// CaptureRiskHookRegistrationFailed (T-887): a registration pass on the
+	// artifact ended in error (a refused repair of a file Observer does not
+	// own, a write failure) within the last 24 hours, and the error has
+	// since cleared. Reported for 24 hours after the failure, like
+	// hook_repaired, so a failure fixed before the next ACCEPTED report (an
+	// org outage) still reaches the organization. While the error holds,
+	// hook_registration_error is reported instead. An act: the item carries
+	// the failure time (CaptureRiskItem.At). Additive: an older server drops
+	// the label, an older node never sends it.
+	CaptureRiskHookRegistrationFailed = "hook_registration_failed"
+	// CaptureRiskRouteRepaired (lane P1): on a managed node whose
+	// organization governs an enforcement point in the API proxy, the
+	// daemon's route maintenance put back an AI tool's proxy route that
+	// Observer had written before and that was gone. Reported for 24 hours
+	// after the repair, like hook_repaired; an act whose item carries the
+	// repair time (CaptureRiskItem.At), the tool and a home-relative label of
+	// the config file. Additive: an older server drops the label.
+	CaptureRiskRouteRepaired = "route_repaired"
+	// CaptureRiskRouteBypassObserved (surface-gap arc Wave 1, OBS-6): a
+	// routable capture surface ran sessions inside routeattest.ObservedWindow
+	// that did not reach this node's proxy; UnroutedSurfaces names them. A
+	// standing condition, label-only (no located item). NormalizeLabels
+	// derives it from UnroutedSurfaces on both sides, so it is present
+	// exactly when that list is. Additive: an older server drops the label.
+	CaptureRiskRouteBypassObserved = "route_bypass_observed" //nolint:gosec // G101: an enum value, not a credential
+	// CaptureRiskHookSilentSurface (surface-gap arc Wave 5, OBS-7): a tool
+	// with registered hooks captured sessions inside the doctor's liveness
+	// window (hooks.liveness) on a surface where no hook ever fired, or none
+	// at all. A standing condition, located on the tool only (no file): the
+	// silent surfaces and session ids stay node-local, since per-session
+	// org reach is decision D14. Additive: an older server drops the label.
+	CaptureRiskHookSilentSurface = "hook_silent_surface"
+	// The DEC-7 labels (surface-gap lane w4-wire). Each is a standing
+	// condition, label-only (no located item), that NormalizeLabels derives
+	// on both sides from its list (derivedCaptureRisks), so it is present
+	// exactly when the list is. Additive: an older server drops a label it
+	// does not know.
+	//
+	// CaptureRiskHookSwitchedOff: a vendor settings layer switches off the
+	// hooks of the tools HookDisabledTools names.
+	CaptureRiskHookSwitchedOff = "hook_switched_off"
+	// CaptureRiskConfigLayerOverride: a settings layer decides against
+	// Observer's route or hooks; ConfigLayerRisks names the tool and finding.
+	CaptureRiskConfigLayerOverride = "config_layer_override"
+	// CaptureRiskRouteInactiveProvider: a tool's active provider bypasses the
+	// route Observer wrote; InactiveProviderTools names the tools.
+	CaptureRiskRouteInactiveProvider = "route_inactive_provider"
+	// The lane w6-governance labels (surface-gap arc Wave 6). Each is a
+	// standing condition. Additive: an older server drops a label it does
+	// not know (NormalizeLabels), and an older node never sends one.
+	//
+	// CaptureRiskShellWrapMissing (CLI-1b, D6): the organization keeps
+	// command wrapping on for this managed node (node.governance pin
+	// shell_wrap.org_maintain ON) and the wrap is not applied, so a bare
+	// vendor command skips every launcher-only route. Label-only.
+	CaptureRiskShellWrapMissing = "shell_wrap_missing"
+	// CaptureRiskVendorPolicyBlocksMCP (S-15, D17): a cached vendor org
+	// policy (Cline remote config, Factory org settings) keeps Observer's
+	// MCP server from running in that tool. Located on the tool and a
+	// home-relative label of the cache directory; no value read from the
+	// cache crosses.
+	CaptureRiskVendorPolicyBlocksMCP = "vendor_policy_blocks_mcp"
+	// CaptureRiskVendorPolicyPinsRoute (S-15, D17): a cached vendor org
+	// policy pins the tool's provider base URL to a host other than this
+	// node's proxy, or vetoes a loopback route. Located like
+	// CaptureRiskVendorPolicyBlocksMCP; the URL never crosses.
+	CaptureRiskVendorPolicyPinsRoute = "vendor_policy_pins_route"
 )
 
 // Closed unknown-check labels. An unknown check is not a clean result and is
@@ -225,6 +470,58 @@ type ManagedIntegrityDetail struct {
 	DriftedTools        []string `json:"drifted_tools,omitempty"`
 	CaptureRisks        []string `json:"capture_risks,omitempty"`
 	UnknownChecks       []string `json:"unknown_checks,omitempty"`
+	// CaptureRiskItems is the report's located risks (T-847).
+	CaptureRiskItems []CaptureRiskItem `json:"capture_risk_items,omitempty"`
+	// CaptureRiskItemsOmitted is how many located risks are not in
+	// CaptureRiskItems: the node's bound plus any the server's size cap
+	// trimmed (T-873). Zero on a row an older server wrote.
+	CaptureRiskItemsOmitted int `json:"capture_risk_items_omitted,omitempty"`
+	// RoutesWritten and UnroutableTools are the report's route coverage
+	// labels (lane P1), stored as the node sent them after normalization.
+	RoutesWritten   []string `json:"routes_written,omitempty"`
+	UnroutableTools []string `json:"unroutable_tools,omitempty"`
+	// UnselectedTools is the report's "installed, not selected by policy"
+	// list (T-915), informational like the two above.
+	UnselectedTools []string `json:"unselected_tools,omitempty"`
+	// RoutingOff and RoutingOffTools are the report's "routing switched off
+	// by policy" flag and the installed tools it names (D-771).
+	RoutingOff      bool     `json:"routing_off,omitempty"`
+	RoutingOffTools []string `json:"routing_off_tools,omitempty"`
+	// SupervisorMissing is the report's supervisor warning (lane P1).
+	SupervisorMissing bool `json:"supervisor_missing,omitempty"`
+	// RouteObservationVersion and UnroutedSurfaces are the report's
+	// per-surface traffic verdict (OBS-6), stored as normalized. The version
+	// is not omitempty: a row an older server wrote lacks the key and reads
+	// as 0, not reported, never as clean.
+	RouteObservationVersion int      `json:"route_observation_version"`
+	UnroutedSurfaces        []string `json:"unrouted_surfaces,omitempty"`
+	// ConfigLayerVersion, HookDisabledTools, ConfigLayerRisks and
+	// InactiveProviderTools are the report's settings-layer reading (DEC-7),
+	// stored as normalized. The version is not omitempty for the same reason
+	// as RouteObservationVersion: a row an older server wrote reads 0, not
+	// reported.
+	ConfigLayerVersion    int      `json:"config_layer_version"`
+	HookDisabledTools     []string `json:"hook_disabled_tools,omitempty"`
+	ConfigLayerRisks      []string `json:"config_layer_risks,omitempty"`
+	InactiveProviderTools []string `json:"inactive_provider_tools,omitempty"`
+	// RecentChanges are the located risks that appeared since an earlier
+	// report, kept for ManagedIntegrityChangeWindow (server-derived).
+	RecentChanges []CaptureRiskChange `json:"recent_changes,omitempty"`
+	// KnownRisks is the server's bounded memory of every risk this machine
+	// reported within ManagedIntegrityKnownWindow, with when it was last
+	// reported (server-derived, never node-sent). It keeps a STANDING
+	// condition that briefly vanished from a report (a deleted hash registry
+	// hides the binary mismatches it would have found) from being raised as
+	// a new event when it comes back. See DeriveCaptureRiskChanges.
+	KnownRisks []KnownCaptureRisk `json:"known_risks,omitempty"`
+}
+
+// KnownCaptureRisk is one entry of ManagedIntegrityDetail.KnownRisks: a risk
+// identity (a located item, or a label-only item for a bare label) and when
+// the machine last reported it, RFC3339.
+type KnownCaptureRisk struct {
+	CaptureRiskItem
+	LastSeen string `json:"last_seen"`
 }
 
 // ManagedIntegrityResponse is the 200 body of POST /api/agent/managed-integrity.
@@ -424,6 +721,15 @@ type PushEnvelope struct {
 	// internal/orgcontract/commitowner.go.
 	CommitOwnership []CommitOwnershipRow `json:"commit_ownership,omitempty"`
 
+	// DeliveryDays carries the delivery (commit to PR to merge) daily counts
+	// from every node; PullRequests carries PR identity rows ONLY under
+	// ShareOptions.shipsRawContent(). Composed by
+	// store.SelectDeliveryWireRows (internal/store/deliverysummary.go). An
+	// older server ignores both keys, an older agent omits them. See
+	// internal/orgcontract/delivery.go.
+	DeliveryDays []DeliveryDayRow `json:"delivery_days,omitempty"`
+	PullRequests []PullRequestRow `json:"pull_requests,omitempty"`
+
 	// SessionCacheSummaries carries the W2.1 session-scoped cache summary
 	// (per session × model × kind × cause counts + token sums, no content) —
 	// present only under shipsRawContent() (full_content / admin_managed);
@@ -486,6 +792,16 @@ type PushEnvelope struct {
 	// Optional both directions. See internal/orgcontract/toolaccountsession.go.
 	SessionToolAccounts []SessionToolAccountRow `json:"session_tool_accounts,omitempty"`
 
+	// SessionHookActivity is the per-session hook liveness wire (surface-gap
+	// DEC-5), present only when the node ships the hook_activity tier (opt-in
+	// individual / admin-raised managed via extract.hook_activity or the
+	// umbrella). Counts and coarse env classes ship under that tier alone; a
+	// content-level env class (the CLAUDE_CONFIG_DIR hash) additionally
+	// requires the node's raw-content posture. Composed by
+	// store.SelectSessionHookActivity. Optional both directions: an older
+	// server ignores the key. See internal/orgcontract/hookactivity.go.
+	SessionHookActivity []HookActivitySessionRow `json:"session_hook_activity,omitempty"`
+
 	// --- Org-parity Wave-3 per-developer enterprise wires. All ride
 	// shipsRawContent() (full_content / admin_managed) like the session-
 	// scoped wires above; each row type documents its own posture. All
@@ -535,6 +851,24 @@ type PushEnvelope struct {
 	// like RoutingSummaries.
 	TerminalSummaries    []TerminalSummaryRow    `json:"terminal_summaries,omitempty"`
 	RemoteAuditSummaries []RemoteAuditSummaryRow `json:"remote_audit_summaries,omitempty"`
+	// SandboxPosture + SandboxCapability are the OPTIONAL sandbox posture
+	// aggregate (sandbox plan v2 section 8.4): per-day run counts by the
+	// closed isolation and capture enums, and the node's capability enums.
+	// Shipped under the terminal_detail tier, and only while the Sandboxes and
+	// VMs module is active on the node. See sandboxposture.go. Optional both
+	// directions.
+	SandboxPosture    []SandboxPostureRow   `json:"sandbox_posture,omitempty"`
+	SandboxCapability *SandboxCapabilityRow `json:"sandbox_capability,omitempty"`
+	// SecurityPosture / SecurityFindings / AIChangeRecords are the OPTIONAL
+	// security pillar wire (security plan 7.4, lane SEC-E2), composed through
+	// the SecurityOrgProviders seam only while the security module is active
+	// and the share level allows (an individual node sends none until its
+	// operator sets [org_client.share].security). Every field is tag-classed
+	// and raw fields ship only under shipsRawContent(). See securityrows.go.
+	// Optional both directions: an old server ignores the keys.
+	SecurityPosture  []SecurityPostureRow `json:"security_posture,omitempty"`
+	SecurityFindings []SecurityFindingRow `json:"security_findings,omitempty"`
+	AIChangeRecords  []AIChangeRecordRow  `json:"ai_change_records,omitempty"`
 	// MCPRelayActivity is the HMAC-only daily aggregate of this node's MCP
 	// relay decisions (Agent Access P4 W4e, doc3 §9.5). An individual node
 	// attaches it only under [org_client.share].mcp_activity (R8.30.b); an
@@ -784,6 +1118,22 @@ type PushResponse struct {
 	// ignores the unknown key.
 	UpdateVersions map[string]int64 `json:"update_versions,omitempty"`
 
+	// SecurityPurpose is the org's stated purpose for its Code security
+	// views (security plan 7.12, lane SEC-E3): a closed id from
+	// SecurityPurposes, or SecurityPurposeUnset, sent only while
+	// org.security is configured on the server. The node shows it in its
+	// affected-worker notice, rendered from its own label table (never text
+	// the server wrote). Same omitempty compat invariant as the seams above.
+	SecurityPurpose string `json:"security_purpose,omitempty"`
+
+	// SecurityVisibility is what the org's Code security views show under
+	// its current settings (operator ruling P-089): the minimum group, the
+	// fields switched off and whether the optional purpose statement is
+	// shown. Sent with SecurityPurpose, only while org.security is
+	// configured; the node's notice renders it from its own label table.
+	// Same omitempty compat invariant as the seams above.
+	SecurityVisibility *SecurityVisibility `json:"security_visibility,omitempty"`
+
 	// RailVersions is the OPTIONAL rail nudge (2026-10-02 budget-latency arc,
 	// P2): the current version of every node-pulled rail that is NOT a
 	// policy-resource family (RailBudget, RailPricing, RailBundle,
@@ -795,6 +1145,19 @@ type PushResponse struct {
 	// policy_versions key as a policy-resource family and would wake that
 	// loop for a budget edit.
 	RailVersions map[string]int64 `json:"rail_versions,omitempty"`
+
+	// OrgName is the organization's CURRENT display name (T-862). An admin
+	// may rename the org after a node enrolled (Settings > Server, or
+	// `observer-org org rename`); the node records the name it reads here in
+	// place of the one its enrolment stored, so `observer org status` and
+	// the node dashboard follow the rename without a re-enrolment. It rides
+	// the already-authenticated push acknowledgment at the same trust level
+	// as EnrollResponse.OrgName, and it is a label only: it changes no
+	// identity, key pin, grant or policy. The node applies it only when it
+	// passes OrgNameProblem. omitempty on both sides of the compat invariant:
+	// an older server never sends it (the node keeps its enrolment name) and
+	// an older node ignores the unknown key.
+	OrgName string `json:"org_name,omitempty"`
 }
 
 // Rail keys of PushResponse.RailVersions / PolicyVersionsDoc.RailVersions.
@@ -814,7 +1177,20 @@ const (
 	// issue, revoke, extend and scheduled-start. An older node ignores the
 	// unknown key; an older server never sends it.
 	RailGrants = "grants"
+	// RailMessages is the per-caller admin message rail (GET
+	// /api/agent/messages, OrgMessageDoc). Its version is computed PER
+	// CALLER: the highest message id in the caller's own threads combined
+	// with the org's message-settings version, so a message to one developer
+	// wakes only that developer's node. An older node ignores the unknown
+	// key; an older server never sends it.
+	RailMessages = "messages"
 )
+
+// OrgMessagesPath is the node's pull path for admin messages.
+const OrgMessagesPath = "/api/agent/messages"
+
+// OrgMessageReceiptsPath is where the node posts read/acknowledge receipts.
+const OrgMessageReceiptsPath = "/api/agent/messages/receipts"
 
 // PolicyVersionsPath is the node's lightweight policy-freshness probe
 // (GET, enrolment bearer; ETag / If-None-Match -> 304).
@@ -970,6 +1346,23 @@ type PolicyBundle struct {
 	// signature also covers (policybinding.go). Absent on every v1 envelope,
 	// so a released node, which never asks for v2, never sees it.
 	Binding *PolicyBinding `json:"binding,omitempty"`
+	// ProjectBinding is set on a v3 (project-audience) delivery only
+	// (projectenvelope.go): the org, member, assignment epoch and, on the
+	// composed bundle, the digest of the signed project mapping, or, on a
+	// per-project envelope, the org project id. A v3 envelope carries no
+	// Binding; a node never sees this field unless it asked for v3.
+	ProjectBinding *ProjectBinding `json:"project_binding,omitempty"`
+	// Projects rides the composed v3 bundle only: the signed project mapping
+	// and one signed envelope per project whose sections reach the member.
+	// It is NOT part of the composed bundle's own signature; the mapping is
+	// bound by digest and epoch in ProjectBinding, and each envelope carries
+	// its own v3 signature. The node strips it before caching the bundle.
+	Projects *ProjectDelivery `json:"projects,omitempty"`
+	// Families rides a per-project v3 envelope only, to a node that asked
+	// for ProjectFamiliesCapability (projectfamilies.go, lane sec-p3): the
+	// project's family sections, covered by the envelope's signature through
+	// ProjectBinding.FamiliesDigest. Absent everywhere else.
+	Families []ProjectFamilyMember `json:"families,omitempty"`
 }
 
 // SignedPolicyResource is the P0-5 unified, family-tagged, signed org
@@ -1504,8 +1897,8 @@ type TokenUsageRow struct {
 	// GenMs already has node-side); an older server ignores the new wire key.
 	GenMs int64 `json:"gen_ms,omitempty"`
 	// GenBasis names GenMs's basis (models.GenBasisNative /
-	// GenBasisTranscript on the node) — a closed, adapter-minted enum, never
-	// agent-authored text, so it is METADATA and ships BY DEFAULT alongside
+	// GenBasisTranscript / GenBasisOTel on the node) — a closed,
+	// capture-minted enum, never agent-authored text, so it is METADATA and ships BY DEFAULT alongside
 	// GenMs under the same rule. GenTimingV (the adapter's gen-timing parser
 	// version) deliberately has NO wire counterpart: it is a node-local
 	// upsert-precedence input only, meaningless once GenMs/GenBasis have
@@ -2175,6 +2568,219 @@ type PolicyStateRow struct {
 	// carried on the policy-ack rail — NOT on the PushEnvelope, so the
 	// orgpush.go privacy sentinel is untouched.
 	EffectivePins map[string]string `json:"effective_pins,omitempty"`
+
+	// BundleIntegrity and LocalGuard are the gen3 fields (guard tamper
+	// visibility, T-846 / T-848, docs/audits/guard-tamper-visibility-audit-
+	// 2026-10-15.md rows b2 and a2). They are meaningful ONLY on the
+	// family="guard.coding" row (enforcement_point "guard"); the server 400s
+	// a report that carries either on any other row, and a pre-gen3 server
+	// 400s them anywhere (DisallowUnknownFields), which is what the node's
+	// generation ladder probes for (cmd/observer/policystate_wire.go strips
+	// them on the next rung, so an older server keeps every gen2 field).
+	//
+	// BundleIntegrity is what the node found when it re-verified the org
+	// policy bundle ON DISK at report time (signature, key pin and body hash
+	// against the version it recorded when it accepted that bundle): one of
+	// BundleIntegrityVerified / BundleIntegrityAbsent /
+	// BundleIntegrityTampered. Empty = not reported (a pre-gen3 node).
+	//
+	// It is a snapshot at report time, not a history (T-880). The daemon
+	// repairs a tampered or deleted bundle within seconds, so by the next
+	// report the file normally verifies again and this reads verified;
+	// tampered or missing appears only while the repair has not completed
+	// (for example the re-download failed). A repaired tamper reaches the
+	// organization through GuardTamper, which bundle_tampered reads.
+	BundleIntegrity string `json:"bundle_integrity,omitempty"`
+
+	// LocalGuard is the node's local guard configuration as the hook path
+	// would resolve it right now, except that on a node with an org lock the
+	// floorable switches are the values the developer set locally, before
+	// the managed floor or a governance pin raised them (T-848 / T-875), so a
+	// weakening attempt the node overrode still reaches the organization.
+	// Booleans, closed enums, closed detector ids and a COUNT only: the
+	// allow-list's regex text never travels. Nil = not reported (a pre-gen3
+	// node).
+	LocalGuard *LocalGuardPosture `json:"local_guard,omitempty"`
+
+	// GuardTamper is the gen4 field (T-864, guard tamper re-test
+	// 2026-10-16 gap 4): the org-held guard files this node's daemon found
+	// changed or removed outside the daemon and repaired in the last
+	// GuardTamperWindow. The repair is fast enough that the file verifies
+	// again by the next report, so without this record a repaired edit
+	// never reached the organization. Guard row only, like the gen3
+	// fields; a gen3 server 400s it (DisallowUnknownFields), which the
+	// node's generation ladder probes for. Nil = nothing repaired in the
+	// window, or a node that predates it.
+	GuardTamper *GuardTamperReport `json:"guard_tamper,omitempty"`
+
+	// ProjectSectionStatus is the gen5 field (security plan section 7.11,
+	// lane sec-p2b): per project in the signed project mapping this node
+	// holds, whether its section is applied, not matched, unknown or not
+	// delivered (projectsectionstatus.go). Guard row only, like the gen3 and
+	// gen4 fields; a gen4 server 400s it (DisallowUnknownFields), which the
+	// node's generation ladder probes for. Nil = the node holds no project
+	// delivery, or predates the field. Org project ids and closed statuses
+	// only: which directory matched never travels.
+	ProjectSectionStatus []ProjectSectionState `json:"project_section_status,omitempty"`
+	// ProjectSectionTruncated (gen5, same rung) says the node cut
+	// ProjectSectionStatus to what the server accepts (more projects than
+	// MaxProjectMappingProjects, or an entry ValidProjectSectionStatus would
+	// refuse), so the list is partial and the org must not read it as
+	// whole. Guard row only.
+	ProjectSectionTruncated bool `json:"project_section_truncated,omitempty"`
+	// ProjectFamilyStatus is the gen6 field (security plan section 7.11,
+	// lane sec-p3): per project family section this node holds (a
+	// security.scanning section riding a project envelope), its closed
+	// status (projectfamilies.go). Guard row only; a gen5 server 400s it
+	// (DisallowUnknownFields), which the node's generation ladder probes
+	// for. It shares ProjectSectionTruncated. Nil = no family section held,
+	// or a node that predates the field (the org then reads every family
+	// section reaching the member as not delivered).
+	ProjectFamilyStatus []ProjectFamilySectionState `json:"project_family_status,omitempty"`
+	// ProjectFamilyTruncated is the gen7 field (lane SEC-P4 decision 11):
+	// the node cut ProjectFamilyStatus to what the server accepts, so the
+	// family list is partial. ProjectSectionTruncated keeps its gen5 meaning
+	// (the project section list only); a gen6 server 400s this field
+	// (DisallowUnknownFields), so the node's ladder folds it into
+	// ProjectSectionTruncated for such a server, as before. Guard row only.
+	ProjectFamilyTruncated bool `json:"project_family_truncated,omitempty"`
+
+	// FamilyNotApplicable is the gen8 field (SECP-10, lane LEFT-SHARED,
+	// policystate_na.go): on the security.scanning row only, each floor key
+	// the node holds but cannot apply, with its closed reason. A gen7 server
+	// 400s it (DisallowUnknownFields), which the node's generation ladder
+	// probes for. Nil = every key applied, no floor held, or an older node.
+	FamilyNotApplicable []FamilyKeyNotApplicable `json:"family_not_applicable,omitempty"`
+}
+
+// Bundle integrity values for PolicyStateRow.BundleIntegrity (gen3).
+const (
+	// BundleIntegrityVerified: the on-disk org bundle verifies (signature,
+	// key pin, body hash).
+	BundleIntegrityVerified = "verified"
+	// BundleIntegrityAbsent: no org bundle on disk (nothing published yet,
+	// or the file was deleted).
+	BundleIntegrityAbsent = "absent"
+	// BundleIntegrityTampered: a bundle file exists and does NOT verify (an
+	// edited body, a forged key, corrupt JSON). A managed node enforces its
+	// last verified org layer (an individual node runs without the org
+	// layer), and the poll re-fetches the bundle at once (T-864, T-877).
+	BundleIntegrityTampered = "tampered"
+	// BundleIntegrityMissing (gen4, T-864): no org bundle on disk although
+	// this node had accepted a verified one (it recorded the version when
+	// it did). Distinct from absent, which is "nothing was ever published
+	// here": a deletion is a tamper, and a managed node keeps enforcing its
+	// last verified copy and re-fetches the bundle at once. A gen3 server
+	// 400s the value; the node's ladder reports it as absent there.
+	BundleIntegrityMissing = "missing"
+)
+
+// LocalGuardPosture is the gen3 effective local guard configuration a node
+// reports on its guard policy-state row (T-848). Every field is a bool, a
+// closed enum, a closed detector id or a count, so nothing a developer typed
+// (a regex, a path) can cross the wire through it.
+type LocalGuardPosture struct {
+	// Enabled is [guard].enabled as the hook path resolves it.
+	Enabled bool `json:"enabled"`
+	// Mode is [guard].mode, normalized to off|observe|enforce.
+	Mode string `json:"mode"`
+	// PromptEnabled is [guard.prompt].enabled as the hook path resolves it.
+	PromptEnabled bool `json:"prompt_enabled"`
+	// PromptMode is the global [guard.prompt].mode: off|warn|redact|ask-once|block.
+	PromptMode string `json:"prompt_mode"`
+	// DetectorModes maps a prompt detector id to its EFFECTIVE mode, listed
+	// only where it differs from PromptMode (an override that took effect).
+	DetectorModes map[string]string `json:"detector_modes,omitempty"`
+	// AllowListCount is how many [guard.prompt].allow patterns are
+	// configured. The count only: the pattern text never travels.
+	AllowListCount int `json:"allow_list_count"`
+}
+
+// Local guard weakening keys: the closed vocabulary of a LocalGuardPosture
+// weakness (LocalGuardWeakenings). They are dotted config paths, so the org
+// reason names the exact knob a developer would have to change back.
+const (
+	LocalGuardKeyEnabled       = "guard.enabled"
+	LocalGuardKeyMode          = "guard.mode"
+	LocalGuardKeyPromptEnabled = "guard.prompt.enabled"
+	LocalGuardKeyPromptMode    = "guard.prompt.mode"
+	LocalGuardKeyDetectors     = "guard.prompt.detectors"
+	LocalGuardKeyAllow         = "guard.prompt.allow"
+)
+
+// localGuardPromptRank orders the prompt-guard modes from weakest to
+// strongest (the same order internal/guard ranks them). A mode outside the
+// set ranks -1.
+var localGuardPromptRank = map[string]int{"off": 0, "warn": 1, "redact": 2, "ask-once": 3, "block": 4}
+
+// localGuardModeRank orders the command guard modes from weakest to strongest.
+var localGuardModeRank = map[string]int{"off": 0, "observe": 1, "enforce": 2}
+
+// LocalGuardPromptModeKnown reports whether m is a prompt-guard mode.
+func LocalGuardPromptModeKnown(m string) bool { _, ok := localGuardPromptRank[m]; return ok }
+
+// LocalGuardModeKnown reports whether m is a normalized command guard mode.
+func LocalGuardModeKnown(m string) bool { _, ok := localGuardModeRank[m]; return ok }
+
+// localGuardFloor is the managed-node floor a LocalGuardPosture is judged
+// against when the organization published no value for that key (D-672: on
+// a managed node org guard rules win and a local edit may not weaken them).
+// A prompt mode below "redact" (off or warn: nothing ever blocks or asks) and
+// a detector whose effective mode is below "redact" are weakenings; a
+// non-empty local allow-list is a weakening because it exempts findings the
+// organization never saw. Exported as LocalGuardPromptFloor so the node's
+// config floor (internal/guardposture) raises a weaker local prompt mode to
+// exactly the value this check accepts.
+const localGuardPromptFloor = LocalGuardPromptFloor
+
+// LocalGuardWeakenings returns, sorted, the LocalGuardKey* keys on which p is
+// weaker than the managed-node floor. pinned carries the organization's
+// PUBLISHED values for guard.enabled / guard.mode (the node.governance pins,
+// "true"/"false" and an enum member); a published value replaces the
+// built-in floor for that key, so an organization that deliberately runs
+// guard in observe mode is not told its own choice is a weakening. A nil p
+// (a pre-gen3 node) reports nothing: absence of evidence is not a finding.
+//
+// The rule is a table walked top-down (CLAUDE.md #5), one check per key.
+func LocalGuardWeakenings(p *LocalGuardPosture, pinned map[string]string) []string {
+	if p == nil {
+		return nil
+	}
+	floorMode := "observe"
+	if v, ok := pinned[LocalGuardKeyMode]; ok && LocalGuardModeKnown(v) {
+		floorMode = v
+	}
+	floorEnabled := true
+	if v, ok := pinned[LocalGuardKeyEnabled]; ok {
+		floorEnabled = v == "true"
+	}
+	// A detector is judged against ITS OWN floor (LocalGuardDetectorFloor):
+	// the lower of "redact" and the shipped default for that detector, so the
+	// default set itself (email and the phone detectors ship off) is never a
+	// weakening (T-864 gap 3: a false local_weakening on an untouched node).
+	// LocalGuardWeakDetectors names them (T-888).
+	weakDetector := len(LocalGuardWeakDetectors(p)) > 0
+	// Every check stands on its own (T-876): a prompt guard switched off does
+	// not hide a prompt mode or detectors set below the floor in the same
+	// edit, so the organization sees every setting the developer lowered.
+	checks := []struct {
+		key  string
+		weak bool
+	}{
+		{LocalGuardKeyEnabled, floorEnabled && !p.Enabled},
+		{LocalGuardKeyMode, localGuardModeRank[p.Mode] < localGuardModeRank[floorMode]},
+		{LocalGuardKeyPromptEnabled, !p.PromptEnabled},
+		{LocalGuardKeyPromptMode, localGuardPromptRank[p.PromptMode] < localGuardPromptRank[localGuardPromptFloor]},
+		{LocalGuardKeyDetectors, weakDetector},
+		{LocalGuardKeyAllow, p.AllowListCount > 0},
+	}
+	var out []string
+	for _, c := range checks {
+		if c.weak {
+			out = append(out, c.key)
+		}
+	}
+	return out
 }
 
 // PolicyStateReport is the POST /api/agent/policy-ack body. AgentVersion is
@@ -2267,6 +2873,13 @@ const (
 	// allow-list, as opposed to receiving-but-rejecting it (capability
 	// mismatch / version skew). It pairs with delivered_unaccepted only.
 	ReasonFamilyNotAccepted = "family_not_accepted" // gen2 — node-side accept_families opt-out
+	// ReasonPostureLoosened is the result-based posture check's refusal
+	// (roadmap F0-8): the body would have made the node weaker on one of its
+	// family's posture axes, so the node kept its last known good. It pairs
+	// with delivered_unaccepted only. Only a family with a posture evaluator
+	// (security.scanning, terminals.isolation) can produce it, and an org
+	// server old enough not to allow it cannot publish those families.
+	ReasonPostureLoosened = "posture_loosened"
 	// ReasonSidecarUnwritable is the gen2 P4-2 reason: the
 	// dashboard.visibility directive's sidecar file could not be written
 	// (§1.4.1), so the class was accepted by policy but never took effect

@@ -20,5 +20,5 @@ func dashboardComponents(configPath string, database *sql.DB) dashapi.Components
 		slog.Default().Warn("dashboard: components service unavailable", "err", err)
 		return nil
 	}
-	return svc
+	return withLiveRunHold(svc) // live sandboxed runs hold a sandbox deactivation (SBX-UPD-1)
 }

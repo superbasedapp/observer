@@ -59,6 +59,17 @@ outputs:
 runs:
   using: composite
   steps:
+    # Hosted runners have started failing the restore below with "No space
+    # left on device" (2026-10-15, runner 2.337.0): the go family's GOCACHE
+    # plus GOMODCACHE no longer fits beside the preinstalled toolchains.
+    # Drop the large SDKs no job here uses before restoring.
+    - shell: bash
+      if: runner.os == 'Linux'
+      run: |
+        before=$(df -BG --output=avail / | tail -1)
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift || true
+        echo "free disk on /: ${before} -> $(df -BG --output=avail / | tail -1)"
+
     - uses: actions/setup-go@v6
       with:
         go-version-file: ${{ inputs.go-version-file }}

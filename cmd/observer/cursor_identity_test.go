@@ -46,7 +46,7 @@ func writeCursorIdentityTestConfig(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
-	body := "[observer]\ndb_path = \"" + filepath.Join(dir, "observer.db") + "\"\n"
+	body := "[observer]\ndb_path = \"" + filepath.ToSlash(filepath.Join(dir, "observer.db")) + "\"\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestAllocateCursorFreshSessionRequiresOOB(t *testing.T) {
 }
 
 func TestCursorFreshAllocationLaunchesAndAnnouncesAfterStart(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	nextOOB := oobCapture(t)
 	dir := t.TempDir()
 	callsPath := filepath.Join(dir, "calls")
@@ -301,7 +301,7 @@ for arg in "$@"; do printf '%s\n' "$arg" >> `+argvPath+`; done`)
 }
 
 func TestCursorWrapperResumeUsesExistingPathWithoutAllocation(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	nextOOB := oobCapture(t)
 	dir := t.TempDir()
 	callsPath := filepath.Join(dir, "calls")
@@ -330,7 +330,7 @@ printf '%s\n' "$@" > `+callsPath)
 }
 
 func TestCursorUserCreateChatRunsExactlyOnce(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	activateCursorTestOOB(t, io.Discard)
 	dir := t.TempDir()
 	callsPath := filepath.Join(dir, "calls")
@@ -351,7 +351,7 @@ func TestCursorUserCreateChatRunsExactlyOnce(t *testing.T) {
 }
 
 func TestCursorAllocationFailurePreventsInteractiveStartAndHidesOutput(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	var oob bytes.Buffer
 	activateCursorTestOOB(t, &oob)
 	dir := t.TempDir()
@@ -385,7 +385,7 @@ fi`)
 }
 
 func TestCursorInteractiveStartFailureDoesNotAnnounce(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	var oob bytes.Buffer
 	activateCursorTestOOB(t, &oob)
 	dir := t.TempDir()
@@ -416,7 +416,7 @@ fi`)
 }
 
 func TestCursorBudgetAdmissionPrecedesFreshAllocation(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	activateCursorTestOOB(t, io.Discard)
 	cfgPath, _ := writeManagedBudgetLaunchFixture(t, true, "enforce")
 	dir := t.TempDir()

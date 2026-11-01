@@ -218,12 +218,47 @@ export type ToolsResponse = {
 // opened as a detail panel (fall back to the legacy `?root=` guidance
 // SlideOver).
 
+// CommitScanInfo is GET /api/project/{id}'s capture.commit_scan: what the
+// last scan attempt hit (detail is git's own message), the folder git runs
+// in when it differs from the stored root (a Windows path translated for a
+// WSL daemon), when the last attempt and the last success were, and whether
+// "Rescan now" is available here.
+export type CommitScanInfo = {
+  kind?: string;
+  detail?: string;
+  scan_root?: string;
+  last_scan_at?: string;
+  last_success_at?: string;
+  failures: number;
+  history_pending: boolean;
+  can_rescan: boolean;
+};
+
+// CommitRescanResponse is POST /api/project/{id}/commit-scan's body.
+export type CommitRescanResponse = {
+  done: boolean;
+  error?: string;
+  capture: ProjectCaptureInfo;
+};
+
 export type ProjectCaptureInfo = {
-  // "no_git": the project root isn't a git repository (or git isn't on
-  // PATH). "never_scanned": git is available but the scanner hasn't run a
-  // pass yet. "error": the last scan failed (timeout / unreadable root) and none has
-  // succeeded since. "ok": commit capture is live for this project.
-  commits: "ok" | "no_git" | "never_scanned" | "error";
+  // The closed capture vocabulary (Go owner: internal/store
+  // commitCaptureStates; copy in lib/vocabTones COMMIT_CAPTURE). Each
+  // non-ok state names its cause; "error" is refined by commits_kind.
+  commits:
+    | "ok"
+    | "catching_up"
+    | "never_scanned"
+    | "no_git"
+    | "no_folder"
+    | "root_missing"
+    | "not_repo"
+    | "error";
+  // The failure kind when commits is "error" (timeout, dubious_ownership,
+  // permission_denied, repo_unreadable, output_too_large, other).
+  commits_kind?: string;
+  // Project detail only: the full scan health behind the banner.
+  commit_scan?: CommitScanInfo;
   // "none": no editor-reported human LOC capture for this project (never
   // render an AI share against it). "vscode": the SuperBased VS Code
   // extension has reported saves for it.
@@ -2628,6 +2663,8 @@ export type ToolAccountEvidence = {
 export type MessageAccount = {
   status: "observed" | "unknown" | "conflict";
   label: string;
+  // Account-level (device / org) label, separate from the person `label`.
+  account_label?: string;
   evidence: ToolAccountEvidence[];
 };
 export type MessageRow = {
@@ -3094,7 +3131,9 @@ export type SetupClaude = {
   claude_binary_found: boolean;
   claude_binary_path?: string;
   launcher_command: string;
-  status: "oauth_ready" | "api_key_ready" | "claude_not_installed" | string;
+  status: "oauth_ready" | "api_key_ready" | "extension_ready" | "claude_not_installed" | string;
+  /** The Claude Code VS Code extension is installed (WINNODE2 16b). */
+  editor_extension_installed?: boolean;
   // Durable routing state — the env.ANTHROPIC_BASE_URL block in
   // ~/.claude/settings.json (managed by POST /api/setup/claude).
   settings_path?: string;
@@ -3102,6 +3141,33 @@ export type SetupClaude = {
   routed_to_observer: boolean;
   would_register: boolean;
   would_register_error?: string;
+  // What the node saw reach the proxy, per capture surface (OBS-1), as
+  // opposed to routed_to_observer, which only reads the settings file.
+  // Absent when the daemon could not read its database.
+  observed_route?: ObservedRoute;
+};
+
+// ObservedRoute is the observed_route block of GET /api/setup/claude
+// (internal/intelligence/dashboard/observedroute.go): sessions per capture
+// surface over the last window_days, and how many reached the proxy.
+export type ObservedRoute = {
+  window_days: number;
+  surfaces: ObservedSurface[];
+};
+
+export type ObservedSurface = {
+  kind: string;
+  host?: string;
+  // routeattest.SurfaceState: invalid_input, unknown_surface, exempt,
+  // unobserved, unknown_measurability, not_measurable, bypass_suspect,
+  // partial, attested.
+  state: string;
+  sessions: number;
+  proxied_sessions: number;
+  routable: boolean;
+  // A routable surface ran sessions that never reached the proxy.
+  bypass: boolean;
+  reason: string;
 };
 
 // SetupRoutePostResponse is the shared POST /api/setup/{claude,codex}
@@ -3266,7 +3332,13 @@ export type ToolStatusRow = {
 };
 
 /** One integration's actions for a tool (GET /api/tools/status wiring). */
-export type ToolWiringPart = { register: boolean; remove: boolean; note?: string };
+export type ToolWiringPart = {
+  register: boolean;
+  remove: boolean;
+  note?: string;
+  /** FU-24: what the tool switches off while the route is in force (integration.RouteTradeoff). */
+  tradeoff?: string;
+};
 
 /** T-421: which wizard steps a tool has, from the same predicates the CLI uses. */
 export type ToolWiring = {
@@ -3349,6 +3421,9 @@ export type ShellWrapTool = {
   commands: string[] | null;
   routes: boolean;
   traffic_proven: boolean;
+  // The opt-in launcher argument (e.g. "--proxy") that would route this
+  // wrapped verb when its bare form does not; absent otherwise.
+  route_flag?: string;
   honesty: ShellWrapHonesty;
   honesty_text: string;
   // Where the real program runs: the target OS ("host") or, on the Windows
@@ -3521,6 +3596,15 @@ export type CodexHookTrust = {
   hash_verified: boolean;
   feature_flag_enabled: boolean;
   instruction?: string;
+  // True when Observer's tool-gate event is among the ones codex will not
+  // run: the Codex guard gate is off, not degraded.
+  gate_off?: boolean;
+  // "native", or the foreign home read (a WSL daemon's view of the
+  // Windows user's ~/.codex).
+  origin?: string;
+  // Every other home carrying Observer codex hooks; the top level is the
+  // one that needs action first.
+  other_homes?: CodexHookTrust[];
 };
 
 export type CodexHookTrustEntry = {
@@ -3708,6 +3792,18 @@ export type EnrolmentStatus = {
   // composed rollup exceeded the accepted push limit, so the push loop is
   // parked and nothing is reaching the org server. Absent is the normal case.
   push_paused?: EnrolmentPushPaused | null;
+  // retention_held is present ONLY when node retention is keeping rows past
+  // [observer.retention].max_age_days because the org push has not accepted
+  // them yet (T-830): a stuck or slow push. Absent is the normal case.
+  retention_held?: EnrolmentRetentionHeld | null;
+};
+
+// EnrolmentRetentionHeld is the "retention held N rows awaiting push" count.
+export type EnrolmentRetentionHeld = {
+  rows: number;
+  actions: number;
+  sessions: number;
+  max_age_days: number;
 };
 
 // EnrolmentPushPaused is the open oversized-batch circuit. `reason` is the
@@ -3842,6 +3938,9 @@ export type ProcessNode = {
   // (RFC3339 UTC); the drawer shows the actual capture time. Empty when
   // unknown.
   started_at?: string;
+  // last_seen_at is the last time the capture saw the process alive; a
+  // still-"running" process unseen for a while had its exit missed.
+  last_seen_at?: string;
   is_boundary?: boolean;
   action_id?: number;
   turn_index?: number;
@@ -4255,6 +4354,10 @@ export type TerminalSessionsMeta = {
   launchable_tool_info?: LaunchableTool[];
   allowed_project_roots?: string[];
   shell_enabled?: boolean;
+  /** True only when the daemon runs inside WSL and so translates a Windows
+   *  custom root (C:\...) to its /mnt/c form. Absent (an older daemon) or
+   *  false: the dialog does not promise the translation. */
+  windows_paths_to_wsl?: boolean;
   /** IDE / desktop-app rows (T2.3). Absent ⇒ no GUI section, never an error. */
   gui_launchables?: GUILaunchable[];
   /** Advertised products the picker cannot start, with the reason (T-494).
@@ -4329,6 +4432,79 @@ export type SandboxAvailability = {
   default_on: boolean;
   sources?: SandboxSourceAvail[];
   tools?: Record<string, SandboxToolAvail>;
+  // Additive per-backend list (sandbox plan v2 section 9): every registry
+  // row with its availability on this host, the selection rule that dropped
+  // it, whether it is beta and the computed capture per network tier. An
+  // older daemon omits it.
+  backends?: SandboxBackendAvail[];
+  // What the organization sets for this node's sandbox (lane SBX-P1B): the
+  // terminals.isolation floors in force and the applied [terminal.sandbox]
+  // pins. Absent when the organization sets nothing, and on an older daemon.
+  org?: SandboxOrgSettings;
+};
+
+// SandboxOrgSettings is SandboxAvailability.org (dashapi.SandboxOrgSettings).
+export type SandboxOrgSettings = {
+  floors?: SandboxOrgValue[];
+  pins?: SandboxOrgValue[];
+  // managed: the keys the organization's managed sandbox policy sets here,
+  // with the effective value; managed_refused: the keys it set that this
+  // machine did not apply, value = the reason (lane SBX-P2E).
+  managed?: SandboxOrgValue[];
+  managed_refused?: SandboxOrgValue[];
+};
+
+// SandboxOrgValue is one organization-set value, ready to display. A pin's
+// key is the [terminal.sandbox] key without its prefix; a floor's key is the
+// terminals.isolation wire key.
+export type SandboxOrgValue = {
+  key: string;
+  label: string;
+  value: string;
+};
+
+// SandboxBackendAvail is one row of SandboxAvailability.backends
+// (dashapi.SandboxBackendAvail).
+export type SandboxBackendAvail = {
+  id: string;
+  label: string;
+  class: string;
+  location: string;
+  maturity: string;
+  phase?: string;
+  available: boolean;
+  verdict?: string;
+  rule?: string;
+  reason?: string;
+  verification?: string;
+  beta: boolean;
+  register_ref?: string;
+  version?: string;
+  egress?: string[];
+  capture_by_tier?: Record<string, string>;
+  component: string;
+  // hint is the driver's note about a known issue on this host that does
+  // not make the row unavailable (sandboxoci's runtime hint table; empty
+  // today).
+  hint?: string;
+};
+
+// LaunchIsolation is a sandboxed run's isolation evidence on a live
+// terminal row (dashapi.LaunchIsolation), the source of the run pill.
+export type LaunchIsolation = {
+  class: string;
+  backend?: string;
+  egress_tier?: string;
+  capture_level?: string;
+  capture_rule?: string;
+  verification?: string;
+  // The run's capture was lowered after launch (the capture relay saw a
+  // refused, rate-limited, dropped or replayed event, missed heartbeats, or
+  // hook drift); capture_causes says why, in the closed vocabulary of
+  // internal/sandboxrelayd (refused, rate_limited, dropped, replayed,
+  // hooks_drifted, heartbeat_missed).
+  capture_degraded?: boolean;
+  capture_causes?: string[];
 };
 
 // SSHProfileInfo is one row of GET /api/terminal/ssh — an operator-authored
@@ -4827,7 +5003,250 @@ export type UpdateStatusResponse = {
 // advertised product the New Terminal picker lists as not launchable here.
 export type UnlaunchableTool = {
   tool: string;
-  kind: "browser" | "hosted" | "desktop" | "no_cli";
+  kind: "browser" | "hosted" | "desktop" | "cli_no_launcher" | "no_cli";
   host?: string;
   note: string;
+};
+
+// ---------------------------------------------------------------------------
+// Delivery: commit to PR to merge (D-689). Mirrors internal/dashapi/delivery.go;
+// docs/projects-page.md "Delivery". Every rate is `known: false` with an
+// `unknown_reason` when there is nothing to divide by or no code host is
+// connected: never render its `value` then.
+
+export type DeliveryFacets = {
+  checks?: string;
+  review?: string;
+  conflicts?: string;
+  behind?: boolean;
+};
+
+export type DeliveryPromptRef = { action_id: number; session_id: string; preview: string };
+
+export type DeliveryLanding = {
+  commit_id: number;
+  sha: string;
+  subject: string;
+  committed_at: string;
+  reachable: boolean;
+  status: string;
+  kind?: string;
+  confidence?: string;
+  rule_id?: string;
+  landing_sha?: string;
+  pr_id?: number;
+  pr_number?: number;
+  abandon_reason?: string;
+  source?: string;
+  landed_at?: string;
+  landed_at_source?: string;
+  first_pushed_at?: string;
+  evaluated_at?: string;
+  session_ids: string[];
+  owner_session_id?: string;
+  prompt?: DeliveryPromptRef;
+};
+
+export type DeliveryPR = {
+  id: number;
+  link_id: number;
+  provider: string;
+  host: string;
+  repo_slug: string;
+  number: number;
+  title: string;
+  url: string;
+  state: string;
+  readiness?: string;
+  bucket: string;
+  facets: DeliveryFacets;
+  raw_state?: string;
+  merge_method?: string;
+  created_at?: string;
+  merged_at?: string;
+  closed_at?: string;
+  updated_at?: string;
+  fetched_at?: string;
+  merge_seconds?: number;
+  stale: boolean;
+  ai_commits: DeliveryLanding[];
+  sessions: string[];
+};
+
+export type DeliveryRate = {
+  known: boolean;
+  value: number;
+  num: number;
+  den: number;
+  caveat?: string;
+  unknown_reason?: string;
+};
+
+export type DeliveryCount = { known: boolean; value: number; unknown_reason?: string };
+
+export type DeliveryMergeTime = {
+  known: boolean;
+  p50_seconds: number;
+  p75_seconds: number;
+  samples: number;
+  source?: string;
+  caveat?: string;
+  unknown_reason?: string;
+};
+
+export type DeliveryFunnel = {
+  known: boolean;
+  edited_prompts: number;
+  committed: number;
+  pushed: number;
+  in_pr: number;
+  landed: number;
+  caveat?: string;
+};
+
+export type DeliverySummary = {
+  ai_commits: number;
+  by_status: Record<string, number>;
+  landed_exact: number;
+  landed_patch: number;
+  landed_squash: number;
+  accepted_work_rate: DeliveryRate;
+  landed_share: DeliveryRate;
+  pr_merge_rate: DeliveryRate;
+  open_mergeable: DeliveryCount;
+  blocked_backlog: Record<string, number>;
+  blocked_known: boolean;
+  time_to_merge: DeliveryMergeTime;
+  funnel: DeliveryFunnel;
+  fetch_age: string;
+  stale_caveat?: string;
+};
+
+export type DeliveryMirror = {
+  id: number;
+  url: string;
+  path: string;
+  default_branch?: string;
+  size_bytes: number;
+  status: string;
+  last_error?: string;
+  last_refresh_at?: string;
+  last_check_at?: string;
+  created_at?: string;
+};
+
+export type DeliveryRemote = {
+  name: string;
+  url?: string;
+  host?: string;
+  provider: string;
+  repo_slug?: string;
+  default_branch?: string;
+  fetch_head_at?: string;
+  source: string;
+  link_id?: number;
+  link_status?: string;
+  mirror?: DeliveryMirror;
+};
+
+export type DeliverySource = {
+  kind: string;
+  provider?: string;
+  auth_mode?: string;
+  account_login?: string;
+  repo_slug?: string;
+  synced_at?: string;
+  last_fetch_at?: string;
+  mirror_refresh_at?: string;
+  evidence_at?: string;
+  default_branch?: string;
+};
+
+export type DeliverySettings = { mirror_enabled: boolean; schedule_minutes: number; updated_at?: string };
+
+export type ProjectDelivery = {
+  project_id: number;
+  local_enabled: boolean;
+  count_likely: boolean;
+  can_check: boolean;
+  source: DeliverySource;
+  remotes: DeliveryRemote[];
+  provider_linked: boolean;
+  link_problem?: { link_id: number; status: string; message?: string; last_ok_at?: string; next_run_at?: string };
+  mirror_eligible: boolean;
+  settings: DeliverySettings;
+  summary: DeliverySummary;
+  pull_requests: DeliveryPR[];
+  not_in_pr: DeliveryLanding[];
+  not_in_pr_total: number;
+  pending_commits: number;
+  truncated?: boolean;
+  window_days: number;
+};
+
+export type SessionDeliveryRow = {
+  commit_id: number;
+  sha: string;
+  subject: string;
+  committed_at: string;
+  reachable: boolean;
+  owner: boolean;
+  evaluated: boolean;
+  landing?: DeliveryLanding;
+  pr?: DeliveryPR;
+};
+
+export type SessionDelivery = {
+  session_id: string;
+  project_id?: number;
+  local_enabled: boolean;
+  provider_linked: boolean;
+  default_branch?: string;
+  last_fetch_at?: string;
+  rows: SessionDeliveryRow[];
+};
+
+export type DeliveryLink = {
+  id: number;
+  provider: string;
+  host: string;
+  auth_mode: string;
+  account_login?: string;
+  scopes_seen?: string;
+  status: string;
+  last_ok_at?: string;
+  last_error_kind?: string;
+  last_error?: string;
+  next_run_at?: string;
+  failures: number;
+  created_at?: string;
+  repos: number;
+};
+
+export type DeliveryLinksResponse = { service_available: boolean; poll_minutes: number; links: DeliveryLink[] };
+
+export type DeliveryMirrorsResponse = {
+  service_available: boolean;
+  used_bytes: number;
+  cap_bytes: number;
+  mirrors: DeliveryMirror[];
+};
+
+export type DeliveryCheckResponse = {
+  done: boolean;
+  error?: string;
+  kind?: string;
+  result?: {
+    checked_at: string;
+    reevaluated: boolean;
+    repos: {
+      remote_name: string;
+      repo_slug?: string;
+      source: string;
+      status: string;
+      detail?: string;
+      commits_checked: number;
+      prs_upserted: number;
+    }[];
+  };
 };

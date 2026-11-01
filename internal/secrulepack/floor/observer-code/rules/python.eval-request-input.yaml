@@ -1,0 +1,19 @@
+rules:
+  - id: python.eval-request-input
+    languages: [python]
+    severity: ERROR
+    message: Input from a web request reaches eval or exec, so a caller can run code on the server.
+    metadata:
+      category: code_vuln
+      cwe: CWE-95
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+          - pattern: flask.request.$ATTR
+          - pattern: request.$ATTR
+          - pattern: self.request.GET
+          - pattern: self.request.POST
+    pattern-sinks:
+      - pattern-either:
+          - pattern: eval(...)
+          - pattern: exec(...)

@@ -4,7 +4,200 @@ All notable changes to SuperBased Observer are documented here.
 
 ## [Unreleased]
 
-### Changed
+## [1.37.0] - 2026-11-01
+
+Stable release on the `stable` channel (npm dist-tags `latest` and `stable`, PyPI, the VS Code
+Marketplace and Open VSX). Everything below is new since 1.36.0. It turns code security on by
+default in the developer and full editions, adds new opt-in sandbox backends and ten adapters, signs
+the Windows and macOS binaries, and moves the build to Go 1.27.3, which needs macOS 13 Ventura or
+later: a Mac on macOS 12 stays on v1.36.0.
+
+Price snapshot: 2026-09-17 (aws us-east-1, azure eastus2, gcp us-central1)
+
+### Highlights
+
+- **Code security is on by default** (developer and full editions): agent commits and pushes are
+  checked for secrets, risky package installs ask, unaccepted committed hooks or MCP servers are
+  flagged.
+- **New sandbox backends, beta and opt-in:** Docker or Podman (runc or gVisor), Landlock, a Cloud
+  Hypervisor microVM, macOS Seatbelt and Apple container, Windows `mxc-process`, hosted E2B, Modal
+  and Vercel.
+- **Observer no longer overwrites or deletes another program's hook entry or file** without
+  `--force`.
+- **Observer follows your tools' config homes** (`CLAUDE_CONFIG_DIR`, `CODEX_HOME` and others).
+- **Ten new adapters, 50 in all:** Autohand Code, IBM Bob Shell, Snowflake Cortex Code, CodeBuddy
+  Code, Deep Agents Code, DimCode, Dirac, Kimchi, Stakpak and VT Code.
+- **Signed binaries, new in this release:** Authenticode on Windows; a Developer ID signature and
+  notarization on macOS.
+- **Smaller org disks:** no endless re-shipping of a cut snapshot; archive files about 7 times
+  smaller.
+
+### Read this before upgrading
+
+- **This release requires macOS 13 Ventura or later.** It is built with Go 1.27.3, which does not
+  run on macOS 12 Monterey. A Mac on macOS 12 stays on v1.36.0. v1.36.0 was meant to carry an
+  advance notice of this and did not. The installer refuses macOS 12 with a plain message.
+- **The commit gate runs by default** on Claude Code, Cursor, Hermes and the plugin-shim hosts. It
+  asks before an agent commit or push when the project's security state is unknown or a dirty
+  project's 2-second quick scan is not clean. Hosts that cannot ask (OpenCode, Kilo CLI, Command
+  Code, headless `claude -p`, pi) refuse until `observer guard approve`.
+- **The first start adds a few database indexes.** On very large stores (millions of guard events)
+  this can take up to a minute or so, once.
+- **Unchanged:** take the proxy route off before stopping the old daemon
+  (`scripts/restart-daemon.sh`).
+
+### Packaging and signing
+
+- Windows binaries are signed with Authenticode.
+- macOS (new): every binary is signed with a Developer ID under the hardened runtime and notarized
+  (not stapled). The one entitlement, `allow-unsigned-executable-memory`, is for code intelligence's
+  wazero compiler.
+- The rule pack, engine manifest, CI driver files and sandbox images are signed with the vendor key
+  that signs update files, and Observer verifies them.
+- **Go 1.27 to build from source; macOS 13 or later (D-764 Q24).** Every binary is built with Go
+  1.27.3 (1.27.3 carries the fix for GO-2026-6809 in `crypto/x509`), building from source needs Go
+  1.27 or later, and CI lints with golangci-lint v2.14.0 (the oldest release that can type check Go
+  1.27 code). Go 1.27 binaries need macOS 13 Ventura or later, so macOS 12 Monterey is no longer
+  supported (no advance notice shipped: v1.36.0 was meant to carry one and did not; a Mac on macOS
+  12 stays on v1.36.0). The macOS PyPI wheels are now tagged `macosx_13_0_x86_64` and `macosx_13_0_arm64`, so pip on an older macOS no longer installs
+  a binary that cannot start (the old `macosx_10_15` and `macosx_11_0` tags were already below the Go
+  1.26 floor of macOS 12). Go 1.27 runs `encoding/json` on its new implementation; AI tool hook
+  payloads decode exactly as before (unknown fields, field-name case, duplicate keys, invalid UTF-8,
+  null and numbers), pinned by new tests that decode the real hook payload fixtures, and thousands of
+  byte-level rewrites of them, through every hook entry point and compare the result with the Go 1.26
+  decoder. They found one change, now undone: a number too large for a float64 (such as `1e400`)
+  inside a tool input became `0` instead of being left empty. Only the wording of some JSON error
+  messages changed.
+
+### New adapters
+
+- **Ten new adapters: Autohand Code, IBM Bob Shell, Snowflake Cortex Code, Tencent CodeBuddy Code,
+  LangChain Deep Agents Code, DimCode, Dirac, Kimchi (Cast AI), Stakpak and VT Code.** Each reads the
+  tool's own local store (`autohand`, `ibm-bob`, `cortex-code`, `codebuddy`, `deepagents-code`,
+  `dimcode`, `dirac`, `kimchi`, `stakpak`, `vtcode`) and is on by default for new installs, with
+  action taxonomy, lines-of-code counting from edit calls, task tracking (DimCode `todowrite` and the
+  other grounded todo tools) and guidance-file detection. None has an `observer <tool>` launcher, MCP
+  writer or proxy route yet, so the New Terminal picker lists them as "no launcher yet". If your
+  `~/.observer/config.toml` sets an explicit `enabled_adapters` list, add the ones you use (startup
+  warns about missing defaults). IBM Bob writes no token counts to disk and Stakpak records no model,
+  so neither shows a cost. Details per tool in `docs/<tool>-adapter.md`; open gaps in
+  `docs/adapter-parity.md`.
+- **Guard tool and prompt gates for seven of them.** `observer init` registers hooks for IBM Bob,
+  CodeBuddy, Deep Agents, DimCode, Dirac, VT Code and Autohand, plus a bash-tool pre-gate for Kimchi;
+  `observer start` registers the ones verified end to end (Linux and macOS shapes of all but
+  Autohand). Autohand stays `observer init`-only because its signed-in settings sync would carry a
+  hook path to your other devices. Cortex Code and Kimchi run Claude Code's own hooks: those calls are
+  now recorded and gated under their own tool, not as Claude Code. Each vendor's contract is in
+  `docs/guard.md` "Live grounding: 2026-10-21 wave".
+
+### Security and guard
+
+- A committed secret stays held until every push remote has it; a plain `git push` asks, naming the
+  commit and remote. A pushed one reads "already pushed: rotate the secret".
+- Commits outside the session's repository (`git -C`, `GIT_DIR`, submodules) are gated too, as are
+  commits inside shell functions, MCP git tools writing another repository and GitHub MCP writes
+  carrying a secret.
+- Agents cannot run `observer update rollback` or deselect the security component.
+- Non-secret commit findings close on their own proof of absence.
+- Repository trust warns once (S-701) in observe and asks under enforce.
+- A signed package index downloads every 6 hours (`[security.deps] index_download = false` stops
+  it); a near-miss of a popular package name asks. The scanners' database (about 300 MB) waits for a
+  one-time accept, except on managed nodes.
+- Opt-in through `[components]`: Opengrep, SARIF import, actionlint, Trivy, KICS, custom scanners,
+  git hooks, agent feedback, signed AI change records.
+- A recursive delete outside the checkout is denied; a linked worktree is its own project.
+- Under enforce, an undecodable gate payload or an unreadable named `--config` blocks gated calls.
+- A local `[guard.rules] disable` no longer removes a rule your organization's signed policy sets;
+  `observer guard status` reports it.
+- **Proxy client authentication, off by default.** `[proxy] client_auth_routes = true` puts a
+  per-install token in the Claude Code and Codex routes; `require_client_auth = true` then refuses
+  requests without it. Restart the safe way after each step. Both switches are local: an
+  organization cannot turn them on remotely.
+
+### Sandboxed terminals
+
+- New backends are never picked automatically (`observer sandbox status`).
+- An egress host allow-list, kept when a daemon restart re-adopts the run. The install gateway
+  allows port 443 with a matching TLS server name only.
+- A first-start install cache, off by default.
+- Restarts and updates ask while a sandboxed run is live (`live_run_update_policy`, default
+  `defer`).
+- Clean-copy runs ask before seeding a sign-in (Claude Code, Codex).
+- A returned copy whose git config carries includes or execution keys is refused.
+- Windows boxes get a private window station, UI limits and an allow-listed environment.
+- An org's terminals policy (`enabled`, `sandbox_required`) covers every launch: CLI, attach,
+  Jump-in, handoff, resume, SSH and Arena. An isolation floor refuses unsandboxed `--attach` and
+  Jump-in.
+- Managed hard budgets are checked before a dashboard terminal starts; a launcher never creates an
+  empty database.
+
+### Agent Arena
+
+- Permission checks are skipped only with `[benchmark] arena_allow_skip_permissions = true`, never
+  for the judge; a managed org can forbid it. By default claude-code candidates edit but run no
+  shell commands; a candidate with no checked mode is refused up front. Each candidate shows its
+  mode.
+- judge_merge needs the setting, merges in a temporary worktree and moves your branch only by a
+  verified fast-forward.
+- Arena always applies the org's tool disallow list and terminals policy, and `[terminal.launch]`
+  only when it is set (by an org pin or your own keys), checked when the arena is created.
+
+### Hooks and AI-tool integration
+
+- An entry in Observer's shape that runs another program is kept and reported; `--force` replaces
+  it (whole files keep a `.bak`). `observer uninstall` deletes only Observer's files.
+- A symlink at any folder level below your home is refused, a stow-managed `~/.config` too.
+- macOS: Xcode's Claude Agent and Codex homes are wired; their sessions file under "Xcode (project
+  unknown)". Gemini in Xcode is not gated.
+- Windows: running WSL distros get the Cursor Remote-WSL hook twin, which runs the real
+  `observer.exe` on npm and pip installs.
+- Replays are judged as their host (DeepSeek, Antigravity, the Copilot runtime).
+- The Cline CLI is gated again; `observer init --antigravity` wires Antigravity alone.
+- A trusted Cursor or Devin admin hooks file stands down Observer's duplicates.
+
+### Org and teams
+
+- **Switching an org from teams to enterprise makes its existing members' nodes managed** on the
+  node and the org server once each node takes the switch, without re-enrolling; switching back
+  ends it at once.
+- Managed grants never cross organizations or reach individual members of an unswitched org; a
+  member's latest enrolment decides their tenancy.
+- Per-session hook activity, shared only with `[org_client.share].hook_activity` (off by default).
+- Security fleet views, exceptions, an evidence export, per-project floors on managed nodes.
+- GitHub App and CI result upload (preview, opt-in, token required).
+- Windows: one project per Windows folder; departed members leave the counts; display names are
+  editable.
+- **Org dashboard: "route observation unreported" means a managed machine did not report, not that
+  it bypasses the proxy (surface-gap arc OBS-6).** A managed node now says, in its managed-integrity
+  report, which routable capture surfaces ran sessions in the last 7 days that never reached its
+  Observer proxy. The Fleet versions node row and the Control Center developer row show this as one
+  pill: "proxy bypassed: <surfaces>" (at risk), "observed traffic routed" (clear), "route observation
+  N/M" when only some of a developer's machines reported, and "route observation unreported" when none
+  did. A node with no report reads overall health `not_reported`, reason
+  `route_observation_not_reported` (`GET /api/org/fleet/versions`), never `ok`. You see it in three
+  cases. (1) The node runs an Observer older than this release, so it sends no
+  `route_observation_version`; the version on the same Fleet versions row shows this. Upgrade the
+  node and it reports on its next integrity cycle. (2) The node is current, and its only observed
+  bypass is in sessions its adapter did not stamp with a capture surface. Those are judged at tool
+  level (ruling P-172) and have no closed wire label, so the node withholds the observation instead of
+  reporting clean; run `observer doctor` on that machine, where the `route.observed` check names the
+  tool. (3) The node could not read its own sessions. In every case the reading is missing evidence:
+  it does not say the machine bypasses the proxy, and it is never counted as clean.
+
+- **Org server: long admin operations run in the background, and only their own setting ends them (T-822, T-826).**
+  A re-price (dry run, apply, revert), a price feed sync, an update bundle import, the deployment doctor
+  and a vendor connection test, run or control-write approval used to run inside the request, so the
+  load balancer's 30 s timeout answered 504. Each now waits up to 20 s and then answers `202` with a
+  running task (`GET /api/org/background-tasks/{id}`); the page shows it, polls it and picks it up again
+  after a reload, and a second start answers `409 task_in_progress`. Eval runs queue past the inline
+  rule the same way. New setting Settings > Server > **Longest background run** (60 s to 24 h, default
+  1 h, `admin:deployment`) is the only deadline for these; the fixed 5-minute vendor pull, 10-minute
+  control write, 30-second connection test and 10-minute eval caps are gone. The assistant turn and
+  insight run deadlines now go up to 24 h, the approved change deadline is a new setting
+  (`assistant.execution_timeout_s`, default 8 min), and the hidden one hour plus five minutes outer
+  bound is removed. Spend stays bounded by the budget caps. Server migration 234 (PostgreSQL 0101).
+  Operators running their own reverse proxy: keep the upstream timeout above 20 s, and at least 300 s
+  for `POST /api/agent/judge` (the bundled HAProxy template now sets 330 s on that path).
 
 - **Org dashboard, Settings > Plane B mode tells the truth about what is in flight (T-777, D-617).**
   With no mode change requested the page now says "No mode change requested" and lists what a change
@@ -19,6 +212,147 @@ All notable changes to SuperBased Observer are documented here.
   empty list otherwise); each gate gains `title`, `about`, `kind`, `why_manual`, `source` and
   `server_check`; capability gains `departed` and `departed_nodes`. `POST /api/org/plane-b/preflight`
   now refuses a generation other than the pending one (409) and a pass or fail without a note (400).
+
+### Cloud
+
+- cloud.superbased.app is open, with WorkOS sign-in and a Free pool spending ceiling. Uploads say
+  "usage not measured" instead of zero. Privacy policy version 2, effective 23 October 2026.
+
+### Dashboard
+
+- The Claude sign-in indicator and agent-config editor follow `CLAUDE_CONFIG_DIR`.
+- Guard > Code security Settings rows; a restart banner and live-runs dialog.
+- **Account-level tool accounts.** A vendor account that several people may share (a device account,
+  a Snowflake account host) is shown as "device account ..." beside the person, never in place of the
+  person, on the node's and the org's session Messages tables. The node and the org resolve accounts
+  through one shared rule, so they agree.
+
+### CLI
+
+- New `observer doctor` rows: `route.observed`, `hooks.liveness`, `hooks.spool`,
+  `writers.live_gate`, `vendor.policy-caches`, `crossmount`, `proxy.client_auth`.
+- `--no-crossmount` on WSL and Windows; `observer ide <app> <folder>` trust-checks the folder.
+- In a stamped edition, `observer components status` lists 16 more components as compiled out,
+  matching what the build removed.
+
+### Fixed
+
+- One install command or manifest edit naming more than 64 packages now gets one
+  `too_many_packages` check (an ask under enforce with online checks on, a flag offline); the
+  packages past 64 used to be dropped silently.
+- npm's install aliases (`in`, `isntall`, `install-test` and the rest) count as installs.
+- The commit classifier gates a negated skip option (`--dry-run --no-dry-run`) and abbreviated long
+  options.
+- The quick scan answers unknown, never clean, when a partial clone lacks an object, instead of
+  fetching it.
+- A drive-relative `cd` on Git Bash reads as unknown.
+- The git hook writer never writes through a planted link.
+- A sandbox clone-remote URL naming any git transport helper (`<name>::<address>`) is refused.
+- A returned symlink chain that leaves the tree is refused.
+- A DeepSeek session that decodes past 512 MiB is skipped with a warning.
+- The IBM Bob, Deep Agents, DimCode and Stakpak adapters copy fewer files from a foreign mount.
+- Observer no longer stalls new activity for minutes after a restart while it clears out old
+  history; cleanup now runs in small steps alongside normal work.
+- Large Freebuff chat files that have not changed are no longer read again every two seconds, which
+  cuts idle CPU use on machines with big Freebuff histories.
+- **A member whose organization switched from teams to enterprise is now a managed node on the org
+  server too (operator ruling P-205).** Once their node has taken the organization's signed switch,
+  machine binding, managed integrity, change-key certificates, execution seal keys, the security
+  relay, org Cloud Intelligence, AI tool settings and the isolation floor serve them as managed,
+  without re-enrolling; the node names its machine and declares managed on access requests. A
+  member of an organization on teams, a member whose node has not taken the switch, and every member
+  after a switch back to teams are served exactly as before. An older org server still refuses these
+  routes for a switched node, and the node now takes that quietly.
+- **A relative `CODEX_HOME` or `CLAUDE_CONFIG_DIR` is refused instead of routing `~/.codex` or `~/.claude`
+  (R-188 F6).** Codex and Claude Code read a relative value against their own working directory, so
+  Observer cannot tell which file it names. `observer init`, `observer start` and route maintenance used
+  to write the hooks, the status line, the proxy route and the MCP entry into the default home anyway, a
+  file the tool does not read, and the route inspection behind `observer doctor` and the managed-integrity
+  probe read that file and reported its route as present. Now each of those writers (and its uninstall) writes nothing and names the variable
+  ("CODEX_HOME is set to a relative path ... set an absolute path"), the same refusal the Cline, Crush,
+  Kimi Code and Qwen Code writers already gave. The MCP registrar refuses the same way for every
+  client's relocation variable (for example a relative `CLINE_DIR`). The route inspection reads such a
+  route as unknown, never present and never drift: `observer doctor`'s `proxy.route_host` check warns
+  naming the tool and the variable, and route maintenance skips it (`route_file_unknown`). If you set
+  one of these variables to a relative path, set it to an absolute one.
+- **Enterprise appliance VMs (Azure and AWS) no longer lose their configuration on a reboot (T-776).**
+  `observer-first-boot.service` re-ran its whole sequence on every boot, and its bundle fetch replaced
+  `.env`, `config.production.toml`, the compose files and `nats.conf` with the bundle's placeholder
+  copies: the NATS URL and TLS paths, `external_url`, `trusted_proxies`, `[metrics].listen`, the
+  `[agent_access]` block and the image digest pins were lost, and on an Agent Access box org
+  crash-looped. First boot now completes once (marker `/var/lib/observer-first-boot/completed`); later
+  boots only sync secrets and run `docker compose up -d --no-recreate` over the same compose files. The
+  bundle fetch never overwrites a live file (a differing copy lands as `<file>.bundle-new`; `--replace`
+  is the explicit, backed-up opt-in). `observer-env-sync.sh` now retries a non-JSON or failed Key Vault /
+  Secrets Manager answer and, out of budget, reports a network / DNS failure instead of "secret ... has
+  no value"; its retry log lines go to stderr, so a retried request can no longer corrupt the captured
+  response. **Existing VMs** pick this up on their next DR-18 `-replace`; a hand-patched box should
+  copy the new scripts and expect one full (now non-destructive) first-boot run before the marker
+  exists. See `deploy/modules/README.md` "Reboots: first boot completes once".
+- **Agent Access companions stranded by a crash restart of org are healed (T-892).** `observer-mcpgw`,
+  `agentgateway` and `harness-gateway` share org's network namespace; a crash restart of org by Docker's
+  restart policy, or a re-create of org, left them in the old namespace with loopback only, and a plain
+  `docker compose up -d` does not fix the crash case. The one-box demo gains `deploy.sh heal` (re-creates
+  each such service that started before org, names an org container that no longer exists, or is
+  unhealthy; a no-op otherwise) and an opt-in `deploy.sh heal --install-timer` (a systemd user timer every
+  2 minutes; `--remove-timer` takes it away). Enterprise appliance VMs run the same check at the end of
+  every `observer-env-sync` run on an app VM. See `docs/demo-box.md` "Healing stranded companions" and
+  `deploy/modules/README.md` "Stranded Agent Access companions".
+
+### What an existing install sees after upgrading
+
+- With no `[components]` block, Code security is active (the gate asks, trust warns, the index
+  downloads); a `[components]` block selects exactly what it names.
+- The first start migrates the database (node 211, org server 273, PostgreSQL 0140).
+- Windows packages grow by about 18 MB (the MXC files).
+- In a linked worktree, sessions land on the main project; old worktree-keyed approvals ask again.
+- Proxy client auth stays off: no token file, no route rewritten; a path starting with a
+  token-shaped `/t/<64 hex>` segment gets 401.
+- A node your org switched to enterprise stays managed and now also gets the managed AI tool
+  settings, budget launch gate and process intervention; an older org server's refusals are taken
+  quietly.
+- An unsandboxed terminal running when `sandbox_required` turns on keeps running but cannot be
+  joined.
+- Now refused: a relative `CODEX_HOME` or `CLAUDE_CONFIG_DIR`; a PATH Trivy or KICS without
+  `allow_unpinned`; opencode or kilo versions with no integrity pin; hosted database export unless
+  `db_export` is on.
+- Restart commands WARN when no daemon answers.
+
+### Known issues and checks not run on a real machine
+
+- Tests only: the WSL twin's real `observer.exe` on npm and pip installs (FU-214). Not run: Copilot
+  for Xcode (LCR-78). Not reproduced live: the Goose uninstall case (FU-212).
+- On Windows, `observer doctor` can start a stopped WSL distro (FU-227).
+- Not every removal checks ownership yet: browser host launcher files, an emptied git hook,
+  `observer service install` and `uninstall` (FU-220 to FU-222).
+- ChatGPT-signed-in Codex cannot run in the macOS Seatbelt sandbox (N1).
+- `service stop` and Ctrl-C end live sandboxed runs.
+- `observer <tool> --no-attach` escapes an isolation floor on a node with no org terminals policy.
+- With `require_client_auth` on, routes the daemon cannot see (Windows-side and WSL-side, GUI and
+  IDE launches, Codex managed settings, hand-set URLs) are refused; an installed Codex holds
+  enforcement off.
+- SWITCHSRV-1: an org of only switched members gets no default "node stopped reporting" alert, and
+  the Control Center managed count reads the enrolment type.
+- Signed macOS builds keep the wazero entitlement until code intelligence uses wazero's interpreter
+  there.
+- The default sandbox images are not published yet.
+- Do not require `superbased/security` on pull requests before a live run.
+- Still owed on real machines (the release gate's register): a Linux host running real bwrap, the
+  Windows and WSL laptop, a Mac, an operator machine with real Claude Code, Codex and Cursor, the
+  GitHub test organization, and the demo box with a deployed org server and its managed nodes.
+
+### Third-party notices
+
+Managed and full binaries (which link actionlint) add:
+
+- MIT texts: actionlint v1.7.12 (the in-module copy's `LICENSE.txt`, "Copyright (c) 2021 rhysd"),
+  doublestar v4.10.0, uax29 v2.7.0, fatih/color v1.19.0, go-colorable v0.1.14, go-isatty v0.0.22,
+  go-runewidth v0.0.23, go-shellwords v1.0.13, robfig/cron v3.0.1;
+- `go.yaml.in/yaml/v4` v4.0.0-rc.4 (Apache-2.0, MIT for the libyaml files) and its NOTICE.
+
+The 43 modules OSV-SCALIBR v0.5.3 links into the managed and full binaries are listed with their
+licences in the CycloneDX SBOM attached to the release for each binary (`observer.cdx.json`,
+`observer-org.cdx.json`).
 
 ## [1.36.0] - 2026-10-10
 

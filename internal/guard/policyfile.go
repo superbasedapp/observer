@@ -11,6 +11,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/guardfallback"
+	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/policy"
 )
 
@@ -76,6 +77,18 @@ type policyFile struct {
 	// them; the consumer gate notes them and keeps the default for the
 	// key, because a newer server may know a value this agent does not.
 	fallbackProblems []string
+	// projectUnknown is the org layer's `[project_audience] unknown`
+	// (orgcontract.DecodeProjectAudienceTable): what the guard does where a
+	// project bundle reaches the member but the project layer is unknown
+	// (projectfloor.go). Empty means the default ("none"). Only the ORG
+	// layer may carry the table; projectAudienceProblems are its entries
+	// this binary could not honour (refused by Lint, noted by the loader).
+	projectUnknown          string
+	projectAudienceProblems []string
+	// envelope is the org layer's signed envelope bytes as verified (nil for
+	// every other layer). The daemon records it in the MAC'd org lock as the
+	// last verified org layer (Guard.OrgLockInputs, T-844).
+	envelope []byte
 }
 
 // rawOverride is a parsed [[override]] entry, kept pre-merge so the
@@ -120,6 +133,9 @@ type tomlPolicyFile struct {
 	// Decoded as a loose map so a key from a newer server is a fallback
 	// problem (noted on the org layer) rather than a decoder error.
 	Fallbacks map[string]any `toml:"fallbacks"`
+	// ProjectAudience is the org-only `[project_audience]` table
+	// (orgcontract.ProjectAudienceTable), decoded loose like Fallbacks.
+	ProjectAudience map[string]any `toml:"project_audience"`
 }
 
 // tomlRule is one [[rule]] entry (§4.4).
@@ -187,6 +203,7 @@ var validSinks = map[string]struct {
 }{
 	"shell_exec":           {[]policy.EventKind{policy.KindShellExec}, "shell execution"},
 	"git_push":             {[]policy.EventKind{policy.KindShellExec}, "git push"},
+	policy.SinkGitCommit:   {[]policy.EventKind{policy.KindShellExec, policy.KindMCPCall}, "agent git commit"},
 	"out_of_project_write": {[]policy.EventKind{policy.KindFileAccess, policy.KindConfigChange}, "out-of-project write"},
 	"mcp_call":             {[]policy.EventKind{policy.KindMCPCall}, "MCP call"},
 }
@@ -227,6 +244,9 @@ func Lint(raw []byte, layer string) []string {
 	// "fix the typo first" before any downstream problem it caused.
 	if len(pf.fallbackProblems) > 0 {
 		return append([]string(nil), pf.fallbackProblems...)
+	}
+	if len(pf.projectAudienceProblems) > 0 {
+		return append([]string(nil), pf.projectAudienceProblems...)
 	}
 	if len(pf.notes) > 0 {
 		return []string{unknownKeysProblem(pf.notes)}
@@ -415,6 +435,15 @@ func parsePolicyFile(raw []byte, layer string) (*policyFile, error) {
 		}
 		pf.fallbacks, pf.fallbackProblems = guardfallback.Decode(f.Fallbacks)
 		pf.notes = append(pf.notes, pf.fallbackProblems...)
+	}
+	// `[project_audience]` is the organization's project_unknown decision
+	// (lane sec-p2a): org-only, like `[fallbacks]`.
+	if meta.IsDefined(orgcontract.ProjectAudienceTable) {
+		if layer != layerOrg {
+			return nil, errors.New(unknownKeysProblem([]string{orgcontract.ProjectAudienceTable}))
+		}
+		pf.projectUnknown, pf.projectAudienceProblems = orgcontract.DecodeProjectAudienceTable(f.ProjectAudience)
+		pf.notes = append(pf.notes, pf.projectAudienceProblems...)
 	}
 	seen := map[string]bool{}
 	for i := range f.Rule {
@@ -751,7 +780,7 @@ func compileEvConds(m *tomlMatchers) (conds []evCond, kinds []policy.EventKind, 
 	if m.Sink != "" {
 		s, ok := validSinks[m.Sink]
 		if !ok {
-			return nil, nil, fmt.Errorf("unknown sink %q (shell_exec|git_push|out_of_project_write|mcp_call)", m.Sink)
+			return nil, nil, fmt.Errorf("unknown sink %q (shell_exec|git_push|git_commit|out_of_project_write|mcp_call)", m.Sink)
 		}
 		sink := m.Sink
 		addEv(func(ctx *policy.MatchContext) (bool, string) {
@@ -825,6 +854,16 @@ func sinkCondition(ctx *policy.MatchContext, sink, desc string) (bool, string) {
 				if len(pos) > 0 && pos[0] == "push" {
 					return true, desc
 				}
+			}
+		}
+	case policy.SinkGitCommit:
+		// The classifier (internal/policy/gitcommit.go) keys on the parsed
+		// intent: anything that records, moves or merges a commit, never a
+		// push (that is git_push) and never a flag-only form (stash, an
+		// opaque interpreter one-liner).
+		for _, c := range policy.ClassifyGitWritesCtx(ctx) {
+			if policy.GitWriteGates(c.Write) && !policy.GitWriteIsPush(c.Write) {
+				return true, desc + ": " + c.Detail
 			}
 		}
 	case "out_of_project_write":

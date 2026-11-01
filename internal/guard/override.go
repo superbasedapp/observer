@@ -101,13 +101,23 @@ type OrgOverridePosture struct {
 	// [[override]] target or an org-defined rule). It is the lock's
 	// blast radius on an individual node.
 	Named map[string]bool
+	// Unverifiable reports that the org bundle exists but cannot be
+	// verified and no last verified layer stands in for it, on a node where
+	// the org's authority reaches every rule (T-844): every rule is locked.
+	Unverifiable bool
 }
 
 // For answers the per-rule question. Both false means the rule is
 // untouched by the org layer on this node: local approvals apply
 // exactly as they did before enrolment.
 func (p OrgOverridePosture) For(ruleID string) (overridable, orgLocked bool) {
-	if ruleID == "" || !p.OrgApplies {
+	if ruleID == "" {
+		return false, false
+	}
+	if p.Unverifiable {
+		return false, true
+	}
+	if !p.OrgApplies {
 		return false, false
 	}
 	if p.Overridable[ruleID] {
@@ -122,7 +132,7 @@ func (p OrgOverridePosture) For(ruleID string) (overridable, orgLocked bool) {
 func (g *Guard) OrgOverridePosture() OrgOverridePosture {
 	es := g.set.Load()
 	if !es.orgApplies() {
-		return OrgOverridePosture{}
+		return OrgOverridePosture{Unverifiable: g.orgUnverifiable(es)}
 	}
 	out := OrgOverridePosture{
 		OrgApplies:     true,
@@ -130,7 +140,7 @@ func (g *Guard) OrgOverridePosture() OrgOverridePosture {
 		Overridable:    map[string]bool{},
 		Named:          es.orgNamedRules,
 	}
-	for _, info := range es.base.RuleInfos() {
+	for _, info := range es.base().RuleInfos() {
 		// Multi-row IDs (R-152's write/read split) grant as a unit:
 		// one overridable row makes the public ID overridable.
 		if info.Overridable {
@@ -160,11 +170,28 @@ func orgLockedVerdict(v policy.Verdict, orgLocks bool) bool {
 // orgLocksVerdictRule folds the snapshot's blast radius and the
 // Guard's tenancy into the one question orgLockedVerdict takes. Kept
 // beside it so no caller re-derives the pair.
-func (g *Guard) orgLocksVerdictRule(es *engineSet, ruleID string) bool {
-	if ruleID == "" || !es.orgApplies() {
+//
+// projectRoot is the event's root ("" on a lane that carries none): inside a
+// root whose org project sections loaded, the rules they name are locked on
+// an individual node too (audit finding 3). The root's engine is resolved
+// first (a cached map read after the evaluation that produced the verdict)
+// so its named set is installed.
+func (g *Guard) orgLocksVerdictRule(es *engineSet, ruleID, projectRoot string) bool {
+	if ruleID == "" {
 		return false
 	}
-	return es.orgLocksRule(ruleID, g.orgLocksEveryRule())
+	if !es.orgApplies() {
+		// T-844: an org bundle that exists but cannot be verified, with no
+		// last verified layer to stand in for it, leaves the org's floor
+		// UNKNOWN on a node where the org's authority reaches every rule.
+		// Every rule is locked then (orglock.go orgUnverifiable): a local
+		// approval must not be what turns a broken bundle into an allow.
+		return g.orgUnverifiable(es)
+	}
+	if projectRoot != "" && es.orgProjectsInForce() {
+		es.engineFor(g, projectRoot)
+	}
+	return es.orgLocksRule(ruleID, projectRoot, g.orgLocksEveryRule())
 }
 
 // stampOrgOverride stamps the org-override posture onto a freshly
@@ -172,11 +199,18 @@ func (g *Guard) orgLocksVerdictRule(es *engineSet, ruleID string) bool {
 // ActionVerdict, from the SAME snapshot that produced the verdict (the
 // NIT one-snapshot-per-evaluation contract).
 func (g *Guard) stampOrgOverride(es *engineSet, av *ActionVerdict) {
+	g.stampOrgOverrideAt(es, av, av.Input.ProjectRoot)
+}
+
+// stampOrgOverrideAt is stampOrgOverride with the root the project layer was
+// looked up under (the hook path's derived root, projectLookupRoot), which
+// the persisted row's ProjectRoot does not carry.
+func (g *Guard) stampOrgOverrideAt(es *engineSet, av *ActionVerdict, projectRoot string) {
 	if av.Verdict.RuleID == "" {
 		return
 	}
 	av.Overridable = av.Verdict.Overridable
-	av.OrgLocked = orgLockedVerdict(av.Verdict, g.orgLocksVerdictRule(es, av.Verdict.RuleID))
+	av.OrgLocked = orgLockedVerdict(av.Verdict, g.orgLocksVerdictRule(es, av.Verdict.RuleID, projectRoot))
 	av.RequestBase = g.requestBase
 }
 
@@ -229,14 +263,14 @@ func HumanBlockLine(av ActionVerdict, sessionID string) string {
 	switch {
 	case av.Overridable && sessionID != "":
 		return fmt.Sprintf(
-			"observer: %s blocked %s. The organization allows an override: run `observer guard approve %s --session %s` and retry.",
+			"observer: %s blocked %s. The organization allows an override: the developer (not the agent) runs `observer guard approve %s --session %s`, then the call can be retried.",
 			av.Verdict.RuleID, what, av.Verdict.RuleID, sessionID)
 	case av.Overridable:
 		return fmt.Sprintf(
 			"observer: %s blocked %s. The organization allows an override, but this lane reported no session id, so the override cannot be scoped from the command line here; grant it on the Observer dashboard Security page instead.",
 			av.Verdict.RuleID, what)
 	}
-	return requestAccessLine(av.Verdict.RuleID, what, av.RequestBase, sessionID)
+	return requestAccessLine(av.Verdict.RuleID, what)
 }
 
 // RequestAccessMaxBytes bounds the org-locked deny line (request-grants G4):
@@ -246,47 +280,60 @@ func HumanBlockLine(av ActionVerdict, sessionID string) string {
 const RequestAccessMaxBytes = 200
 
 // requestAccessVariants is the ordered fallback table for the org-locked
-// line: the richest variant that fits RequestAccessMaxBytes wins. The link
-// opens the node dashboard's request form prefilled with the rule and the
-// session (it never submits; nothing leaves the machine until the developer
-// presses Send, GRANT-8). A variant that needs the dashboard origin is
-// skipped when none is known; the last row always fits.
-var requestAccessVariants = []struct {
-	needsBase    bool
-	needsSession bool
-	render       func(head, link, cli string) string
-}{
-	{true, true, func(h, l, c string) string { return h + " Request access: " + l + " or " + c }},
-	{true, true, func(h, l, _ string) string { return h + " Request access: " + l }},
-	{true, false, func(h, l, c string) string { return h + " Request access: " + l + " or " + c }},
-	{true, false, func(h, l, _ string) string { return h + " Request access: " + l }},
-	{false, false, func(h, _, c string) string { return h + " Request access: run " + c + "." }},
+// line: the richest variant that fits RequestAccessMaxBytes wins; the last
+// row always fits. The line is read in band by the agent, so it carries no
+// URL (WINNODE2 16d: an agent treated the localhost request link as an
+// undocumented service and refused to use it, or might try to call it). It
+// is an instruction the agent relays to the developer; the link itself is
+// offered where a human reads it (the dashboard, the desktop notification,
+// RequestAccessLink).
+var requestAccessVariants = []func(head, cli string) string{
+	func(h, c string) string {
+		return h + " Ask your admin: Observer dashboard, Requests page, or run " + c + "."
+	},
+	func(h, _ string) string {
+		return h + " Ask your admin for an exception from the Observer dashboard, Requests page."
+	},
+	func(h, _ string) string { return h + " Ask your admin for an exception." },
 }
 
 // requestAccessLine renders the org-locked block line: what was blocked,
-// that the organization locks the rule, and how to ask for an exception.
-// Hyphens only, US spelling, one line.
-func requestAccessLine(ruleID, what, base, sessionID string) string {
+// that the organization locks the rule, and how the developer asks for an
+// exception. Hyphens only, US spelling, one line, no URL.
+func requestAccessLine(ruleID, what string) string {
 	head := fmt.Sprintf("observer: %s blocked %s; your organization locks this rule.", ruleID, what)
 	cli := "`observer request access --rule " + ruleID + " \"<reason>\"`"
 	var last string
-	for _, v := range requestAccessVariants {
-		if v.needsBase && base == "" {
-			continue
-		}
-		if v.needsSession && sessionID == "" {
-			continue
-		}
-		link := base + "/requests?rule=" + url.QueryEscape(ruleID)
-		if v.needsSession {
-			link += "&session=" + url.QueryEscape(sessionID)
-		}
-		last = v.render(head, link, cli)
+	for _, render := range requestAccessVariants {
+		last = render(head, cli)
 		if len(last) <= RequestAccessMaxBytes {
 			return last
 		}
 	}
 	return last
+}
+
+// RequestAccessLink is the node dashboard request form for a verdict the
+// developer can ask about, prefilled (it never submits; nothing leaves the
+// machine until the developer presses Send, GRANT-8): an org-locked rule's
+// access request, or a budget stop's increase request. "" when the
+// dashboard origin is unknown or there is nothing to request. Only a human
+// reads it (the desktop notification); in-band reasons carry no URL.
+func RequestAccessLink(av ActionVerdict) string {
+	if av.RequestBase == "" || av.Verdict.RuleID == "" {
+		return ""
+	}
+	switch {
+	case av.Category == string(policy.CategoryBudget):
+		return av.RequestBase + BudgetIncreaseRequestPath
+	case av.OrgLocked:
+		link := av.RequestBase + "/requests?rule=" + url.QueryEscape(av.Verdict.RuleID)
+		if av.Input.SessionID != "" {
+			link += "&session=" + url.QueryEscape(av.Input.SessionID)
+		}
+		return link
+	}
+	return ""
 }
 
 // SetRequestAccessBase sets the node dashboard origin the org-locked deny

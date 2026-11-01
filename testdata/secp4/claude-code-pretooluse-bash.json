@@ -1,0 +1,1 @@
+{"session_id":"7c1e2a90-1b5f-4c3e-9a1d-2f0e5b8c4d11","transcript_path":"{{HOME}}/.claude/projects/-proj/7c1e2a90-1b5f-4c3e-9a1d-2f0e5b8c4d11.jsonl","cwd":"{{CWD}}","permission_mode":"default","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"{{COMMAND}}","description":"Commit the change"}}

@@ -63,6 +63,7 @@ import type {
 } from "@/lib/types";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { navIcon } from "@/lib/nav";
+import { capturePillView } from "@/lib/capturePill";
 import { MetricIcon } from "@/components/MetricIcon";
 
 const EVENTS_LIMIT = 25;
@@ -597,8 +598,12 @@ function SetupBanner({
 }) {
   const [expanded, setExpanded] = useState<"claude" | "codex" | null>(null);
   if (!claude && !codex) return null;
-  const claudeOK =
-    claude?.status === "oauth_ready" || claude?.status === "api_key_ready";
+  // The Claude pill reads the same table as the top bar's capture pill
+  // (lib/capturePill.ts, OBS-1): OK only when sessions were observed going
+  // through the proxy with no routable surface bypassing it, never from the
+  // install status alone.
+  const claudeView = capturePillView(claude);
+  const claudeOK = claudeView.state === "active";
   const codexOK = codex?.status === "routed_to_observer";
   const allOK = claudeOK && codexOK;
   const intent = allOK ? "success" : "warn";
@@ -614,7 +619,7 @@ function SetupBanner({
         <span className={`font-semibold ${intentFg}`}>Proxy</span>
         <StatusPill
           label="Claude"
-          status={claude?.status ?? "unknown"}
+          status={claude ? claudeView.label : "unknown"}
           ok={claudeOK}
           active={expanded === "claude"}
           onClick={() =>
@@ -668,6 +673,18 @@ function SetupBanner({
                     : "(not set)",
               ],
               ["Settings file", claude.settings_path || "-"],
+              [
+                "Observed traffic",
+                claude.observed_route && claude.observed_route.surfaces.length > 0
+                  ? `last ${claude.observed_route.window_days}d: ` +
+                    claude.observed_route.surfaces
+                      .map(
+                        (sf) =>
+                          `${sf.host ? `${sf.kind} (${sf.host})` : sf.kind} ${sf.proxied_sessions}/${sf.sessions} proxied, ${sf.state}`,
+                      )
+                      .join("; ")
+                  : "(no Claude Code session recorded)",
+              ],
             ]}
           />
           <RouteAction

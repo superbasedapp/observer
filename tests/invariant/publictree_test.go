@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/marmutapp/superbased-observer/internal/testsupport/publictree"
 )
 
 // publictree_test.go holds the one answer to "is this the public tree?" for
@@ -16,18 +18,19 @@ import (
 // tree always carries cmd/observer-org, so a guard that skips only in the
 // public tree keeps full strength where the private code lives.
 
+// The definition is shared with every other package's tests through
+// internal/testsupport/publictree, so the two cannot disagree.
+
 // inPublicTree reports whether root is the stripped public tree.
 func inPublicTree(root string) bool {
-	return !dirExists(root, "cmd/observer-org")
+	return publictree.In(root)
 }
 
 // skipInPublicTree skips t when root is the public tree, naming what the
 // public tree does not carry.
 func skipInPublicTree(t *testing.T, root, what string) {
 	t.Helper()
-	if inPublicTree(root) {
-		t.Skipf("public tree: %s is private-only (scripts/release.sh PRIVATE_ONLY_PATHS)", what)
-	}
+	publictree.SkipAt(t, root, what)
 }
 
 var markOmittedRe = regexp.MustCompile(`components\.MarkOmitted\("([^"]+)"\)`)

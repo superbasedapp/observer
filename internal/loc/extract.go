@@ -85,15 +85,31 @@ type extractShapeRule struct {
 // extractShapes is the ladder, in evaluation order. See Extract's doc
 // comment for why the order is what it is.
 var extractShapes = []extractShapeRule{
+	// ibm-bob's exact change record FIRST: the same payload also carries
+	// the call's own arguments (search/replace, content, ...), which the
+	// later rows would only estimate from.
+	{ShapeBobChanges, matchJSONKey(BobChangesKey), parseBobChanges},
 	{ShapeCodexChanges, matchCodexChanges, parseCodexChanges},
 	{ShapeEdits, matchJSONKey("edits"), parseEditsArray},
+	{ShapeAnchorEdits, matchJSONKey("files"), parseAnchorEdits},
+	{ShapeASTReplace, matchJSONAll("operation", "targets"), parseASTTargets},
 	{ShapeOldNewString, matchJSONAny("old_string", "new_string"), parseKeyPair("old_string", "new_string")},
 	{ShapeOldNewCamel, matchJSONAny("oldString", "newString"), parseKeyPair("oldString", "newString")},
 	{ShapeOldNewSnakeAbb, matchJSONAny("old_str", "new_str"), parseKeyPair("old_str", "new_str")},
 	{ShapeNewSource, matchJSONAny("new_source", "old_source"), parseKeyPair("old_source", "new_source")},
+	{ShapeOldNewText, matchJSONAny("oldText", "newText"), parseKeyPair("oldText", "newText")},
+	{ShapeSearchReplKeys, matchJSONAll("search", "replace"), parseKeyPair("search", "replace")},
+	// insert_content BEFORE content: its `content` is an inserted
+	// fragment, never the file's whole after-image.
+	{ShapeInsertContent, matchJSONAll("line", "content"), parseInsertContent},
 	{ShapeContent, matchJSONKey("content"), parseContentKey},
+	{ShapeContents, matchJSONKey("contents"), parseContentsKey},
 	{ShapeFileText, matchJSONKey("file_text"), parseFileTextKey},
 	{ShapeSearchReplace, matchJSONKey("diff"), parseSearchReplaceDiff},
+	{ShapeSearchReplace, matchJSONKey("blocks"), parseSearchReplaceBlocksKey},
+	{ShapeWrappedPatch, matchJSONAny("patch", "input"), parseWrappedPatchKey},
+	{ShapePatchDiff, matchJSONKey("patch"), parsePatchDiffKey},
+	{ShapeWrappedPatch, matchJSONStringBeginPatch, parseJSONStringBeginPatch},
 	{ShapeCodexPatch, matchBeginPatch, parseBeginPatchText},
 	{ShapeCodexJS, matchCodexJS, parseCodexJS},
 	{ShapePathOnly, matchPathOnly, parsePathOnly},
@@ -105,6 +121,23 @@ func matchJSONKey(key string) func(Input, string, map[string]json.RawMessage) bo
 	return func(_ Input, _ string, obj map[string]json.RawMessage) bool {
 		_, ok := obj[key]
 		return ok
+	}
+}
+
+// matchJSONAll builds a predicate for "this JSON object has every one of
+// these keys". Used where a single key is too generic to identify the
+// shape on its own (ibm-bob's `search`, `line`).
+func matchJSONAll(keys ...string) func(Input, string, map[string]json.RawMessage) bool {
+	return func(_ Input, _ string, obj map[string]json.RawMessage) bool {
+		if obj == nil {
+			return false
+		}
+		for _, k := range keys {
+			if _, ok := obj[k]; !ok {
+				return false
+			}
+		}
+		return true
 	}
 }
 
@@ -179,6 +212,8 @@ var keyPairShapes = map[string]Shape{
 	"oldString":  ShapeOldNewCamel,
 	"old_str":    ShapeOldNewSnakeAbb,
 	"old_source": ShapeNewSource,
+	"oldText":    ShapeOldNewText,
+	"search":     ShapeSearchReplKeys,
 }
 
 // shapeForKeyPair maps a before-key to its Shape, defaulting to the
@@ -193,27 +228,39 @@ func shapeForKeyPair(oldKey string) Shape {
 // multiEdit is one entry of a MultiEdit payload's edits array. Both key
 // spellings are accepted because the same array shape appears under both
 // the snake_case and camelCase adapters.
+//
+// The pi-mono family (pi, kimchi) spells the pair oldText/newText:
+// `{"path","edits":[{"oldText","newText"}]}` (live: kimchi
+// testdata/kimchi/session-wsl.jsonl, pi's own Windows store 2026-10-21).
+// Before loc.Version 3 that spelling decoded to two empty sides and the
+// edit counted ZERO lines silently.
 type multiEdit struct {
 	OldString string `json:"old_string"`
 	NewString string `json:"new_string"`
 	OldAlt    string `json:"oldString"`
 	NewAlt    string `json:"newString"`
+	OldText   string `json:"oldText"`
+	NewText   string `json:"newText"`
+}
+
+// firstNonEmpty returns the first non-empty string.
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // old returns the before-image of one MultiEdit entry.
 func (m multiEdit) old() string {
-	if m.OldString != "" {
-		return m.OldString
-	}
-	return m.OldAlt
+	return firstNonEmpty(m.OldString, m.OldAlt, m.OldText)
 }
 
 // new returns the after-image of one MultiEdit entry.
 func (m multiEdit) after() string {
-	if m.NewString != "" {
-		return m.NewString
-	}
-	return m.NewAlt
+	return firstNonEmpty(m.NewString, m.NewAlt, m.NewText)
 }
 
 // parseEditsArray handles MultiEdit: several before/after pairs against
@@ -269,6 +316,261 @@ func parseFileTextKey(in Input, _ string, obj map[string]json.RawMessage) []File
 	return []FileStats{fs}
 }
 
+// parseContentsKey handles autohand's `write_file`:
+// `{"path":…,"contents":…}` (live, testdata/autohand). The body is the
+// complete after-image, the same as a claude-code Write's `content`.
+func parseContentsKey(in Input, _ string, obj map[string]json.RawMessage) []FileStats {
+	path := pathFromJSON(in, obj)
+	fs := wholeContentStats(in, path, jsonString(obj, "contents"))
+	fs.Shape = ShapeContents
+	return []FileStats{fs}
+}
+
+// parseInsertContent handles ibm-bob's `insert_content`:
+// `{"path":…,"line":N,"content":…}` (bobshell 2.0.6 tool definition:
+// "adding new lines of content into a file without modifying existing
+// content"; line 0 appends). The body is an inserted FRAGMENT, so every
+// line is an addition and nothing is removed: it must never reach the
+// whole-file `content` row, which would treat the fragment as the file's
+// after-image (an overwrite of everything else).
+func parseInsertContent(in Input, _ string, obj map[string]json.RawMessage) []FileStats {
+	content := jsonString(obj, "content")
+	if content == "" {
+		return nil
+	}
+	path := pathFromJSON(in, obj)
+	fs := addedContentStats(path, content)
+	fs.Shape = ShapeInsertContent
+	return []FileStats{fs}
+}
+
+// parseSearchReplaceBlocksKey handles autohand's `search_replace`:
+// `{"path":…,"blocks":"<<<<<<< SEARCH…=======…>>>>>>> REPLACE"}` (live,
+// testdata/autohand). Same block grammar as cline's `diff`, different key.
+func parseSearchReplaceBlocksKey(in Input, _ string, obj map[string]json.RawMessage) []FileStats {
+	return searchReplaceStats(in, obj, jsonString(obj, "blocks"))
+}
+
+// beginPatchPrefix opens a codex-style apply_patch envelope.
+const beginPatchPrefix = "*** Begin Patch"
+
+// parseWrappedPatchKey handles an apply_patch envelope wrapped in a JSON
+// object: vtcode stores its apply_patch arguments as
+// `{"input":"*** Begin Patch…"}` or `{"patch":"*** Begin Patch…"}`
+// (internal/adapter/vtcode/tools.go patchText). Only a value that IS an
+// envelope matches; a `patch` holding a unified diff falls through to
+// parsePatchDiffKey, and a generic `input` falls through entirely.
+func parseWrappedPatchKey(_ Input, _ string, obj map[string]json.RawMessage) []FileStats {
+	for _, k := range []string{"input", "patch"} {
+		if s := jsonString(obj, k); strings.HasPrefix(strings.TrimSpace(s), beginPatchPrefix) {
+			return parseBeginPatch(s, ShapeWrappedPatch)
+		}
+	}
+	return nil
+}
+
+// parsePatchDiffKey handles autohand's `apply_patch`:
+// `{"path":…,"patch":"<unified diff>"}` (autohand-cli dist tool
+// definition "Apply a unified diff to a file", required [path, patch]).
+// The diff is per-file, so the path comes from the payload.
+func parsePatchDiffKey(in Input, _ string, obj map[string]json.RawMessage) []FileStats {
+	patch := jsonString(obj, "patch")
+	if strings.TrimSpace(patch) == "" {
+		return nil
+	}
+	fs := unifiedDiffStats(pathFromJSON(in, obj), patch)
+	fs.Shape = ShapePatchDiff
+	return []FileStats{fs}
+}
+
+// matchJSONStringBeginPatch recognises an apply_patch envelope stored as
+// a JSON STRING literal (vtcode's bare-string apply_patch arguments).
+// Without this row the quoted string fell to plain_content and was
+// counted as a whole-file write of the patch text — a wrong number, not a
+// missing one.
+func matchJSONStringBeginPatch(_ Input, raw string, obj map[string]json.RawMessage) bool {
+	if obj != nil {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimSpace(raw), `"`+beginPatchPrefix)
+}
+
+// parseJSONStringBeginPatch decodes the string literal and counts the
+// envelope inside it.
+func parseJSONStringBeginPatch(_ Input, raw string, _ map[string]json.RawMessage) []FileStats {
+	var s string
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &s); err != nil {
+		return nil
+	}
+	return parseBeginPatch(s, ShapeWrappedPatch)
+}
+
+// anchorDelimiter separates a dirac line anchor's opaque ID from the
+// exact current source line it names ("Apple§first line";
+// dirac-cli shared/utils/line-hashing.ts ANCHOR_DELIMITER).
+const anchorDelimiter = "§"
+
+// anchorFile / anchorEdit are dirac `edit_file`'s argument shape:
+// `{"files":[{"path":…,"edits":[{"edit_type":"replace"|"insert_after"|
+// "insert_before","anchor":"ID§line","end_anchor":"ID§line"|null,
+// "text":…}]}]}` (live Windows task 1792584662340; dirac-cli
+// EditFileTool.ts).
+type anchorFile struct {
+	Path  string       `json:"path"`
+	Edits []anchorEdit `json:"edits"`
+}
+
+type anchorEdit struct {
+	EditType  string  `json:"edit_type"`
+	Anchor    string  `json:"anchor"`
+	EndAnchor *string `json:"end_anchor"`
+	Text      string  `json:"text"`
+}
+
+// anchorLine returns the source line an anchor names (the text after the
+// delimiter); an anchor with no delimiter is taken verbatim.
+func anchorLine(anchor string) string {
+	if i := strings.Index(anchor, anchorDelimiter); i >= 0 {
+		return anchor[i+len(anchorDelimiter):]
+	}
+	return anchor
+}
+
+// anchorEditStats measures one dirac anchor edit. Inserts are pure
+// additions (exact). A replace names only its first and last line, so a
+// one-line replace (anchor == end_anchor) is exact, while a multi-line
+// replace knows its endpoints but not the lines between them: it is
+// measured over the two known lines and marked ConfidenceLow so the UI
+// can say the removed side is partial. An unknown edit_type yields
+// nothing.
+func anchorEditStats(path string, e anchorEdit) (FileStats, bool) {
+	switch e.EditType {
+	case "insert_after", "insert_before":
+		return editStats(path, "", e.Text), true
+	case "replace":
+		start := anchorLine(e.Anchor)
+		if e.EndAnchor == nil || *e.EndAnchor == "" || *e.EndAnchor == e.Anchor {
+			return editStats(path, start, e.Text), true
+		}
+		fs := editStats(path, start+"\n"+anchorLine(*e.EndAnchor), e.Text)
+		fs.Confidence = ConfidenceLow
+		return fs, true
+	}
+	return FileStats{}, false
+}
+
+// parseAnchorEdits counts dirac `edit_file`, one row per file, summing
+// its edits the way parseEditsArray sums a MultiEdit.
+func parseAnchorEdits(in Input, _ string, obj map[string]json.RawMessage) []FileStats {
+	var files []anchorFile
+	if err := json.Unmarshal(obj["files"], &files); err != nil || len(files) == 0 {
+		return nil
+	}
+	byPath := map[string]*FileStats{}
+	digests := map[string]*strings.Builder{}
+	for _, f := range files {
+		if len(f.Edits) == 0 {
+			continue
+		}
+		path := f.Path
+		if path == "" {
+			path = in.Target
+		}
+		row, ok := byPath[path]
+		if !ok {
+			lang, cat := Language(path)
+			row = &FileStats{Path: path, Lang: lang, Category: cat, Shape: ShapeAnchorEdits, Confidence: ConfidenceHigh}
+			byPath[path] = row
+			digests[path] = &strings.Builder{}
+		}
+		for _, e := range f.Edits {
+			part, ok := anchorEditStats(path, e)
+			if !ok {
+				row.Confidence = ConfidenceLow
+				continue
+			}
+			row.Stats.Add(part.Stats)
+			row.Confidence = row.Confidence.Min(part.Confidence)
+			d := digests[path]
+			d.WriteString(e.EditType + "\x00" + normalizeBody(anchorLine(e.Anchor)) + "\x00")
+			if e.EndAnchor != nil {
+				d.WriteString(normalizeBody(anchorLine(*e.EndAnchor)))
+			}
+			d.WriteString("\x00" + normalizeBody(e.Text) + "\x00")
+		}
+	}
+	if len(byPath) == 0 {
+		return nil
+	}
+	out := make([]FileStats, 0, len(byPath))
+	for p, row := range byPath {
+		row.InputDigest = digestOf(digests[p].String())
+		out = append(out, *row)
+	}
+	sortFileStats(out)
+	return out
+}
+
+// astTarget is one entry of dirac `edit_ast`'s targets array:
+// `{"operation":"rename"|"replace","targets":[{"path","symbol",
+// "replacement"}]}` (dirac-cli EditAstTool.ts).
+type astTarget struct {
+	Path        string `json:"path"`
+	Symbol      string `json:"symbol"`
+	Replacement string `json:"replacement"`
+}
+
+// parseASTTargets counts dirac `edit_ast`.
+//
+//   - replace: `replacement` is the complete new definition; the replaced
+//     definition is NOT in the payload. Its lines are booked as additions
+//     at ConfidenceLow (the removed side is unknown).
+//   - rename: `replacement` is a symbol name and the edited reference
+//     sites are resolved by the tool, so nothing is measurable: each
+//     target file is recorded as touched (path_only, actor unknown).
+func parseASTTargets(in Input, _ string, obj map[string]json.RawMessage) []FileStats {
+	var targets []astTarget
+	if err := json.Unmarshal(obj["targets"], &targets); err != nil || len(targets) == 0 {
+		return nil
+	}
+	op := jsonString(obj, "operation")
+	byPath := map[string]*FileStats{}
+	digests := map[string]*strings.Builder{}
+	for _, t := range targets {
+		path := t.Path
+		if path == "" {
+			path = in.Target
+		}
+		if op != "replace" {
+			if _, seen := byPath[path]; !seen {
+				fs := unparsed(path, ShapePathOnly)
+				byPath[path] = &fs
+				digests[path] = &strings.Builder{}
+			}
+			digests[path].WriteString(op + "\x00" + t.Symbol + "\x00" + t.Replacement + "\x00")
+			continue
+		}
+		part := editStats(path, "", t.Replacement)
+		row, ok := byPath[path]
+		if !ok {
+			lang, cat := Language(path)
+			row = &FileStats{Path: path, Lang: lang, Category: cat, Shape: ShapeASTReplace, Confidence: ConfidenceLow}
+			byPath[path] = row
+			digests[path] = &strings.Builder{}
+		}
+		row.Stats.Add(part.Stats)
+		row.Confidence = row.Confidence.Min(part.Confidence)
+		digests[path].WriteString("replace\x00" + t.Symbol + "\x00" + normalizeBody(t.Replacement) + "\x00")
+	}
+	out := make([]FileStats, 0, len(byPath))
+	for p, row := range byPath {
+		row.InputDigest = digestOf(digests[p].String())
+		out = append(out, *row)
+	}
+	sortFileStats(out)
+	return out
+}
+
 // searchReplaceMarkers are the two block-delimiter families cline (and
 // its Kilo fork) emit for `replace_in_file`. Current builds write the
 // dashed form; older ones write the conflict-marker form, and a corpus
@@ -296,7 +598,13 @@ var searchReplaceMarkers = [][3]string{
 // A payload whose `diff` carries no recognisable block yields nothing, so
 // the ladder falls through rather than reporting a confident zero.
 func parseSearchReplaceDiff(in Input, _ string, obj map[string]json.RawMessage) []FileStats {
-	blocks := parseSearchReplaceBlocks(jsonString(obj, "diff"))
+	return searchReplaceStats(in, obj, jsonString(obj, "diff"))
+}
+
+// searchReplaceStats measures a SEARCH/REPLACE block body, whichever key
+// carried it.
+func searchReplaceStats(in Input, obj map[string]json.RawMessage, body string) []FileStats {
+	blocks := parseSearchReplaceBlocks(body)
 	if len(blocks) == 0 {
 		return nil
 	}

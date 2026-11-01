@@ -25,7 +25,7 @@ var _ daemonDashboard = (*dashboard.Server)(nil)
 // newDaemonDashboard builds the dashboard server from opts. On error it
 // returns a nil interface, never a typed nil, so callers can test for nil.
 func newDaemonDashboard(opts dashapi.Options) (daemonDashboard, error) {
-	srv, err := dashboard.New(opts)
+	srv, err := dashboard.New(withInstallSignals(opts))
 	if err != nil {
 		return nil, err
 	}
@@ -42,4 +42,14 @@ func setTerminalPingPolicy(interval, timeout time.Duration, failuresAllowed int)
 // exposed": a non-loopback bind needs a ready remote substrate.
 func checkRemoteBind(addr string, rc dashapi.RemoteController) error {
 	return dashboard.CheckRemoteBind(addr, rc)
+}
+
+// withInstallSignals wires the install-signal probe (installsignal.go) the
+// Claude Code setup snapshot reads (WINNODE2 16b), unless the caller set
+// one.
+func withInstallSignals(opts dashapi.Options) dashapi.Options {
+	if opts.InstallSignalTools == nil {
+		opts.InstallSignalTools = func() []string { return installSignalToolsFor("") }
+	}
+	return opts
 }

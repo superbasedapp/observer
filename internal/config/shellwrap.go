@@ -12,7 +12,10 @@ package config
 // card (POST /api/shell-wrap/apply), which write this block and the files
 // together. Editing the keys by hand changes nothing until one of those runs
 // (`observer shell-wrap status` reports the drift). The daemon never touches
-// a shell start-up file on its own.
+// a shell start-up file on its own, with one exception (surface-gap CLI-1b,
+// operator decision D6): on a MANAGED node whose organization pinned
+// shell_wrap.org_maintain, the daemon applies (ON) or removes (OFF) the
+// native target's wrap through the same applier, and records OrgApplied.
 type ShellWrapConfig struct {
 	// Enabled records that the wrap is applied. Default false.
 	Enabled bool `toml:"enabled"`
@@ -34,6 +37,19 @@ type ShellWrapConfig struct {
 	// keys, same opt-in rule; only meaningful when the daemon runs inside
 	// WSL. Zero value = off.
 	Windows ShellWrapTargetConfig `toml:"windows"`
+	// OrgMaintain is the org-pinned managed command-wrapping switch
+	// (node.governance key shell_wrap.org_maintain, CLI-1b). It exists so
+	// the pin resolves in this build's config; the daemon reads the pinned
+	// value live from the governance posture
+	// (govern.Effective.ShellWrapPosture) and never reads this local value,
+	// which an individual node has no use for.
+	OrgMaintain bool `toml:"org_maintain"`
+	// OrgApplied records that the native target's wrap was applied by the
+	// managed daemon for the organization (written by the applier with the
+	// choice; cleared when the developer applies or disables it themselves).
+	// Only a wrap with OrgApplied set is removed when the organization turns
+	// managed wrapping off: a wrap the developer applied is theirs.
+	OrgApplied bool `toml:"org_applied"`
 }
 
 // ShellWrapTargetConfig is one shell-wrap target's recorded choice. The

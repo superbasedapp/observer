@@ -120,6 +120,9 @@ func (k JWK) PublicKey() (any, error) {
 		if errX != nil || errY != nil || len(x) != 32 || len(y) != 32 {
 			return nil, errors.New("jose: malformed P-256 coordinates")
 		}
+		// The raw coordinates are validated on the curve just below; kept so key
+		// parsing is unchanged by the Go 1.27 move.
+		//nolint:staticcheck // SA1019: deprecated X / Y fields, validated below
 		pub := &ecdsa.PublicKey{Curve: elliptic.P256(), X: new(big.Int).SetBytes(x), Y: new(big.Int).SetBytes(y)}
 		if !pub.Curve.IsOnCurve(pub.X, pub.Y) { //nolint:staticcheck // explicit on-curve validation of untrusted input
 			return nil, errors.New("jose: P-256 point is not on the curve")

@@ -60,6 +60,12 @@ func (inertProxy) SetLaneTable(map[string]string, string) error { return nil }
 // LaneTable reports no lanes.
 func (inertProxy) LaneTable() (map[string]string, string) { return nil, "" }
 
+// SetRouteLanes accepts and drops route lanes (there is no proxy to route).
+func (inertProxy) SetRouteLanes(map[string]string) error { return nil }
+
+// ResolvableLanes reports no lane: nothing resolves without a proxy.
+func (inertProxy) ResolvableLanes() map[string]bool { return nil }
+
 // SetRoutingSnapshotWithFallback accepts and drops a routing snapshot.
 func (inertProxy) SetRoutingSnapshotWithFallback(map[string]string, string, string, string, []string, string, bool) error {
 	return nil

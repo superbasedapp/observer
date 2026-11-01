@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/marmutapp/superbased-observer/internal/hook"
 	"github.com/marmutapp/superbased-observer/internal/hookevent"
@@ -46,7 +47,13 @@ func handleBindingFallback(tool, label string, b integration.HookBinding, stdin 
 // dialect's own allow before recording an observe-family payload
 // (compaction, task) through hook_observe.go. Returns false when no
 // receiver applies (the caller's binding fallback then answers allow).
-func dispatchBindingReceiver(_ context.Context, tool, event, configPath string, b integration.HookBinding) bool {
+func dispatchBindingReceiver(ctx context.Context, tool, event, configPath string, b integration.HookBinding) bool {
+	// A post-tool event registered for the security feedback (lane sec-h):
+	// the dialect's allow with the feedback lines (security_feedback.go).
+	if handlePostFeedbackHook(ctx, tool, event, tool+":"+event, configPath, os.Stdin, hookStdout, os.Stderr) {
+		markHookReplied()
+		return true
+	}
 	if !hook.KnownPromptDialect(b.Dialect) {
 		return false
 	}

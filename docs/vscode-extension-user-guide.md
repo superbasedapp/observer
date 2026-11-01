@@ -444,7 +444,7 @@ If you don't want the dashboard webview, just don't run
 
 1. Install observer via `npm install -g @superbased/observer` or
    `pip install superbased-observer`. Then either restart VS Code
-   or run **SuperBased: Doctor** to re-resolve.
+   or run **SuperBased: Doctor** to re-resolve. On Windows PowerShell, type `npx.cmd` and `npm.cmd` instead of `npx` and `npm` (or use Command Prompt): PowerShell's default execution policy blocks the `npx.ps1` and `npm.ps1` scripts.
 2. Set `observer.binary.path` to the absolute path of a working
    binary.
 
@@ -554,8 +554,9 @@ charts, columns, filters, metrics, calculations, and a glossary.
 
 The extension is **strictly local-first**:
 
-- **Zero telemetry.** Respects `telemetry.telemetryLevel`. No
-  usage analytics, no crash reports, no session-id beacons.
+- **No usage data is sent to us today.** The extension currently sends
+  no usage analytics, crash reports, or session-id beacons to SuperBased,
+  and your content never leaves without your consent.
 - **No outbound network calls** at runtime. The only network
   traffic the extension ever generates is the first-install
   binary download from

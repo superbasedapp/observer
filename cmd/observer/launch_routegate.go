@@ -65,9 +65,13 @@ func resolveGatedRoute(tool, label, proxyURL, launcherModel string, args, enviro
 	in.CredentialPresent = p.Gate.CredentialPresent(lookup)
 	in.ModelPresent = p.Gate.ModelPresent(lookup, args, launcherModel)
 	in.ForeignProvider = p.Gate.ProviderTypeForeign(lookup, args)
+	pins := gateAuthPins(p.Gate, lookup)
+	in.AuthPinned = len(pins) > 0
 
 	prefix := "observer " + label + ": "
 	switch integration.EvaluateRouteGate(p.Gate, in) {
+	case integration.RouteGateRoutedAuthPinned:
+		return gatedRoute{routed: true, caveat: authPinnedCaveat(label, pins)}
 	case integration.RouteGateOwnEndpoint:
 		return gatedRoute{notice: prefix + "not routed through the proxy: " + p.EnvVar +
 			" is already set to your own endpoint, so it is left alone"}

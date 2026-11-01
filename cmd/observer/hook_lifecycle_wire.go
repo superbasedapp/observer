@@ -43,6 +43,9 @@ type lifecycleDrainDeps struct {
 	compaction func(ctx context.Context, r hookspool.Record) error
 	// hold re-appends a held record to the live spool (hookspool.Append).
 	hold func(path string, r hookspool.Record) error
+	// activity lands one aside file's hook liveness records (the ONE writer,
+	// store.UpsertHookActivity, in production). nil drops them.
+	activity func(ctx context.Context, rows []store.HookActivityRow) error
 }
 
 // drainHookLifecycleSpool processes every aside spool file that is ready and
@@ -82,6 +85,13 @@ func drainHookLifecycleSpool(ctx context.Context, spoolPath string, d lifecycleD
 			}
 			total += len(plan.events)
 		}
+		if len(plan.activity) > 0 && d.activity != nil {
+			// Best effort, after the file's events landed: a failed upsert is
+			// a lost liveness count, never a re-ingested event.
+			if err := d.activity(ctx, plan.activity); err != nil {
+				logger.Warn("hook lifecycle spool: hook activity", "err", err, "records", len(plan.activity))
+			}
+		}
 		for _, r := range plan.compactions {
 			if d.compaction == nil {
 				continue
@@ -108,6 +118,15 @@ func drainHookLifecycleSpool(ctx context.Context, spoolPath string, d lifecycleD
 	if _, err := hookspool.SetAside(spoolPath, now); err != nil {
 		logger.Warn("hook lifecycle spool: set aside", "err", err)
 	}
+	// Activity records the hooks skipped while the spool was past its cap
+	// (nothing drained it): the live spool is empty again, so say so once and
+	// clear the count (R-188 F5; the doctor's hooks.spool row reads it while
+	// the daemon is down).
+	if n, err := hookspool.TakeSkippedActivity(spoolPath, now); err != nil {
+		logger.Warn("hook lifecycle spool: skipped activity count", "err", err)
+	} else if n > 0 {
+		logger.Warn("hook lifecycle spool: hook activity records were skipped while the spool was past its cap", "skipped", n, "cap_bytes", hookspool.MaxActivitySpoolBytes)
+	}
 	return total
 }
 
@@ -117,6 +136,7 @@ type lifecycleAsidePlan struct {
 	events      []models.ToolEvent
 	compactions []hookspool.Record
 	holds       []hookspool.Record
+	activity    []store.HookActivityRow
 	expired     int
 }
 
@@ -127,6 +147,10 @@ type lifecycleAsidePlan struct {
 func planLifecycleAside(ctx context.Context, st lifecycleSessions, records []hookspool.Record, known map[string]bool, held *int, now time.Time, logger *slog.Logger) lifecycleAsidePlan {
 	var p lifecycleAsidePlan
 	for _, r := range records {
+		if r.Kind == hookspool.KindActivity {
+			p.activity = append(p.activity, hookActivityRow(r))
+			continue
+		}
 		exists := false
 		if r.NeedsSession() {
 			v, cached := known[r.SessionID]
@@ -173,6 +197,18 @@ func planLifecycleAside(ctx context.Context, st lifecycleSessions, records []hoo
 	return p
 }
 
+// hookActivityRow is one spooled activity record as the writer's row.
+func hookActivityRow(r hookspool.Record) store.HookActivityRow {
+	return store.HookActivityRow{
+		Tool: r.Tool, Event: r.HookEvent, SessionID: r.SessionID, Count: 1,
+		FirstAt: r.Timestamp, LastAt: r.Timestamp, EnvClasses: r.Env,
+	}
+}
+
+// hookActivityPruneInterval is how often the loop drops hook_activity rows
+// past store.HookActivityRetention.
+const hookActivityPruneInterval = time.Hour
+
 // hookLifecycleLoop is the daemon's ONE drainer of the lifecycle hook spool
 // (hook-parity Lane C1) and its ONE watcher of vendor hook-disable switches
 // (T-046). P1 like every sibling loop: it never propagates an
@@ -193,17 +229,26 @@ func hookLifecycleLoop(ctx context.Context, configPath string) {
 		compaction: func(ctx context.Context, r hookspool.Record) error {
 			return applyCompactionRecord(ctx, recorder, r)
 		},
-		hold: hookspool.Append,
+		hold:     hookspool.Append,
+		activity: st.UpsertHookActivity,
 	}
+	var lastPrune time.Time
 	// T-046: the same loop watches the vendor switches that turn every hook
-	// off, and persists a guard event (reaching the org) when one turns on.
-	disabled := newHookDisableWatch()
+	// off, and persists a guard event (reaching the org) when one turns on;
+	// T-910 adds the switches in the projects the store knows.
+	disabled := newHookDisableWatch(st)
 	tick := func() {
 		now := time.Now()
 		if n := drainHookLifecycleSpool(ctx, spool, drain, now, logger); n > 0 {
 			logger.Info("hook lifecycle spool: ingested lifecycle rows", "count", n)
 		}
 		disabled.check(ctx, st, now, logger)
+		if now.Sub(lastPrune) >= hookActivityPruneInterval {
+			lastPrune = now
+			if _, err := st.PruneHookActivity(ctx, now.Add(-store.HookActivityRetention)); err != nil {
+				logger.Warn("hook activity: prune", "err", err)
+			}
+		}
 	}
 	tick()
 	t := time.NewTicker(hookLifecycleInterval)

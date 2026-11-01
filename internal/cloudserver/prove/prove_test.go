@@ -210,11 +210,11 @@ func TestProvePipelineEndToEnd(t *testing.T) {
 
 	var audits []string
 	rep, err := prove.Run(context.Background(), prove.Options{
-		FoundryAPIKey: proveKey,
-		RouteID:       routeID,
-		Control:       control,
-		Attestor:      att,
-		Provider:      &foundry.AzureClient{},
+		APIKey:   proveKey,
+		RouteID:  routeID,
+		Control:  control,
+		Attestor: att,
+		Provider: &foundry.AzureClient{},
 		Audit: func(_ context.Context, eventType, detail string) error {
 			audits = append(audits, eventType+" "+detail)
 			return nil
@@ -318,11 +318,11 @@ func TestProvePipelineEndToEnd(t *testing.T) {
 func TestProveReportNeverPrintsTheCredential(t *testing.T) {
 	fake := newFakeFoundry(t, resultJSON("SYNTHETIC FIXTURE session", []string{"metrics"}))
 	rep, err := prove.Run(context.Background(), prove.Options{
-		FoundryAPIKey: proveKey,
-		RouteID:       routeID,
-		Control:       &fakeControl{route: activeRoute(t, fake.srv.URL, string(foundry.DialectChatCompletions))},
-		Attestor:      &fakeAttestor{verified: true, reason: "ok"},
-		Provider:      &foundry.AzureClient{},
+		APIKey:   proveKey,
+		RouteID:  routeID,
+		Control:  &fakeControl{route: activeRoute(t, fake.srv.URL, string(foundry.DialectChatCompletions))},
+		Attestor: &fakeAttestor{verified: true, reason: "ok"},
+		Provider: &foundry.AzureClient{},
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -473,7 +473,7 @@ func TestProveFailsAtEachStep(t *testing.T) {
 			// One fixture keeps the assertion about provider-call counts exact.
 			one := prove.Catalog()[:1]
 			rep, err := prove.Run(context.Background(), prove.Options{
-				FoundryAPIKey: proveKey, RouteID: routeID,
+				APIKey: proveKey, RouteID: routeID,
 				Control: control, Attestor: att, Provider: &foundry.AzureClient{}, Fixtures: one,
 			})
 			if err != nil {
@@ -531,7 +531,7 @@ func TestProveDialectGateReadsTheRecordForResponsesStoreFalse(t *testing.T) {
 	fake := newFakeFoundry(t, resultJSON("SYNTHETIC FIXTURE", []string{"metrics"}))
 	control := &fakeControl{route: activeRoute(t, fake.srv.URL, string(foundry.DialectResponsesStoreFalse)), dialectOK: true}
 	rep, err := prove.Run(context.Background(), prove.Options{
-		FoundryAPIKey: proveKey, RouteID: routeID,
+		APIKey: proveKey, RouteID: routeID,
 		Control: control, Attestor: &fakeAttestor{verified: true, reason: "ok"},
 		Provider: &foundry.AzureClient{}, Fixtures: prove.Catalog()[:1],
 	})
@@ -565,11 +565,11 @@ func TestProveRefusesWithoutItsOwnCredential(t *testing.T) {
 	fake := newFakeFoundry(t, resultJSON("t", nil))
 	control := &fakeControl{route: activeRoute(t, fake.srv.URL, string(foundry.DialectChatCompletions))}
 	_, err := prove.Run(context.Background(), prove.Options{
-		FoundryAPIKey: "   ",
-		RouteID:       routeID,
-		Control:       control,
-		Attestor:      &fakeAttestor{verified: true},
-		Provider:      &foundry.AzureClient{},
+		APIKey:   "   ",
+		RouteID:  routeID,
+		Control:  control,
+		Attestor: &fakeAttestor{verified: true},
+		Provider: &foundry.AzureClient{},
 	})
 	if !errors.Is(err, prove.ErrNoProveCredential) {
 		t.Fatalf("want ErrNoProveCredential, got %v", err)
@@ -589,7 +589,7 @@ func TestProveRefusesMissingDependencies(t *testing.T) {
 	fake := newFakeFoundry(t, resultJSON("t", nil))
 	base := func() prove.Options {
 		return prove.Options{
-			FoundryAPIKey: proveKey, RouteID: routeID,
+			APIKey: proveKey, RouteID: routeID,
 			Control:  &fakeControl{route: activeRoute(t, fake.srv.URL, string(foundry.DialectChatCompletions))},
 			Attestor: &fakeAttestor{verified: true}, Provider: &foundry.AzureClient{},
 		}
@@ -630,9 +630,9 @@ func TestProveOptionsCarryNoCredentialSource(t *testing.T) {
 		}
 	}
 	// And the credential it DOES take is a plain string.
-	f, ok := ot.FieldByName("FoundryAPIKey")
+	f, ok := ot.FieldByName("APIKey")
 	if !ok || f.Type.Kind() != reflect.String {
-		t.Fatalf("prove.Options.FoundryAPIKey must exist and be a string, got %+v (ok=%v)", f.Type, ok)
+		t.Fatalf("prove.Options.APIKey must exist and be a string, got %+v (ok=%v)", f.Type, ok)
 	}
 }
 
@@ -645,13 +645,13 @@ func TestProveIgnoresTheWorkerCredentialEnv(t *testing.T) {
 	t.Setenv("SBCI_FOUNDRY_API_KEY", workerKey)
 
 	// The worker's seam would resolve this env into a present credential...
-	if key, ok, _ := (jobs.StaticCredentials{Key: workerKey}).ProviderKey(context.Background(), routeID); !ok || key != workerKey {
+	if key, ok, _ := (jobs.StaticCredentials{Key: workerKey}).ProviderKey(context.Background(), store.RouteInfo{RouteID: routeID}); !ok || key != workerKey {
 		t.Fatalf("precondition: the worker seam should resolve the poison key, got %q ok=%v", key, ok)
 	}
 
 	fake := newFakeFoundry(t, resultJSON("SYNTHETIC FIXTURE session", []string{"metrics"}))
 	rep, err := prove.Run(context.Background(), prove.Options{
-		FoundryAPIKey: proveKey, RouteID: routeID,
+		APIKey: proveKey, RouteID: routeID,
 		Control:  &fakeControl{route: activeRoute(t, fake.srv.URL, string(foundry.DialectChatCompletions))},
 		Attestor: &fakeAttestor{verified: true, reason: "ok"},
 		Provider: &foundry.AzureClient{}, Fixtures: prove.Catalog()[:1],
@@ -674,7 +674,7 @@ func TestProveIgnoresTheWorkerCredentialEnv(t *testing.T) {
 
 	// ...and the worker's own default is STILL absence: nothing the proving lane
 	// did provisioned a credential for the worker.
-	if _, ok, _ := (jobs.AbsentCredentials{}).ProviderKey(context.Background(), routeID); ok {
+	if _, ok, _ := (jobs.AbsentCredentials{}).ProviderKey(context.Background(), store.RouteInfo{RouteID: routeID}); ok {
 		t.Fatal("the worker's credential-absence default reports a credential after a proving run")
 	}
 }

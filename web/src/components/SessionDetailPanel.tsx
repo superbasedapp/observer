@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { SlideOver, SurfaceBadge, TabPanel, TabStrip, ToolBadge, Tooltip, TruncatedPath, type TabDef } from "@/components/primitives";
 import { ChartState } from "@/components/ChartState";
@@ -9,11 +9,14 @@ import { SessionActionHeader } from "@/components/SessionActionHeader";
 import { fetchJSON } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
 import {
-  DRAWER_TAB_PARAM,
+  DRAWER_MESSAGE_PARAM,
   clearDrawerTab,
+  drawerProcFromParams,
   drawerTabFromParams,
+  hasDrawerState,
   legacyDrawerTab,
   migrateLegacyDrawerTab,
+  writeDrawerProc,
   writeDrawerTab,
 } from "@/lib/drawerTab";
 import { costLabel, fmtShortId } from "@/lib/format";
@@ -228,7 +231,7 @@ export function SessionDetailPanel({
   // unconditional call here would re-navigate on every mount of every page
   // that renders this panel closed, and could self-retrigger. Once the param
   // is gone hasTabParam is false and the effect is inert.
-  const hasTabParam = searchParams.has(DRAWER_TAB_PARAM);
+  const hasTabParam = hasDrawerState(searchParams);
   useEffect(() => {
     if (!urlTabState || open || !hasTabParam) return;
     setSearchParams((prev) => clearDrawerTab(prev) ?? prev, { replace: true });
@@ -243,6 +246,29 @@ export function SessionDetailPanel({
       replace: true,
     });
   }, [hasLegacyTab, setSearchParams, watch]);
+
+  // ----- Picked process (System tab) --------------------------------
+  //
+  // The process picked in the System tab's Tree / Table / Call stack views is
+  // one selection shared by all three. The route-addressed panel keeps it in
+  // `?proc=` (a link can point at one process; closing the panel drops it with
+  // `?dtab=`, see clearDrawerTab); a non-route panel keeps it locally, for the
+  // same reason its tab is local (see the urlTabState prop doc).
+  const [localProc, setLocalProc] = useState<string | null>(null);
+  const selectedProc = urlTabState ? drawerProcFromParams(searchParams) : localProc;
+  const setSelectedProc = useCallback(
+    (key: string | null) => {
+      if (!urlTabState) {
+        setLocalProc(key);
+        return;
+      }
+      setSearchParams((prev) => writeDrawerProc(prev, key), { replace: true });
+    },
+    [urlTabState, setSearchParams],
+  );
+  useEffect(() => {
+    setLocalProc(null);
+  }, [sessionId]);
 
   // ----- Mount policy: lazy-mount, then keep mounted ---------------
   //
@@ -483,6 +509,23 @@ export function SessionDetailPanel({
     return () => clearTimeout(t);
   }, [focusMid]);
 
+  // `?msg=<message key>` (lib/drawerTab.ts DRAWER_MESSAGE_PARAM): a deep link
+  // to one message, e.g. an admin message's turn attachment (T-854). Runs the
+  // same jump a Processes link does (switch to Messages, load the page that
+  // holds the row, scroll to it and highlight it) once per session and key,
+  // after the first messages read lands. Only the panel that owns the route's
+  // params reads it, the same gate as `?dtab=`.
+  const urlMsg = urlTabState && open ? searchParams.get(DRAWER_MESSAGE_PARAM) : null;
+  const focusedFromUrl = useRef<string | null>(null);
+  const haveMessages = messages.data != null;
+  useEffect(() => {
+    if (!urlMsg || !sessionId || !haveMessages) return;
+    const key = `${sessionId}#${urlMsg}`;
+    if (focusedFromUrl.current === key) return;
+    focusedFromUrl.current = key;
+    void onFocusMessage(urlMsg);
+  }, [urlMsg, sessionId, haveMessages, onFocusMessage]);
+
   // Tail-follow: in watch mode, keep the messages view pinned to the page new
   // rows land on — but only while the reader is stuck to the followed edge
   // (paginating away releases it). Which page that is depends on the sort:
@@ -715,7 +758,13 @@ export function SessionDetailPanel({
           <MCPCallsTab sessionId={sessionId} onFocusMessage={onFocusMessage} />
         </TabPanel>
         <TabPanel id="system" active={activeTab} idPrefix="sessdetail" className="mt-5">
-          <SystemTab sessionId={sessionId} onFocusMessage={onFocusMessage} />
+          <SystemTab
+            sessionId={sessionId}
+            onFocusMessage={onFocusMessage}
+            selectedProc={selectedProc}
+            onSelectProc={setSelectedProc}
+            onOpenTimeline={() => setTab("messages")}
+          />
         </TabPanel>
       </div>
     </SlideOver>

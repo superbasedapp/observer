@@ -33,7 +33,7 @@
     "hook_supported": false,
     "prompt_lane": "",
     "prompt_lane_only": false,
-    "receiver_registered_for_id": false
+    "receiver_registered_for_id": true
   },
   "antigravity-cli": {
     "advertised_is_windows": false,
@@ -69,7 +69,31 @@
     "hook_supported": false,
     "prompt_lane": "",
     "prompt_lane_only": false,
-    "receiver_registered_for_id": false
+    "receiver_registered_for_id": true
+  },
+  "autohand": {
+    "advertised_is_windows": false,
+    "advertised_ok": true,
+    "auto_register_prompt_off": false,
+    "auto_register_prompt_on": false,
+    "auto_register_remediation": "run: observer init --force (or clear the conflicting hooks entry by hand)",
+    "enforcement": "hook_block",
+    "hook_supported": true,
+    "prompt_lane": "hook",
+    "prompt_lane_only": false,
+    "receiver_registered_for_id": true
+  },
+  "autohand-windows": {
+    "advertised_is_windows": true,
+    "advertised_ok": true,
+    "auto_register_prompt_off": false,
+    "auto_register_prompt_on": false,
+    "auto_register_remediation": "run: observer init --force (or clear the conflicting hooks entry by hand)",
+    "enforcement": "hook_block",
+    "hook_supported": false,
+    "prompt_lane": "hook",
+    "prompt_lane_only": false,
+    "receiver_registered_for_id": true
   },
   "chatgpt-web": {
     "advertised_is_windows": false,
@@ -163,9 +187,9 @@
     "auto_register_remediation": "run: observer init --force (or clear the conflicting hooks entry by hand)",
     "enforcement": "hook_block",
     "hook_supported": true,
-    "prompt_lane": "proxy_only",
+    "prompt_lane": "hook",
     "prompt_lane_only": false,
-    "receiver_registered_for_id": false
+    "receiver_registered_for_id": true
   },
   "cline-cli-windows": {
     "advertised_is_windows": true,
@@ -175,9 +199,9 @@
     "auto_register_remediation": "run: observer init --force (or clear the conflicting hooks entry by hand)",
     "enforcement": "hook_block",
     "hook_supported": false,
-    "prompt_lane": "proxy_only",
+    "prompt_lane": "hook",
     "prompt_lane_only": false,
-    "receiver_registered_for_id": false
+    "receiver_registered_for_id": true
   },
   "cline-windows": {
     "advertised_is_windows": true,
@@ -190,6 +214,30 @@
     "prompt_lane": "probe_required",
     "prompt_lane_only": false,
     "receiver_registered_for_id": false
+  },
+  "codebuddy": {
+    "advertised_is_windows": false,
+    "advertised_ok": true,
+    "auto_register_prompt_off": true,
+    "auto_register_prompt_on": true,
+    "auto_register_remediation": "run: observer init --force (or clear the conflicting hooks entry by hand)",
+    "enforcement": "hook_block",
+    "hook_supported": true,
+    "prompt_lane": "hook",
+    "prompt_lane_only": false,
+    "receiver_registered_for_id": true
+  },
+  "codebuddy-windows": {
+    "advertised_is_windows": true,
+    "advertised_ok": true,
+    "auto_register_prompt_off": true,
+    "auto_register_prompt_on": true,
+    "auto_register_remediation": "run: observer init --force (or clear the conflicting hooks entry by hand)",
+    "enforcement": "hook_block",
+    "hook_supported": true,
+    "prompt_lane": "hook",
+    "prompt_lane_only": false,
+    "receiver_registered_for_id": true
   },
   "codex": {
     "advertised_is_windows": false,
@@ -259,21 +307,21 @@
     "auto_register_remediation": "run: observer init --force (or clear the conflicting hooks entry by hand)",
     "enforcement": "hook_block",
     "hook_supported": true,
-    "prompt_lane": "proxy_only",
+    "prompt_lane": "hook",
     "prompt_lane_only": false,
-    "receiver_registered_for_id": false
+    "receiver_registered_for_id": true
   },
   "copilot-cli-windows": {
     "advertised_is_windows": true,
     "advertised_ok": true,
-    "auto_register_prompt_off": false,
-    "auto_register_prompt_on": false,
+    "auto_register_prompt_off": true,
+    "auto_register_prompt_on": true,
     "auto_register_remediation": "run: observer init --force (or clear the conflicting hooks entry by hand)",
     "enforcement": "hook_block",
-    "hook_supported": false,
-    "prompt_lane": "proxy_only",
+    "hook_supported": true,
+    "prompt_lane": "hook",
     "prompt_lane_only": false,
-    "receiver_registered_for_id": false
+    "receiver_registered_for_id": true
   },
   "copilot-web": {
     "advertised_is_windows": false,
@@ -310,6 +358,30 @@
     "prompt_lane": "",
     "prompt_lane_only": false,
     "receiver_registered_for_id": false
+  },
+  "cortex-code": {
+    "advertised_is_windows": false,
+    "advertised_ok": true,
+    "auto_register_prompt_off": false,
+    "auto_register_prompt_on": false,
+    "auto_register_remediation": "run: observer init --force (or clear the conflicting hooks entry by hand)",
+    "enforcement": "hook_block",
+    "hook_supported": false,
+    "prompt_lane": "hook",
+    "prompt_lane_only": false,
+    "receiver_registered_for_id": true
+  },
+  "cortex-code-windows": {
+    "advertised_is_windows": true,
+    "advertised_ok": true,
+    "auto_register_prompt_off": false,
+    "auto_register_prompt_on": false,
+    "auto_register_remediation": "run: observer init --force (or clear the conflicting hooks entry by hand)",
+    "enforcement": "hook_block",
+    "hook_supported": false,
+    "prompt_lane": "hook",
+    "prompt_lane_only": false,
+    "receiver_registered_for_id": true
   },
   "cowork": {
     "advertised_is_windows": false,
@@ -383,6 +455,30 @@
     "prompt_lane_only": false,
     "receiver_registered_for_id": true
   },
+  "deepagents-code": {
+    "advertised_is_windows": false,
+    "advertised_ok": true,
+    "auto_register_prompt_off": true,
+    "auto_register_prompt_on": true,
+    "auto_register_remediation": "run: observer init --force (or clear the conflicting hooks entry by hand)",
+    "enforcement": "hook_block",
+    "hook_supported": true,
+    "prompt_lane": "hook",
+    "prompt_lane_only": false,
+    "receiver_registered_for_id": true
+  },
+  "deepagents-code-windows": {
+    "advertised_is_windows": true,
+    "advertised_ok": true,
+    "auto_register_prompt_off": true,
+    "auto_register_prompt_on": true,
+    "auto_register_remediation": "run: observer init --force (or clear the conflicting hooks entry by hand)",
+    "enforcement": "hook_block",
+    "hook_supported": true,
+    "prompt_lane": "hook",
+    "prompt_lane_only": false,
+    "receiver_registered_for_id": true
+  },
   "deepseek": {
     "advertised_is_windows": false,
     "advertised_ok": true,
@@ -393,7 +489,7 @@
     "hook_supported": false,
     "prompt_lane": "",
     "prompt_lane_only": false,
-    "receiver_registered_for_id": false
+    "receiver_registered_for_id": true
   },
   "deepseek-windows": {
     "advertised_is_windows": true,
@@ -405,7 +501,7 @@
     "hook_supported": false,
     "prompt_lane": "",
     "prompt_lane_only": false,
-    "receiver_registered_for_id": false
+    "receiver_registered_for_id": true
   },
   "devin": {
     "advertised_is_windows": false,
@@ -427,6 +523,54 @@
     "auto_register_remediation": "run: observer init --force (or clear the conflicting hooks entry by hand)",
     "enforcement": "hook_block",
     "hook_supported": false,
+    "prompt_lane": "hook",
+    "prompt_lane_only": false,
+    "receiver_registered_for_id": true
+  },
+  "dimcode": {
+    "advertised_is_windows": false,
+    "advertised_ok": true,
+    "auto_register_prompt_off": true,
+    "auto_register_prompt_on": true,
+    "auto_register_remediation": "run: observer init --force (or clear the conflicting hooks entry by hand)",
+    "enforcement": "hook_block",
+    "hook_supported": true,
+    "prompt_lane": "hook",
+    "prompt_lane_only": false,
+    "receiver_registered_for_id": true
+  },
+  "dimcode-windows": {
+    "advertised_is_windows": true,
+    "advertised_ok": true,
+    "auto_register_prompt_off": true,
+    "auto_register_prompt_on": true,
+    "auto_register_remediation": "run: observer init --force (or clear the conflicting hooks entry by hand)",
+    "enforcement": "hook_block",
+    "hook_supported": true,
+    "prompt_lane": "hook",
+    "prompt_lane_only": false,
+    "receiver_registered_for_id": true
+  },
+  "dirac": {
+    "advertised_is_windows": false,
+    "advertised_ok": true,
+    "auto_register_prompt_off": true,
+    "auto_register_prompt_on": true,
+    "auto_register_remediation": "run: observer init --force (or clear the conflicting hooks entry by hand)",
+    "enforcement": "hook_block",
+    "hook_supported": true,
+    "prompt_lane": "hook",
+    "prompt_lane_only": false,
+    "receiver_registered_for_id": true
+  },
+  "dirac-windows": {
+    "advertised_is_windows": true,
+    "advertised_ok": true,
+    "auto_register_prompt_off": true,
+    "auto_register_prompt_on": true,
+    "auto_register_remediation": "run: observer init --force (or clear the conflicting hooks entry by hand)",
+    "enforcement": "hook_block",
+    "hook_supported": true,
     "prompt_lane": "hook",
     "prompt_lane_only": false,
     "receiver_registered_for_id": true
@@ -623,6 +767,30 @@
     "prompt_lane_only": false,
     "receiver_registered_for_id": true
   },
+  "ibm-bob": {
+    "advertised_is_windows": false,
+    "advertised_ok": true,
+    "auto_register_prompt_off": true,
+    "auto_register_prompt_on": true,
+    "auto_register_remediation": "run: observer init --force (or clear the conflicting hooks entry by hand)",
+    "enforcement": "hook_block",
+    "hook_supported": true,
+    "prompt_lane": "hook",
+    "prompt_lane_only": false,
+    "receiver_registered_for_id": true
+  },
+  "ibm-bob-windows": {
+    "advertised_is_windows": true,
+    "advertised_ok": true,
+    "auto_register_prompt_off": true,
+    "auto_register_prompt_on": true,
+    "auto_register_remediation": "run: observer init --force (or clear the conflicting hooks entry by hand)",
+    "enforcement": "hook_block",
+    "hook_supported": true,
+    "prompt_lane": "hook",
+    "prompt_lane_only": false,
+    "receiver_registered_for_id": true
+  },
   "junie": {
     "advertised_is_windows": false,
     "advertised_ok": true,
@@ -695,6 +863,30 @@
     "prompt_lane_only": false,
     "receiver_registered_for_id": false
   },
+  "kimchi": {
+    "advertised_is_windows": false,
+    "advertised_ok": true,
+    "auto_register_prompt_off": true,
+    "auto_register_prompt_on": true,
+    "auto_register_remediation": "run: observer init --force (or clear the conflicting hooks entry by hand)",
+    "enforcement": "hook_block",
+    "hook_supported": true,
+    "prompt_lane": "hook",
+    "prompt_lane_only": false,
+    "receiver_registered_for_id": true
+  },
+  "kimchi-windows": {
+    "advertised_is_windows": true,
+    "advertised_ok": true,
+    "auto_register_prompt_off": false,
+    "auto_register_prompt_on": false,
+    "auto_register_remediation": "run: observer init --force (or clear the conflicting hooks entry by hand)",
+    "enforcement": "hook_block",
+    "hook_supported": false,
+    "prompt_lane": "hook",
+    "prompt_lane_only": false,
+    "receiver_registered_for_id": true
+  },
   "kimi-code": {
     "advertised_is_windows": false,
     "advertised_ok": true,
@@ -726,10 +918,10 @@
     "auto_register_prompt_on": false,
     "auto_register_remediation": "run: observer init --force (or clear the conflicting hooks entry by hand)",
     "enforcement": "sandbox_enforce",
-    "hook_supported": false,
-    "prompt_lane": "probe_required",
+    "hook_supported": true,
+    "prompt_lane": "",
     "prompt_lane_only": false,
-    "receiver_registered_for_id": false
+    "receiver_registered_for_id": true
   },
   "kiro-cli-windows": {
     "advertised_is_windows": true,
@@ -739,9 +931,9 @@
     "auto_register_remediation": "run: observer init --force (or clear the conflicting hooks entry by hand)",
     "enforcement": "sandbox_enforce",
     "hook_supported": false,
-    "prompt_lane": "probe_required",
+    "prompt_lane": "",
     "prompt_lane_only": false,
-    "receiver_registered_for_id": false
+    "receiver_registered_for_id": true
   },
   "kiro-crew": {
     "advertised_is_windows": false,
@@ -1020,6 +1212,54 @@
     "receiver_registered_for_id": true
   },
   "qwen-code-windows": {
+    "advertised_is_windows": true,
+    "advertised_ok": true,
+    "auto_register_prompt_off": true,
+    "auto_register_prompt_on": true,
+    "auto_register_remediation": "run: observer init --force (or clear the conflicting hooks entry by hand)",
+    "enforcement": "hook_block",
+    "hook_supported": true,
+    "prompt_lane": "hook",
+    "prompt_lane_only": false,
+    "receiver_registered_for_id": true
+  },
+  "stakpak": {
+    "advertised_is_windows": false,
+    "advertised_ok": true,
+    "auto_register_prompt_off": false,
+    "auto_register_prompt_on": false,
+    "auto_register_remediation": "run: observer init --force (or clear the conflicting hooks entry by hand)",
+    "enforcement": "recorded_acceptance",
+    "hook_supported": false,
+    "prompt_lane": "",
+    "prompt_lane_only": false,
+    "receiver_registered_for_id": false
+  },
+  "stakpak-windows": {
+    "advertised_is_windows": true,
+    "advertised_ok": true,
+    "auto_register_prompt_off": false,
+    "auto_register_prompt_on": false,
+    "auto_register_remediation": "run: observer init --force (or clear the conflicting hooks entry by hand)",
+    "enforcement": "recorded_acceptance",
+    "hook_supported": false,
+    "prompt_lane": "",
+    "prompt_lane_only": false,
+    "receiver_registered_for_id": false
+  },
+  "vtcode": {
+    "advertised_is_windows": false,
+    "advertised_ok": true,
+    "auto_register_prompt_off": true,
+    "auto_register_prompt_on": true,
+    "auto_register_remediation": "run: observer init --force (or clear the conflicting hooks entry by hand)",
+    "enforcement": "hook_block",
+    "hook_supported": true,
+    "prompt_lane": "hook",
+    "prompt_lane_only": false,
+    "receiver_registered_for_id": true
+  },
+  "vtcode-windows": {
     "advertised_is_windows": true,
     "advertised_ok": true,
     "auto_register_prompt_off": true,

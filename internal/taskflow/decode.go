@@ -52,6 +52,11 @@ type decoderEntry struct {
 //   - grok, deepseek, kimi-code, qoder, qwen-code, command-code, muse,
 //     mistral-code: zero live rows AND zero fixture payloads anywhere
 //     in the corpus (§R2.7) — no grounding to decode against.
+//   - cortex-code task_create/task_update (see its row), codebuddy
+//     (TodoWrite, TaskCreate/TaskUpdate) and vtcode (task_tracker): tool
+//     names exist in the vendor bundles but no payload exists in either
+//     OS's live store or any fixture (checked 2026-10-21). stakpak has no
+//     checklist tool at all.
 var decoderTable = []decoderEntry{
 	{
 		tool: models.ToolCursor, names: []string{"TodoWrite"}, kind: SnapshotKind,
@@ -144,6 +149,68 @@ var decoderTable = []decoderEntry{
 			}, in)
 		},
 	},
+	// dimcode todowrite (2026-10-21): the identical whole-list
+	// {"todos":[{"id","content","status","priority"}]} shape as
+	// opencode/zcode; statuses seen live: pending, in_progress, completed.
+	{
+		tool: models.ToolDimCode, names: []string{"todowrite"}, kind: SnapshotKind,
+		decode: func(in, _ string) ([]TaskItem, bool) {
+			return decodeGenericSnapshot(snapshotShape{
+				containerKeys: []string{"todos"},
+				contentKeys:   []string{"content"},
+			}, in)
+		},
+	},
+	// autohand todo_write (2026-10-21): {"tasks":[{"content","status",
+	// "activeForm"}]}, no id (3 payloads, testdata/autohand/linux).
+	{
+		tool: models.ToolAutohand, names: []string{"todo_write"}, kind: SnapshotKind,
+		decode: func(in, _ string) ([]TaskItem, bool) {
+			return decodeGenericSnapshot(snapshotShape{
+				containerKeys: []string{"tasks"},
+				contentKeys:   []string{"content"},
+			}, in)
+		},
+	},
+	// deepagents-code write_todos (2026-10-21): {"todos":[{"content",
+	// "status"}]}, no id — langchain agents/middleware/todo.py Todo
+	// TypedDict in the installed deepagents-code 0.x tool env. No live
+	// call on this box yet; a different shape decodes to nothing.
+	{
+		tool: models.ToolDeepAgentsCode, names: []string{"write_todos"}, kind: SnapshotKind,
+		decode: func(in, _ string) ([]TaskItem, bool) {
+			return decodeGenericSnapshot(snapshotShape{
+				containerKeys: []string{"todos"},
+				contentKeys:   []string{"content"},
+			}, in)
+		},
+	},
+	// kimchi (2026-10-21, pi-mono todo extension): create_todos /
+	// update_todos keyed snapshots, clear_todos an empty snapshot,
+	// mark_todo / add_todo deltas on the same numeric id.
+	{tool: models.ToolKimchi, names: []string{"create_todos", "update_todos"}, kind: SnapshotKind, decode: decodeKimchiSnapshot},
+	{tool: models.ToolKimchi, names: []string{"clear_todos"}, kind: SnapshotKind, decode: decodeKimchiClear},
+	{tool: models.ToolKimchi, names: []string{"mark_todo"}, kind: DeltaKind, decode: decodeKimchiMarkTodo},
+	{tool: models.ToolKimchi, names: []string{"add_todo"}, kind: DeltaKind, decode: decodeKimchiAddTodo},
+	// cortex-code system_todo_write (2026-10-21): {"todos":[{content,
+	// status}]} (cortex.exe 1.2.18 inputSchema; no live call yet).
+	// task_create / task_update are deliberately NOT decoded: task_create
+	// also appends its subject to the same TodoStore this snapshot
+	// renders, so decoding both would track one task twice (a native
+	// task-<hex> key and a content key) until a live session shows how
+	// the two co-occur.
+	{
+		tool: models.ToolCortexCode, names: []string{"system_todo_write"}, kind: SnapshotKind,
+		decode: func(in, _ string) ([]TaskItem, bool) {
+			return decodeGenericSnapshot(snapshotShape{
+				containerKeys: []string{"todos"},
+				contentKeys:   []string{"content"},
+			}, in)
+		},
+	},
+	// ibm-bob update_todo_list (2026-10-21): Roo-family markdown
+	// checklist string.
+	{tool: models.ToolIBMBob, names: []string{"update_todo_list"}, kind: SnapshotKind, decode: decodeRooChecklist},
 	// copilot (VS Code core) manage_todo_list — the rare KEYED snapshot.
 	{
 		tool: models.ToolCopilot, names: []string{"manage_todo_list", "managetodolist"}, kind: SnapshotKind,

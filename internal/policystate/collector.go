@@ -53,6 +53,16 @@ const (
 	// table the row's EffectiveHash describes; every field stays enum-only
 	// (Status/Reason/Mode from the closed sets, hashes, versions).
 	PointNodeMCPRelay = "node-mcp-relay"
+	// PointNodeSandboxIsolation is the v6 terminals.isolation point (sandbox
+	// plan v2 section 8.2, lane SBX-P1B): the isolation floors the node's
+	// sandbox selection applies. Enum-only like every other point.
+	PointNodeSandboxIsolation = "node-sandbox-isolation"
+	// PointNodeSecurity is the v7 security.scanning point (security plan
+	// 4.9, lane SEC-E): the floors the node's security module applies.
+	// Every field stays enum-only; since gen8 (lane LEFT-SHARED) the keys
+	// the node could not apply ride the row as keys and closed reasons
+	// (FamilyNotApplicable), as `observer security status` shows them.
+	PointNodeSecurity = "node-security"
 )
 
 // Family identifiers (§2.4). One family per enforcement point.
@@ -80,6 +90,12 @@ const (
 	// literal as policyfam.FamilyMCPAccess / policyfam/mcpaccess.Family,
 	// duplicated for the same dependency-graph reason as the others.
 	FamilyToolsMCPAccess = "tools.mcp_access"
+	// FamilyTerminalsIsolation is the sandbox module's floors family, the
+	// same literal as policyfam.FamilyTerminalsIsolation.
+	FamilyTerminalsIsolation = "terminals.isolation"
+	// FamilySecurityScanning is the security module's floor family (v7).
+	// Same literal as policyfam.FamilySecurityScanning.
+	FamilySecurityScanning = "security.scanning"
 )
 
 // PointFacts is the resolved input for ONE enforcement point (§4.1). The split
@@ -171,6 +187,57 @@ type PointFacts struct {
 	// config paths; values are closed spellings. Nil on a node with nothing
 	// to report. See orgcontract.PolicyStateRow.EffectivePins.
 	EffectivePins map[string]string
+
+	// --- gen3 (T-846 / T-848), meaningful ONLY when point == PointGuard ---
+	// The server 400s a report that carries these on any other row, so
+	// Resolve copies them onto the guard row alone.
+
+	// BundleIntegrity is the on-disk org bundle re-verification result
+	// (orgcontract.BundleIntegrity*), "" when the reader did not check.
+	BundleIntegrity string
+	// BundleRejectCode is the typed reason a TAMPERED on-disk bundle failed
+	// (orgcontract.ReasonSigInvalid or ReasonKeyPinMismatch, the gen1
+	// vocabulary, so an older server still reads the row honestly). Only
+	// consulted when BundleIntegrity is orgcontract.BundleIntegrityTampered.
+	BundleRejectCode string
+	// LocalGuard is the effective local guard configuration as the hook path
+	// resolves it; nil when not resolved.
+	LocalGuard *orgcontract.LocalGuardPosture
+
+	// --- gen4 (T-864), guard point only, same server-400 reason ---
+
+	// GuardTamper is the org-held guard files the daemon repaired in the
+	// last orgcontract.GuardTamperWindow; nil when none.
+	GuardTamper *orgcontract.GuardTamperReport
+
+	// --- gen5 (lane sec-p2b), guard point only, same server-400 reason ---
+
+	// ProjectSectionStatus is, per project in the signed project mapping
+	// the node holds, its section's closed status; nil when the node holds
+	// no project delivery.
+	ProjectSectionStatus []orgcontract.ProjectSectionState
+	// ProjectSectionTruncated: the node cut ProjectSectionStatus to the
+	// wire's bound (the list is partial).
+	ProjectSectionTruncated bool
+
+	// --- gen6 (lane sec-p3), guard point only, same server-400 reason ---
+
+	// ProjectFamilyStatus is, per project family section the node holds in
+	// a mapped project's envelope, its closed status.
+	ProjectFamilyStatus []orgcontract.ProjectFamilySectionState
+
+	// --- gen7 (lane SEC-P4), guard point only, same server-400 reason ---
+
+	// ProjectFamilyTruncated: the node cut ProjectFamilyStatus to the
+	// wire's bound (the family list is partial). It no longer rides
+	// ProjectSectionTruncated.
+	ProjectFamilyTruncated bool
+
+	// --- gen8 (lane LEFT-SHARED, SECP-10), security point only ---
+
+	// FamilyNotApplicable is, per floor key the node holds but cannot
+	// apply, its closed reason (orgcontract policystate_na.go).
+	FamilyNotApplicable []orgcontract.FamilyKeyNotApplicable
 }
 
 // PointReader resolves the live PointFacts for one enforcement point. It is the
@@ -229,11 +296,31 @@ func constReason(r string) func(PointFacts) string { return func(PointFacts) str
 func mapRejectReason(f PointFacts) string { return f.RejectCode }
 
 // resolveTable is the frozen ordered decision table (P0-6 §3.2 + P0-5 §7.1
-// widening). Rows 1-9, first-match-wins. P0-5 added row 4 (org preauth inert
+// widening). Rows 0-9, first-match-wins (row 0, the on-disk bundle tamper
+// check, is the gen3 T-846 addition). P0-5 added row 4 (org preauth inert
 // → accepted_inert/not_preauthorized) and relaxed row 6 (effective) so an
 // authorized Org layer reports effective even when its Spec mode is
 // observe/advise — inertness is ONLY the preauthorization gate, not mode.
 var resolveTable = []resolveRule{
+	{ // 0 - the org bundle ON DISK no longer verifies (T-846, audit row b2).
+		// It outranks every fetch outcome: whatever the last poll said, the
+		// file the hooks read right now is not the one the org signed, so the
+		// org layer is not in force in the hook path and the row must not read
+		// effective. delivered_unaccepted + sig_invalid/key_pin_mismatch is the
+		// gen1 vocabulary, so a pre-gen3 server (which strips nothing here,
+		// the status is old) still shows it honestly.
+		status: orgcontract.StatusDeliveredUnaccepted,
+		reason: func(f PointFacts) string {
+			if f.BundleRejectCode == orgcontract.ReasonKeyPinMismatch {
+				return orgcontract.ReasonKeyPinMismatch
+			}
+			return orgcontract.ReasonSigInvalid
+		},
+		match:   func(c resolveCtx) bool { return c.f.BundleIntegrity == orgcontract.BundleIntegrityTampered },
+		desired: cachedVersion,
+		running: runningVersion,
+		hash:    orgRailHash,
+	},
 	{ // 1 — a delivered bundle/resource failed a gate (from the in-memory last-fetch).
 		status:  orgcontract.StatusDeliveredUnaccepted,
 		reason:  mapRejectReason,
@@ -359,6 +446,21 @@ func Resolve(point, family string, f PointFacts) orgcontract.PolicyStateRow {
 		row.DroppedClasses = f.DroppedClasses
 		row.EffectivePins = f.EffectivePins
 	}
+	// gen3 (T-846 / T-848): guard row only, for the same server-400 reason.
+	if point == PointGuard {
+		row.BundleIntegrity = f.BundleIntegrity
+		row.LocalGuard = f.LocalGuard
+		row.GuardTamper = f.GuardTamper
+		row.ProjectSectionStatus = f.ProjectSectionStatus
+		row.ProjectSectionTruncated = f.ProjectSectionTruncated
+		row.ProjectFamilyStatus = f.ProjectFamilyStatus
+		row.ProjectFamilyTruncated = f.ProjectFamilyTruncated
+	}
+	// gen8 (lane LEFT-SHARED): security.scanning row only, for the same
+	// server-400 reason.
+	if point == PointNodeSecurity {
+		row.FamilyNotApplicable = f.FamilyNotApplicable
+	}
 	for _, rule := range resolveTable {
 		if rule.match(c) {
 			row.Status = rule.status
@@ -402,6 +504,10 @@ var pointFamily = map[string]string{
 	PointNodeDashboard: FamilyNodeGovernance,
 	PointNodeFeatures:  FamilyNodeFeatures,
 	PointNodeMCPRelay:  FamilyToolsMCPAccess,
+	// v6 (lane SBX-P1B).
+	PointNodeSandboxIsolation: FamilyTerminalsIsolation,
+	// v7 (lane SEC-E).
+	PointNodeSecurity: FamilySecurityScanning,
 }
 
 // CorePoints is the v1 (four-point) subset of the snapshot — the row set a
@@ -435,7 +541,7 @@ func IsCorePoint(point string) bool {
 // server would happily have taken.
 //
 // ORDER IS THE CONTRACT: append new optional points, never insert.
-var OptionalPoints = []string{PointProxyGateway, PointNodeDashboard, PointNodeFeatures, PointNodeMCPRelay}
+var OptionalPoints = []string{PointProxyGateway, PointNodeDashboard, PointNodeFeatures, PointNodeMCPRelay, PointNodeSandboxIsolation, PointNodeSecurity}
 
 // IsOptionalPoint reports whether point is an optional (post-v1) point.
 func IsOptionalPoint(point string) bool {

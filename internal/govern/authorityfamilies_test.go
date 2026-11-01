@@ -186,11 +186,14 @@ func TestGovernedFamilies_EveryKnownAuthorityMapsOrIsExempt(t *testing.T) {
 	}
 	for _, tok := range toks {
 		families := GovernedFamilies([]string{tok})
-		if len(families) == 0 && !exemptFromFamilyMapping[tok] {
+		if reason, exempt := exemptFromFamilyMapping[tok]; exempt && reason == "" {
+			t.Errorf("KnownAuthority token %q is exempt from family mapping with no reason", tok)
+		}
+		if _, exempt := exemptFromFamilyMapping[tok]; len(families) == 0 && !exempt {
 			t.Errorf("KnownAuthority token %q maps to no policy family and is not in exemptFromFamilyMapping - "+
 				"add a row to authorityFamilyTable, or a conscious exemption with a reason", tok)
 		}
-		if len(families) > 0 && exemptFromFamilyMapping[tok] {
+		if _, exempt := exemptFromFamilyMapping[tok]; len(families) > 0 && exempt {
 			t.Errorf("KnownAuthority token %q is in exemptFromFamilyMapping but ALSO maps to %v - "+
 				"remove it from the exemption list, or remove its authorityFamilyTable row", tok, families)
 		}
@@ -233,15 +236,15 @@ func TestManagedGovernedFamilies(t *testing.T) {
 		// managed node must still accept node.features (C156-04).
 		{
 			name: "enterprise set without feature.lock still governs node.features", authority: EnterpriseAuthoritySet(),
-			want: []string{familyNodeFeatures, familyNodeGovernance, familyToolsMCPAccess},
+			want: []string{familyNodeFeatures, familyNodeGovernance, familySecurityScanning, familyTerminalsIsolation, familyToolsMCPAccess},
 		},
 		{
 			name: "a single extract token on a managed grant", authority: []string{AuthorityExtractCache},
-			want: []string{familyNodeFeatures, familyNodeGovernance},
+			want: []string{familyNodeFeatures, familyNodeGovernance, familySecurityScanning, familyTerminalsIsolation},
 		},
 		{
 			name: "feature.lock dedupes", authority: []string{AuthorityFeatureLock},
-			want: []string{familyNodeFeatures, familyNodeGovernance},
+			want: []string{familyNodeFeatures, familyNodeGovernance, familySecurityScanning, familyTerminalsIsolation},
 		},
 	}
 	for _, tc := range cases {

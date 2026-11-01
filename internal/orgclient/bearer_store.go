@@ -10,7 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
-	keyring "github.com/zalando/go-keyring"
+	"github.com/marmutapp/superbased-observer/internal/keystore"
 )
 
 // keyring record names stored under the configured service (KeychainID).
@@ -66,19 +66,20 @@ type BearerStore interface {
 // keychain-backed store, otherwise it falls back to a 0600-mode file store
 // rooted at fallbackDir. A nil logger is tolerated (slog.Default is used).
 //
-// Warning hygiene (M4.4 of the 2026-06-02 teams test follow-ups): on the
-// FIRST observed downgrade we log a WARN naming the fallback; we then
-// touch a sentinel at <fallbackDir>/org-bearer/.keychain-unavailable so
-// subsequent CLI invocations (which can be many per session) stay silent.
-// If the keychain later becomes available (e.g. the user starts gnome-
-// keyring-daemon), keychainUsable() returns true on the next probe, we
-// remove the sentinel, and the WARN can fire again on a future downgrade.
+// Warning hygiene (M4.4 of the 2026-06-02 teams test follow-ups, WINNODE2
+// section 16c): the downgrade WARN prints once per install and state. The
+// "already said" record is a notice marker under <fallbackDir>/notices
+// (noticeFirst), never a file in the credential store: opening the store
+// creates nothing under <fallbackDir>/org-bearer, so a read-only command
+// (`observer org status`, `observer doctor`, an init dry run) leaves no
+// credential-store marker behind. The marker is cleared
+// on unenrol, so a later downgrade warns again.
 func OpenBearerStore(service, fallbackDir string, logger *slog.Logger) BearerStore {
 	return openBearerStore(service, fallbackDir, logger, true)
 }
 
 // OpenBearerStoreQuiet is OpenBearerStore without the downgrade warning and
-// without arming its sentinel, for a caller on a node that is not enrolled
+// without recording its notice, for a caller on a node that is not enrolled
 // (T-735, D-547): `observer proxy start` on a never-enrolled node warned
 // about the org bearer keychain it would never use. The warning stays armed
 // for the first enrolment, which opens the store with OpenBearerStore.
@@ -86,29 +87,28 @@ func OpenBearerStoreQuiet(service, fallbackDir string) BearerStore {
 	return openBearerStore(service, fallbackDir, nil, false)
 }
 
+// legacyKeychainMarker is the file an older build wrote into the credential
+// store directory on every downgrade. Nothing reads it any more; a Clear
+// removes it.
+const legacyKeychainMarker = ".keychain-unavailable"
+
+// bearerNoticeKey names the downgrade warning's notice marker.
+func bearerNoticeKey(service string) string { return "org-bearer-keychain-" + service }
+
 func openBearerStore(service, fallbackDir string, logger *slog.Logger, warn bool) BearerStore {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	storeDir := filepath.Join(fallbackDir, "org-bearer")
-	sentinel := filepath.Join(storeDir, ".keychain-unavailable")
 	if keychainUsable(service) {
-		// Recovered from a previous downgrade — clear the sentinel so a
-		// future downgrade warns again.
-		_ = os.Remove(sentinel)
 		return &keychainStore{service: service, fallbackDir: fallbackDir}
 	}
-	if !warn {
-		return &fileStore{dir: storeDir, service: service, fallbackDir: fallbackDir}
-	}
-	if _, err := os.Stat(sentinel); err != nil {
+	if warn && noticeFirst(fallbackDir, bearerNoticeKey(service), "keychain unavailable") {
 		logger.Warn(
 			"org bearer: OS keychain unavailable, falling back to 0600 file store",
 			"service", service, "dir", fallbackDir,
-			"note", "this warning is suppressed on subsequent invocations; remove ~/.observer/org-bearer/.keychain-unavailable to re-arm",
+			"note", "this warning prints once per install; remove "+noticePath(fallbackDir, bearerNoticeKey(service))+" to see it again",
 		)
-		_ = os.MkdirAll(storeDir, 0o700)
-		_ = os.WriteFile(sentinel, []byte("1"), 0o600)
 	}
 	return &fileStore{dir: storeDir, service: service, fallbackDir: fallbackDir}
 }
@@ -126,11 +126,11 @@ type agentAccessKeyClearer interface {
 // (ErrUnsupportedPlatform alone misses headless Linux without a Secret
 // Service). The probe record is always deleted.
 func keychainUsable(service string) bool {
-	if err := keyring.Set(service, recProbe, "1"); err != nil {
+	if err := keystore.KeyringSet(service, recProbe, "1"); err != nil {
 		return false
 	}
-	got, err := keyring.Get(service, recProbe)
-	_ = keyring.Delete(service, recProbe)
+	got, err := keystore.KeyringGet(service, recProbe)
+	_ = keystore.KeyringDelete(service, recProbe)
 	return err == nil && got == "1"
 }
 
@@ -149,17 +149,43 @@ func (s *keychainStore) agentAccessKeys() AgentAccessKeyStore {
 	return agentAccessKeyStoreForClear(s.service, s.fallbackDir, true)
 }
 
+// fileFallback is the 0600 file store openBearerStore returns for the same
+// (service, fallbackDir) when the keychain is unavailable.
+//
+// Issue 1b (WINNODE merge follow-up): on Windows a process with no logon
+// session (SSH key logon, WMI, session 0) cannot use Credential Manager, so
+// an enrolment from there writes the bearer and agent key to this file store.
+// A daemon started later from the developer's sign-in has a working keychain
+// that holds neither; reading only the keychain made it report "not
+// enrolled" and never push. LoadBearer and LoadAgentKey therefore fall back
+// to this store on a keychain miss (the keychain wins when both hold one),
+// and Clear clears it too.
+//
+// WINNODE2 merge ruling (audit H1): the credential is never moved. A file
+// copy stays where the enrolment put it, because a process with no logon
+// session (a session 0 or WMI daemon, an SSH CLI) can read only the file
+// store; moving it into the keychain and deleting the files left those
+// processes "not enrolled". To keep the two stores from diverging,
+// SaveBearer and SaveAgentKey also overwrite a file copy that already
+// exists (refreshFileCopy) and never create one.
+func (s *keychainStore) fileFallback() *fileStore {
+	return &fileStore{dir: filepath.Join(s.fallbackDir, "org-bearer"), service: s.service, fallbackDir: s.fallbackDir}
+}
+
 func (s *keychainStore) SaveBearer(bearer string) error {
-	if err := keyring.Set(s.service, recBearer, bearer); err != nil {
+	if err := keystore.KeyringSet(s.service, recBearer, bearer); err != nil {
+		return fmt.Errorf("orgclient.SaveBearer: %w", err)
+	}
+	if err := s.refreshFileCopy(recBearer, bearer); err != nil {
 		return fmt.Errorf("orgclient.SaveBearer: %w", err)
 	}
 	return nil
 }
 
 func (s *keychainStore) LoadBearer() (string, error) {
-	v, err := keyring.Get(s.service, recBearer)
-	if errors.Is(err, keyring.ErrNotFound) {
-		return "", ErrNoSecret
+	v, err := keystore.KeyringGet(s.service, recBearer)
+	if errors.Is(err, keystore.ErrKeyringNotFound) {
+		return s.fileFallback().LoadBearer()
 	}
 	if err != nil {
 		return "", fmt.Errorf("orgclient.LoadBearer: %w", err)
@@ -168,16 +194,20 @@ func (s *keychainStore) LoadBearer() (string, error) {
 }
 
 func (s *keychainStore) SaveAgentKey(key ed25519.PrivateKey) error {
-	if err := keyring.Set(s.service, recAgentKey, base64.StdEncoding.EncodeToString(key)); err != nil {
+	enc := base64.StdEncoding.EncodeToString(key)
+	if err := keystore.KeyringSet(s.service, recAgentKey, enc); err != nil {
+		return fmt.Errorf("orgclient.SaveAgentKey: %w", err)
+	}
+	if err := s.refreshFileCopy(recAgentKey, enc); err != nil {
 		return fmt.Errorf("orgclient.SaveAgentKey: %w", err)
 	}
 	return nil
 }
 
 func (s *keychainStore) LoadAgentKey() (ed25519.PrivateKey, error) {
-	v, err := keyring.Get(s.service, recAgentKey)
-	if errors.Is(err, keyring.ErrNotFound) {
-		return nil, ErrNoSecret
+	v, err := keystore.KeyringGet(s.service, recAgentKey)
+	if errors.Is(err, keystore.ErrKeyringNotFound) {
+		return s.fileFallback().LoadAgentKey()
 	}
 	if err != nil {
 		return nil, fmt.Errorf("orgclient.LoadAgentKey: %w", err)
@@ -185,20 +215,40 @@ func (s *keychainStore) LoadAgentKey() (ed25519.PrivateKey, error) {
 	return decodeAgentKey(v)
 }
 
+// refreshFileCopy overwrites the file store's copy of rec with val when one
+// already exists, so a no-logon-session process reading the file store sees
+// the same credential as the keychain (a desktop re-enrolment after an SSH
+// one). It never creates a copy: a keychain enrolment writes nothing under
+// org-bearer/. A copy that is not a regular file is refused, not followed.
+func (s *keychainStore) refreshFileCopy(rec, val string) error {
+	fs := s.fileFallback()
+	fi, err := os.Lstat(fs.path(rec))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("check the file copy of %s: %w", rec, err)
+	}
+	if !fi.Mode().IsRegular() {
+		return fmt.Errorf("the file copy of %s is not a regular file; not overwritten", rec)
+	}
+	return fs.write(rec, val)
+}
+
 func (s *keychainStore) SaveVirtualKey(key string, generation uint64) error {
 	v, err := encodeVirtualKey(key, generation)
 	if err != nil {
 		return err
 	}
-	if err := keyring.Set(s.service, recVirtualKey, v); err != nil {
+	if err := keystore.KeyringSet(s.service, recVirtualKey, v); err != nil {
 		return fmt.Errorf("orgclient.SaveVirtualKey: %w", err)
 	}
 	return nil
 }
 
 func (s *keychainStore) LoadVirtualKey() (string, uint64, error) {
-	v, err := keyring.Get(s.service, recVirtualKey)
-	if errors.Is(err, keyring.ErrNotFound) {
+	v, err := keystore.KeyringGet(s.service, recVirtualKey)
+	if errors.Is(err, keystore.ErrKeyringNotFound) {
 		return "", 0, ErrNoSecret
 	}
 	if err != nil {
@@ -211,12 +261,12 @@ func (s *keychainStore) LoadVirtualKey() (string, uint64, error) {
 // payload removes the record.
 func (s *keychainStore) SaveBreakGlassLeases(raw []byte) error {
 	if len(raw) == 0 {
-		if err := keyring.Delete(s.service, recBreakGlassLeases); err != nil && !errors.Is(err, keyring.ErrNotFound) {
+		if err := keystore.KeyringDelete(s.service, recBreakGlassLeases); err != nil && !errors.Is(err, keystore.ErrKeyringNotFound) {
 			return fmt.Errorf("orgclient.SaveBreakGlassLeases: %w", err)
 		}
 		return nil
 	}
-	if err := keyring.Set(s.service, recBreakGlassLeases, string(raw)); err != nil {
+	if err := keystore.KeyringSet(s.service, recBreakGlassLeases, string(raw)); err != nil {
 		return fmt.Errorf("orgclient.SaveBreakGlassLeases: %w", err)
 	}
 	return nil
@@ -224,8 +274,8 @@ func (s *keychainStore) SaveBreakGlassLeases(raw []byte) error {
 
 // LoadBreakGlassLeases implements BreakGlassLeaseStore.
 func (s *keychainStore) LoadBreakGlassLeases() ([]byte, error) {
-	v, err := keyring.Get(s.service, recBreakGlassLeases)
-	if errors.Is(err, keyring.ErrNotFound) {
+	v, err := keystore.KeyringGet(s.service, recBreakGlassLeases)
+	if errors.Is(err, keystore.ErrKeyringNotFound) {
 		return nil, ErrNoSecret
 	}
 	if err != nil {
@@ -237,9 +287,14 @@ func (s *keychainStore) LoadBreakGlassLeases() ([]byte, error) {
 func (s *keychainStore) Clear() error {
 	var errs []error
 	for _, rec := range []string{recBearer, recAgentKey, recVirtualKey, recBreakGlassLeases} {
-		if err := keyring.Delete(s.service, rec); err != nil && !errors.Is(err, keyring.ErrNotFound) {
+		if err := keystore.KeyringDelete(s.service, rec); err != nil && !errors.Is(err, keystore.ErrKeyringNotFound) {
 			errs = append(errs, err)
 		}
+	}
+	// The file store LoadBearer falls back to: an unenrolled node must not
+	// read a stale file bearer back as enrolled.
+	if err := s.fileFallback().Clear(); err != nil {
+		errs = append(errs, err)
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("orgclient.Clear: %w", errors.Join(errs...))
@@ -345,6 +400,8 @@ func (s *fileStore) Clear() error {
 			errs = append(errs, err)
 		}
 	}
+	_ = os.Remove(filepath.Join(s.dir, legacyKeychainMarker))
+	noticeReset(s.fallbackDir, bearerNoticeKey(s.service))
 	if len(errs) > 0 {
 		return fmt.Errorf("orgclient.fileStore.Clear: %w", errors.Join(errs...))
 	}

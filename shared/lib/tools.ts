@@ -46,6 +46,17 @@ export type ToolKey =
   | "junie"
   | "poolside"
   | "zed"
+  // 2026-10-21 capture-only wave (CLI agents with no observer launcher yet).
+  | "autohand"
+  | "ibm-bob"
+  | "cortex-code"
+  | "codebuddy"
+  | "deepagents-code"
+  | "dimcode"
+  | "dirac"
+  | "kimchi"
+  | "stakpak"
+  | "vtcode"
   // Browser-chatbot rail (Phase 2) — captured by the opt-in MV3 browser
   // extension, NOT coding CLIs. Tokens are ALWAYS estimated.
   | "chatgpt-web"
@@ -303,6 +314,19 @@ const TOOLS: Record<string, ToolMeta> = {
   poolside: { key: "poolside", label: "Poolside", colorVar: "var(--tool-poolside)", provider: "agnostic" },
   // Zed editor's native agent.
   zed: { key: "zed", label: "Zed", colorVar: "var(--tool-zed)", provider: "agnostic" },
+  // 2026-10-21 capture-only wave. provider stays "agnostic" for all ten (the
+  // zcode / mistral-code precedent: each rides its own or a user-picked
+  // upstream, none a single modelled provider).
+  autohand: { key: "autohand", label: "Autohand Code", colorVar: "var(--tool-autohand)", provider: "agnostic" },
+  "ibm-bob": { key: "ibm-bob", label: "IBM Bob", colorVar: "var(--tool-ibm-bob)", provider: "agnostic" },
+  "cortex-code": { key: "cortex-code", label: "Cortex Code", colorVar: "var(--tool-cortex-code)", provider: "agnostic" },
+  codebuddy: { key: "codebuddy", label: "CodeBuddy Code", colorVar: "var(--tool-codebuddy)", provider: "agnostic" },
+  "deepagents-code": { key: "deepagents-code", label: "Deep Agents Code", colorVar: "var(--tool-deepagents-code)", provider: "agnostic" },
+  dimcode: { key: "dimcode", label: "DimCode", colorVar: "var(--tool-dimcode)", provider: "agnostic" },
+  dirac: { key: "dirac", label: "Dirac", colorVar: "var(--tool-dirac)", provider: "agnostic" },
+  kimchi: { key: "kimchi", label: "Kimchi", colorVar: "var(--tool-kimchi)", provider: "agnostic" },
+  stakpak: { key: "stakpak", label: "Stakpak", colorVar: "var(--tool-stakpak)", provider: "agnostic" },
+  vtcode: { key: "vtcode", label: "VT Code", colorVar: "var(--tool-vtcode)", provider: "agnostic" },
   // Browser-chatbot rail (Phase 2). provider names the vendor whose web app
   // the extension observes; browser:true forces the mandatory "est." label
   // on every token/cost figure (§9).

@@ -5,6 +5,13 @@ type Admission struct {
 	Tokens  bool
 	Tools   bool
 	Content bool
+	// Timing: the export's per-call generation durations (Result.GenTimings)
+	// may be stamped onto the tool's own transcript token rows. Only while
+	// the transcript adapter captures (it owns those rows; with it off the
+	// export's turn carries its own duration) and only for a row that
+	// declares the join (Vendor.TranscriptTiming). The stamp fills a row
+	// with no timing of its own and never replaces the transcript's.
+	Timing bool
 	// Refused, when set, says why nothing from this export lands here.
 	Refused string
 	// TokensOwner, when set, says why the export's token rows do not land
@@ -49,7 +56,10 @@ type admitRule struct {
 //     tool's own transcript capture off (adapter disabled, or the tool has
 //     none) the export owns every kind; with it on, only the kinds the row
 //     declares dedup-safe land (tokens fold against the transcript twin);
-//     tool calls never do, because actions have no cross-path dedup.
+//     tool calls never do, because actions have no cross-path dedup. With
+//     it on, the export's generation timing may stamp the transcript's own
+//     token rows (Admission.Timing); the proxy route does not change that,
+//     because a stamp adds no row.
 var admitRules = []admitRule{
 	{
 		when: func(v Vendor, _ AdmitInput) bool { return v.Grain == GrainTeam },
@@ -75,7 +85,10 @@ func transcriptAdmission(v Vendor, transcriptCapture bool) Admission {
 	if !transcriptCapture {
 		return Admission{Tokens: true, Tools: true, Content: true}
 	}
-	return Admission{Tokens: v.Owner.TokensWithTranscript, Content: v.Owner.ContentWithTranscript}
+	return Admission{
+		Tokens: v.Owner.TokensWithTranscript, Content: v.Owner.ContentWithTranscript,
+		Timing: v.TranscriptTiming != "",
+	}
 }
 
 // AdmitWith resolves what a vendor's export may write on this node.

@@ -30,9 +30,10 @@ import { ChevronDown, ChevronRight, TriangleAlert } from "lucide-react";
 // message link + per-process CPU/memory/disk metrics with sparklines) and the
 // observe-only §14 findings.
 //
-// The tree/table body (tree rows, sortable table, Tree|Table toggle, collapse-
-// all, sparklines, metric badges) was promoted into the shared design system
-// (ProcessTree) so the node and org System tabs render the same tree. The
+// The tree/table/call-stack body (tree rows, sortable table, the spawn-chain
+// chart and stack, the Tree|Table|Call stack switcher, collapse-all,
+// sparklines, metric badges) was promoted into the shared design system
+// (ProcessTree) so the node and org System tabs render the same views. The
 // capture-diagnostics panel (with its Settings deep-links), findings list,
 // network egress list and the /processes fetch stay node-side.
 
@@ -331,9 +332,17 @@ const PROC_REFRESH_MS = 15000;
 export function ProcessesSection({
   sessionId,
   onFocusMessage,
+  selectedProc,
+  onSelectProc,
+  onOpenTimeline,
 }: {
   sessionId: string | null;
   onFocusMessage?: (messageId: string) => void;
+  // The process picked in Tree / Table / Call stack (the shell keeps it in
+  // `?proc=`). Omitted: ProcessTree keeps the selection locally.
+  selectedProc?: string | null;
+  onSelectProc?: (key: string | null) => void;
+  onOpenTimeline?: () => void;
 }) {
   const [open, setOpen] = useState<boolean>(() => {
     try {
@@ -342,6 +351,11 @@ export function ProcessesSection({
       return false;
     }
   });
+  // A link that names a process (`?proc=`) opens the section: it is otherwise
+  // collapsed by default and the picked process would be invisible.
+  useEffect(() => {
+    if (selectedProc) setOpen(true);
+  }, [selectedProc]);
   const toggleOpen = useCallback(() => {
     setOpen((v) => {
       const next = !v;
@@ -462,7 +476,8 @@ export function ProcessesSection({
                 </div>
               )}
 
-              {data.network_total && sessionId && (
+              {/* network_total is a count: a bare `0 &&` would render "0". */}
+              {(data.network_total ?? 0) > 0 && sessionId && (
                 <NetworkEventsPanel sessionId={sessionId} />
               )}
 
@@ -472,6 +487,10 @@ export function ProcessesSection({
                   total={data.total}
                   sessionKey={sessionId}
                   renderMessageLink={renderMessageLink}
+                  onOpenMessage={onFocusMessage}
+                  onOpenTimeline={onOpenTimeline}
+                  sessionLabel={sessionId ? `Session ${sessionId.slice(0, 8)}` : "Session"}
+                  {...(onSelectProc ? { selectedKey: selectedProc ?? null, onSelectedKeyChange: onSelectProc } : {})}
                 />
               )}
             </div>

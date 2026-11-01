@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/git"
 	"github.com/marmutapp/superbased-observer/internal/guidance"
 	"github.com/marmutapp/superbased-observer/internal/scrub"
 	"github.com/marmutapp/superbased-observer/internal/store"
@@ -688,9 +689,14 @@ func scrubGuidanceMetadata(scrubber *scrub.Scrubber, files []guidance.File) {
 	}
 }
 
-// guidanceRootExists reports whether root is a directory here and now.
+// guidanceRootExists reports whether root is a directory here and now. A
+// root that is not a path (FU-193's "Xcode (project unknown)") is none,
+// never stat'ed relative to the working directory (audit row 7).
 func guidanceRootExists(root string) bool {
-	info, err := os.Stat(root)
+	if !git.HostRooted(root) {
+		return false
+	}
+	info, err := os.Stat(root) //nolint:gosec // G703: a metadata read of the user's own local path; no privilege boundary is crossed
 	return err == nil && info.IsDir()
 }
 

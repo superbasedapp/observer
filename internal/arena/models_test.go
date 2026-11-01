@@ -105,7 +105,8 @@ func TestExecuteDrive_ModelOverrideArgvPerHarness(t *testing.T) {
 				bin := fakeBin(t, binDir, "harness-fake", `printf '%s\n' "$@" > "`+argsFile+`"`)
 				ic, _ := integration.For(tool)
 				if _, err := executeDrive(context.Background(), bin, ic.Headless, driveRequest{
-					Tool: tool, Model: model, WorktreePath: t.TempDir(), Prompt: "p", Timeout: 30 * time.Second,
+					Bypass: BypassDecision{Allowed: true}, // argv shape of the skip lane (OSH-R-005)
+					Tool:   tool, Model: model, WorktreePath: t.TempDir(), Prompt: "p", Timeout: 30 * time.Second,
 				}); err != nil {
 					t.Fatalf("executeDrive: %v", err)
 				}

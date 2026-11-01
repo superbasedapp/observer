@@ -25,54 +25,23 @@ const (
 	ProviderOther      = "other"
 )
 
-// Provider groups, for the add-account picker.
+// The provider catalogue (ProviderDef, Providers, groups and gap codes) lives
+// in catalog.go.
+
+// Secret keys. A source names the secrets it needs by these keys; the page
+// owns the words for each.
 const (
-	GroupPlans   = "plans"   // coding plans and subscriptions
-	GroupBalance = "balance" // pay-as-you-go API balances
+	SecretKey     = "key"     // an API key
+	SecretMgmt    = "mgmt"    // a management or admin key
+	SecretPAT     = "pat"     // a personal access token
+	SecretSession = "session" // a pasted browser session (a Cookie header or a bearer token)
+	SecretAWS     = "aws_secret"
 )
-
-// ProviderDef is one row of the provider table.
-type ProviderDef struct {
-	ID    string
-	Group string
-	// Tools are integration-registry tool ids that draw from this plan. They
-	// scope the "estimated from your usage" spend of a manual entry and are
-	// test-checked against the registry.
-	Tools []string
-}
-
-// Providers is the provider table, in picker order.
-var Providers = []ProviderDef{
-	{ID: ProviderClaude, Group: GroupPlans, Tools: []string{"claude-code"}},
-	{ID: ProviderChatGPT, Group: GroupPlans, Tools: []string{"codex"}},
-	{ID: ProviderCopilot, Group: GroupPlans, Tools: []string{"copilot", "copilot-cli"}},
-	{ID: ProviderCursor, Group: GroupPlans, Tools: []string{"cursor"}},
-	{ID: ProviderWindsurf, Group: GroupPlans, Tools: []string{"devin"}},
-	{ID: ProviderKiro, Group: GroupPlans, Tools: []string{"kiro-cli"}},
-	{ID: ProviderKimiCode, Group: GroupPlans, Tools: []string{"kimi-code"}},
-	{ID: ProviderAmp, Group: GroupPlans},
-	{ID: ProviderAugment, Group: GroupPlans},
-	{ID: ProviderOpenRouter, Group: GroupBalance},
-	{ID: ProviderDeepSeek, Group: GroupBalance},
-	{ID: ProviderMoonshot, Group: GroupBalance},
-	{ID: ProviderXAI, Group: GroupBalance},
-	{ID: ProviderOther, Group: GroupPlans},
-}
-
-// ProviderByID returns the provider row.
-func ProviderByID(id string) (ProviderDef, bool) {
-	for _, p := range Providers {
-		if p.ID == id {
-			return p, true
-		}
-	}
-	return ProviderDef{}, false
-}
 
 // SecretSpec names one secret a source needs. Secrets live only in the OS
 // keychain (internal/keystore), never in the database or config.
 type SecretSpec struct {
-	Key      string // "key" | "mgmt" | "pat"
+	Key      string // one of the Secret* keys
 	Required bool
 }
 
@@ -128,6 +97,11 @@ type SourceDef struct {
 	Order int
 	// DocURL is the vendor's own documentation, when there is one.
 	DocURL string
+	// UserBaseURL marks a self-hosted gateway source: it has no fixed Hosts
+	// and reads its host from the account's required base_url parameter,
+	// fixed per account and checked by CheckBaseURL at save time and again
+	// by the egress package on every request (ledger SUBS-5).
+	UserBaseURL bool
 }
 
 // Rung is the source's ladder rung.
@@ -260,6 +234,10 @@ var Sources = []SourceDef{
 		Secrets: []SecretSpec{{Key: "key", Required: true}}, Hosts: []string{"api.kimi.com"}, MinInterval: 10 * time.Minute,
 	},
 }
+
+// addSources appends source rows. Each src_*.go file calls it from init, so
+// parallel lanes add sources without editing one shared slice literal.
+func addSources(rows ...SourceDef) { Sources = append(Sources, rows...) }
 
 // SourceByID returns the source row.
 func SourceByID(id string) (SourceDef, bool) {

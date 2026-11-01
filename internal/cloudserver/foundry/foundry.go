@@ -6,6 +6,12 @@
 // dark: the route resolver refuses it unless an operator verification record
 // exists (enforced by the caller, not here). Every call is bounded, single,
 // and non-agentic — no tools, no Batch, no stateful endpoints.
+//
+// The request/response shapes, the sentinel errors and the Provider seam are
+// owned by internal/cloudserver/inference (shared with the Anthropic client);
+// the names below are aliases so existing callers keep compiling unchanged.
+// AzureClient is ONE implementation of inference.Provider, selected only when
+// the process is configured for the foundry provider family.
 package foundry
 
 import (
@@ -18,88 +24,52 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/marmutapp/superbased-observer/internal/cloudserver/inference"
 )
 
-// Dialect selects the API surface.
-type Dialect string
+// Dialect selects the API surface (alias of inference.Dialect).
+type Dialect = inference.Dialect
 
 const (
 	// DialectChatCompletions is the active stateless Chat Completions dialect.
-	DialectChatCompletions Dialect = "chat_completions"
+	DialectChatCompletions = inference.DialectChatCompletions
 	// DialectResponsesStoreFalse is the Responses API with store:false forced.
-	DialectResponsesStoreFalse Dialect = "responses_store_false"
+	DialectResponsesStoreFalse = inference.DialectResponsesStoreFalse
 )
 
-// Sentinel errors the executor classifies on.
+// Sentinel errors the executor classifies on (shared with every provider).
 var (
 	// ErrQuota is a provider quota/rate-limit response (HTTP 429).
-	ErrQuota = errors.New("foundry: provider quota/rate-limit (429)")
+	ErrQuota = inference.ErrQuota
 	// ErrTimeout is a provider-call timeout / deadline.
-	ErrTimeout = errors.New("foundry: provider call timed out")
+	ErrTimeout = inference.ErrTimeout
 	// ErrPersistenceViolation means a responses_store_false call returned a
 	// response indicating the prompt/completion WAS persisted — a hard failure
 	// (the whole point of store:false is no persistence).
-	ErrPersistenceViolation = errors.New("foundry: response indicated persistence (store:false violated)")
+	ErrPersistenceViolation = inference.ErrPersistenceViolation
 	// ErrUnsupportedDialect is an unknown dialect.
-	ErrUnsupportedDialect = errors.New("foundry: unsupported dialect")
+	ErrUnsupportedDialect = inference.ErrUnsupportedDialect
 )
 
 // ProviderError is a non-2xx, non-429 provider HTTP response.
-type ProviderError struct {
-	StatusCode int
-	Body       string
-}
-
-func (e *ProviderError) Error() string {
-	return fmt.Sprintf("foundry: provider status %d: %s", e.StatusCode, truncate(e.Body, 256))
-}
+type ProviderError = inference.ProviderError
 
 // Request is one bounded structured-output completion. The body is built by
 // this package (the caller cannot smuggle store:true — the responses builder
 // forces store:false).
-type Request struct {
-	Endpoint        string // Azure OpenAI base, e.g. https://x.openai.azure.com
-	Deployment      string // deployment name, e.g. "luna"
-	APIVersion      string // e.g. "2024-10-21"
-	APIKey          string // api-key header (from the credential seam)
-	Dialect         Dialect
-	System          string          // system instruction (evidence-as-data framing)
-	User            string          // user message (the delimited evidence)
-	SchemaName      string          // json_schema name
-	Schema          json.RawMessage // JSON schema for strict structured output
-	MaxOutputTokens int
-	Timeout         time.Duration
-}
+type Request = inference.Request
 
-// Response is the parsed provider result. Content is the model's JSON text
-// (the structured output the caller unmarshals into a result).
-type Response struct {
-	Content   string
-	TokensIn  int64
-	TokensOut int64
-	// FinishReason is the provider's stop reason, normalized across dialects:
-	// FinishLength when the answer was cut at MaxOutputTokens (Chat Completions
-	// finish_reason "length", or a Responses status "incomplete" for reason
-	// "max_output_tokens"), otherwise the provider's value verbatim (often
-	// "stop"; empty when the provider sent none). It is DIAGNOSTIC only: a
-	// truncated answer is incomplete JSON, which the caller already rejects as
-	// invalid output, and this lets the attempt ledger say why.
-	FinishReason string
-}
+// Response is the parsed provider result.
+type Response = inference.Response
 
 // FinishLength is the normalized FinishReason of an answer cut at the
-// request's MaxOutputTokens.
-const FinishLength = "length"
+// request's MaxOutputTokens (Chat Completions finish_reason "length", or a
+// Responses status "incomplete" for reason "max_output_tokens").
+const FinishLength = inference.FinishLength
 
-// Truncated reports whether the answer was cut at the output-token cap.
-func (r Response) Truncated() bool { return r.FinishReason == FinishLength }
-
-// Provider is the seam the worker's Luna executor calls. AzureClient is the
-// real implementation; tests inject a fake or drive AzureClient at an httptest
-// server.
-type Provider interface {
-	Complete(ctx context.Context, req Request) (Response, error)
-}
+// Provider is the seam the worker's executors call.
+type Provider = inference.Provider
 
 // AzureClient is the HTTP provider client.
 type AzureClient struct {
@@ -198,6 +168,7 @@ func (c *AzureClient) chatCompletions(ctx context.Context, req Request) (Respons
 		Content:      parsed.Choices[0].Message.Content,
 		TokensIn:     parsed.Usage.PromptTokens,
 		TokensOut:    parsed.Usage.CompletionTokens,
+		Usage:        inference.Usage{Input: parsed.Usage.PromptTokens, Output: parsed.Usage.CompletionTokens},
 		FinishReason: parsed.Choices[0].FinishReason,
 	}, nil
 }
@@ -269,7 +240,11 @@ func (c *AzureClient) responsesStoreFalse(ctx context.Context, req Request) (Res
 	if parsed.Status == "incomplete" && parsed.IncompleteDetails.Reason == "max_output_tokens" {
 		finish = FinishLength
 	}
-	return Response{Content: content, TokensIn: parsed.Usage.InputTokens, TokensOut: parsed.Usage.OutputTokens, FinishReason: finish}, nil
+	return Response{
+		Content: content, TokensIn: parsed.Usage.InputTokens, TokensOut: parsed.Usage.OutputTokens,
+		Usage:        inference.Usage{Input: parsed.Usage.InputTokens, Output: parsed.Usage.OutputTokens},
+		FinishReason: finish,
+	}, nil
 }
 
 // indicatesPersistence reports whether a responses body signals server-side
@@ -322,32 +297,6 @@ func isTimeout(err error) bool {
 	return errors.As(err, &te) && te.Timeout()
 }
 
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "..."
-}
-
-// FakeProvider is a scripted Provider for the executor e2e + corpora tests.
-type FakeProvider struct {
-	// Func, when set, fully controls the response.
-	Func func(ctx context.Context, req Request) (Response, error)
-	// Response/Err are used when Func is nil.
-	Response Response
-	Err      error
-	// Requests records every request for assertions (e.g. evidence-as-data
-	// framing, store:false forcing).
-	Requests []Request
-}
-
-// Complete returns the scripted response, recording the request.
-func (f *FakeProvider) Complete(ctx context.Context, req Request) (Response, error) {
-	f.Requests = append(f.Requests, req)
-	if f.Func != nil {
-		return f.Func(ctx, req)
-	}
-	return f.Response, f.Err
-}
-
-var _ Provider = (*FakeProvider)(nil)
+// FakeProvider is a scripted Provider for the executor e2e + corpora tests
+// (alias of inference.FakeProvider).
+type FakeProvider = inference.FakeProvider

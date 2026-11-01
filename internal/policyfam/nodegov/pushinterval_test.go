@@ -9,12 +9,14 @@ import (
 // in PinnableKeys: an "int" row with explicit bounds. The direction is the
 // numeric CEILING rule (govern.LowerInt), which has no meaning for a bool or a
 // string, and an unbounded ceiling would let a typo stop a node reporting.
+// Bounds are allowed on any int row (the sandbox timeout and retention rows,
+// sandbox plan v2 section 10.1) and on no other kind.
 func TestLoweringOnlyPinRowsAreInts(t *testing.T) {
 	seen := 0
 	for _, row := range PinnableKeys {
 		if row.Direction != DirLoweringOnly {
-			if row.Min != 0 || row.Max != 0 {
-				t.Errorf("%s carries bounds but is not a lowering-only int row", row.Key)
+			if (row.Min != 0 || row.Max != 0) && row.Kind != "int" {
+				t.Errorf("%s carries bounds but is not an int row", row.Key)
 			}
 			continue
 		}

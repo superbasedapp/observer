@@ -22,13 +22,16 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/contentcap"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/gitalias"
 	"github.com/marmutapp/superbased-observer/internal/guard"
 	"github.com/marmutapp/superbased-observer/internal/guard/notify"
 	"github.com/marmutapp/superbased-observer/internal/guardposture"
 	"github.com/marmutapp/superbased-observer/internal/hook"
+	"github.com/marmutapp/superbased-observer/internal/hookctx"
 	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/pidbridge"
+	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
 	"github.com/marmutapp/superbased-observer/internal/scrub"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -299,6 +302,14 @@ var hookReceivers = map[string]func(ctx context.Context, event, configPath strin
 	"kimi-code": func(_ context.Context, event, configPath string) {
 		handlePromptSubmitOnlyHook(models.ToolKimiCode, "kimi-code", hook.PromptDialectKimiCode, "UserPromptSubmit", event, configPath)
 	},
+	// kiro-cli (gfiD, 2026-10-15): userPromptSubmit cannot block on kiro-cli
+	// 2.28.0 (live), so the dialect only warns the model in plain text.
+	// preToolUse is served earlier by the binding-driven tool gate; a V3
+	// PascalCase event is folded onto the camelCase binding first
+	// (canonicalHookEvent).
+	"kiro-cli": func(_ context.Context, event, configPath string) {
+		handlePromptSubmitOnlyHook(models.ToolKiroCLI, "kiro-cli", hook.PromptDialectKiroCLI, "userPromptSubmit", event, configPath)
+	},
 	"qwen-code": func(_ context.Context, event, configPath string) {
 		handlePromptSubmitOnlyHook(models.ToolQwenCode, "qwen-code", hook.PromptDialectTopLevelBlock, "UserPromptSubmit", event, configPath)
 	},
@@ -328,14 +339,28 @@ var hookReceivers = map[string]func(ctx context.Context, event, configPath strin
 	// devin's dispatch tool string covers Windsurf/Devin Desktop
 	// Cascade's pre_user_prompt — the CLI's own separate, still-unwired
 	// hooks.v1.json is untouched (see internal/integration's devin row).
-	// antigravity-cli PreInvocation (audit P1; restored by T-476): a
-	// warn-only seam that runs before every model call; the dialect reads
-	// the prompt from the session transcript (agy 1.3.0 writes the
-	// USER_INPUT step before invocationNum 0) and judges each prompt once.
+	// antigravity-cli PreInvocation (audit P1; restored by T-476; blocks
+	// since the 2026-10-15 guard-enforcement fix): a pre-model-call seam
+	// that runs before every model call; the dialect reads the prompt from
+	// the session transcript (agy 1.3.x writes the USER_INPUT step before
+	// invocationNum 0), judges each prompt once, warns with a userMessage
+	// and blocks by aborting the turn (then taints the conversation).
 	// (The PreToolUse tool gate, hook-parity Lane A6, is served by the
 	// binding route ahead of this receiver.)
 	"antigravity-cli": func(_ context.Context, event, configPath string) {
 		handlePromptSubmitOnlyHook(models.ToolAntigravityCLI, "antigravity-cli", hook.PromptDialectAntigravityPreInvocation, "PreInvocation", event, configPath)
+	},
+	// copilot-cli (guard-fix lane B, live 2026-10-15): userPromptSubmitted
+	// blocks with handled + responseContent + modifiedPrompt. preToolUse is
+	// served earlier by the binding-driven tool gate (standaloneToolGate).
+	"copilot-cli": func(_ context.Context, event, configPath string) {
+		handlePromptSubmitOnlyHook(models.ToolCopilotCLI, "copilot-cli", hook.PromptDialectCopilotCLI, "userPromptSubmitted", event, configPath)
+	},
+	// cline-cli (guard-fix lane B, live 2026-10-15): the Observer plugin's
+	// beforeModel prompt gate. beforeTool and a legacy PreToolUse script are
+	// served earlier by the binding-driven tool gate.
+	"cline-cli": func(_ context.Context, event, configPath string) {
+		handlePromptSubmitOnlyHook(models.ToolClineCLI, "cline-cli", hook.PromptDialectClinePlugin, "beforeModel", event, configPath)
 	},
 	"devin": func(_ context.Context, event, configPath string) {
 		handlePromptSubmitOnlyHook(models.ToolDevin, "devin", hook.PromptDialectCascade, "pre_user_prompt", event, configPath)
@@ -352,12 +377,41 @@ var hookReceivers = map[string]func(ctx context.Context, event, configPath strin
 		}
 		handlePromptSubmitOnlyHook(models.ToolCommandCode, "command-code", hook.PromptDialectCommandCode, "transformInput", event, configPath)
 	},
+	// The 2026-10-21 wave (docs/guard.md "Live grounding: 2026-10-21
+	// wave"): each tool's prompt gate; the pre-tool gate is served earlier
+	// by the binding-driven tool gate (standaloneToolGate). Kimchi and
+	// Cortex Code run Claude Code's own hooks, which the claude-code
+	// receiver recognises and re-routes (hook.ClassifyClaudeHookPayload);
+	// their entries serve a hand-wired `observer hook <tool>` command.
+	"ibm-bob":         wavePromptReceiver(models.ToolIBMBob, hook.PromptDialectClaudeCode, "UserPromptSubmit"),
+	"codebuddy":       wavePromptReceiver(models.ToolCodeBuddy, hook.PromptDialectTopLevelBlock, "UserPromptSubmit"),
+	"deepagents-code": wavePromptReceiver(models.ToolDeepAgentsCode, hook.PromptDialectClaudeCode, "UserPromptSubmit"),
+	"dimcode":         wavePromptReceiver(models.ToolDimCode, hook.PromptDialectKimiCode, "UserPromptSubmit"),
+	"dirac":           wavePromptReceiver(models.ToolDirac, hook.PromptDialectDirac, "UserPromptSubmit"),
+	"autohand":        wavePromptReceiver(models.ToolAutohand, hook.PromptDialectAutohand, "pre-prompt"),
+	"vtcode":          wavePromptReceiver(models.ToolVTCode, hook.PromptDialectKimiCode, "UserPromptSubmit"),
+	"kimchi":          wavePromptReceiver(models.ToolKimchi, hook.PromptDialectClaudeCode, "UserPromptSubmit"),
+	"cortex-code":     wavePromptReceiver(models.ToolCortexCode, hook.PromptDialectClaudeCode, "UserPromptSubmit"),
+	// Surface-gap lane w5-foreign: prompt gates reached through another
+	// tool's registration (the antigravity-cli and claude-code receivers
+	// serve the replayed payloads, hook_surface.go / foreignhost.go).
+	"antigravity": replayPromptReceiver(models.ToolAntigravity, hook.PromptDialectAntigravityPreInvocation, "PreInvocation"),
+	"deepseek":    replayPromptReceiver(models.ToolDeepSeek, hook.PromptDialectClaudeCode, "UserPromptSubmit"),
+}
+
+// wavePromptReceiver is a hookReceivers entry whose only guarded event of
+// its own is the prompt gate promptEvent, evaluated in dialect.
+func wavePromptReceiver(tool, dialect, promptEvent string) func(ctx context.Context, event, configPath string) {
+	return func(_ context.Context, event, configPath string) {
+		handlePromptSubmitOnlyHook(tool, tool, dialect, promptEvent, event, configPath)
+	}
 }
 
 func newHookCmd() *cobra.Command {
 	var (
-		configPath string
-		maxRuntime time.Duration
+		configPath     string
+		maxRuntime     time.Duration
+		bridgeSentinel bool
 	)
 	cmd := &cobra.Command{
 		Use:   "hook <tool> <event>",
@@ -376,12 +430,44 @@ func newHookCmd() *cobra.Command {
 			// per-invocation verdict-tracking state fresh for THIS
 			// call — see hookReplied's doc comment for why this must
 			// be the single reset point.
-			runHookInvocation(cmd.Context(), args, configPath, maxRuntime, os.Exit)
+			exit := os.Exit
+			if bridgeSentinel {
+				// AW-37: started by `observer hook-bridge`, which reads
+				// every exit other than 0 and 2 as "the hook did not run"
+				// unless it is the sentinel. The invocation's decided exits
+				// go through exit or hookOSExit and are mapped here. Two
+				// paths are not: a cobra argument or flag error (main
+				// exits 1, also what an older WSL observer without this
+				// flag answers) and a panic outside recoverHookPanic (the
+				// Go runtime exits 2). The bridge blocks on both, which
+				// is the fail-closed reading the bridge exists for.
+				exit = sentinelExit(os.Exit)
+				hookOSExit = exit
+			}
+			runHookInvocation(cmd.Context(), args, configPath, maxRuntime, exit)
 		},
 	}
+	cmd.Flags().BoolVar(&bridgeSentinel, hookbridgeSentinelFlagName, false, "set by `observer hook-bridge`: map every exit code other than 0 and 2 to the bridge's sentinel (internal/hookbridge)")
+	_ = cmd.Flags().MarkHidden(hookbridgeSentinelFlagName)
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to observer config.toml; when set, hook DB writes land on the config's observer.db (matches the proxy / MCP server invocations)")
 	cmd.Flags().DurationVar(&maxRuntime, "max-runtime", 0, "Hard wall-clock cap on a single hook invocation; on exceedance the process exits 0 (fail-open) so the host AI tool is never pinned, except a gate hook (tool/prompt gate) while guard enforcement is on, which BLOCKS the call with a reason (see installHookWatchdog). 0 = use OBSERVER_HOOK_MAX_RUNTIME or the 30s default (gate events are also capped below the host's own hook timeout). See docs/observer-platform-issues-v3.md V3-1.")
 	return cmd
+}
+
+// hookStateDirResolver returns the resolver hook.SetStateDirResolver runs
+// for the forensics logs: the Observer home of the config the invocation
+// runs under, which is the directory of its [observer] db_path (the
+// convention of daemon.log, the delivery credential and the OTLP ingest
+// token). "" when the config cannot be loaded, so the hook package falls
+// back to ~/.observer and the hook still never fails on a log.
+func hookStateDirResolver(configPath string) func() string {
+	return func() string {
+		cfg, err := config.Load(config.LoadOptions{GlobalPath: configPath})
+		if err != nil || cfg.Observer.DBPath == "" {
+			return ""
+		}
+		return filepath.Dir(cfg.Observer.DBPath)
+	}
 }
 
 // runHookInvocation is one `observer hook <tool> <event>` invocation.
@@ -406,11 +492,25 @@ func runHookInvocation(ctx context.Context, args []string, configPath string, ma
 	// call — see hookReplied's doc comment for why this must
 	// be the single reset point.
 	resetHookInvocationState()
+	resetHookActivity()
+	// The forensics logs follow --config's Observer home (live proof
+	// 2026-10-21), resolved lazily on the first log write.
+	hook.SetStateDirResolver(hookStateDirResolver(configPath))
+
+	// Inside a sandbox box the invocation goes over the capture relay and
+	// never opens a database (hook_relay.go, sandbox plan section 5.2).
+	if code, boxed := boxHookRelay(args, os.Stdin, os.Stdout, os.Stderr); boxed {
+		exitFn(code)
+		return
+	}
+	// Every exit below writes the armed activity record first (R-188 F4):
+	// the watchdog and the panic guard end the process through exitFn.
+	exitFn = activityFlushingExit(exitFn)
 
 	tool := args[0]
 	event := ""
 	if len(args) >= 2 {
-		event = args[1]
+		event = canonicalHookEvent(tool, args[1])
 	}
 	label := tool
 	if event != "" {
@@ -424,14 +524,40 @@ func runHookInvocation(ctx context.Context, args []string, configPath string, ma
 	// see recoverHookPanic's doc comment.
 	defer recoverHookPanic(label, hookStdout, os.Stderr, exitFn)
 
+	// The hook context seam (internal/hookctx, roadmap F0-3): every
+	// process fact and payload-named file the handlers below read comes
+	// through this one filled context. The security providers read
+	// nothing until an event names a project (hook_security.go).
+	//
+	// Lane sbx-p2: a relay child of the daemon (an invocation relayed out of
+	// a sandbox) fills it through the Daemon entry from the run's channel
+	// instead (hook_relay.go); either way the pure builders read it through
+	// hookctx.Process.
+	hreq := hookctx.Request{Tool: tool, Event: event}
+	hc, relayed := relayChildHookContext(ctx, hreq, configPath)
+	if !relayed {
+		hc = hookctx.Host(ctx, hreq, hostHookSource(), hostHookProviders(configPath))
+	}
+	hookctx.SetProcess(hc)
+	ctx = hookctx.WithContext(ctx, hc)
+	setInvocationHookContext(hc, configPath)
+
 	// Hook failure semantics (section 5.7): the provisional plan comes
 	// from the registry alone; the gate budget is capped below the host's
 	// own hook timeout and measured from start.
 	plan := provisionalHookFailurePlan(tool, event, configPath)
+	plan.Started = start
 	setHookPlan(plan)
-	budget := hookGateBudget(resolveHookMaxRuntime(maxRuntime, os.Getenv("OBSERVER_HOOK_MAX_RUNTIME")), plan)
+	budget := hookGateBudget(resolveHookMaxRuntime(maxRuntime, hc.Getenv("OBSERVER_HOOK_MAX_RUNTIME")), plan)
 	stopWatchdog := installHookWatchdog(hookRemaining(start, budget), exitFn, os.Stderr)
 	defer stopWatchdog()
+	// Hook liveness (OBS-7): ONE DB-free spool record per invocation, after
+	// the handler below has replied, while the watchdog is still armed
+	// (hook_activity.go). Receivers report the session id they parsed.
+	// A block or fail-closed exit (hookExitProcess), the watchdog and the
+	// panic guard flush the same armed record before the process ends, once.
+	armHookActivity(func() { emitHookActivity(tool, event, configPath, os.Stderr, hookActivityDepsFor(hc.Getenv)) })
+	defer flushHookActivity()
 	// The posture settles the plan BEFORE stdin is read. T-381: the cheap
 	// reads (posture, config) publish an interim plan first, so a slow full
 	// derivation on a node that does not enforce fails open, not closed.
@@ -460,13 +586,35 @@ func runHookInvocation(ctx context.Context, args []string, configPath string, ma
 		// every tool, before the tool's own receiver (hook_lifecycle.go).
 		body, _ := readHookBodyDetectTruncation(os.Stdin, promptSubmitBodyLimit)
 		body = bytes.TrimPrefix(body, []byte{0xEF, 0xBB, 0xBF})
-		handleLifecycleHook(ctx, tool, label, b, body, configPath, hookStdout, os.Stderr, productionLifecycleDeps())
+		handleLifecycleHook(ctx, tool, label, b, body, configPath, hookStdout, os.Stderr, productionLifecycleDeps(ctx))
+	} else if feedbackOptInRoute(tool, event, configPath) {
+		// A post-tool event Observer registers only for the security
+		// feedback (a RegisterWhen binding), while it is selected: the
+		// feedback handler, ahead of the tool's own receiver, which would
+		// answer its prompt-only allow and carry nothing
+		// (security_feedback.go). Not selected, the event goes to the
+		// receiver below exactly as before.
+		handlePostFeedbackHook(ctx, tool, event, label, configPath, os.Stdin, hookStdout, os.Stderr)
+		markHookReplied()
 	} else if fn, ok := hookReceivers[tool]; ok {
 		fn(ctx, event, configPath)
-	} else if dispatchBindingDialect(ctx, tool, event, configPath) {
+	} else {
+		dispatchWithoutReceiver(ctx, tool, event, label, configPath)
+	}
+}
+
+// dispatchWithoutReceiver is runHookInvocation's path for an event no
+// hookReceivers entry serves: a binding whose dialect has its own handler,
+// the binding's capability receiver, the one binding-driven allow, or the
+// plain approve. A receiver that owns only one event of its tool hands every
+// other event here (replayPromptReceiver).
+func dispatchWithoutReceiver(ctx context.Context, tool, event, label, configPath string) {
+	if dispatchBindingDialect(ctx, tool, event, configPath) {
 		// A binding whose dialect has its own handler (the plugin hosts,
 		// hook_pluginshim.go).
-	} else if b, ok := resolveHookBinding(tool, event); ok {
+		return
+	}
+	if b, ok := resolveHookBinding(tool, event); ok {
 		// A tool with bindings but no receiver: the binding's capability
 		// receiver when one exists (dispatchBindingReceiver), else the one
 		// binding-driven allow (hook_binding.go).
@@ -474,9 +622,30 @@ func runHookInvocation(ctx context.Context, args []string, configPath string, ma
 			handleBindingFallback(tool, label, b, os.Stdin, hookStdout, os.Stderr)
 			markHookReplied()
 		}
-	} else {
-		hook.HandleApprove(label, os.Stdin, hookStdout, os.Stderr)
-		markHookReplied()
+		return
+	}
+	hook.HandleApprove(label, os.Stdin, hookStdout, os.Stderr)
+	markHookReplied()
+}
+
+// replayPromptReceiver is the hookReceivers entry of a tool whose prompt gate
+// is reached through ANOTHER tool's registration (HookBinding.ReplayedVia:
+// the Antigravity App and IDE on antigravity-cli's hooks.json, DeepSeek
+// Harness on Observer's Claude Code hooks). That registration's receiver
+// serves the replayed payload; this entry serves a hand-wired
+// `observer hook <tool> <promptEvent>` the same way, and hands every other
+// event to the path it took before the tool had a receiver.
+func replayPromptReceiver(tool, dialect, promptEvent string) func(ctx context.Context, event, configPath string) {
+	return func(ctx context.Context, event, configPath string) {
+		if event != promptEvent {
+			label := tool
+			if event != "" {
+				label = tool + ":" + event
+			}
+			dispatchWithoutReceiver(ctx, tool, event, label, configPath)
+			return
+		}
+		handlePromptSubmitOnlyHook(tool, tool, dialect, promptEvent, event, configPath)
 	}
 }
 
@@ -499,11 +668,13 @@ func handleClaudeCodeHook(ctx context.Context, event, configPath string) {
 	if event != "" {
 		label = "claude-code:" + event
 	}
-	stdin, body, verdict := claudeCodeHookPayload(os.Stdin, event)
+	stdin, body, verdict := claudeCodeHookPayload(os.Stdin, event, configPath)
 	if verdict.Foreign {
+		noteForeignHookActivity(verdict, body)
 		answerForeignClaudeCodeHook(ctx, label, verdict, body, configPath, hookStdout, os.Stderr)
 		return
 	}
+	noteHookPayload(body)
 	dispatchClaudeCodeHook(ctx, event, configPath, stdin)
 }
 
@@ -528,8 +699,12 @@ func dispatchClaudeCodeHook(ctx context.Context, event, configPath string, stdin
 		// hook_skillsnap.go) can run AFTER the session-start reply, on the
 		// same payload, without changing the handler's signature.
 		var body bytes.Buffer
-		handleClaudeCodeSessionStart(ctx, os.Getppid(), defaultAncestors, io.TeeReader(stdin, &body), hookStdout, os.Stderr, label, writer)
+		hc := hookContext(ctx)
+		handleClaudeCodeSessionStart(ctx, hc.ParentPID(), hc.Ancestors, io.TeeReader(stdin, &body), hookStdout, os.Stderr, label, writer)
 		recordClaudeSkillSnapshot(body.Bytes(), "SessionStart", label, configPath, os.Stderr)
+		// Repository trust's session-start flag (security.trust): after
+		// the reply, never blocking.
+		recordSessionStartTrust(ctx, models.ToolClaudeCode, body.Bytes(), configPath, os.Stderr)
 		return
 	}
 	// Tier 1 expansion (2026-05): each of these events maps to one row
@@ -542,7 +717,7 @@ func dispatchClaudeCodeHook(ctx context.Context, event, configPath string, stdin
 		if b, ok := lifecycleBinding(models.ToolClaudeCode, "SessionEnd"); ok {
 			body, _ := io.ReadAll(io.LimitReader(stdin, defaultHookBodyLimit))
 			body = bytes.TrimPrefix(body, []byte{0xEF, 0xBB, 0xBF})
-			handleLifecycleHook(ctx, models.ToolClaudeCode, label, b, body, configPath, hookStdout, os.Stderr, productionLifecycleDeps())
+			handleLifecycleHook(ctx, models.ToolClaudeCode, label, b, body, configPath, hookStdout, os.Stderr, productionLifecycleDeps(ctx))
 			return
 		}
 		handleClaudeCodeActionEvent(ctx, stdin, label, configPath, buildClaudeSessionEndEvent)
@@ -639,15 +814,71 @@ func handleObserveOnlyHook(ctx context.Context, tool, label, event, configPath s
 // handler still reads - and still detects truncation - exactly as before.
 // An over-bound payload is never classified (its tail, where Cursor puts
 // cursor_version, is not in hand) and takes the normal path.
-func claudeCodeHookPayload(r io.Reader, event string) (stdin io.Reader, body []byte, verdict hook.ForeignVerdict) {
+//
+// A leading UTF-8 BOM (a .NET / PowerShell stdin writer on a UTF-8 console
+// prepends one) is stripped ONCE, here, from the stream itself (FU-161):
+// every handler reads the same BOM-free bytes the classifier judged, so no
+// handler decodes an untrimmed copy, fails, and approves unevaluated. The
+// handlers' truncation detection then measures the payload without the
+// BOM, which is the payload.
+func claudeCodeHookPayload(r io.Reader, event, configPath string) (stdin io.Reader, body []byte, verdict hook.ForeignVerdict) {
 	buf, _ := io.ReadAll(io.LimitReader(r, promptSubmitBodyLimit+1))
+	over := int64(len(buf)) > promptSubmitBodyLimit
+	buf = bytes.TrimPrefix(buf, []byte{0xEF, 0xBB, 0xBF})
 	stdin = io.MultiReader(bytes.NewReader(buf), r)
-	if int64(len(buf)) > promptSubmitBodyLimit {
+	if over {
 		return stdin, nil, hook.ForeignVerdict{}
 	}
-	body = bytes.TrimPrefix(buf, []byte{0xEF, 0xBB, 0xBF})
+	body = buf
 	hook.DumpHookShape(models.ToolClaudeCode, event, body)
-	return stdin, body, hook.ClassifyClaudeHookPayload(body)
+	// The host environment through the hook context (a relayed event reads
+	// the run's declared environment, never the daemon's), and the host's
+	// own registration probe for a row that answers neutral only while
+	// Observer's own hook for the host sees the call (G2).
+	return stdin, body, hook.ClassifyClaudeHookPayloadHost(body, hook.ForeignHostEnv{
+		Getenv:            hookctx.Process().Getenv,
+		OwnGateRegistered: ownGateRegisteredProbe(configPath),
+	})
+}
+
+// ownGateRegisteredProbe is hook.OwnGateRegistered for this hook process:
+// the registry the hook would have been written by, at the home and with
+// the relocation variables the hook context supplies (hookctx.Process; the
+// pinned-home rule's isolation still reads no variable). It answers false,
+// so the replay is judged, when the binary path or the home cannot be
+// resolved and always on the relay path (hookctx.PathDaemon): there the
+// hook context is the sandbox run's, and the daemon host's own Copilot home
+// says nothing about whether the run's Copilot has Observer's hook.
+func ownGateRegisteredProbe(configPath string) func(tool, step string) bool {
+	return func(tool, step string) bool {
+		hc := hookctx.Process()
+		if hc.Path() != hookctx.PathHost {
+			return false
+		}
+		home := hookProcessHome(hc, runtime.GOOS)
+		if home == "" {
+			return false
+		}
+		bin, err := absoluteBinaryPath()
+		if err != nil {
+			return false
+		}
+		getenv := hc.Getenv
+		if crossmount.IsolationReason() != "" {
+			getenv = crossmount.NoEnv
+		}
+		return hook.OwnGateRegistered(hook.Options{BinaryPath: bin, ConfigPath: configPath, HomeDir: home, Getenv: getenv})(tool, step)
+	}
+}
+
+// hookProcessHome is the hook process's home as os.UserHomeDir reads it
+// (USERPROFILE on Windows, HOME elsewhere), through the hook context's
+// environment rather than the operating system's.
+func hookProcessHome(hc *hookctx.Context, goos string) string {
+	if goos == "windows" {
+		return hc.Getenv("USERPROFILE")
+	}
+	return hc.Getenv("HOME")
 }
 
 // answerForeignClaudeCodeHook is the claude-code receiver's answer to a
@@ -660,8 +891,13 @@ func claudeCodeHookPayload(r io.Reader, event string) (stdin io.Reader, body []b
 //     answered with the host's neutral reply (Lane C3 dispatches lifecycle
 //     only; a gate binding stays unhandled, so unknown is an allow);
 //   - ForeignNeutral (the host's own Observer hook already sees the call,
-//     e.g. cursor-agent): the host's neutral reply for the step (T-034h: an
-//     EMPTY stdout is logged by cursor-agent as a failed hook);
+//     e.g. cursor-agent, or the Copilot CLI runtime while Observer's
+//     copilot-cli registration is in place): the host's neutral reply for
+//     the step (T-034h: an EMPTY stdout is logged by cursor-agent as a failed
+//     hook);
+//   - ForeignReroute (the host runs Claude Code's hooks as its own gate, or
+//     its own Observer hook is absent): served by the host's binding for the
+//     event under the host's tool id (rerouteForeignHook);
 //   - ForeignNoop (recognisably foreign, unidentified): nothing on stdout.
 func answerForeignClaudeCodeHook(ctx context.Context, label string, v hook.ForeignVerdict, body []byte, configPath string, stdout, stderr io.Writer) {
 	host := v.Host
@@ -669,14 +905,17 @@ func answerForeignClaudeCodeHook(ctx context.Context, label string, v hook.Forei
 		host = "an unidentified host"
 	}
 	hook.RecordForeignReplay(label, v, len(body))
+	if v.Action == hook.ForeignReroute && rerouteForeignHook(ctx, v, body, configPath, stdout, stderr) {
+		return
+	}
 	if v.Action == hook.ForeignDispatch {
 		if b, ok := lifecycleBinding(v.Tool, v.Step); ok {
 			fmt.Fprintf(stderr, "observer-hook: %s payload from %s; dispatched to %s %s\n", label, host, v.Tool, v.Step)
-			handleLifecycleHook(ctx, v.Tool, label, b, body, configPath, stdout, stderr, productionLifecycleDeps())
+			handleLifecycleHook(ctx, v.Tool, label, b, body, configPath, stdout, stderr, productionLifecycleDeps(ctx))
 			return
 		}
 	}
-	if (v.Action == hook.ForeignNeutral || v.Action == hook.ForeignDispatch) && len(v.Reply) > 0 {
+	if (v.Action == hook.ForeignNeutral || v.Action == hook.ForeignDispatch || v.Action == hook.ForeignReroute) && len(v.Reply) > 0 {
 		_, _ = stdout.Write(v.Reply)
 		markHookReplied()
 		fmt.Fprintf(stderr, "observer-hook: %s payload from %s (runs Claude Code hooks); neutral reply, nothing recorded\n", label, host)
@@ -684,6 +923,81 @@ func answerForeignClaudeCodeHook(ctx context.Context, label string, v hook.Forei
 	}
 	setHookExpectsStdoutReply(false)
 	fmt.Fprintf(stderr, "observer-hook: %s payload from %s (runs Claude Code hooks); no-op\n", label, host)
+}
+
+// rerouteServe is how the host's binding serves a rerouted payload.
+type rerouteServe int
+
+const (
+	// rerouteUnserved: the host has no served binding for the event, so
+	// the payload gets the host's neutral reply and is not counted as the
+	// host's call (a Copilot runtime UserPromptSubmit replay: copilot-cli
+	// has no Claude prompt replay binding).
+	rerouteUnserved rerouteServe = iota
+	rerouteLifecycle
+	rerouteToolGate
+	reroutePromptGate
+)
+
+// foreignReroute resolves the host binding a ForeignReroute payload is
+// served by. rerouteForeignHook serves through it and
+// noteForeignHookActivity counts through it, so a reroute nothing serves is
+// never counted as the host's call.
+func foreignReroute(v hook.ForeignVerdict) (rerouteServe, integration.HookBinding) {
+	if b, ok := lifecycleBinding(v.Tool, v.Step); ok {
+		return rerouteLifecycle, b
+	}
+	b, ok := replayHookBinding(v.Tool, v.Step)
+	if !ok || !b.Wired {
+		return rerouteUnserved, integration.HookBinding{}
+	}
+	switch {
+	case b.Cap == integration.HookCapToolGate && toolGateServed(b):
+		return rerouteToolGate, b
+	case b.Cap == integration.HookCapPromptGate && hook.KnownPromptDialect(b.Dialect):
+		return reroutePromptGate, b
+	}
+	return rerouteUnserved, integration.HookBinding{}
+}
+
+// replayHookBinding is the binding of tool a payload replayed through
+// Observer's Claude Code hooks is served by: the tool's binding for step
+// that declares it is reached through claude-code (ReplayedVia), when the
+// tool has one beside a registered binding of the same event (cursor's
+// preToolUse, FU-122), else the tool's binding for step.
+func replayHookBinding(tool, step string) (integration.HookBinding, bool) {
+	if c, ok := integration.For(tool); ok {
+		for _, b := range c.Hook.Bindings {
+			if b.NativeEvent == step && b.ReplayedVia == models.ToolClaudeCode {
+				return b, true
+			}
+		}
+	}
+	return resolveHookBinding(tool, step)
+}
+
+// rerouteForeignHook serves a ForeignReroute payload as the HOST's own hook
+// call: its wired tool gate, prompt gate or lifecycle binding for the event,
+// under the host's tool id. It reports false when the host has no served
+// binding for the event (the caller then writes the neutral reply).
+func rerouteForeignHook(ctx context.Context, v hook.ForeignVerdict, body []byte, configPath string, stdout, stderr io.Writer) bool {
+	label := v.Tool + ":" + v.Step
+	kind, b := foreignReroute(v)
+	switch kind {
+	case rerouteLifecycle:
+		handleLifecycleHook(ctx, v.Tool, label, b, body, configPath, stdout, stderr, productionLifecycleDeps(ctx))
+		return true
+	case rerouteToolGate:
+		fmt.Fprintf(stderr, "observer-hook: claude-code payload from %s; served as %s\n", v.Host, label)
+		setHookExpectsStdoutReply(hook.ToolGateAllowWritesStdout(b.Dialect))
+		runToolGate(v.Tool, label, b, body, false, configPath, stdout, stderr)
+		return true
+	case reroutePromptGate:
+		fmt.Fprintf(stderr, "observer-hook: claude-code payload from %s; served as %s\n", v.Host, label)
+		evaluatePromptSubmitBody(v.Tool, v.Tool, b.Dialect, v.Step, v.Step, configPath, body, false, stdout)
+		return true
+	}
+	return false
 }
 
 // pidbridgeWriter is the injected DB-write side of the SessionStart hook,
@@ -746,7 +1060,8 @@ func defaultAncestors(parentPID int) []int {
 // only os.Getppid() led to unresolvable api_turns.session_id values.
 //
 // parentPID, ancestors and writer are injected for tests; production
-// calls via the dispatcher pass os.Getppid(), defaultAncestors, and
+// calls via the dispatcher pass the hook context's ParentPID and Ancestors
+// (internal/hookctx: os.Getppid and defaultAncestors on the host path) and
 // defaultPidbridgeWriter.
 func handleClaudeCodeSessionStart(
 	ctx context.Context,
@@ -758,6 +1073,7 @@ func handleClaudeCodeSessionStart(
 	writer pidbridgeWriter,
 ) {
 	body, _ := io.ReadAll(io.LimitReader(stdin, defaultHookBodyLimit))
+	body = bytes.TrimPrefix(body, []byte{0xEF, 0xBB, 0xBF})
 
 	var payload struct {
 		SessionID     string `json:"session_id"`
@@ -983,7 +1299,7 @@ func isCommandShell(pid int, procDir string) bool {
 // bool reports whether the file could be read — a false return
 // terminates the ancestor walk.
 func readComm(path string) (string, bool) {
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) //nolint:gosec // G703: reads the user's own local file with the user's own rights
 	if err != nil {
 		return "", false
 	}
@@ -1066,12 +1382,17 @@ func handleClaudeCodePreTool(stdin io.Reader, stdout, stderr io.Writer, label, c
 	// unparseable body must never reach the guard's approve-if-unevaluable
 	// path while the guard is enforcing.
 	body, truncated := readHookBodyDetectTruncation(stdin, promptSubmitBodyLimit)
+	// The one trim of this receiver's bytes (FU-161; claudeCodeHookPayload
+	// already strips it from the stream, a direct caller may not): the
+	// bytes the guard decodes are the bytes judged valid below.
+	body = bytes.TrimPrefix(body, []byte{0xEF, 0xBB, 0xBF})
 	fmt.Fprintf(stderr, "observer-hook: event=%s received bytes=%d truncated=%v at=%s\n",
 		label, len(body), truncated, time.Now().UTC().Format(time.RFC3339))
 
-	cfg, cfgErr := config.Load(config.LoadOptions{GlobalPath: configPath})
-	// Section 5.7: under enforcement an unreadable config fails closed.
-	if cfgErr != nil && hookFailClosed(guardposture.KindConfig, body) {
+	// Section 5.7: under enforcement an unreadable or missing explicit
+	// config fails closed (FU-185).
+	cfg, stop, cfgErr := loadGateConfig(configPath, body, stderr)
+	if stop {
 		return
 	}
 
@@ -1095,16 +1416,28 @@ func handleClaudeCodePreTool(stdin io.Reader, stdout, stderr io.Writer, label, c
 	// behavior) unless this invocation's plan fails closed (guard
 	// enforcement in force, section 5.7): then it blocks with a reason.
 	var recordAfterReply func()
+	// A flag's developer notice rides the approve/rewrite reply below
+	// (the binding's WarnField: Claude Code's systemMessage).
+	var warnField, warn string
 	if cfgErr == nil && cfg.Guard.Enabled && cfg.Guard.Mode != "off" {
 		if g := buildHookGuard(cfg, stderr); g != nil {
-			var blocked bool
 			// Review M2-11: a block is marked decided right after its reply
 			// and before persist, so a panic in persist can never add an
 			// allow on top of it.
-			blocked, recordAfterReply = hook.HandleGuardedDecided(
-				label, body, g, makeGuardPersist(cfg, g, label, stderr), markHookDecided, stdout, stderr,
+			// The security pillar's facts and the dirty-marker raise, as
+			// on every other tool gate (hook_security.go; lane sec-gate2).
+			enrich := securityToolGateEnrich(configPath, models.ToolClaudeCode, "PreToolUse", hookSecurityAliases(cfg, cfgErr))
+			res := hook.HandleGuardedEnriched(
+				label, body, g, makeGuardPersist(cfg, g, label, stderr), markHookDecided, enrich, stdout, stderr,
 			)
-			if blocked {
+			recordAfterReply, warnField, warn = res.RecordAfterReply, res.WarnField, res.Warn
+			// JSON whose fields the gate reads do not decode cannot be
+			// judged: under enforcement it fails closed here, never the
+			// approve below (FU-161).
+			if res.Undecodable && hookFailClosed(guardposture.KindUnparseable, body) {
+				return
+			}
+			if res.Replied {
 				// P2-1: HandleGuarded already wrote the block/ask
 				// reply above (its own doc comment: "reply went out
 				// first") — mark it so a panic in the effort capture
@@ -1120,9 +1453,19 @@ func handleClaudeCodePreTool(stdin io.Reader, stdout, stderr io.Writer, label, c
 			return
 		}
 	}
+	// Guard and the commit gate allowed the call: an agent commit's trailer
+	// marker is written now, before the reply lets the commit run (audit
+	// finding F3; a no-op unless the enrich step held one).
+	provenanceAgentCommitAllowed()
 
 	binary, binErr := absoluteBinaryPath()
 	rewritten, newCmd, reason := decidePreToolRewrite(body, cfg, cfgErr, binary, binErr, runtime.GOOS)
+	if rewritten && hookctx.Process().Path() == hookctx.PathDaemon {
+		// A command relayed out of a sandbox box runs IN the box, where
+		// `observer run` has no database to record into (the capture relay,
+		// lane sbx-p2): pass it through unwrapped.
+		rewritten, newCmd, reason = false, "", "sandboxed-relay"
+	}
 
 	reply := preToolReply{Decision: "approve", Continue: true}
 	if rewritten {
@@ -1135,7 +1478,7 @@ func handleClaudeCodePreTool(stdin io.Reader, stdout, stderr io.Writer, label, c
 	} else if reason != "" {
 		fmt.Fprintf(stderr, "observer-hook: %s bash passthrough (%s)\n", label, reason)
 	}
-	_ = json.NewEncoder(stdout).Encode(reply)
+	_ = json.NewEncoder(stdout).Encode(hook.WithWarnField(reply, warnField, warn))
 	markHookReplied()
 	if recordAfterReply != nil {
 		recordAfterReply()
@@ -1169,7 +1512,7 @@ func buildHookGuard(cfg config.Config, stderr io.Writer) *guard.Guard {
 	if hookPlanFailsClosed() {
 		cfg.Guard.Strict = true
 	}
-	g, err := hookGuardNew(guard.Options{Config: cfg.Guard, Home: home, Notifier: notify.NewDesktop()})
+	g, err := hookGuardNew(guard.Options{Config: cfg.Guard, Home: home, Notifier: notify.NewDesktop(), PackRules: securityRulesWithSwitches(cfg.Security, securityHookPackRules(hookSecurityConfigPath))})
 	if err != nil {
 		fmt.Fprintf(stderr, "observer-hook: guard construction failed (running unguarded): %v\n", err)
 		return nil
@@ -1184,6 +1527,10 @@ func buildHookGuard(cfg config.Config, stderr io.Writer) *guard.Guard {
 	if fn := hookMCPAccessLookup(cfg); fn != nil {
 		g.SetMCPAccessLookup(fn)
 	}
+	// R-112 to R-114 (D-761): git aliases resolve from the table the daemon
+	// publishes beside the DB (one file read, only when a git command names
+	// a subcommand that is not a git builtin); the hook never runs git.
+	g.SetGitAliasLookup(fileGitAliasLookup(gitalias.Path(cfg.Observer.DBPath), nil))
 	// §6.3 approvals on the hook path: the lookup opens the DB
 	// LAZILY and only runs for verdicts that would block (ask/deny —
 	// rare by construction), so the common approve path never pays a
@@ -1276,6 +1623,28 @@ func buildHookGuard(cfg config.Config, stderr io.Writer) *guard.Guard {
 		judged, err := store.New(database).PreSendPromptJudged(lctx, sessionID, digest, at)
 		return err == nil && judged
 	})
+	// Stopped-conversation taint (guard.PromptSessionStopped): a seam whose
+	// stop leaves the prompt in the conversation (agy PreInvocation abort)
+	// asks it before every model call. Same lazy DB open; a failure is a
+	// miss (the turn is judged on its own prompt).
+	g.SetPromptSessionStopLookup(func(tool, sessionID string) []guard.PromptSessionStop {
+		database, err := db.Open(context.Background(), db.Options{Path: cfg.Observer.DBPath})
+		if err != nil {
+			return nil
+		}
+		defer database.Close()
+		lctx, cancel := context.WithTimeout(context.Background(), cfg.Observer.Hooks.HookTimeout())
+		defer cancel()
+		stops, err := store.New(database).PromptSessionStops(lctx, tool, sessionID)
+		if err != nil {
+			return nil
+		}
+		out := make([]guard.PromptSessionStop, 0, len(stops))
+		for _, sp := range stops {
+			out = append(out, guard.PromptSessionStop{RuleID: sp.RuleID, Severity: sp.Severity})
+		}
+		return out
+	})
 	return g
 }
 
@@ -1364,6 +1733,12 @@ var promptDialectsWithoutStdoutReply = map[string]bool{
 	// Kimi Code: exit-code block, EMPTY stdout on allow (any stdout is
 	// appended to the model context).
 	hook.PromptDialectKimiCode: true,
+	// Kiro CLI: an exit-0 stdout is added to the model context, so a
+	// recovered panic must leave stdout empty (the warn is plain text).
+	hook.PromptDialectKiroCLI: true,
+	// Dirac: an allow is an empty stdout (exit 0); a block is the cancel
+	// object, written only when the guard blocks.
+	hook.PromptDialectDirac: true,
 }
 
 // handlePromptSubmitOnlyHook is the shared receiver for tools whose
@@ -1385,10 +1760,6 @@ var promptDialectsWithoutStdoutReply = map[string]bool{
 // (hook.HandleApprove, which also appends the forensics log row these
 // tools always got via the default case).
 func handlePromptSubmitOnlyHook(tool, label, dialect, promptEvent, event, configPath string) {
-	fullLabel := label
-	if event != "" {
-		fullLabel = label + ":" + event
-	}
 	// A second prompt event on the same tool (Devin: Desktop Cascade's
 	// pre_user_prompt AND the Devin CLI's UserPromptSubmit) is evaluated in
 	// ITS binding's dialect, resolved from the registry (capability shape,
@@ -1401,9 +1772,29 @@ func handlePromptSubmitOnlyHook(tool, label, dialect, promptEvent, event, config
 	body, truncated := readHookBodyDetectTruncation(os.Stdin, promptSubmitBodyLimit)
 	body = bytes.TrimPrefix(body, []byte{0xEF, 0xBB, 0xBF})
 	hook.DumpHookShape(tool, event, body)
+	noteHookPayload(body)
+	// Another surface that runs this tool's registration (the Antigravity
+	// App and IDE on the agy hooks.json) is judged and recorded as its own
+	// call (hook_surface.go, surface-gap W-2c).
+	if rb, ok := resolveHookBinding(tool, event); ok && event == promptEvent {
+		if surface, _, ok := hookSurfaceBinding(tool, rb, body); ok {
+			tool, label = surface, surface
+		}
+	}
+	evaluatePromptSubmitBody(tool, label, dialect, promptEvent, event, configPath, body, truncated, hookStdout)
+}
 
+// evaluatePromptSubmitBody is handlePromptSubmitOnlyHook over a payload
+// already in hand (a rerouted foreign payload, rerouteForeignHook), replying
+// on out.
+func evaluatePromptSubmitBody(tool, label, dialect, promptEvent, event, configPath string, body []byte, truncated bool, out io.Writer) {
+	body = bytes.TrimPrefix(body, []byte{0xEF, 0xBB, 0xBF})
+	fullLabel := label
+	if event != "" {
+		fullLabel = label + ":" + event
+	}
 	if event != promptEvent {
-		hook.HandlePromptAllow(dialect, fullLabel, bytes.NewReader(body), hookStdout, os.Stderr)
+		hook.HandlePromptAllow(dialect, fullLabel, bytes.NewReader(body), out, os.Stderr)
 		markHookReplied()
 		// Observe-family events (compaction, task) on this mechanism are
 		// recorded after the allow reply (hook_observe.go).
@@ -1418,8 +1809,8 @@ func handlePromptSubmitOnlyHook(tool, label, dialect, promptEvent, event, config
 	// promptDialectsWithoutStdoutReply's doc comment).
 	setHookExpectsStdoutReply(!promptDialectsWithoutStdoutReply[dialect])
 
-	cfg, cfgErr := config.Load(config.LoadOptions{GlobalPath: configPath})
-	if cfgErr != nil && hookFailClosed(guardposture.KindConfig, body) {
+	cfg, stop, cfgErr := loadGateConfig(configPath, body, os.Stderr)
+	if stop {
 		return
 	}
 	if !truncated && hookPayloadUnparseable(body) && hookFailClosed(guardposture.KindUnparseable, body) {
@@ -1427,9 +1818,9 @@ func handlePromptSubmitOnlyHook(tool, label, dialect, promptEvent, event, config
 	}
 	// The next-prompt org budget notice rides this dialect's user-visible
 	// reply field when it has one (hook_budgetnotice.go).
-	var stdout io.Writer = hookStdout
+	var stdout io.Writer = out
 	if cfgErr == nil {
-		stdout = wrapBudgetNotice(hookStdout, dialect, cfg.Observer.DBPath, time.Now())
+		stdout = wrapBudgetNotice(out, dialect, cfg.Observer.DBPath, time.Now())
 		// A prompt is node activity: the daemon's policy-freshness
 		// checker watches this stamp (P2, nodeactivity.go).
 		_ = budgetwarnfile.TouchActivity(cfg.Observer.DBPath)
@@ -1443,6 +1834,12 @@ func handlePromptSubmitOnlyHook(tool, label, dialect, promptEvent, event, config
 				tool, dialect, promptEvent, body, truncated, g,
 				makePromptGuardPersist(cfg, g, tool, fullLabel, os.Stderr), stdout, os.Stderr,
 			)
+			// A prompt payload the dialect cannot decode was not judged:
+			// under enforcement it fails closed, never the allow below
+			// (FU-161).
+			if !handled && hook.PromptPayloadUndecodable(dialect, body) && hookFailClosed(guardposture.KindUnparseable, body) {
+				return
+			}
 			if handled {
 				// P2-1: whatever this dialect's wire contract required
 				// (a JSON reply, or deliberately nothing) has ALREADY
@@ -1487,6 +1884,15 @@ func handlePromptSubmitOnlyHook(tool, label, dialect, promptEvent, event, config
 // test binary.
 var hookOSExit = os.Exit
 
+// hookExitProcess is the one way a decided verdict ends the process: it
+// writes the invocation's armed activity record (flushHookActivity), which
+// os.Exit would otherwise skip, and exits through hookOSExit. A blocking or
+// fail-closed call therefore still counts as hook activity (R-188 F4).
+func hookExitProcess(code int) {
+	flushHookActivity()
+	hookOSExit(code)
+}
+
 // handleClaudeCodeUserPromptSubmit is the guarded counterpart of the
 // plain "user-prompt-submit" capture-only path (Part B item 1/2):
 // evaluate the prompt via hook.HandlePromptSubmitGuarded BEFORE
@@ -1523,8 +1929,8 @@ func handleClaudeCodeUserPromptSubmitFrom(ctx context.Context, stdin io.Reader, 
 	body, truncated := readHookBodyDetectTruncation(stdin, promptSubmitBodyLimit)
 	body = bytes.TrimPrefix(body, []byte{0xEF, 0xBB, 0xBF})
 
-	cfg, cfgErr := config.Load(config.LoadOptions{GlobalPath: configPath})
-	if cfgErr != nil && hookFailClosed(guardposture.KindConfig, body) {
+	cfg, stop, cfgErr := loadGateConfig(configPath, body, os.Stderr)
+	if stop {
 		return
 	}
 	if !truncated && hookPayloadUnparseable(body) && hookFailClosed(guardposture.KindUnparseable, body) {
@@ -1557,6 +1963,11 @@ func handleClaudeCodeUserPromptSubmitFrom(ctx context.Context, stdin io.Reader, 
 				models.ToolClaudeCode, hook.PromptDialectClaudeCode, "UserPromptSubmit",
 				body, truncated, g, makePromptGuardPersist(cfg, g, models.ToolClaudeCode, label, os.Stderr), stdout, os.Stderr,
 			)
+			// FU-161: an undecodable prompt payload fails closed under
+			// enforcement instead of reaching the approve below.
+			if !handled && hook.PromptPayloadUndecodable(hook.PromptDialectClaudeCode, body) && hookFailClosed(guardposture.KindUnparseable, body) {
+				return
+			}
 			if handled {
 				// P2-1 (docs/audits/codebase-audit-2026-09-16.md
 				// adversarial review): record the reply + the decided
@@ -1612,7 +2023,11 @@ func handleClaudeCodeUserPromptSubmitFrom(ctx context.Context, stdin io.Reader, 
 		defer database.Close()
 		insertCtx, cancel := context.WithTimeout(ctx, cfg.Observer.Hooks.HookTimeout())
 		defer cancel()
-		if _, err := store.New(database).Ingest(insertCtx, []models.ToolEvent{ev}, nil, store.IngestOptions{}); err != nil {
+		st := store.New(database)
+		// The same prompt typed again later in the session is its own row;
+		// the same event delivered again is not (B7, promptOccurrenceID).
+		ev.SourceEventID = resolvePromptOccurrence(insertCtx, st, ev.SourceFile, ev.SourceEventID, ev.Timestamp)
+		if _, err := st.Ingest(insertCtx, []models.ToolEvent{ev}, nil, store.IngestOptions{}); err != nil {
 			fmt.Fprintf(os.Stderr, "observer-hook: %s insert: %v\n", label, err)
 		}
 	}()
@@ -1635,7 +2050,12 @@ func handleClaudeCodeUserPromptSubmitFrom(ctx context.Context, stdin io.Reader, 
 func handleClaudeCodePostTool(stdin io.Reader, stdout, stderr io.Writer, label, configPath string) {
 	body, _ := io.ReadAll(io.LimitReader(stdin, defaultHookBodyLimit))
 	body = bytes.TrimPrefix(body, []byte{0xEF, 0xBB, 0xBF})
-	_ = json.NewEncoder(stdout).Encode(hook.Decision{Decision: "approve"})
+	// The security feedback seam (lane sec-h, security_feedback.go): while
+	// security.feedback is not selected the reply is the bare approve,
+	// byte for byte.
+	reply, _ := json.Marshal(hook.Decision{Decision: "approve"})
+	reply = append(reply, '\n')
+	securityPostFeedback(context.Background(), stdout, models.ToolClaudeCode, "PostToolUse", body, reply, configPath)
 	markHookReplied()
 
 	recordClaudecodeEffort(body, "PostToolUse", label, configPath, stderr)
@@ -1702,7 +2122,9 @@ func recordClaudecodeEffort(body []byte, eventName, label, configPath string, st
 // consider"; any other reason is a short tag for diagnostic logging.
 func decidePreToolRewrite(body []byte, cfg config.Config, cfgErr error, binary string, binErr error, hostOS string) (rewrite bool, newCommand, reason string) {
 	var p preToolPayload
-	if err := json.Unmarshal(body, &p); err != nil {
+	// Defence in depth (FU-161): the receiver strips the BOM, a direct
+	// caller may not.
+	if err := json.Unmarshal(bytes.TrimPrefix(body, []byte{0xEF, 0xBB, 0xBF}), &p); err != nil {
 		return false, "", ""
 	}
 	if p.ToolName != "Bash" || p.ToolInput.Command == "" {
@@ -1728,6 +2150,31 @@ func decidePreToolRewrite(body []byte, cfg config.Config, cfgErr error, binary s
 	// (those hooks don't rewrite the command).
 	if hostOS != "windows" && looksWindowsPath(p.Cwd) {
 		return false, "", "cross-os-shell"
+	}
+	// FU-163: a native Windows hook skips the rewrite. Claude Code runs the
+	// rewritten command in Git Bash (MSYS). The native backslash binary path
+	// is read there as escapes (`C:\Users\...\observer.exe` became
+	// `C:Users...observer.exe`, so every rewritten call exited 127), and
+	// the slash form, although it execs, does not keep the command's argv:
+	// observer.exe re-encodes the arguments as a Windows command line and an
+	// MSYS child (printf, grep, cat, sh) re-parses it with its own quoting
+	// and glob rules, so `printf '%s|' "c'd" '*.go'` reached printf as one
+	// mangled argument, and a shell script (`./build.sh`) cannot be exec'd
+	// by observer.exe at all (127). Checked from Git Bash 5.2 on Windows 11
+	// on 2026-10-29. Shell-output compression is unavailable there; capture
+	// and the guard are unaffected (they do not rewrite the command).
+	//
+	// FU-186: a Windows-to-WSL twin (claude-code-wsl) runs this Windows
+	// observer.exe from a distro's Linux bash through WSL interop, so the
+	// shell is not Git Bash: the payload cwd is a POSIX path. The rewrite is
+	// skipped there too (the command would name observer.exe, which bash
+	// runs only as a Windows program through interop, with the same argv
+	// re-encoding), but the reason says which case it is.
+	if hostOS == "windows" {
+		if strings.HasPrefix(p.Cwd, "/") && !looksWindowsPath(p.Cwd) {
+			return false, "", "wsl-interop"
+		}
+		return false, "", "windows-shell"
 	}
 	if binErr != nil || binary == "" {
 		return false, "", "binary-lookup-error"
@@ -1891,7 +2338,8 @@ func buildClaudeUserPromptSubmitEvent(body []byte) (models.ToolEvent, bool) {
 	// settings.json) still collapse to one row. Same convention as :stop:,
 	// :post_tool_batch: and :user_prompt_expansion:. Residual, shared with
 	// those: the exact same prompt text repeated inside one session collapses
-	// to a single row.
+	// to a single row HERE; the prompt handler then numbers a later repeat
+	// (resolvePromptOccurrence, B7), so only a re-delivery collapses.
 	ev.SourceEventID = p.SessionID + ":user_prompt_submit:" + claudeContentHash(body)
 	text := scrub.New().String(p.Prompt)
 	ev.RawToolInput = text
@@ -2590,7 +3038,10 @@ func buildClaudeWorktreeCreateReply(body []byte) (worktreePath string, ev models
 	if name == "" {
 		name = "worktree-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 	}
-	root := os.Getenv("OBSERVER_CLAUDE_WORKTREE_ROOT")
+	// No context reaches this pure reply builder (its golden test calls it
+	// with the payload alone): the host default of the seam is what the
+	// hook process read before it.
+	root := hookctx.Process().Getenv("OBSERVER_CLAUDE_WORKTREE_ROOT")
 	if root == "" {
 		home, err := os.UserHomeDir()
 		if err != nil || home == "" {

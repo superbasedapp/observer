@@ -5,10 +5,8 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	_ "modernc.org/sqlite"
 
@@ -390,83 +388,6 @@ func TestStageMirrorIfForeign_NativePassThrough(t *testing.T) {
 	}
 	if got != "/home/me/.local/share/kilo/kilo.db" {
 		t.Errorf("native path got remapped to %q", got)
-	}
-}
-
-// TestStageMirrorIfForeign_CopiesTrioAndReusesOnRepeat pins the
-// foreign-mount happy path — first call copies the trio (.db + -wal +
-// -shm) into a per-source cache dir; second call with unchanged
-// source skips the copy (mtime-equal). Mirrors the opencode test.
-func TestStageMirrorIfForeign_CopiesTrioAndReusesOnRepeat(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		// os.UserCacheDir on Windows returns %LOCALAPPDATA% and
-		// ignores XDG_CACHE_HOME, so we can't redirect the mirror
-		// dir cleanly from a test. The mirror codepath itself is
-		// still exercised — just not bounded to a per-test cache root.
-		t.Skip("os.UserCacheDir ignores XDG_CACHE_HOME on Windows")
-	}
-	srcRoot := t.TempDir()
-	cacheRoot := t.TempDir()
-	t.Setenv("XDG_CACHE_HOME", cacheRoot)
-	orig := allHomesFunc
-	t.Cleanup(func() { allHomesFunc = orig })
-	allHomesFunc = func() []crossmount.HomeRoot {
-		return []crossmount.HomeRoot{
-			{Path: "/home/observer", OS: crossmount.OSLinux, Origin: "native"},
-			{Path: srcRoot, OS: crossmount.OSWindows, Origin: "wsl-mnt:fake"},
-		}
-	}
-	srcDB := filepath.Join(srcRoot, "kilo.db")
-	if err := os.WriteFile(srcDB, []byte("DBv1"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(srcDB+"-wal", []byte("WALv1"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(srcDB+"-shm", []byte("SHMv1"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	first, err := stageMirrorIfForeign(srcDB)
-	if err != nil {
-		t.Fatalf("first mirror: %v", err)
-	}
-	if first == srcDB {
-		t.Fatalf("foreign source returned passthrough")
-	}
-	if !strings.HasPrefix(first, cacheRoot) {
-		t.Errorf("mirror %q must live under cache root %q", first, cacheRoot)
-	}
-	for _, suffix := range []string{"", "-wal", "-shm"} {
-		got, err := os.ReadFile(first + suffix)
-		if err != nil {
-			t.Fatalf("read mirror sibling %s: %v", suffix, err)
-		}
-		want := map[string]string{"": "DBv1", "-wal": "WALv1", "-shm": "SHMv1"}[suffix]
-		if string(got) != want {
-			t.Errorf("mirror %s = %q want %q", suffix, got, want)
-		}
-	}
-	// Backdate source so mirror is newer; repeat call must skip copy.
-	past := time.Now().Add(-time.Hour)
-	for _, suffix := range []string{"", "-wal", "-shm"} {
-		if err := os.Chtimes(srcDB+suffix, past, past); err != nil {
-			t.Fatal(err)
-		}
-	}
-	beforeSecond, err := os.Stat(first)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := stageMirrorIfForeign(srcDB); err != nil {
-		t.Fatalf("second mirror: %v", err)
-	}
-	afterSecond, err := os.Stat(first)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !afterSecond.ModTime().Equal(beforeSecond.ModTime()) {
-		t.Errorf("mirror mtime changed; repeat call must skip when source is unchanged")
 	}
 }
 

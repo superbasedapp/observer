@@ -17,7 +17,7 @@ func TestDisclosedAttestorHealthyForAttestedResourceAndPolicy(t *testing.T) {
 	if !att.Healthy {
 		t.Fatalf("want healthy for the disclosed resource, got %+v", att)
 	}
-	for _, want := range []string{ModeProviderRetentionDisclosed, "policy v1", b.ARMResourceID, "santosh"} {
+	for _, want := range []string{ModeProviderRetentionDisclosed, "policy v1", b.ARMResourceID, "santosh", "NOT verified"} {
 		if !strings.Contains(att.Reason, want) {
 			t.Errorf("reason must carry %q, got %q", want, att.Reason)
 		}
@@ -28,6 +28,34 @@ func TestDisclosedAttestorHealthyForAttestedResourceAndPolicy(t *testing.T) {
 	}
 	if !strings.Contains(att.ContentLoggingValue, "not-disabled") || !strings.Contains(att.ContentLoggingValue, ModeProviderRetentionDisclosed) {
 		t.Errorf("content logging value must name the disclosed posture, got %q", att.ContentLoggingValue)
+	}
+}
+
+// TestDisclosedAttestorAnthropicResource pins the Anthropic shape: a route
+// bound to the provider-neutral "anthropic:messages:<model>" identity attests
+// under the disclosed mode, and the verdict says retention is not verified.
+func TestDisclosedAttestorAnthropicResource(t *testing.T) {
+	b := Binding{
+		TenantID: "anthropic", SubscriptionID: "default",
+		ARMResourceID:    "anthropic:messages:claude-haiku-5-5",
+		EndpointAudience: "https://api.anthropic.com", RouteGeneration: 3,
+	}
+	d := DisclosedAttestor{AttestedResourceID: "anthropic:messages:claude-haiku-5-5", PolicyVersion: "2", AttestedBy: "operator"}
+	att, err := d.Attest(context.Background(), b, time.Now())
+	if err != nil || !att.Healthy {
+		t.Fatalf("want healthy, got %+v, %v", att, err)
+	}
+	if att.Reason != DisclosedReason("2", "anthropic:messages:claude-haiku-5-5", "operator") {
+		t.Errorf("reason = %q", att.Reason)
+	}
+	if strings.Contains(att.Reason, "ContentLogging disabled") || !strings.Contains(att.Reason, "NOT verified") {
+		t.Errorf("reason must never read as a verified/disabled-logging claim: %q", att.Reason)
+	}
+	// A different model is a different resource: not covered.
+	other := b
+	other.ARMResourceID = "anthropic:messages:claude-opus-5-5"
+	if att, _ := d.Attest(context.Background(), other, time.Now()); att.Healthy {
+		t.Fatalf("disclosure for one model must not cover another, got %+v", att)
 	}
 }
 

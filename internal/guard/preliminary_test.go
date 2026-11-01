@@ -1,6 +1,7 @@
 package guard
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
@@ -37,7 +38,8 @@ func TestPreliminaryGateEnforcement(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			exists := func(p string) bool {
 				for _, f := range tc.files {
-					if f == p {
+					// The product joins the probe path natively.
+					if f == filepath.ToSlash(p) {
 						return true
 					}
 				}

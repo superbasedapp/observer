@@ -122,7 +122,11 @@ func commandBaseName(tok string) string {
 // registerClaudeCode's observerCmdMatches short-circuits per event.
 func (r *Registry) registerClaudeCodeStatusline() RegistrationResult {
 	res := RegistrationResult{Tool: "claude-code-statusline", DryRun: r.opts.DryRun}
-	settingsDir := filepath.Join(r.opts.HomeDir, ".claude")
+	settingsDir, err := r.claudeConfigDir()
+	if err != nil {
+		res.Error = err
+		return res
+	}
 	path := filepath.Join(settingsDir, "settings.json")
 	res.ConfigPath = path
 
@@ -194,11 +198,13 @@ func (r *Registry) registerClaudeCodeStatusline() RegistrationResult {
 	if r.opts.DryRun {
 		return res
 	}
+	// No hook_checksums.json write: settings.json's entry is the HOOK
+	// writer's (a digest of the "hooks" subtree for this credential-
+	// bearing file, D-268), which this writer never touches. Recording it
+	// here would re-baseline the hook drift guard over a hooks edit the
+	// user made after the hook install. Ownership of "statusLine" is read
+	// from the command itself, the --statusline-tools writer's rule.
 	if err := r.writeHookSettingsJSON("claude-code", settingsDir, pinned, raw, settings); err != nil {
-		res.Error = err
-		return res
-	}
-	if err := r.recordHookChecksum("claude-code", path); err != nil {
 		res.Error = err
 		return res
 	}
@@ -211,12 +217,22 @@ func (r *Registry) registerClaudeCodeStatusline() RegistrationResult {
 // empty one. Only an entry recognised as observer-written (via
 // isObserverStatuslineEntry) is ever removed; a foreign/user-authored
 // "statusLine" is left untouched and reported via HooksKept, mirroring
-// how unregisterClaudeCode preserves non-observer hook entries without
-// requiring --force to do so (Force here gates ONLY the checksum-drift
-// guard below, exactly like the hook unregistrars).
+// how unregisterClaudeCode preserves non-observer hook entries.
+//
+// It neither consults nor removes the file's hook_checksums.json entry:
+// that entry is the hook writer's (see registerClaudeCodeStatusline).
+// Removing it stranded the hook uninstall's drift guard (a later
+// `observer init --uninstall` refused without --force), and requiring it
+// made this uninstall refuse after the hook uninstall had removed it.
+// The write itself preserves every other member under the settings lock,
+// so there is no other-key edit for a guard to protect.
 func (r *Registry) unregisterClaudeCodeStatusline() UnregistrationResult {
 	res := UnregistrationResult{Tool: "claude-code-statusline", DryRun: r.opts.DryRun}
-	settingsDir := filepath.Join(r.opts.HomeDir, ".claude")
+	settingsDir, err := r.claudeConfigDir()
+	if err != nil {
+		res.Error = err
+		return res
+	}
 	path := filepath.Join(settingsDir, "settings.json")
 	res.ConfigPath = path
 
@@ -254,28 +270,11 @@ func (r *Registry) unregisterClaudeCodeStatusline() UnregistrationResult {
 	var cur claudeStatuslineEntry
 	if err := json.Unmarshal(existing, &cur); err != nil || !isObserverStatuslineEntry(cur.Command) {
 		// Foreign (or unparseable) "statusLine" — a user-authored
-		// statusline (or another tool's). Never removed by uninstall;
-		// no --force override for this case (only for checksum drift
-		// below), mirroring the hook unregistrars' HooksKept posture.
+		// statusline (or another tool's). Never removed by uninstall,
+		// with or without --force, mirroring the hook unregistrars'
+		// HooksKept posture.
 		res.HooksKept = append(res.HooksKept, "statusLine")
 		res.Skipped = true
-		return res
-	}
-
-	// There is real work to do — verify the file hasn't drifted since
-	// we installed, so we don't clobber user edits made to OTHER keys
-	// in the same file. Passing --force bypasses the guard. Note the
-	// checksum registry tracks this whole FILE (not the "statusLine"
-	// key specifically) — the same coarse, file-granularity contract
-	// registerClaudeCode's recordChecksum already uses for "hooks".
-	match, err := r.checksumMatches(path, raw)
-	if err != nil {
-		res.Error = fmt.Errorf("hook.unregisterClaudeCodeStatusline: checksum: %w", err)
-		return res
-	}
-	res.ChecksumMatch = match
-	if !match && !r.opts.Force {
-		res.Error = safeErrorf("hook.unregisterClaudeCodeStatusline: %s has been modified since install (checksum mismatch); pass --force to remove anyway", path)
 		return res
 	}
 
@@ -296,10 +295,6 @@ func (r *Registry) unregisterClaudeCodeStatusline() UnregistrationResult {
 			res.Error = err
 			return res
 		}
-	}
-	if err := r.removeChecksum(path); err != nil {
-		res.Error = err
-		return res
 	}
 	return res
 }

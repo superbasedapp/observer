@@ -216,3 +216,68 @@ func TestHookDisableWatch(t *testing.T) {
 	}
 	_ = hookdisable.Switches
 }
+
+type fakeRootLister struct {
+	roots []string
+	err   error
+	calls int
+}
+
+func (f *fakeRootLister) RecentProjectRoots(_ context.Context, limit int) ([]string, error) {
+	f.calls++
+	if limit != hookdisable.MaxProjectRoots {
+		return nil, errors.New("unbounded")
+	}
+	return f.roots, f.err
+}
+
+// TestHookDisableWatchProjectScope (T-910): a project's
+// .claude/settings.local.json disableAllHooks is reported once as a guard
+// event carrying the project root; the project scan runs on its own
+// cadence, and a failed root read keeps the previous result instead of
+// reporting the switch cleared and set again.
+func TestHookDisableWatchProjectScope(t *testing.T) {
+	files := map[string]string{}
+	lister := &fakeRootLister{roots: []string{"/work/app"}}
+	w := newHookDisableWatch(lister)
+	w.home, w.goos = "/h", ""
+	w.read = func(p string) ([]byte, error) {
+		if s, ok := files[p]; ok {
+			return []byte(s), nil
+		}
+		return nil, errors.New("absent")
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	st := &fakePersister{}
+	local := filepath.Join("/work/app", ".claude", "settings.local.json")
+	files[local] = `{"permissions":{"allow":["Bash(ls)"]},"disableAllHooks":true}`
+	now := time.Now()
+	if n := w.check(context.Background(), st, now, logger); n != 1 {
+		t.Fatalf("project switch persisted %d, want 1", n)
+	}
+	v := st.vs[0]
+	if v.Input.ProjectRoot != filepath.Clean("/work/app") || v.Input.Target != local || !strings.Contains(v.Verdict.Advice, "in project "+filepath.Clean("/work/app")) ||
+		!strings.Contains(v.Verdict.Reason, "project scope") {
+		t.Fatalf("verdict = %+v", v)
+	}
+	// Within the interval the project files are not re-read, and the
+	// standing finding is not reported again.
+	delete(files, local)
+	if n := w.check(context.Background(), st, now.Add(time.Second), logger); n != 0 || lister.calls != 1 {
+		t.Fatalf("within interval: persisted %d, root reads %d", n, lister.calls)
+	}
+	// A failed root read keeps the last project result.
+	files[local] = `{"disableAllHooks":true}`
+	lister.err = errors.New("db busy")
+	if n := w.check(context.Background(), st, now.Add(hookProjectScanInterval), logger); n != 0 {
+		t.Fatalf("failed root read persisted %d", n)
+	}
+	// Cleared, then set again: reported again.
+	lister.err = nil
+	delete(files, local)
+	w.check(context.Background(), st, now.Add(2*hookProjectScanInterval), logger)
+	files[local] = `{"disableAllHooks":true}`
+	if n := w.check(context.Background(), st, now.Add(3*hookProjectScanInterval), logger); n != 1 {
+		t.Fatalf("re-set project switch persisted %d, want 1", n)
+	}
+}

@@ -16,11 +16,10 @@ import (
 //
 // No matcher, no "type" field — a flat command list, the vendor's OWN
 // shape distinct from every other hooks.json this repo writes.
-// PowerShell is left empty here: Devin Desktop's only grounded
-// install channel today is the macOS Homebrew cask (internal/
-// integration's devin row, GUI.Binary.Installs) — a Windows cross-OS
-// bridge is a documented, deferred gap for this mechanism, same as
-// HookGeminiSettings/HookQwenSettings/HookFactoryJSON.
+// PowerShell is left empty in the native per-node user file; the
+// devin-windows bridge (register_crossos_ide.go, surface-gap IDE-6) writes
+// its portable command into both fields, and the administrator system file
+// (managedhooks.go) carries a powershell command for Windows.
 //
 // B5: this type is now used ONLY to construct observer's OWN entry.
 // A sibling entry already in the list — one this repo doesn't own,
@@ -96,18 +95,58 @@ func readCascadeHooksFile(path string) (map[string]json.RawMessage, map[string][
 // bindings (event_lists golden).
 var cascadeEvents = []string{"pre_user_prompt", "pre_run_command", "pre_write_code", "pre_read_code", "pre_mcp_tool_use"}
 
+// cascadeTarget is one Cascade hooks.json Observer writes: the native
+// Devin Desktop file, the JetBrains plugin's file (devin-jetbrains) or the
+// Windows-side Devin Desktop file a WSL daemon bridges (devin-windows).
+type cascadeTarget struct {
+	// label is the RegistrationResult.Tool.
+	label string
+	// dir holds hooks.json.
+	dir string
+	// command builds Observer's command for event.
+	command func(event string) string
+	// powershell also writes the command as the entry's "powershell" field
+	// (a Windows host; the portable bridge runs under PowerShell too).
+	powershell bool
+	// managed applies this host's administrator hooks file (the native
+	// Devin Desktop file only: the system file is merged with that one).
+	managed bool
+	// errPrefix names the registrar in wrapped errors.
+	errPrefix string
+}
+
+// nativeCascadeTarget is ~/.codeium/windsurf/hooks.json on the daemon's OS.
+func (r *Registry) nativeCascadeTarget() cascadeTarget {
+	return cascadeTarget{
+		label: "devin", dir: filepath.Join(r.opts.HomeDir, ".codeium", "windsurf"),
+		command:   r.nativeCascadeCommand,
+		managed:   true,
+		errPrefix: "hook.registerCascade",
+	}
+}
+
+// nativeCascadeCommand is the daemon-OS command for event.
+func (r *Registry) nativeCascadeCommand(event string) string {
+	return shellQuoteIfNeeded(forwardSlashPath(r.opts.BinaryPath)) + " hook devin " + event + r.configFlagSuffixForwardSlash()
+}
+
 // registerCascade installs Observer's hooks into
 // ~/.codeium/windsurf/hooks.json, one entry per cascadeEvents event (Part B
 // item 2, phase-3a: the HookCascadeJSON mechanism).
 func (r *Registry) registerCascade() RegistrationResult {
-	res := RegistrationResult{Tool: "devin", DryRun: r.opts.DryRun}
-	dir := filepath.Join(r.opts.HomeDir, ".codeium", "windsurf")
+	return r.registerCascadeAt(r.nativeCascadeTarget())
+}
+
+// registerCascadeAt writes Observer's entries into t's hooks.json.
+func (r *Registry) registerCascadeAt(t cascadeTarget) RegistrationResult {
+	res := RegistrationResult{Tool: t.label, DryRun: r.opts.DryRun}
+	dir := t.dir
 	path := filepath.Join(dir, "hooks.json")
 	res.ConfigPath = path
 
 	unlock, err := r.lockSettings(path)
 	if err != nil {
-		res.Error = fmt.Errorf("hook.registerCascade: %w", err)
+		res.Error = fmt.Errorf("%s: %w", t.errPrefix, err)
 		return res
 	}
 	defer unlock()
@@ -119,74 +158,100 @@ func (r *Registry) registerCascade() RegistrationResult {
 		res.Error = err
 		return res
 	}
+	// FU-192: an entry in Observer's shape running another binary is kept.
+	if r.refusesForeignBinaryInFile(&res, t.errPrefix, path, "devin", identityContent) {
+		return res
+	}
 
-	for _, event := range cascadeEvents {
+	// IDE-6 managed row: Cascade merges the system hooks.json with this
+	// file, so an event the administrator file already runs Observer's hook
+	// for is not registered here a second time, and Observer's own earlier
+	// per-node entry for it is removed (a non-Observer entry stays).
+	plan := managedHooksPlan{register: cascadeEvents}
+	if t.managed {
+		plan = r.managedHooksPlanFor("devin", cascadeEvents)
+	}
+	res.Warnings = append(res.Warnings, plan.warnings...)
+	res.HooksDropped = dropCascadeObserverEntries(hooksByEvent, plan.drop)
+	if plan.complete && len(res.HooksDropped) == 0 {
+		return plan.finish(res)
+	}
+	events := plan.register
+
+	for _, event := range events {
 		if r.skipEvent("devin", event) {
 			continue
 		}
-		cmd := shellQuoteIfNeeded(forwardSlashPath(r.opts.BinaryPath)) + " hook devin " + event + r.configFlagSuffixForwardSlash()
-		entries := hooksByEvent[event]
-		idx := -1
-		for i, raw := range entries {
-			var probe cascadeEntryProbe
-			if err := json.Unmarshal(raw, &probe); err != nil {
-				continue
-			}
-			if isObserverAnyHookEntry(probe.Command, "devin") {
-				idx = i
-			}
-		}
-		if idx >= 0 {
-			var probe cascadeEntryProbe
-			if err := json.Unmarshal(entries[idx], &probe); err == nil && probe.Command == cmd {
-				res.AlreadySet = append(res.AlreadySet, event)
-				continue
-			}
-			entries = append(entries[:idx:idx], entries[idx+1:]...)
-		}
-		if !r.opts.Force {
-			for _, raw := range entries {
-				var probe cascadeEntryProbe
-				if err := json.Unmarshal(raw, &probe); err != nil {
-					continue
-				}
-				if !isObserverAnyHookEntry(probe.Command, "devin") {
-					res.Error = fmt.Errorf("hook.registerCascade: event %s already has a non-observer hook; pass --force to overwrite", event)
-					return res
-				}
-			}
-		}
-		entryJSON, err := json.Marshal(cascadeHookEntry{Command: cmd})
-		if err != nil {
-			res.Error = fmt.Errorf("hook.registerCascade: marshal entry: %w", err)
+		if err := r.cascadeRegisterEvent(t, &res, hooksByEvent, event); err != nil {
+			res.Error = err
 			return res
 		}
-		hooksByEvent[event] = append(entries, entryJSON)
-		res.HooksAdded = append(res.HooksAdded, event)
 	}
-	if len(res.HooksAdded) == 0 {
-		return res
+	if len(res.HooksAdded) == 0 && len(res.HooksDropped) == 0 {
+		return plan.finish(res)
 	}
 
 	hooksJSON, err := json.Marshal(hooksByEvent)
 	if err != nil {
-		res.Error = fmt.Errorf("hook.registerCascade: marshal hooks: %w", err)
+		res.Error = fmt.Errorf("%s: marshal hooks: %w", t.errPrefix, err)
 		return res
 	}
 	top["hooks"] = hooksJSON
 
 	if r.opts.DryRun {
-		return res
+		return plan.finish(res)
 	}
 	if err := writeJSONIndented(dir, pinned, top); err != nil {
 		res.Error = err
 		return res
 	}
-	if err := r.recordChecksum(path); err != nil {
+	if err := r.recordChecksum(res.Tool, path); err != nil {
 		res.Error = err
 		return res
 	}
-	return res
+	return plan.finish(res)
+}
+
+// cascadePowerShellMatches reports whether entry's "powershell" field is
+// what the target writes: cmd when it writes one, absent otherwise.
+func cascadePowerShellMatches(entry json.RawMessage, want bool, cmd string) bool {
+	var probe struct {
+		PowerShell string `json:"powershell"`
+	}
+	if json.Unmarshal(entry, &probe) != nil {
+		return false
+	}
+	if want {
+		return probe.PowerShell == cmd
+	}
+	return probe.PowerShell == ""
+}
+
+// dropCascadeObserverEntries removes Observer's own entries for events from
+// hooksByEvent (raw entries, so a sibling keeps every field) and returns the
+// events it changed. A non-Observer entry is never removed.
+func dropCascadeObserverEntries(hooksByEvent map[string][]json.RawMessage, events []string) []string {
+	var dropped []string
+	for _, ev := range events {
+		var kept []json.RawMessage
+		for _, raw := range hooksByEvent[ev] {
+			var probe cascadeEntryProbe
+			if json.Unmarshal(raw, &probe) == nil && isObserverAnyHookEntry(probe.Command, "devin") {
+				continue
+			}
+			kept = append(kept, raw)
+		}
+		if len(kept) == len(hooksByEvent[ev]) {
+			continue
+		}
+		dropped = append(dropped, ev)
+		if len(kept) == 0 {
+			delete(hooksByEvent, ev)
+		} else {
+			hooksByEvent[ev] = kept
+		}
+	}
+	return dropped
 }
 
 // unregisterCascade removes ONLY the observer-owned pre_user_prompt
@@ -194,8 +259,12 @@ func (r *Registry) registerCascade() RegistrationResult {
 // top-level key, every other event, and every sibling entry in
 // pre_user_prompt's own list byte-for-byte untouched.
 func (r *Registry) unregisterCascade() UnregistrationResult {
-	res := UnregistrationResult{Tool: "devin", DryRun: r.opts.DryRun}
-	dir := filepath.Join(r.opts.HomeDir, ".codeium", "windsurf")
+	return r.unregisterCascadeAt("devin", filepath.Join(r.opts.HomeDir, ".codeium", "windsurf"))
+}
+
+// unregisterCascadeAt removes Observer's entries from dir/hooks.json.
+func (r *Registry) unregisterCascadeAt(label, dir string) UnregistrationResult {
+	res := UnregistrationResult{Tool: label, DryRun: r.opts.DryRun}
 	path := filepath.Join(dir, "hooks.json")
 	res.ConfigPath = path
 
@@ -265,4 +334,62 @@ func (r *Registry) unregisterCascade() UnregistrationResult {
 		return res
 	}
 	return res
+}
+
+// cascadeRegisterEvent adds Observer's entry for one event to hooksByEvent
+// (or records it as already set), keeping every non-Observer entry. Split
+// out of registerCascadeAt to keep that function's branching readable.
+func (r *Registry) cascadeRegisterEvent(t cascadeTarget, res *RegistrationResult, hooksByEvent map[string][]json.RawMessage, event string) error {
+	cmd := t.command(event)
+	entries := hooksByEvent[event]
+	idx := -1
+	for i, raw := range entries {
+		var probe cascadeEntryProbe
+		if err := json.Unmarshal(raw, &probe); err != nil {
+			continue
+		}
+		if isObserverAnyHookEntry(probe.Command, "devin") {
+			idx = i
+		}
+	}
+	if idx >= 0 {
+		// T-847: an extra field on Observer's entry is never "already
+		// set" (hook_shape.go).
+		shape := flatCommandEntries(func(c string) bool { return isObserverAnyHookEntry(c, "devin") })
+		if t.powershell {
+			shape.handlerFields = map[string]bool{"command": true, "powershell": true}
+		}
+		drift := entriesShapeDrift(entries[idx:idx+1], shape)
+		if drift {
+			shapeRewrite(res, event, cmd, cmd)
+		}
+		var probe cascadeEntryProbe
+		if err := json.Unmarshal(entries[idx], &probe); err == nil && probe.Command == cmd && !drift && cascadePowerShellMatches(entries[idx], t.powershell, cmd) {
+			res.AlreadySet = append(res.AlreadySet, event)
+			return nil
+		}
+		entries = append(entries[:idx:idx], entries[idx+1:]...)
+	}
+	if r.refuses(res.ConfigPath, identityContent) {
+		for _, raw := range entries {
+			var probe cascadeEntryProbe
+			if err := json.Unmarshal(raw, &probe); err != nil {
+				continue
+			}
+			if !isObserverAnyHookEntry(probe.Command, "devin") {
+				return fmt.Errorf("%s: event %s already has a non-observer hook; pass --force to overwrite", t.errPrefix, event)
+			}
+		}
+	}
+	entry := cascadeHookEntry{Command: cmd}
+	if t.powershell {
+		entry.PowerShell = cmd
+	}
+	entryJSON, err := json.Marshal(entry)
+	if err != nil {
+		return fmt.Errorf("%s: marshal entry: %w", t.errPrefix, err)
+	}
+	hooksByEvent[event] = append(entries, entryJSON)
+	res.HooksAdded = append(res.HooksAdded, event)
+	return nil
 }

@@ -1,0 +1,31 @@
+rules:
+  - id: python.sql-string-concat
+    languages: [python]
+    severity: ERROR
+    message: Web request input is pasted into SQL text; pass the value as a query parameter instead.
+    metadata:
+      category: code_vuln
+      cwe: CWE-89
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: flask.request.$ATTR
+              - pattern: request.$ATTR
+              - pattern: self.request.$ATTR
+          - metavariable-regex:
+              metavariable: $ATTR
+              regex: ^(args|form|values|json|data|files|cookies|get_json|get_data|GET|POST|body|COOKIES|FILES|query_params)$
+    pattern-sanitizers:
+      - pattern: int(...)
+      - pattern: float(...)
+    pattern-sinks:
+      - patterns:
+          - pattern: $CUR.$EXEC($SQL, ...)
+          - metavariable-regex:
+              metavariable: $EXEC
+              regex: ^(execute|executemany|executescript|raw|mogrify)$
+          - metavariable-regex:
+              metavariable: $CUR
+              regex: (?i)^(.*\.)?\w*(cursor|cur|conn|connection|con|db|database|session|engine|sqlite\w*|pg\w*|psycopg\w*|objects|manager)(\(\))?$
+          - focus-metavariable: $SQL

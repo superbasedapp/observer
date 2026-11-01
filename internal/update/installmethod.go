@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"path"
 	"strings"
+
+	"github.com/marmutapp/superbased-observer/internal/platform/winshim"
 )
 
 // PathProbe is the FS-shaped question the install-method table needs,
@@ -45,6 +47,13 @@ type Detection struct {
 	// SelfApply is false. Empty when the node self-applies.
 	Advice string
 }
+
+// InstallerUninstallerName is the uninstaller the Windows setup program
+// writes into its install directory, one level above bin\observer.exe. Its
+// presence is what marks a copy as installed by the setup program; the
+// name is deliberately specific so another product's uninstall.exe in a
+// shared directory cannot match.
+const InstallerUninstallerName = "superbased-uninstall.exe"
 
 // installRule is one row of the §3.7 table. Rows are evaluated
 // top-down and the first match wins; the ordering is the specification
@@ -130,6 +139,21 @@ var installRules = []installRule{
 		},
 	},
 	{
+		// The Windows setup program (installer/windows/superbased-setup.nsi)
+		// writes its uninstaller beside the bin directory. That copy owns
+		// its Start menu and Apps and Features entries, so it upgrades by
+		// running the newer setup program rather than swapping its binary.
+		name:   "windows-setup-program",
+		method: MethodInstaller,
+		advice: "download and run the newer installer from https://superbased.app/download",
+		matches: func(p PathProbe, lower string) bool {
+			if p.GOOS != "windows" {
+				return false
+			}
+			return p.sibling(path.Dir(path.Dir(lower)), InstallerUninstallerName)
+		},
+	},
+	{
 		name:   "system-package-owned",
 		method: MethodAPT, // replaced by the probe's answer
 		advice: "use the system package manager to upgrade this package",
@@ -178,7 +202,10 @@ func Detect(p PathProbe) Detection {
 				method = owner
 			}
 		}
-		return Detection{Method: method, SelfApply: r.self, Rule: r.name, Advice: r.advice}
+		// The advice is a command the operator types on this host, so a
+		// Windows node names the npm `.cmd` shim (PowerShell's default
+		// execution policy refuses the `.ps1` one a bare `npm` resolves to).
+		return Detection{Method: method, SelfApply: r.self, Rule: r.name, Advice: winshim.CommandFor(r.advice, p.GOOS)}
 	}
 	if p.Writable {
 		return Detection{Method: MethodBinary, SelfApply: true, Rule: "standalone-writable"}
@@ -212,6 +239,7 @@ var selfUpdatableMethods = map[Method]bool{
 	MethodBrew:           false,
 	MethodAPT:            false,
 	MethodRPM:            false,
+	MethodInstaller:      false,
 	MethodUnknown:        false,
 }
 

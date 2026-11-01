@@ -249,6 +249,16 @@ func BuildEvent(eventName string, body []byte, sc *scrub.Scrubber) (models.ToolE
 	return buildEvent(eventName, body, sc, defaultStash)
 }
 
+// DecodeHookPayload decodes body as BuildEvent's payload shape and nothing
+// more: no event is built and the reasoning stash is never read or taken.
+// A non-nil error is the parse failure BuildEvent would report (JSON that is
+// not an object, a field of the wrong type), which the guarded receiver
+// fails closed on under enforcement (FU-161).
+func DecodeHookPayload(body []byte) error {
+	var raw rawHookPayload
+	return json.Unmarshal(body, &raw)
+}
+
 // reasoningCarrier is the afterAgentThought → next-recordable-event
 // carrier buildEvent threads reasoning through (pending.go). The live
 // hook uses the on-disk cross-process stash (defaultStash) because each

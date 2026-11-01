@@ -14,7 +14,7 @@ import { ProjectDetailPanel } from "@/components/ProjectDetailPanel";
 import { useApi } from "@/lib/useApi";
 import { useFilters, windowLabel, windowParams } from "@/lib/filters";
 import { costLabel, fmtInt, fmtRelative, fmtUSD, withoutDollars } from "@/lib/format";
-import { COMMIT_CAPTURE } from "@/lib/vocabTones";
+import { COMMIT_CAPTURE, commitCaptureTip } from "@/lib/vocabTones";
 import { VocabPill } from "@shared/lib/vocabPill";
 import { CodeCommentSplit } from "@shared/primitives/CodeCommentSplit";
 import {
@@ -275,7 +275,7 @@ function projectColumns(
                 vocab="commitCapture"
                 table={COMMIT_CAPTURE}
                 value={r.capture.commits}
-                title={COMMIT_CAPTURE[r.capture.commits].tip}
+                title={commitCaptureTip(r.capture)}
               />
             )}
           </span>

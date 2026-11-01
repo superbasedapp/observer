@@ -268,7 +268,7 @@ func TestPruneGuardRows_CheckpointKeepsChainVerifiable(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	removed, err := s.PruneGuardRows(ctx, 30)
+	removed, err := s.PruneGuardRows(ctx, 30, 0)
 	if err != nil {
 		t.Fatalf("PruneGuardRows: %v", err)
 	}
@@ -295,7 +295,7 @@ func TestPruneGuardRows_CheckpointKeepsChainVerifiable(t *testing.T) {
 	}
 
 	// retentionDays <= 0 is a clean no-op (config pass-through).
-	removed, err = s.PruneGuardRows(ctx, 0)
+	removed, err = s.PruneGuardRows(ctx, 0, 0)
 	if err != nil || removed != 0 {
 		t.Fatalf("retention<=0 = (%d, %v), want (0, nil) no-op", removed, err)
 	}
@@ -311,7 +311,7 @@ func TestPruneGuardRows_CheckpointKeepsChainVerifiable(t *testing.T) {
 	if _, err := s2.InsertGuardEvents(ctx, oldOnly); err != nil {
 		t.Fatalf("s2 seed: %v", err)
 	}
-	if n, err := s2.PruneGuardRows(ctx, 30); err != nil || n != 2 {
+	if n, err := s2.PruneGuardRows(ctx, 30, 0); err != nil || n != 2 {
 		t.Fatalf("s2 full prune = (%d, %v), want (2, nil)", n, err)
 	}
 	report, err = s2.VerifyGuardChain(ctx)
@@ -349,7 +349,7 @@ func TestPruneGuardRows_SkewedRowRetained(t *testing.T) {
 	if _, err := s.InsertGuardEvents(ctx, events); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	removed, err := s.PruneGuardRows(ctx, 30)
+	removed, err := s.PruneGuardRows(ctx, 30, 0)
 	if err != nil {
 		t.Fatalf("PruneGuardRows: %v", err)
 	}
@@ -653,7 +653,7 @@ func TestGuardApprovals(t *testing.T) {
 		t.Errorf("non-expiring grant ExpiresAt = %v, want zero", byRule[0].ExpiresAt)
 	}
 
-	removed, err := s.PruneGuardRows(ctx, 30)
+	removed, err := s.PruneGuardRows(ctx, 30, 0)
 	if err != nil {
 		t.Fatalf("PruneGuardRows: %v", err)
 	}

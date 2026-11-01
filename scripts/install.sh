@@ -24,7 +24,8 @@
 #                          and verified
 #   --service              after installing, turn on integration.service
 #                          and run `observer service install --now`
-#                          (Linux with systemd)
+#                          (Linux with systemd: a user unit; macOS: a
+#                          launchd agent that starts at sign-in)
 #   --no-service           do not offer the service (on an upgrade: leave
 #                          an existing service unit untouched)
 #   --uninstall           stop the service unit if any, run `observer
@@ -76,6 +77,9 @@ VENDOR_KEYS="npbhJUUL/Zy088BDnuqYRDqjjQtlyF9/eVcWFOCzj2g="
 DEFAULT_BASE_URL="https://github.com/superbasedapp/observer/releases"
 LATEST_API_URL="https://api.github.com/repos/superbasedapp/observer/releases/latest"
 DEFAULT_EDITION="developer"
+# The launchd agent `observer service install` writes on macOS
+# (internal/service/launchd.go LaunchdLabel).
+LAUNCH_AGENT="$HOME/Library/LaunchAgents/app.superbased.observer.plist"
 
 edition="" version="latest" prefix="" from_dir="" base_url=""
 require_sig=0 service_choice="" uninstall=0 purge=0 force=0 dry_run=0 assume_yes=0
@@ -457,6 +461,38 @@ detect_platform() {
   if [ "$os" = darwin ] && [ "$arch" = x64 ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" = 1 ]; then
     arch=arm64
   fi
+  check_macos_floor
+}
+
+# macos_version: the macOS product version (13.0, 15.1, ...). The hermetic
+# tests stand in a fixture command for sw_vers with
+# OBSERVER_INSTALL_TEST_SW_VERS (honoured only with --from-dir, like every
+# other test hook); it prints the version, or nothing and fails to stand in
+# for a version that cannot be read.
+macos_version() {
+  if [ -n "${OBSERVER_INSTALL_TEST_SW_VERS:-}" ] && [ -n "$from_dir" ]; then
+    "$OBSERVER_INSTALL_TEST_SW_VERS" -productVersion 2>/dev/null
+    return
+  fi
+  sw_vers -productVersion 2>/dev/null
+}
+
+# check_macos_floor: this release is built with Go 1.27, which needs macOS 13
+# Ventura or later. A Mac below that is refused before anything is chosen or
+# downloaded; v1.36.0 is the last release for macOS 12. Runs on macOS, and on
+# any host when the tests stand in a sw_vers fixture.
+check_macos_floor() {
+  if [ "$os" != darwin ]; then
+    [ -n "${OBSERVER_INSTALL_TEST_SW_VERS:-}" ] && [ -n "$from_dir" ] || return 0
+  fi
+  mv_ver=$(macos_version) || mv_ver=""
+  mv_major=${mv_ver%%.*}
+  case "$mv_major" in
+    ''|*[!0-9]*) die "could not read the macOS version (sw_vers -productVersion). Observer needs macOS 13 Ventura or later; on macOS 12, stay on v1.36.0." ;;
+  esac
+  if [ "$mv_major" -lt 13 ]; then
+    die "this release needs macOS 13 Ventura or later and this Mac runs macOS $mv_ver. v1.36.0 is the last release for macOS 12 (use the install.sh attached to v1.36.0), or upgrade macOS first."
+  fi
 }
 
 default_prefix() {
@@ -489,6 +525,8 @@ do_uninstall() {
   bin="$target/observer"
   unit_user="$HOME/.config/systemd/user/observer.service"
   unit_system="/etc/systemd/system/observer.service"
+  # macOS: the launchd agent `observer service install` writes (T-920).
+  if [ "$(uname -s)" = Darwin ]; then unit_user="$LAUNCH_AGENT"; fi
 
   say "Uninstall plan:"
   if [ -f "$unit_user" ]; then say "  - stop, disable and remove the user service unit ($bin service uninstall)"; fi
@@ -907,12 +945,23 @@ offer_service() {
   # integration.service is off by default in every edition
   # (docs/components.md), so the service is offered, never assumed, and it
   # is turned on through the binary's own component selection first.
-  [ "$os" = linux ] || return 0
-  systemd_present || return 0
+  case "$os" in
+    linux) systemd_present || return 0; os_kind="systemd user unit" ;;
+    darwin)
+      os_kind="launchd agent, starts when you sign in"
+      # An agent that already runs this install keeps its arguments; the
+      # running daemon moves to the new binary on its next restart.
+      if [ -f "$LAUNCH_AGENT" ]; then
+        say "A launchd agent ($LAUNCH_AGENT) already starts Observer. It runs the new binary after: $installed service restart"
+        return 0
+      fi
+      ;;
+    *) return 0 ;;
+  esac
   if [ "$service_choice" = no ]; then return 0; fi
   if [ -z "$service_choice" ]; then
     interactive || return 0
-    yes_no "Run Observer as a background service (systemd user unit)? [y/N] " n || return 0
+    yes_no "Run Observer as a background service ($os_kind)? [y/N] " n || return 0
   fi
   if ! "$installed" components add integration.service --yes; then
     warn "could not turn on integration.service; the service was not installed"

@@ -115,10 +115,45 @@ var t725Cases = []t725Case{
 		windows: true,
 		existing: func(oldBin, _ string) func(string) string {
 			return func(ev string) string {
-				return "MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu-20.04 -- " + oldBin + " hook claude-code " + hookEventArg(ev)
+				return portableBridgeCommand("Ubuntu-20.04", oldBin, "claude-code", hookEventArg(ev), "")
 			}
 		},
 		wantIdentical: true,
+	},
+	{
+		name:    "bridge, other binary path, explicit default --config: kept",
+		keep:    true,
+		windows: true,
+		existing: func(oldBin, home string) func(string) string {
+			return func(ev string) string {
+				return portableBridgeCommand("Ubuntu-20.04", oldBin, "claude-code", hookEventArg(ev), filepath.ToSlash(filepath.Join(home, ".observer", "config.toml")))
+			}
+		},
+		wantIdentical: true,
+	},
+	{
+		// AP-119: the Git-Bash-only MSYS_NO_PATHCONV=1 form is migrated
+		// even though it runs the same binary.
+		name:    "bridge, legacy MSYS_NO_PATHCONV form: rewritten",
+		keep:    true,
+		windows: true,
+		existing: func(oldBin, _ string) func(string) string {
+			return func(ev string) string {
+				return "MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu-20.04 -- " + oldBin + " hook claude-code " + hookEventArg(ev)
+			}
+		},
+		wantRule: "bridge-form",
+	},
+	{
+		name:    "bridge, prefix-free form without the exit trailer: rewritten",
+		keep:    true,
+		windows: true,
+		existing: func(oldBin, _ string) func(string) string {
+			return func(ev string) string {
+				return "wsl.exe -d Ubuntu-20.04 -- " + msysLiteralPath(oldBin) + " hook claude-code " + hookEventArg(ev)
+			}
+		},
+		wantRule: "bridge-form",
 	},
 	{
 		name:    "bridge target, native Windows entry: converted to the bridge",

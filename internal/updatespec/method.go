@@ -25,6 +25,11 @@ const (
 	MethodAPT Method = "apt"
 	// MethodRPM is an rpm-owned install.
 	MethodRPM Method = "rpm"
+	// MethodInstaller is a copy the Windows setup program installed (it
+	// owns the files, the Start menu entry and the Apps and Features
+	// entry). It upgrades by running the newer setup program, never by
+	// replacing its own binary.
+	MethodInstaller Method = "installer"
 	// MethodUnknown is the honest zero value: nothing was resolvable
 	// (no executable path). It never self-applies.
 	MethodUnknown Method = "unknown"

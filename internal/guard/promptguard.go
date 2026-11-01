@@ -113,6 +113,46 @@ var promptModeRank = map[PromptMode]int{
 	PromptModeBlock:   4,
 }
 
+// promptFloorRow maps one pinned prompt-rule decision onto the minimum
+// [guard.prompt] mode it guarantees.
+type promptFloorRow struct {
+	decision policy.Decision
+	mode     PromptMode
+}
+
+// promptDecisionFloor is the ONE table that turns a pinned rule decision
+// into a prompt-mode floor (CLAUDE.md rule 5). An overridable org deny
+// has already been softened to ask by promptDecision, so it floors at
+// ask-once (the developer may confirm by resending), never at block.
+var promptDecisionFloor = []promptFloorRow{
+	{policy.DecisionDeny, PromptModeBlock},
+	{policy.DecisionAsk, PromptModeAskOnce},
+	{policy.DecisionFlag, PromptModeWarn},
+}
+
+// promptFloorLayers are the policy layers whose pinned decision floors
+// the local [guard.prompt] mode. Only the organization's signed bundle
+// does: a developer tunes their own prompt lane through [guard.prompt]
+// directly, so their own overrides add nothing here.
+var promptFloorLayers = map[string]bool{
+	layerOrg: true,
+}
+
+// promptModeFloor returns the minimum prompt mode v's pinned decision
+// guarantees, or PromptModeOff when no floor-setting layer pinned it.
+func promptModeFloor(v policy.Verdict) PromptMode {
+	if !promptFloorLayers[v.DecisionPinnedBy] {
+		return PromptModeOff
+	}
+	d := promptDecision(v)
+	for _, row := range promptDecisionFloor {
+		if row.decision == d {
+			return row.mode
+		}
+	}
+	return PromptModeOff
+}
+
 // parsePromptMode reports whether s is a known mode string.
 func parsePromptMode(s string) (PromptMode, bool) {
 	m := PromptMode(s)
@@ -358,6 +398,10 @@ type PromptVerdict struct {
 	// WarnIndirect mirrors the seam's PromptSeamCaps.WarnIndirect (set by
 	// WithAction): a warn the developer does not see in band still toasts.
 	WarnIndirect bool
+	// BlockSilent mirrors the seam's PromptSeamCaps.BlockSilent (set by
+	// WithAction): a block that shows the developer no reason in band
+	// toasts regardless of the alert severity threshold.
+	BlockSilent bool
 }
 
 // promptDecision is the decision a prompt verdict asks of its seam: the
@@ -374,6 +418,7 @@ func promptDecision(v policy.Verdict) policy.Decision {
 func (pv PromptVerdict) WithAction(caps PromptSeamCaps, lane string) PromptVerdict {
 	pv.Lane = lane
 	pv.WarnIndirect = caps.WarnIndirect
+	pv.BlockSilent = caps.BlockSilent
 	if pv.redactWanted(caps) {
 		// The prompt goes through masked (promptaction.go redactWanted).
 		pv.Action, pv.ActionDegradedFrom, pv.Outcome = PromptActionRedact, "", PromptOutcomeWarned
@@ -562,8 +607,11 @@ func (g *Guard) buildPromptFindings(text string, skip func(value string) bool) (
 		ActiveDetectors: g.activePromptDetectors(),
 	}
 	findings, wasTruncated := scrub.DetectPromptFindings(text, opts)
+	// D-672: on a managed node a local allow-pattern does not drop a finding
+	// of a class whose rule the organization pinned (orgPromptReach).
+	reach := g.orgPromptReach()
 	for _, f := range findings {
-		if g.promptAllowed(f.Value) || (skip != nil && skip(f.Value)) {
+		if (g.promptAllowed(f.Value) && !reach[f.Class]) || (skip != nil && skip(f.Value)) {
 			continue
 		}
 		hash := normalizedSpanHash(f.Class, f.Value)
@@ -601,10 +649,15 @@ func (g *Guard) buildPromptFindings(text string, skip func(value string) bool) (
 // half that stops it from silently consuming ANY detector's
 // per-detector cap, paired with detect.go's own per-detector cap
 // change (the other half of BLOCK-2).
+//
+// D-672: on a managed node a detector whose class the organization pinned
+// (orgPromptReach) stays active whatever the local global or per-detector
+// mode says, so the org's floor (promptModeFloor) has a finding to act on.
 func (g *Guard) activePromptDetectors() map[string]bool {
+	reach := g.orgPromptReach()
 	active := make(map[string]bool, len(scrub.DetectorNames()))
 	for _, name := range scrub.DetectorNames() {
-		if effectivePromptMode(g.cfg.Prompt.Mode, g.cfg.Prompt.Detectors, name) != PromptModeOff {
+		if effectivePromptMode(g.cfg.Prompt.Mode, g.cfg.Prompt.Detectors, name) != PromptModeOff || detectorReached(reach, name) {
 			active[name] = true
 		}
 	}
@@ -760,7 +813,7 @@ func (g *Guard) stampPromptOrgLock(pv *PromptVerdict) {
 	if pv.Verdict.RuleID == "" || pv.GrantID != 0 {
 		return
 	}
-	pv.OrgLocked = orgLockedVerdict(pv.Verdict, g.orgLocksVerdictRule(g.set.Load(), pv.Verdict.RuleID))
+	pv.OrgLocked = orgLockedVerdict(pv.Verdict, g.orgLocksVerdictRule(g.set.Load(), pv.Verdict.RuleID, ""))
 	pv.RequestBase = g.requestBase
 }
 
@@ -777,7 +830,7 @@ func PromptRequestAccessHint(pv PromptVerdict, sessionID string) string {
 	if !ok {
 		what = blockedWhatFallback
 	}
-	return strings.TrimPrefix(requestAccessLine(pv.Verdict.RuleID, what, pv.RequestBase, sessionID), "observer: ")
+	return strings.TrimPrefix(requestAccessLine(pv.Verdict.RuleID, what), "observer: ")
 }
 
 // raisePromptSeverityOnDeny implements the FIX-1 severity bump
@@ -879,6 +932,19 @@ func (g *Guard) evaluatePromptDecide(ev policy.Event) PromptVerdict {
 			worst = r.mode
 		}
 	}
+	// Guard-rules live audit 2026-10-15 (F1): an organization that pinned
+	// this rule's decision (`decision = "deny"` and/or `enforce = true`)
+	// sets a FLOOR under the local per-detector mode. Without it an org
+	// deny resolved to the node's ask-once default and an identical
+	// resend went through on every tool. The local mode still wins when
+	// it is stricter. The floor is applied BEFORE the off exit below: a
+	// local per-detector "off" is a local mode like any other, so it
+	// cannot undo an org pin (integration security review, 2026-10-15).
+	// It only raises `worst`; the observe-mode and enforce-cap exits
+	// below still apply exactly as before.
+	if floor := promptModeFloor(verdict); promptModeRank[floor] > promptModeRank[worst] {
+		worst = floor
+	}
 	if worst == PromptModeOff {
 		return PromptVerdict{Verdict: policy.Verdict{Decision: policy.DecisionAllow}, Outcome: PromptOutcomeAllowed}
 	}
@@ -906,7 +972,6 @@ func (g *Guard) evaluatePromptDecide(ev policy.Event) PromptVerdict {
 		verdict.Decision = policy.DecisionFlag
 		return PromptVerdict{Verdict: verdict, Outcome: PromptOutcomeWarned, OrgCapped: verdict.EnforceCappedBy == layerOrg}
 	}
-
 	switch worst {
 	case PromptModeWarn:
 		verdict.Decision = policy.DecisionFlag

@@ -26,6 +26,11 @@ const (
 	KindTool
 	// KindContent is one captured content body (prompt, tool input/output).
 	KindContent
+	// KindGenTiming is one model call's generation duration, keyed so it can
+	// be stamped onto the tool's OWN transcript token row for the same call
+	// (Vendor.TranscriptTiming). It never becomes a turn and carries no
+	// tokens.
+	KindGenTiming
 )
 
 // Grain says whose data one export carries. It decides WHERE the export may
@@ -75,6 +80,11 @@ type Turn struct {
 	ReasoningTokens  int64
 	CostUSD          float64
 	DurationMS       int64
+	// TimeToFirstTokenMS is the vendor's own time-to-first-token for the
+	// call (Fields.TTFT); 0 when the export carries none. It lands on
+	// api_turns.time_to_first_token_ms, an enrichment column the merge
+	// fills only when empty (internal/turnmerge).
+	TimeToFirstTokenMS int64
 	// ViaProxyRoute: the export's resource carries the launcher's route
 	// marker (RouteResourceAttr=RouteProxy), so this call went through the
 	// node's proxy.
@@ -126,11 +136,32 @@ type Content struct {
 	TimeUnixNano uint64
 }
 
+// GenTiming is one model call's generation duration as the export reports
+// it, keyed to the tool's own transcript token row for the same call. The
+// caller stamps DurationMS onto the token_usage row whose Key column equals
+// KeyValue in SessionID (gen_basis "otel"), and only where that row has no
+// timing of its own: the transcript's native timing always wins.
+type GenTiming struct {
+	Tool      string
+	SessionID string
+	// Key names the transcript token_usage column KeyValue equals
+	// (Vendor.TranscriptTiming).
+	Key      TimingKey
+	KeyValue string
+	// DurationMS is the call's END-TO-END duration (time to first token
+	// included), never a stream-only span; always positive.
+	DurationMS int64
+	Timestamp  time.Time
+}
+
 // Result is everything one export mapped to.
 type Result struct {
 	Turns    []Turn
 	Tools    []ToolCall
 	Contents []Content
+	// GenTimings are the per-call generation durations for the transcript's
+	// own token rows (KindGenTiming rules).
+	GenTimings []GenTiming
 	// Skipped counts turn records dropped because their rule requires a
 	// vendor request id and the record had none (the Claude Code rule: a
 	// turn without its request id could duplicate a proxied row).

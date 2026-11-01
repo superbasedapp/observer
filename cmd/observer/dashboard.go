@@ -30,11 +30,15 @@ func newDashboardCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "dashboard",
-		Short: "Serve the local analytics dashboard (embedded HTML + /api/* JSON)",
-		Long: "Runs a single-file HTML dashboard served by net/http against the\n" +
-			"observer DB. Endpoints: /api/status, /api/cost, /api/sessions,\n" +
-			"/api/discover, /api/patterns. Content-Type-agnostic clients (e.g.\n" +
-			"curl) can consume the /api/* JSON directly.",
+		Short: "Serve the local dashboard on its own, without the daemon",
+		Long: "Serves the same node dashboard `observer start` serves (every page:\n" +
+			"Overview, Sessions, Cost, Tools, Security, Settings and the rest) from\n" +
+			"this machine's observer database, on 127.0.0.1 by default. Use it to\n" +
+			"browse captured data when the daemon is not running. It does not\n" +
+			"capture: no watcher, no proxy and no org push run in this process, so\n" +
+			"pages that report live capture say so. The dashboard reads its data\n" +
+			"from local /api/* JSON endpoints, which a script on this machine can\n" +
+			"also read.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Match `observer start`: every child process launched by this
 			// standalone dashboard must resolve the same explicit config and DB.
@@ -74,7 +78,11 @@ func newDashboardCmd() *cobra.Command {
 			// projects-page-roi-and-commit-alignment-plan-2026-09-21.md
 			// §4 W3) — same wiring as `observer start`.
 			projectsJudgeGrade, projectsJudgeGradeReason := projectsDashboardOptions(&cfg)
-			server, err := dashboard.New(dashapi.Options{
+			// D-MU1: the Connected-tools catalog reads every adapter's
+			// WatchPaths before the listener binds; discovery walks run in
+			// the background, as in `observer start`.
+			configureAdapterDiscovery(cmd.Context(), cfg, componentSnapshotForConfig(cfg).AdapterActive)
+			server, err := dashboard.New(withInstallSignals(dashapi.Options{
 				ProcessArchive: processArchive,
 				Governance:     ngov.Effective,
 				DB:             database,
@@ -93,6 +101,47 @@ func newDashboardCmd() *cobra.Command {
 				CloudGradeAvailability: CommitAlignmentAvailability,
 				JudgeGrade:             projectsJudgeGrade,
 				JudgeGradeReason:       projectsJudgeGradeReason,
+				// Projects page "Rescan now" (commitscan_wire.go): the daemon's own
+				// commit scanner, nil when [projects].commit_scan is off.
+				CommitRescan: commitRescanWithDelivery(cfg, database),
+				// Package checks card (security_deps_dash.go): the install
+				// gate's state and the dashboard accept of its disclosure.
+				PackageChecks: packageChecksDash(resolvedConfigPath, database),
+				// Scanners card (security_scan_dash.go): the OSV database
+				// download's one-time accept (PT-19).
+				ScannerDB: scannerDBDash(resolvedConfigPath, database),
+				// SARIF upload (security_sarifimport.go): one file the
+				// developer picked, through the CLI's own import (lane SEC-P4).
+				SARIFImport: sarifImportDash(database),
+				// Code rules card (security_opengrep_dash.go): the guided
+				// install with its size consent (lane SEC-G2).
+				Opengrep: opengrepDash(resolvedConfigPath, database),
+				IaC:      iacDash(resolvedConfigPath, database),
+				// AI change records card (security_provenance_cmd.go, lane sec-f2a).
+				Provenance: provenanceDash(resolvedConfigPath, database),
+				// The one security opt-in rule (security_optin.go): the
+				// components state's security_selected (which Settings rows and
+				// the Explain button show), and the trust, git hooks and
+				// scanner routes.
+				SecuritySelected: securitySelected,
+				// The Components page's view with the modules' own rules
+				// (components_gate.go), so a removed sandbox root reads as off there
+				// as in `observer components status` (P-057).
+				ComponentStateView: componentStateView,
+				// The launch row's Observer-entry test (launch_trust_own.go), so
+				// the New Terminal trust chip leaves out what the launch leaves out.
+				RepoTrustOwn: repoTrustDashboardOwn,
+				// The launch row's conditional rows (trust_conditions.go), so the
+				// review lists N2's initializeCommand row as the launch reads it.
+				RepoTrustPaths: repoTrustDashboardPaths(resolvedConfigPath),
+				// The Findings tab's Explain (security.feedback, lane sec-h).
+				SecurityExplain: securityExplainDash(resolvedConfigPath, database),
+				// The affected-worker notice (security_orgnotice_dash.go, lane SEC-E3).
+				SecurityOrgShare: securityOrgShareDash(cfg.OrgClient.Share.Security),
+				// Delivery (delivery_wire.go, D-689): the [delivery] tunables and the
+				// one process-wide delivery service the poll loop also runs.
+				Delivery:        cfg.Delivery,
+				DeliveryService: deliveryDashOption(cfg, database),
 				// LOC editor endpoint credential — same resolution as
 				// `observer start`, so a developer running the dashboard
 				// standalone gets the identical posture.
@@ -107,14 +156,17 @@ func newDashboardCmd() *cobra.Command {
 				// Cloud account seam (cloudaccount_wire.go): local sign-in probe +
 				// `observer cloud login|logout` subprocess runner behind the Settings
 				// → Cloud Intelligence Sign-in button. Spawns the CLI; links nothing new.
-				CloudAccount:     newCloudAccountSeams(resolvedConfigPath),
-				ArenaAdmission:   arenaBudgetAdmissionSeam(resolvedConfigPath),
-				GuardEnabled:     cfg.Guard.Enabled,
-				GuardMode:        cfg.Guard.Mode,
-				GuardStrict:      cfg.Guard.Strict,
-				GuardHookFailure: guardHookFailureSeam(configPath),
-				GuardToolGates:   guardToolGatesSeam(configPath, surfaces.sandboxProber),
-				ToolCatalog:      toolCatalog(),
+				CloudAccount:   newCloudAccountSeams(resolvedConfigPath),
+				ArenaAdmission: arenaBudgetAdmissionSeam(resolvedConfigPath),
+				ArenaPreflight: arenaPreflightSeam(resolvedConfigPath),
+				// OSH-R-005: may an Arena drive skip the harness's permission checks.
+				ArenaPermissionBypass: arenaPermissionBypassSeam(resolvedConfigPath),
+				GuardEnabled:          cfg.Guard.Enabled,
+				GuardMode:             cfg.Guard.Mode,
+				GuardStrict:           cfg.Guard.Strict,
+				GuardHookFailure:      guardHookFailureSeam(configPath),
+				GuardToolGates:        guardToolGatesSeam(configPath, surfaces.sandboxProber),
+				ToolCatalog:           toolCatalog(),
 				// Connected tools hooks probe: the daemon's own
 				// auto-registration options (T-376).
 				HookRegistryOptions: hookProbeOptionsSeam(configPath),
@@ -142,6 +194,9 @@ func newDashboardCmd() *cobra.Command {
 				// Nil unless [terminal.sandbox].enabled → endpoint reports
 				// disabled and a sandbox request 501s (fail closed).
 				SandboxProber: surfaces.sandboxProber,
+				// The New Terminal "project policy" line (lane sec-p2b): reads the
+				// project match record; shown only when the node holds a project delivery.
+				ProjectPolicy: terminalProjectPolicySeam(cfg, store.New(database)),
 				// Tool-binary-resolution seams (tool-binary-resolution arc §5):
 				// pre-launch verdict + guided install. Defined as plain funcs so
 				// the dashboard package never imports internal/toolresolve.
@@ -188,7 +243,7 @@ func newDashboardCmd() *cobra.Command {
 				// non-loopback bind stays fail-closed until Phase 2 exposure.
 				Remote:      remoteCtrl,
 				RemoteAudit: remoteAuditSink(database),
-			})
+			}))
 			if err != nil {
 				return err
 			}
@@ -218,6 +273,7 @@ func newDashboardCmd() *cobra.Command {
 			// in this path (pre-Phase-2), so pass nil.
 			// D-514 / D-516: never refuse; bind loopback and say why once.
 			listen = feasibleDashboardAddr(listen, remoteCtrl, cmd.ErrOrStderr())
+			noteDashboardListen(listen)
 			ctx, cancel := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer cancel()
 			// Same default-off, loopback-only profiling knob as `observer

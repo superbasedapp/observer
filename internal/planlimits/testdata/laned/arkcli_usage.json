@@ -1,0 +1,15 @@
+{
+  "viewer": {"auth_method": "sso", "profile": "agent-plan_cn-beijing_personal"},
+  "items": [
+    {"product": "agent-plan", "subscribed": true, "periods": [
+      {"label": "5h", "total": 2000, "percent": 0},
+      {"label": "weekly", "used": 2009.33, "total": 7000, "percent": 28.7, "reset_at": "2025-10-13T00:00:00+08:00"},
+      {"label": "monthly", "used": 2009.33, "total": 20000, "percent": 10.05, "reset_at": "2025-10-31T23:59:59+08:00"}]},
+    {"product": "coding-plan", "subscribed": true, "periods": [
+      {"label": "session", "percent": 7.48, "reset_at": 1760010000},
+      {"label": "weekly", "percent": 62.5, "reset_at": 1760313600000},
+      {"label": "monthly", "percent": 1.36, "reset_at": -1}], "updated_at": 1759999000000},
+    {"product": "image-plan", "subscribed": true, "periods": [{"label": "weekly", "percent": 99}]},
+    {"product": "coding-plan-team", "subscribed": false, "periods": [{"label": "weekly", "percent": 50}]}
+  ]
+}

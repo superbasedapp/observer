@@ -28,7 +28,9 @@ func TestEvaluateRouteGateTable(t *testing.T) {
 		{"row 3: foreign provider wins over a missing model", byok, RouteGateInput{CredentialPresent: true, ForeignProvider: true}, RouteGateForeignProvider},
 		{"row 2 before row 3: no credential with a foreign type", byok, RouteGateInput{ForeignProvider: true}, RouteGateNoCredential},
 		{"row 4: credential without model is refused", byok, RouteGateInput{CredentialPresent: true}, RouteGateModelRequired},
-		{"row 5: credential and model route", byok, RouteGateInput{CredentialPresent: true, ModelPresent: true}, RouteGateRouted},
+		{"row 5 (CLI-6): a saved sign-in choice routes with its caveat", keyOnly, RouteGateInput{CredentialPresent: true, AuthPinned: true}, RouteGateRoutedAuthPinned},
+		{"row 2 before row 5: no credential with a saved sign-in", keyOnly, RouteGateInput{AuthPinned: true}, RouteGateNoCredential},
+		{"row 6: credential and model route", byok, RouteGateInput{CredentialPresent: true, ModelPresent: true}, RouteGateRouted},
 		{"a lane needing no model routes on the credential", keyOnly, RouteGateInput{CredentialPresent: true}, RouteGateRouted},
 	}
 	for _, tc := range cases {

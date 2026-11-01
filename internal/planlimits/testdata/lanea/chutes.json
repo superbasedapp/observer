@@ -1,0 +1,1 @@
+{"subscription":{"active":true,"plan_name":"Pro","current_period_end":"2025-11-01T00:00:00Z"},"monthly":{"used":250,"limit":1000,"resets_at":"2025-11-01T00:00:00Z","unit":"credits"},"rolling_window":{"requests":40,"limit":100,"window_minutes":240,"reset_at":"2025-10-09T12:00:00Z","unit":"requests"}}

@@ -1,0 +1,24 @@
+rules:
+  - id: python.path-traversal-request
+    languages: [python]
+    severity: WARNING
+    message: A file path built from web request input is opened without confining it to a base directory.
+    metadata:
+      category: code_vuln
+      cwe: CWE-22
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+          - pattern: flask.request.$ATTR
+          - pattern: request.$ATTR
+    pattern-sanitizers:
+      - pattern-either:
+          - pattern: os.path.basename(...)
+          - pattern: werkzeug.utils.secure_filename(...)
+          - pattern: secure_filename(...)
+    pattern-sinks:
+      - pattern-either:
+          - pattern: open(...)
+          - pattern: send_file(...)
+          - pattern: flask.send_file(...)
+          - pattern: os.remove(...)

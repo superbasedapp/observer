@@ -5,6 +5,7 @@
 // Node 20).
 
 import type { ComponentsStateLite } from '../components-internals';
+import type { SecurityEditorResponse } from '../security-internals';
 import type {
   CacheStatusResponse,
   CostResponse,
@@ -12,6 +13,7 @@ import type {
   FileStateResponse,
   HeadlineResponse,
   HealthResponse,
+  MessagesSummaryResponse,
   SessionsResponse,
   WatcherHealthResponse,
 } from './types';
@@ -130,6 +132,11 @@ export class Client {
     return this.get<ComponentsStateLite>(`/api/components/state`);
   }
 
+  /** GET /api/security/editor: the open code security findings of a folder's project (lane sec-c3). */
+  async securityEditor(folder: string): Promise<SecurityEditorResponse> {
+    return this.get<SecurityEditorResponse>(`/api/security/editor?root=${encodeURIComponent(folder)}`);
+  }
+
   async fileState(absolutePath: string): Promise<FileStateResponse> {
     return this.get<FileStateResponse>(
       `/api/file/state?path=${encodeURIComponent(absolutePath)}`,
@@ -217,6 +224,45 @@ export class Client {
       return res.ok;
     } catch {
       return false;
+    }
+  }
+
+  /** GET /api/messages/summary: unread counts and the newest admin message
+   *  (admin and developer messaging, T-854). */
+  async messagesSummary(): Promise<MessagesSummaryResponse> {
+    return this.get<MessagesSummaryResponse>(`/api/messages/summary`);
+  }
+
+  /**
+   * ackMessage acknowledges one admin message (POST /api/messages/{id}/ack).
+   *
+   * The route is an owner-local write guarded by the dashboard's
+   * double-submit confirm token: the request must carry the same token in
+   * the X-Observer-Confirm header and the sb_remote_confirm cookie. This
+   * client is not a browser, so it does what the dashboard does in two
+   * explicit steps: a GET of /api/messages mints the token (its body echoes
+   * it), then the POST sends it back in both places. Like postEditorChange,
+   * it sends no Origin header, which the daemon's loopback guard admits.
+   * Throws on any failure; the caller falls back to opening the thread.
+   */
+  async ackMessage(messageId: number): Promise<void> {
+    if (!Number.isInteger(messageId) || messageId <= 0) {
+      throw new Error(`invalid message id ${messageId}`);
+    }
+    const minted = await this.get<{ confirm_token?: string }>(`/api/messages?status=open`);
+    const token = (minted.confirm_token ?? '').trim();
+    if (!token) throw new Error('SuperBased API /api/messages returned no confirm token');
+    const res = await this.fetchWithTimeout(this.url(`/api/messages/${messageId}/ack`), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Observer-Confirm': token,
+        Cookie: `sb_remote_confirm=${token}`,
+      },
+      body: '{}',
+    });
+    if (!res.ok) {
+      throw new Error(`SuperBased API /api/messages/${messageId}/ack → HTTP ${res.status} ${res.statusText}`);
     }
   }
 

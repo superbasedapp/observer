@@ -60,6 +60,10 @@ func seedVerifiedGrant(t *testing.T, st *store.Store, g orgcontract.AccessGrantW
 // grant's uses: a one-use grant allows one call, whichever process asks
 // first.
 func TestOrgGrantWiring_HookAndDaemonReadTheSameGrant(t *testing.T) {
+	// The guards read the org bundle and user policy under the home; the
+	// process temp home's .observer is a file (FU-20), which reads as a
+	// failed org layer and keeps the lock.
+	pinToolHomes(t)
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "observer.db")
 	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})

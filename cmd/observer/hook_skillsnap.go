@@ -21,6 +21,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/db"
 	"github.com/marmutapp/superbased-observer/internal/git"
 	"github.com/marmutapp/superbased-observer/internal/guidance"
+	"github.com/marmutapp/superbased-observer/internal/hookctx"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
 	"github.com/marmutapp/superbased-observer/internal/skillhistory"
@@ -71,8 +72,13 @@ type skillSnapEnv struct {
 	Scan func(ctx context.Context, anchor string, opts guidance.Options) (guidance.Result, error)
 	// ReadSkill reads one SKILL.md (size-capped, containment-checked).
 	ReadSkill func(anchor, abs string, maxBytes int64) ([]byte, error)
-	// ProjectRoot resolves the project root for a (local) cwd.
+	// ProjectRoot resolves the project root for a (local) cwd: the project
+	// the snapshot is recorded under.
 	ProjectRoot func(cwd string) string
+	// CheckoutRoot resolves the top level of the checkout cwd sits in, the
+	// directory the project's skills are read from (a linked worktree's
+	// own files, F0-14). nil reads from ProjectRoot.
+	CheckoutRoot func(cwd string) string
 	// UserHome is the hook process's own home directory.
 	UserHome func() (string, error)
 	HostOS   string
@@ -81,10 +87,18 @@ type skillSnapEnv struct {
 
 func productionSkillSnapEnv() skillSnapEnv {
 	return skillSnapEnv{
+		// A relayed event reads only under its run's roots (lane sbx-p2b):
+		// the payload's cwd and transcript path are the box's claims.
 		Scan: func(ctx context.Context, anchor string, opts guidance.Options) (guidance.Result, error) {
+			if !hookctx.Process().Contains(anchor) {
+				return guidance.Result{}, fmt.Errorf("skill scan %s: %w", anchor, hookctx.ErrRefused)
+			}
 			return guidance.Scan(ctx, anchor, guidance.OSFS(anchor), opts)
 		},
 		ReadSkill: func(anchor, abs string, maxBytes int64) ([]byte, error) {
+			if !hookctx.Process().Contains(anchor) || !hookctx.Process().Contains(abs) {
+				return nil, fmt.Errorf("skill read %s: %w", abs, hookctx.ErrRefused)
+			}
 			fsys := guidance.OSFS(anchor)
 			info, err := fsys.Stat(abs)
 			if err != nil {
@@ -97,6 +111,12 @@ func productionSkillSnapEnv() skillSnapEnv {
 		},
 		ProjectRoot: func(cwd string) string {
 			if root, ok := git.FindRoot(cwd); ok {
+				return root
+			}
+			return cwd
+		},
+		CheckoutRoot: func(cwd string) string {
+			if root, ok := git.FindCheckoutRoot(cwd); ok {
 				return root
 			}
 			return cwd
@@ -153,6 +173,10 @@ func buildSkillSnapshot(ctx context.Context, env skillSnapEnv, req skillSnapRequ
 	}
 	cwd := crossmount.TranslateForeignPath(req.Cwd)
 	root := env.ProjectRoot(cwd)
+	checkout := root
+	if env.CheckoutRoot != nil {
+		checkout = env.CheckoutRoot(cwd)
+	}
 	home, homeOK := resolveSkillHome(env, req)
 	snap := store.SkillSnapshot{
 		SessionID: req.SessionID, Tool: models.ToolClaudeCode, Event: req.Event, Source: req.Source,
@@ -163,7 +187,7 @@ func buildSkillSnapshot(ctx context.Context, env skillSnapEnv, req skillSnapRequ
 	defer cancel()
 
 	if req.Event == skillhistory.EventSkillInvoke {
-		return invokedSkillSnapshot(ctx, env, req, snap, root, home, homeOK)
+		return invokedSkillSnapshot(ctx, env, req, snap, checkout, home, homeOK)
 	}
 
 	opts := guidance.DefaultOptions()
@@ -173,7 +197,7 @@ func buildSkillSnapshot(ctx context.Context, env skillSnapEnv, req skillSnapRequ
 	passes := []struct {
 		anchor string
 		o      guidance.Options
-	}{{root, withProjectOnly(opts)}}
+	}{{checkout, withProjectOnly(opts)}}
 	if homeOK {
 		passes = append(passes, struct {
 			anchor string

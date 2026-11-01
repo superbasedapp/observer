@@ -33,7 +33,10 @@ import (
 // wireVendorOTLPIngest returns the receiver's logs handler and the trace
 // handler that routes claimed vendor resources to the ingest and passes the
 // rest to planeA. start.go's otlp-receiver calls it when [ingest.otel] is on.
-func wireVendorOTLPIngest(cfg config.Config, database *sql.DB, logger *slog.Logger, planeA otlpingest.TraceHandler) (otlpingest.Handler, otlpingest.TraceHandler) {
+//
+// ctx bounds the background retry of export generation timings that arrived
+// before their transcript rows (otlp_gentiming.go).
+func wireVendorOTLPIngest(ctx context.Context, cfg config.Config, database *sql.DB, logger *slog.Logger, planeA otlpingest.TraceHandler) (otlpingest.Handler, otlpingest.TraceHandler) {
 	// T-536: a tool whose persisted proxy route is active has its token rows
 	// owned by the proxy. REVIEW-4 P4-18: only when this node serves that
 	// proxy. cfg here is the raw config the receiver reloads, so
@@ -44,6 +47,7 @@ func wireVendorOTLPIngest(cfg config.Config, database *sql.DB, logger *slog.Logg
 	ing := newOTLPIngest(store.New(database), logger, cfg.Ingest.OTel.CapturesContent(), cfg.Ingest.OTel.MaxContentBytes(),
 		enabledAdapterSet(cfg.Observer.Watch.EnabledAdapters)).
 		withProxyRoutes(newProxyRouteResolver(serving, userHomeOrEmpty()).Routed)
+	go ing.runGenTimingRetry(ctx)
 	return ing.logs, ing.traces(planeA)
 }
 
@@ -79,6 +83,10 @@ type otlpIngest struct {
 	// proxied regardless (T-536).
 	proxyRouted func(tool string) bool
 	scrubber    *scrub.Scrubber
+	// genPending parks export generation timings whose transcript row is
+	// not ingested yet (otlp_gentiming.go); clock is time.Now outside tests.
+	genPending genTimingPending
+	clock      func() time.Time
 	// warned remembers the one-time warnings (an unmapped service.name, a
 	// refused team-grain vendor) so a chatty exporter does not flood the log.
 	warned sync.Map
@@ -93,7 +101,7 @@ func newOTLPIngest(st *store.Store, logger *slog.Logger, captureContent bool, co
 	}
 	return &otlpIngest{
 		st: st, logger: logger, captureContent: captureContent, contentMaxBytes: contentMaxBytes,
-		transcriptCapture: transcriptCapture, scrubber: scrub.New(),
+		transcriptCapture: transcriptCapture, scrubber: scrub.New(), clock: time.Now,
 	}
 }
 
@@ -263,6 +271,18 @@ func (o *otlpIngest) apply(ctx context.Context, res otlpvendor.Result) error {
 		o.noteWrite(&retry, err, "otlp ingest: tool calls not stored", "count", len(events))
 	}
 
+	// Generation timing for the transcript's own token rows (AP-131
+	// follow-up): earlier stamps still waiting for their row go first, then
+	// this export's. A stamp never adds a row, so it is not a token write.
+	o.retryPendingGenTimings(ctx)
+	var stamps []store.TranscriptGenStamp
+	for _, gt := range res.GenTimings {
+		if _, a := admit(gt.Tool, false); a.Timing {
+			stamps = append(stamps, genStampFromOTLP(gt))
+		}
+	}
+	o.stampGenTimings(ctx, stamps)
+
 	if o.captureContent {
 		var keep []otlpvendor.Content
 		for _, c := range res.Contents {
@@ -306,6 +326,7 @@ func apiTurnFromOTLP(t otlpvendor.Turn) models.APITurn {
 		CacheCreationTokens: t.CacheWriteTokens,
 		CostUSD:             t.CostUSD,
 		TotalResponseMS:     t.DurationMS,
+		TimeToFirstTokenMS:  t.TimeToFirstTokenMS,
 		Source:              t.SourceTag,
 	}
 }

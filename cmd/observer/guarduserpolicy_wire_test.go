@@ -18,6 +18,21 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
+// homeDisplay is p as a guard reason shows it: under the home directory as
+// "~" plus the rest (on Windows the test temp folder is under the home, on
+// Linux it is not), else p itself.
+func homeDisplay(p string) string {
+	h, err := os.UserHomeDir()
+	if err != nil || h == "" {
+		return p
+	}
+	h = filepath.Clean(h)
+	if len(p) > len(h) && strings.EqualFold(p[:len(h)], h) && os.IsPathSeparator(p[len(h)]) {
+		return "~" + p[len(h):]
+	}
+	return p
+}
+
 // TestRecordUserPolicyInvalid pins the T-323 org event: a user policy
 // the guard drops raises ONE guard_error flag with degraded_from
 // "user_policy_invalid" per distinct file content, nothing for a valid
@@ -76,7 +91,7 @@ func TestRecordUserPolicyInvalid(t *testing.T) {
 			r.Decision != "flag" || r.EventKind != "config_change" || r.Severity != "high" || r.Enforced {
 			t.Errorf("event row = %+v", r)
 		}
-		if !strings.Contains(r.Reason, policyPath) || !strings.Contains(r.Reason, "rules are OFF") {
+		if !strings.Contains(r.Reason, homeDisplay(policyPath)) || !strings.Contains(r.Reason, "rules are OFF") {
 			t.Errorf("reason %q does not name the file and the consequence", r.Reason)
 		}
 	}
@@ -90,7 +105,8 @@ func TestRecordUserPolicyInvalid(t *testing.T) {
 // runs; a warning while it is off; OK for absent or valid files.
 func TestGuardUserPolicyDoctorCheck(t *testing.T) {
 	t.Parallel()
-	const path = "/home/u/.observer/guard-policy.toml"
+	// The message names the file with the host separator (Windows 11 Pro rerun 2026-10-25, D5 group 4).
+	path := filepath.FromSlash("/home/u/.observer/guard-policy.toml")
 	files := map[string]string{
 		"broken": "[[override]]\nrule = R-153\n",
 		"valid":  "[[override]]\nrule = \"R-153\"\ndecision = \"deny\"\n",

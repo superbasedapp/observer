@@ -52,6 +52,16 @@ type Inputs struct {
 	// own, like every `observer <tool> -- args` launcher. A packaged-app
 	// launch cannot carry them and says so in Notes.
 	ExtraArgs []string
+	// InstanceRunning reports whether an instance of the app at bin (Bin,
+	// or the .app bundle for a macOS launch) is already running on this
+	// host. It is asked only for a launch whose new process would hand its
+	// arguments to that instance and exit (a single-instance child-env app,
+	// WrapSpec.ColdStartOnly, or any macOS `open -a` launch), so the injected
+	// environment would never reach the app. nil, or a probe that cannot
+	// tell, answers false: the wrap verdict then stays as before, with the
+	// cold-start caveat in its note. The process probe lives in
+	// cmd/observer; this package stays pure.
+	InstanceRunning func(bin string) bool
 }
 
 // Plan is the composed launch: the argv to exec, the environment ADDITIONS
@@ -113,6 +123,11 @@ const (
 	// WrapReasonNoMechanism — the row has no grounded base-URL mechanism (a
 	// WrapNone row, or an unknown wrap kind: the honest zero).
 	WrapReasonNoMechanism WrapReason = "no_wrap_mechanism"
+	// WrapReasonInstanceRunning: an instance of a single-instance app is
+	// already running (or macOS `open -a` would reuse one): the new process
+	// hands its arguments to that instance and exits, so the routing
+	// environment never reaches the app (finding IDE-2, ledger AP-043).
+	WrapReasonInstanceRunning WrapReason = "instance_running"
 )
 
 // mechanism names the launch SHAPE the argv rules selected. It exists so the
@@ -242,6 +257,18 @@ var childEnvBlockers = []childEnvBlocker{
 		},
 	},
 	{
+		// A running instance receives the launch over IPC (a second Code.exe
+		// or idea64.exe forwards its arguments and exits; `open -a` activates
+		// the running app). Asked only for a launch that would hand off, so
+		// the probe never runs for a multi-instance app.
+		reason: WrapReasonInstanceRunning,
+		note:   instanceRunningNote,
+		match: func(spec integration.GUILaunchSpec, in Inputs, mech mechanism) bool {
+			handsOff := spec.Wrap.ColdStartOnly || mech == mechDarwinBundle
+			return handsOff && in.InstanceRunning != nil && in.InstanceRunning(in.Bin)
+		},
+	},
+	{
 		reason: WrapReasonNoProxyURL,
 		note:   "no observer proxy URL resolved - nothing to inject",
 		match:  func(_ integration.GUILaunchSpec, in Inputs, _ mechanism) bool { return in.ProxyURL == "" },
@@ -304,6 +331,10 @@ var wrapRules = []wrapRule{
 		},
 	},
 }
+
+// instanceRunningNote is the WrapReasonInstanceRunning note: what happened
+// and what the operator does about it.
+const instanceRunningNote = "an instance of this app is already running and receives this launch, keeping its own environment, so routing does not reach it - close all windows first, then launch again"
 
 // coldStartNote is the caveat appended to a single-instance app's wrap note: an
 // already-running window is handed the launch by the app itself and never
@@ -407,7 +438,9 @@ func applyWrap(spec integration.GUILaunchSpec, in Inputs, mech mechanism) wrapRe
 	// ColdStartOnly is a property of the child-env mechanism itself, so it
 	// qualifies that kind's note whether or not the injection took: an operator
 	// who sees "applied" still needs to know it only counts on a cold start.
-	if spec.Wrap.Kind == integration.WrapChildEnv && spec.Wrap.ColdStartOnly {
+	// A launch already blocked by a running instance says so itself; the
+	// generic caveat would only repeat it.
+	if spec.Wrap.Kind == integration.WrapChildEnv && spec.Wrap.ColdStartOnly && res.reason != WrapReasonInstanceRunning {
 		res.note = joinNotes(res.note, coldStartNote)
 	}
 	return res

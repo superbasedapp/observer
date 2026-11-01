@@ -1,30 +1,30 @@
 {
   "compact_lifecycle": {
-    "vendor_provides": 21,
-    "vendor_provides_inferred_only": 1,
+    "vendor_provides": 28,
+    "vendor_provides_inferred_only": 2,
     "observer_registers": 2,
     "observer_wires": 2
   },
   "context_inject": {
-    "vendor_provides": 10,
+    "vendor_provides": 14,
     "vendor_provides_inferred_only": 0,
     "observer_registers": 3,
     "observer_wires": 1
   },
   "environment_observe": {
-    "vendor_provides": 1,
+    "vendor_provides": 3,
     "vendor_provides_inferred_only": 0,
     "observer_registers": 1,
     "observer_wires": 1
   },
   "model_call_observe": {
-    "vendor_provides": 6,
+    "vendor_provides": 7,
     "vendor_provides_inferred_only": 0,
     "observer_registers": 2,
     "observer_wires": 2
   },
   "notification_observe": {
-    "vendor_provides": 2,
+    "vendor_provides": 9,
     "vendor_provides_inferred_only": 0,
     "observer_registers": 1,
     "observer_wires": 1
@@ -36,19 +36,19 @@
     "observer_wires": 0
   },
   "permission_observe": {
-    "vendor_provides": 2,
+    "vendor_provides": 8,
     "vendor_provides_inferred_only": 0,
     "observer_registers": 2,
     "observer_wires": 2
   },
   "prompt_gate": {
-    "vendor_provides": 21,
+    "vendor_provides": 34,
     "vendor_provides_inferred_only": 0,
-    "observer_registers": 16,
-    "observer_wires": 16
+    "observer_registers": 27,
+    "observer_wires": 31
   },
   "session_lifecycle": {
-    "vendor_provides": 29,
+    "vendor_provides": 39,
     "vendor_provides_inferred_only": 1,
     "observer_registers": 6,
     "observer_wires": 8
@@ -60,31 +60,31 @@
     "observer_wires": 0
   },
   "subagent_lifecycle": {
-    "vendor_provides": 13,
+    "vendor_provides": 19,
     "vendor_provides_inferred_only": 1,
     "observer_registers": 5,
     "observer_wires": 5
   },
   "task_observe": {
-    "vendor_provides": 2,
+    "vendor_provides": 4,
     "vendor_provides_inferred_only": 0,
     "observer_registers": 1,
     "observer_wires": 1
   },
   "tool_failure_observe": {
-    "vendor_provides": 2,
+    "vendor_provides": 5,
     "vendor_provides_inferred_only": 0,
     "observer_registers": 2,
     "observer_wires": 2
   },
   "tool_gate": {
-    "vendor_provides": 34,
+    "vendor_provides": 43,
     "vendor_provides_inferred_only": 1,
-    "observer_registers": 26,
-    "observer_wires": 26
+    "observer_registers": 35,
+    "observer_wires": 38
   },
   "tool_observe": {
-    "vendor_provides": 8,
+    "vendor_provides": 17,
     "vendor_provides_inferred_only": 0,
     "observer_registers": 4,
     "observer_wires": 5
@@ -96,7 +96,7 @@
     "observer_wires": 1
   },
   "turn_lifecycle": {
-    "vendor_provides": 37,
+    "vendor_provides": 46,
     "vendor_provides_inferred_only": 1,
     "observer_registers": 4,
     "observer_wires": 11

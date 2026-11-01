@@ -205,7 +205,7 @@ func TestProofTable(t *testing.T) {
 	}{
 		{
 			components.DistroMinimal,
-			[]string{"src/pages/Terminals", "src/pages/Remote", "src/components/LaunchTerminal"},
+			[]string{"src/pages/Terminals", "src/pages/Remote", "src/components/LaunchTerminal", "src/pages/CodeSecurity"},
 			[]string{"src/pages/Overview"},
 			[]string{"@xterm/xterm", "@xterm/addon-fit", "react-grid-layout", "qrcode"},
 			nil,
@@ -217,7 +217,7 @@ func TestProofTable(t *testing.T) {
 			[]string{"qrcode"},
 			[]string{"@xterm/xterm"},
 		},
-		{components.DistroDeveloper, nil, []string{"src/pages/Terminals", "src/pages/Remote"}, nil, []string{"@xterm/xterm", "qrcode"}},
+		{components.DistroDeveloper, nil, []string{"src/pages/Terminals", "src/pages/Remote", "src/pages/CodeSecurity"}, nil, []string{"@xterm/xterm", "qrcode"}},
 		{"", nil, []string{"src/pages/Terminals"}, nil, []string{"@xterm/xterm"}},
 	}
 	for _, c := range cases {

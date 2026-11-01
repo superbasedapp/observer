@@ -41,11 +41,15 @@ type Speed struct {
 // Basis values, strongest first. BasisMeasured is a capture-recorded
 // request duration (the proxy's total_response_ms, or Claude Code OTel's
 // duration_ms, which also lands in api_turns.total_response_ms); BasisNative
-// is a per-call duration the tool's own store recorded; BasisTranscript is
-// a span an adapter derived from its transcript's record order.
+// is a per-call duration the tool's own store recorded; BasisOTel is a
+// per-call duration the tool's own OpenTelemetry export reported, stamped
+// onto the transcript's row (it fills only a row with no native timing);
+// BasisTranscript is a span an adapter derived from its transcript's record
+// order.
 const (
 	BasisMeasured   = "measured"
 	BasisNative     = "native"
+	BasisOTel       = "otel"
 	BasisTranscript = "transcript"
 )
 
@@ -55,7 +59,8 @@ const (
 var basisRank = map[string]int{
 	BasisMeasured:   0,
 	BasisNative:     1,
-	BasisTranscript: 2,
+	BasisOTel:       2,
+	BasisTranscript: 3,
 }
 
 func rankOf(basis string) int {

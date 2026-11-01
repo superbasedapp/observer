@@ -1,6 +1,7 @@
 package natslog
 
 import (
+	"log/slog"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -11,8 +12,6 @@ import (
 const (
 	// DefaultStream is the JetStream stream name.
 	DefaultStream = "SBO_TELEMETRY"
-	// DefaultMaxAge is the stream retention horizon (plan O4: 72 h).
-	DefaultMaxAge = 72 * time.Hour
 	// DefaultMaxBytes is the stream storage cap: 10 GiB, the value the
 	// production estate actually runs. Lowered from the plan O4 default of
 	// 250 GiB (JetStream error 10047 against a 35 GB broker broke the
@@ -60,9 +59,13 @@ type Options struct {
 	// Replicas is the stream replication factor (default 1; forced to 1 for
 	// Embedded). An existing stream with a different count is kept as-is.
 	Replicas int
-	// MaxAge is the retention horizon (default DefaultMaxAge).
-	MaxAge time.Duration
 	// MaxBytes is the storage cap (default DefaultMaxBytes; -1 = unlimited).
+	// It is a disk SAFETY VALVE, not a retention horizon: at the cap the
+	// stream refuses new records (Discard:New -> ErrFull -> 503 + Retry-After
+	// to the node, which keeps its rows and retries) and never evicts a
+	// record a durable has not acked. There is deliberately no age limit
+	// (T-823): records leave the log only through Log.TrimApplied, once every
+	// durable consumer acked them.
 	MaxBytes int64
 	// EmbeddedMaxStore caps the IN-PROCESS server's whole JetStream file-store
 	// pool (Embedded only; ignored by Connect). Zero — the production default —
@@ -79,7 +82,9 @@ type Options struct {
 	// MaxMessages is the ErrFull message-count cap (0 or -1 = unlimited).
 	MaxMessages int64
 	// DuplicateWindow is the Nats-Msg-Id dedup window (default
-	// DefaultDuplicateWindow); clamped to MaxAge, which it must not exceed.
+	// DefaultDuplicateWindow). The broker keeps the window's ids in memory
+	// independently of whether the record is still stored, so trimming an
+	// acked record does not shorten the window while the broker runs.
 	DuplicateWindow time.Duration
 	// MaxDeliver is the per-consumer delivery budget (default DefaultMaxDeliver).
 	MaxDeliver int
@@ -91,6 +96,13 @@ type Options struct {
 	PublishTimeout time.Duration
 	// Name is the NATS client name (diagnostic).
 	Name string
+	// ReconnectWait is the wait between reconnect passes after the broker
+	// connection drops (default DefaultReconnectWait). The client reconnects
+	// indefinitely; this only paces it (T-883).
+	ReconnectWait time.Duration
+	// Logger receives the summarised connection-lifecycle lines (lost, still
+	// unreachable every few minutes, restored). nil uses slog.Default().
+	Logger *slog.Logger
 
 	// CredsFile is a NATS credentials file (JWT + nkey seed).
 	CredsFile string
@@ -127,9 +139,6 @@ func (o Options) withDefaults() Options {
 	if o.Replicas <= 0 {
 		o.Replicas = 1
 	}
-	if o.MaxAge <= 0 {
-		o.MaxAge = DefaultMaxAge
-	}
 	if o.MaxBytes == 0 {
 		o.MaxBytes = DefaultMaxBytes
 	}
@@ -143,10 +152,6 @@ func (o Options) withDefaults() Options {
 	if o.DuplicateWindow <= 0 {
 		o.DuplicateWindow = DefaultDuplicateWindow
 	}
-	if o.DuplicateWindow > o.MaxAge {
-		// JetStream refuses a duplicate window longer than MaxAge; clamp it.
-		o.DuplicateWindow = o.MaxAge
-	}
 	if o.MaxDeliver <= 0 {
 		o.MaxDeliver = DefaultMaxDeliver
 	}
@@ -159,6 +164,9 @@ func (o Options) withDefaults() Options {
 	if o.PublishTimeout <= 0 {
 		o.PublishTimeout = DefaultPublishTimeout
 	}
+	if o.ReconnectWait <= 0 {
+		o.ReconnectWait = DefaultReconnectWait
+	}
 	return o
 }
 
@@ -166,6 +174,23 @@ func (o Options) withDefaults() Options {
 // defaulted): Limits retention, File storage, Discard:New (so a full stream
 // rejects net-new records with ErrFull rather than evicting), plus the caps
 // and the duplicate window.
+//
+// MaxAge is ALWAYS 0 (no age limit, T-823). Before T-823 the stream carried a
+// 24 h / 72 h MaxAge, which JetStream applies whether or not a durable has
+// acked the record, so a consumer backlog older than the horizon was deleted
+// unsaved. Records now leave the stream only through TrimApplied (every
+// durable acked them). An existing stream is updated in place on the next
+// boot (MaxAge is an updatable field; the retention policy, creation stamp and
+// ordering metadata are untouched, so the stream's ordering generation and
+// every recovery rule keyed on it are unchanged).
+//
+// Interest retention was considered and rejected: JetStream stores NOTHING
+// for a publish that matches no consumer on an interest stream
+// (SkipMsgNoInterest, while still acking the publisher), and deleting a
+// durable on an interest stream drops every record only it still needed,
+// which is exactly the documented remedy for ErrDurableIncompatible. Both are
+// silent-loss paths; the Limits stream plus an explicit ack-floor trim has
+// neither.
 func (o Options) streamConfig() jetstream.StreamConfig {
 	return jetstream.StreamConfig{
 		Name:       o.Stream,
@@ -173,7 +198,7 @@ func (o Options) streamConfig() jetstream.StreamConfig {
 		Retention:  jetstream.LimitsPolicy,
 		Storage:    jetstream.FileStorage,
 		Discard:    jetstream.DiscardNew,
-		MaxAge:     o.MaxAge,
+		MaxAge:     0,
 		MaxBytes:   o.MaxBytes,
 		MaxMsgSize: o.MaxMsgBytes,
 		MaxMsgs:    o.MaxMessages,

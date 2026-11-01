@@ -104,6 +104,18 @@ var toolCatalogs = []toolCatalog{
 	qwenCodeCatalog,
 	zcodeCatalog,
 	zedCatalog,
+
+	// The 2026-10-21 capture-only wave (surface-gap lane w4-catalog).
+	autohandCatalog,
+	ibmBobCatalog,
+	cortexCodeCatalog,
+	codebuddyCatalog,
+	deepAgentsCodeCatalog,
+	dimcodeCatalog,
+	diracCatalog,
+	kimchiCatalog,
+	stakpakCatalog,
+	vtcodeCatalog,
 }
 
 var (

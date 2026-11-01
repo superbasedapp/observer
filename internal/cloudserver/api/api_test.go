@@ -495,6 +495,45 @@ func TestJobHappyPathAndIdempotency(t *testing.T) {
 	}
 }
 
+// TestJobNotMeasuredUsageAccepted pins the new-node direction on a current
+// server (D-866): an envelope whose metrics say usage_status "not_measured"
+// passes Validate and the two-digest recompute and is admitted. The legacy
+// direction (no field) is TestJobHappyPathAndIdempotency's envelope.
+func TestJobNotMeasuredUsageAccepted(t *testing.T) {
+	h := newHarness(t)
+	c := h.login(t, "nina")
+	env := cloudcontract.Envelope{
+		SchemaVersion:      cloudcontract.EnvelopeSchemaVersion,
+		CloudSessionID:     "cs-unmeasured",
+		CloudProjectID:     "cp-unmeasured",
+		Tool:               "claude-code",
+		ModelFamily:        cloudcontract.ModelFamilyUnknown,
+		StartedAtBucket:    time.Now().UTC().Format(time.RFC3339),
+		DurationSeconds:    60,
+		Metrics:            cloudcontract.MetricsBlock{UsageStatus: cloudcontract.UsageNotMeasured},
+		DisclosurePurposes: []cloudcontract.Purpose{cloudcontract.PurposeStructuralInsights},
+		ScrubberVersion:    "scrub-v1",
+		Authority:          dataauthority.Classification{Authority: dataauthority.AuthorityPersonal, Version: dataauthority.Version},
+	}
+	cd, err := cloudcontract.EvidenceContentDigest(env)
+	if err != nil {
+		t.Fatalf("content digest: %v", err)
+	}
+	env.EvidenceContentDigest = cd
+	raw, err := cloudcontract.UploadBytes(env)
+	if err != nil {
+		t.Fatalf("upload bytes: %v", err)
+	}
+	if !bytes.Contains(raw, []byte(`"usage_status": "not_measured"`)) {
+		t.Fatalf("envelope bytes lack usage_status:\n%s", raw)
+	}
+	c.previewConfirm(t, cloudcontract.UploadDigest(raw), cd, []string{"structural_activity_insights"})
+	resp := c.do(c.signedReq("POST", "/v1/intelligence/jobs", raw))
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("submit status=%d body=%s, want 202", resp.StatusCode, readAll(resp))
+	}
+}
+
 func TestJobDigestTamperRejected(t *testing.T) {
 	h := newHarness(t)
 	c := h.login(t, "grace")

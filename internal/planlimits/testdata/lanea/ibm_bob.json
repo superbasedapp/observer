@@ -1,0 +1,1 @@
+{"instances":[{"instance_id":"instance-one","instance_name":"Personal","user_id":"user-one","plan_name":"Pro+","refresh_at":1761955200,"region_domain":"us-east.bob.ibm.com","teams":[{"id":"team-one","name":"Solo","budget_limit":40,"usage":10},{"id":"team-two","name":"Pair","budget_limit":40,"usage":12.5}]}]}

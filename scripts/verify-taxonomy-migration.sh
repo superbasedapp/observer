@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # verify-taxonomy-migration.sh — assert the committed backfill migration
-# internal/db/migrations/077_tooltax_action_type_backfill.sql matches a
+# internal/db/migrations/196_tooltax_action_type_backfill_2.sql matches a
 # fresh run of internal/db/taxbackfillgen.
 #
 # taxbackfillgen is the SOLE writer of that file. It transposes
@@ -14,10 +14,15 @@
 #
 # Note the migration is APPLY-ONCE by nature: regenerating it after it
 # has shipped changes bytes a user's database has already consumed
-# (migrations are keyed by version, not by content). Until the release
-# that carries 077 is out, keep it in sync; after that, a tooltax change
-# needs a NEW migration, not a regenerated 077 — which this gate will
-# tell you about by failing.
+# (migrations are keyed by version, not by content). 077 shipped in v1.36.0
+# and is FROZEN as shipped (released-step rule, D-880, T-982,
+# docs/migration-numbering.md); 196 re-applies the full current table and
+# is safe on a database that ran 077 (every statement only moves rows out of
+# 'unknown'). Until the release that carries 196 is out, keep 196 in sync;
+# after that, a tooltax change needs yet another NEW step (point
+# taxbackfillgen's migrationName at it), never a regenerated 196. This gate
+# and TestShippedMigrationsNeverChange both fail on a regenerated shipped
+# step.
 #
 # Like verify-taxonomy-build.sh, this NEVER mutates the working tree and
 # NEVER shells out to git: it regenerates into a scratch directory and
@@ -29,7 +34,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
 COMMITTED_DIR="internal/db/migrations"
-ARTIFACT="077_tooltax_action_type_backfill.sql"
+ARTIFACT="196_tooltax_action_type_backfill_2.sql"
 
 if [ ! -d "internal/db/taxbackfillgen" ]; then
     echo "verify-taxonomy-migration: missing internal/db/taxbackfillgen" >&2

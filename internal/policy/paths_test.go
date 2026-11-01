@@ -25,7 +25,14 @@ func TestNormPath(t *testing.T) {
 		{"drive root slash", `C:\`, "c:/"},
 		{"tilde preserved", "~/x/../y", "~/y"},
 		{"empty", "", ""},
-		{"unc-ish", `\\server\share\x`, "/server/share/x"},
+		// WINNODE item 2: a UNC path stays UNC (it used to fold to
+		// "/server/share/x", a POSIX look-alike no Windows root compared with).
+		{"unc", `\\server\share\x`, `\\server/share/x`},
+		{"unc dotdot clamps at the share", `\\server\share\..\..\x`, `\\server/share/x`},
+		{"unc idempotent", `\\server/share/x`, `\\server/share/x`},
+		{"extended-length drive", `\\?\C:\Users\x`, "c:/Users/x"},
+		{"extended-length unc", `\\?\UNC\server\share\x`, `\\server/share/x`},
+		{"posix double slash is not unc", "//server/share", "/server/share"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -122,10 +129,41 @@ func TestIsUnder(t *testing.T) {
 		{`C:\elsewhere`, "/home/u", false},          // mixed flavors: unknown
 		{"", "/a", false},
 		{"/a", "", false},
+		// A drvfs mount folds onto its drive, in either direction.
+		{`C:\Users\U\P\f.go`, "/mnt/c/Users/u/p", true},
+		{"/mnt/c/Users/u/p/f.go", `C:\Users\U\P`, true},
+		{`D:\Users\U\P\f.go`, "/mnt/c/Users/u/p", false}, // other drive
+		{`C:\anything`, "/mnt/c", true},                  // drive root
+		{`C:\Users\u`, "/mnt/cache/Users/u", false},      // /mnt/cache is no drive
 	}
 	for _, tc := range cases {
 		if got := isUnder(tc.child, tc.root); got != tc.want {
 			t.Errorf("isUnder(%q, %q) = %v, want %v", tc.child, tc.root, got, tc.want)
+		}
+	}
+}
+
+// TestPathsEqualDrvfs pins that a drvfs mount and its drive spelling
+// are one location, and that the fold never reaches a non-drive /mnt
+// directory or a non-drvfs POSIX path.
+func TestPathsEqualDrvfs(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"/mnt/c/Users/u", `C:\Users\U`, true},
+		{`c:/users/u/`, "/mnt/c/Users/u", true},
+		{"/mnt/c", `C:\`, true},
+		{"/mnt/d/x", `C:\x`, false},
+		{"/home/u", `C:\home\u`, false},
+		{"/mnt/cache/x", `C:\x`, false},
+		{"/mnt/c/x", "/mnt/c/x", true},
+		{"/mnt/c/X", "/mnt/c/x", false}, // POSIX pair stays case-sensitive
+	}
+	for _, tc := range cases {
+		if got := pathsEqual(tc.a, tc.b); got != tc.want {
+			t.Errorf("pathsEqual(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
 		}
 	}
 }

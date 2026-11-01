@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -118,7 +119,8 @@ func TestMCPRegistrarFollowsCredentialFileRules(t *testing.T) {
 				if _, ok := servers[ServerName]; ok != wantObserver {
 					t.Errorf("%s: observer entry present = %v, want %v", stage, ok, wantObserver)
 				}
-				if fi, _ := os.Stat(l.Path); fi.Mode().Perm() != 0o640 {
+				// POSIX-only: Windows has no mode bits (Perm reports 0666 or 0444).
+				if fi, _ := os.Stat(l.Path); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o640 {
 					t.Errorf("%s: mode = %v, want 0640 kept", stage, fi.Mode().Perm())
 				}
 				rel, _ := filepath.Rel(home, l.Path)
@@ -185,7 +187,8 @@ func TestCodexMCPEditsOnlyItsTable(t *testing.T) {
 	if obs, _ := servers[ServerName].(map[string]any); obs["command"] != "/opt/observer" {
 		t.Errorf("observer entry = %v", servers[ServerName])
 	}
-	if fi, _ := os.Stat(l.Path); fi.Mode().Perm() != 0o640 {
+	// POSIX-only: Windows has no mode bits (Perm reports 0666 or 0444).
+	if fi, _ := os.Stat(l.Path); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o640 {
 		t.Errorf("mode = %v, want 0640 kept", fi.Mode().Perm())
 	}
 	if res := r.Register("codex"); res.Error != nil || !res.AlreadySet {

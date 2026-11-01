@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"os"
+	"runtime"
 	"testing"
 	"time"
 
@@ -19,6 +20,22 @@ import (
 // (P2-2) requires pidbridge.ProcessStartTime to independently confirm a
 // real process is live at pid before trusting any row for it, so a made-up
 // pid can never hit any more — that would defeat the fence's whole point.
+// liveHitWant is what LookupSessionPID must answer for a fresh bridge row of
+// this test binary's own live pid. On Linux the pid-reuse fence confirms the
+// process start time from /proc and trusts the row. On every other OS
+// pidbridge.ProcessStartTime has no start-time source (startfence_other.go
+// returns ok=false), so the fence fails closed and the same row is a clean
+// miss: that refusal is the contract there, not a skipped case. The only
+// caller, node process intervention, is Linux-only by the same table
+// (intervention.ProcessControlSupportedOn; ScanInstalledProcesses reports
+// ErrBindingUnsupported elsewhere, ruling P-175).
+func liveHitWant(sessionID string) (string, bool) {
+	if runtime.GOOS == "linux" {
+		return sessionID, true
+	}
+	return "", false
+}
+
 func TestLookupSessionPID(t *testing.T) {
 	s, database := newTestStore(t)
 	ctx := context.Background()
@@ -31,16 +48,18 @@ func TestLookupSessionPID(t *testing.T) {
 	}
 
 	t.Run("hit, tool matches", func(t *testing.T) {
+		wantID, wantOK := liveHitWant("sess-real")
 		id, ok, err := s.LookupSessionPID(ctx, pid, "muse")
-		if err != nil || !ok || id != "sess-real" {
-			t.Fatalf("LookupSessionPID(pid, muse) = %q, %v, %v; want sess-real, true, nil", id, ok, err)
+		if err != nil || ok != wantOK || id != wantID {
+			t.Fatalf("LookupSessionPID(pid, muse) = %q, %v, %v; want %q, %v, nil", id, ok, err, wantID, wantOK)
 		}
 	})
 
 	t.Run("hit, tool check skipped when empty", func(t *testing.T) {
+		wantID, wantOK := liveHitWant("sess-real")
 		id, ok, err := s.LookupSessionPID(ctx, pid, "")
-		if err != nil || !ok || id != "sess-real" {
-			t.Fatalf("LookupSessionPID(pid, \"\") = %q, %v, %v; want sess-real, true, nil", id, ok, err)
+		if err != nil || ok != wantOK || id != wantID {
+			t.Fatalf("LookupSessionPID(pid, \"\") = %q, %v, %v; want %q, %v, nil", id, ok, err, wantID, wantOK)
 		}
 	})
 
@@ -92,9 +111,10 @@ func TestLookupSessionPID_PidReuseFence(t *testing.T) {
 		if err := bridge.Write(ctx, pidbridge.Entry{PID: pid, SessionID: "sess-live-fresh", Tool: "muse"}); err != nil {
 			t.Fatalf("seed fresh bridge row: %v", err)
 		}
+		wantID, wantOK := liveHitWant("sess-live-fresh")
 		id, ok, err := s.LookupSessionPID(ctx, pid, "muse")
-		if err != nil || !ok || id != "sess-live-fresh" {
-			t.Fatalf("LookupSessionPID(pid, muse) = %q, %v, %v; want sess-live-fresh, true, nil", id, ok, err)
+		if err != nil || ok != wantOK || id != wantID {
+			t.Fatalf("LookupSessionPID(pid, muse) = %q, %v, %v; want %q, %v, nil", id, ok, err, wantID, wantOK)
 		}
 	})
 

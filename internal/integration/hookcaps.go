@@ -58,7 +58,9 @@ const (
 	HookCapNotificationObserve HookCap = "notification_observe"
 	// HookCapTaskObserve: task created / completed.
 	HookCapTaskObserve HookCap = "task_observe"
-	// HookCapContextInject: text appended to the model context.
+	// HookCapContextInject: text appended to the model context. The post
+	// phase (text after a tool ran, security pillar plan section 4.7,
+	// spike JSP-6) carries the security feedback line (lane SEC-H).
 	HookCapContextInject HookCap = "context_inject"
 	// HookCapUserMessage: non-blocking text the human sees.
 	HookCapUserMessage HookCap = "user_message"
@@ -93,7 +95,7 @@ var hookCapPhases = map[HookCap][]string{
 	HookCapEnvironmentObserve:  {HookPhaseNone},
 	HookCapNotificationObserve: {HookPhaseNone},
 	HookCapTaskObserve:         {HookPhaseStart, HookPhaseEnd},
-	HookCapContextInject:       {HookPhaseStart, HookPhasePre},
+	HookCapContextInject:       {HookPhaseStart, HookPhasePre, HookPhasePost},
 	HookCapUserMessage:         {HookPhaseNone, HookPhasePre},
 }
 
@@ -280,6 +282,42 @@ type HookBinding struct {
 	// Wired without being Registered in this row's own config, even on a
 	// per-event-config mechanism.
 	ReplayedVia string
+	// StandsInFor, on a ReplayedVia binding, names the NativeEvent of this
+	// tool's OWN registered gate binding the replay stands in for: the
+	// replayed call is the same call that registration sees, so the
+	// receiver serves the replay only while that registration is absent
+	// (the Copilot CLI runtime's Claude-compatible PreToolUse, internal/hook
+	// foreignhost.go). Empty for a replay that is the tool's only gate on
+	// those calls (Kimchi, DeepSeek). Cortex Code's replays name the events
+	// its own hooks.json writer registers (built, behind live check LC18):
+	// the own binding joins when that writer switches on, and until then
+	// ReplayFallback is false (FU-141).
+	StandsInFor string
+	// WarnField, when non-empty, names the top-level field of this event's
+	// ALLOW reply that the host shows the DEVELOPER as a pass-through notice
+	// (Claude Code's common "systemMessage": "Warning message shown to the
+	// user"). A tool gate sets it to the humanized reason of a record-worthy
+	// flag, so a warn rule is visible without stopping the call. Empty means
+	// the host documents no such field (or the allow is an empty stdout), so
+	// a flag there stays silent to the developer and is only recorded.
+	WarnField string
+	// AdminCaveat, when non-empty, is a short admin-facing capability fact
+	// about this gate that the per-tool rule coverage
+	// (controlcoverage.RuleCoverage, rendered on the org guard form) shows
+	// beside the outcome: something the developer does or does not see that
+	// the decision ladder alone cannot say. One sentence; the long grounding
+	// stays in Note.
+	AdminCaveat string
+	// RegisterWhen, when non-empty, is the component id that must be
+	// SELECTED for Observer to write this binding's event into the vendor
+	// config: the event is registered while the component is selected and
+	// removed when it is not (internal/hook Options.Selected). Such a
+	// binding is never Registered in the static sense, so every surface
+	// that reads Registered (the parity matrices, `observer start`
+	// auto-registration's live rule) is unchanged while nothing selects it.
+	// Today only the security feedback rows (component security.feedback)
+	// set it.
+	RegisterWhen string
 }
 
 // HasDecision reports whether the binding's reply can express d.
@@ -314,6 +352,21 @@ func (h HookSpec) WiredFor(c HookCap) bool {
 	return false
 }
 
+// ReplayFallback reports whether b is reached through another tool's
+// registration (ReplayedVia) only as a stand-in for a gate this spec
+// registers in the tool's own config (StandsInFor names a registered, wired
+// binding of the same capability). Such a replay runs only while that
+// registration is absent, so the tool's gate does not ride the other
+// tool's registration: a check or a coverage row that says it does would be
+// wrong.
+func (h HookSpec) ReplayFallback(b HookBinding) bool {
+	if b.ReplayedVia == "" || b.StandsInFor == "" {
+		return false
+	}
+	o, ok := h.Binding(b.StandsInFor)
+	return ok && o.Cap == b.Cap && o.Wired && o.Registered && o.ReplayedVia == ""
+}
+
 // Binding returns the first binding whose NativeEvent is native (a native
 // event that provides two capabilities carries two bindings; the first is
 // its primary one). ok=false when the spec has no such event.
@@ -329,10 +382,55 @@ func (h HookSpec) Binding(native string) (HookBinding, bool) {
 // RegisteredEvents returns the distinct native events Observer registers on
 // this spec, in binding order.
 func (h HookSpec) RegisteredEvents() []string {
+	return h.RegisteredEventsWith(nil)
+}
+
+// RegisteredEventsWith returns RegisteredEvents plus, after them in binding
+// order, the events of every RegisterWhen binding whose component selected
+// reports true. A nil selected adds nothing, so the result is exactly
+// RegisteredEvents.
+func (h HookSpec) RegisteredEventsWith(selected func(component string) bool) []string {
 	var out []string
 	seen := map[string]bool{}
 	for _, b := range h.Bindings {
 		if !b.Registered || seen[b.NativeEvent] {
+			continue
+		}
+		seen[b.NativeEvent] = true
+		out = append(out, b.NativeEvent)
+	}
+	if selected == nil {
+		return out
+	}
+	for _, b := range h.Bindings {
+		if b.RegisterWhen == "" || seen[b.NativeEvent] || !selected(b.RegisterWhen) {
+			continue
+		}
+		seen[b.NativeEvent] = true
+		out = append(out, b.NativeEvent)
+	}
+	return out
+}
+
+// OptInEvents returns the distinct native events that only RegisterWhen
+// bindings name (no Registered binding shares the event) and whose
+// component selected reports false: the events a writer removes when the
+// component is not selected. A nil selected treats every component as not
+// selected.
+func (h HookSpec) OptInEvents(selected func(component string) bool) []string {
+	static := map[string]bool{}
+	for _, b := range h.Bindings {
+		if b.Registered {
+			static[b.NativeEvent] = true
+		}
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, b := range h.Bindings {
+		if b.RegisterWhen == "" || static[b.NativeEvent] || seen[b.NativeEvent] {
+			continue
+		}
+		if selected != nil && selected(b.RegisterWhen) {
 			continue
 		}
 		seen[b.NativeEvent] = true

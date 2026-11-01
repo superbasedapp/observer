@@ -436,7 +436,9 @@ SELECT project_root,
 // proportional to what the operator is actually working on; a dormant
 // project is inventoried again the moment a session touches it.
 //
-// limit <= 0 means no cap.
+// limit <= 0 means no cap. A root that is not a path (projectRootIsPath;
+// FU-193's "Xcode (project unknown)") is left out: a pass walks each root
+// as a directory.
 func (s *Store) GuidanceScanRoots(ctx context.Context, limit int) ([]string, error) {
 	query := `
 SELECT root_path
@@ -460,7 +462,7 @@ SELECT root_path
 		if err := rows.Scan(&root); err != nil {
 			return nil, fmt.Errorf("store.GuidanceScanRoots: scan: %w", err)
 		}
-		if root != "" {
+		if root != "" && projectRootIsPath(root) {
 			out = append(out, root)
 		}
 	}
@@ -713,7 +715,8 @@ SELECT p.root_path
 		if err := rows.Scan(&root); err != nil {
 			return nil, fmt.Errorf("store.GuidanceNeverScannedRoots: scan: %w", err)
 		}
-		if root != "" {
+		// A root that is not a path is no directory to scan (audit row 7).
+		if root != "" && projectRootIsPath(root) {
 			out = append(out, root)
 		}
 	}

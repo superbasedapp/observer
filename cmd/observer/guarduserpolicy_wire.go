@@ -84,8 +84,8 @@ func userPolicyInvalidVerdict(st guard.UserPolicyStatus, at time.Time) guard.Act
 			Decision: policy.DecisionFlag,
 			RuleID:   guard.GuardErrorRuleID,
 			Severity: policy.SeverityHigh,
-			Reason: "user guard policy " + userPolicyLocation(st) + " does not load: " + st.Error +
-				"; its rules are OFF (built-in rules and the org policy stay in force)",
+			Reason: guardEventReason("user guard policy " + userPolicyLocation(st) + " does not load: " + st.Error +
+				"; its rules are OFF (built-in rules and the org policy stay in force)"),
 			Advice: "Fix the file (Security > Rules > Advanced: policy layers in the dashboard, or `observer guard lint`); the next daemon check clears this.",
 			Source: policy.SourceBuiltin,
 		},

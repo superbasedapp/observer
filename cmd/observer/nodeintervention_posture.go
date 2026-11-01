@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"os"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
@@ -25,7 +24,7 @@ func nodeInterventionPostureProvider(ctx context.Context, st *store.Store, dbPat
 		row.DirectControl = "control_unavailable"
 		reportCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
-		auth, err := nodeInterventionAuthority(reportCtx, st, os.Getuid(), time.Now().UTC())
+		auth, err := nodeInterventionAuthority(reportCtx, st, nodeInterventionAuthorityUID(), time.Now().UTC())
 		if err != nil {
 			return row, true
 		}

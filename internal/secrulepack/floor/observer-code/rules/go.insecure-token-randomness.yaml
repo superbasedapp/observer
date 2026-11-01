@@ -1,0 +1,28 @@
+rules:
+  - id: go.insecure-token-randomness
+    languages: [go]
+    severity: WARNING
+    message: A secret value (a token, key, password or nonce) is made with math/rand, which is predictable; use crypto/rand.
+    metadata:
+      category: code_vuln
+      cwe: CWE-338
+    patterns:
+      - pattern-either:
+          - pattern: rand.$F(...)
+      - metavariable-regex:
+          metavariable: $F
+          regex: ^(Intn|IntN|Int63|Int63n|Int31|Int31n|Uint32|Uint64|Float64|Perm|N|Int64N|Uint64N|Shuffle)$
+      - pattern-either:
+          - patterns:
+              - pattern-inside: $TOK := <... rand.$F(...) ...>
+              - metavariable-regex:
+                  metavariable: $TOK
+                  regex: (?i)^\w*(token|secret|nonce|otp|password|passwd|apikey|sessionid|salt|resetcode)\w*$
+          - patterns:
+              - pattern-inside: |
+                  func $FN(...) $T {
+                    ...
+                  }
+              - metavariable-regex:
+                  metavariable: $FN
+                  regex: (?i)^\w*(token|secret|nonce|otp|password|passwd|apikey|sessionid|salt|resetcode)\w*$

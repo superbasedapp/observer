@@ -9,8 +9,6 @@ import (
 	"os"
 	"path/filepath"
 
-	keyring "github.com/zalando/go-keyring"
-
 	"github.com/marmutapp/superbased-observer/internal/keystore"
 )
 
@@ -296,7 +294,7 @@ func (s *keychainStore) SaveDeviceKey(key ed25519.PrivateKey) error {
 	}
 	// recordName never scopes recDeviceKey (scopedRecords[recDeviceKey] ==
 	// false): one device identity is shared across every host.
-	if err := keyring.Set(ServiceName, recordName(recDeviceKey, s.host), base64.StdEncoding.EncodeToString(key)); err != nil {
+	if err := keystore.KeyringSet(ServiceName, recordName(recDeviceKey, s.host), base64.StdEncoding.EncodeToString(key)); err != nil {
 		return fmt.Errorf("cloudcred.SaveDeviceKey: %w", err)
 	}
 	return nil
@@ -311,8 +309,8 @@ func (s *keychainStore) LoadDeviceKey() (ed25519.PrivateKey, error) {
 }
 
 func (s *keychainStore) get(rec, fn string) (string, error) {
-	v, err := keyring.Get(ServiceName, rec)
-	if errors.Is(err, keyring.ErrNotFound) {
+	v, err := keystore.KeyringGet(ServiceName, rec)
+	if errors.Is(err, keystore.ErrKeyringNotFound) {
 		return "", ErrNotFound
 	}
 	if err != nil {
@@ -340,10 +338,10 @@ func (s *keychainStore) getScoped(rec, fn string) (string, error) {
 	}
 	err = adoptLegacyBundle(dir, s.host,
 		func(rec string) (string, error) { return s.get(rec, fn) },
-		func(rec, value string) error { return keyring.Set(ServiceName, rec, value) },
+		func(rec, value string) error { return keystore.KeyringSet(ServiceName, rec, value) },
 		func(rec string) error {
-			err := keyring.Delete(ServiceName, rec)
-			if errors.Is(err, keyring.ErrNotFound) {
+			err := keystore.KeyringDelete(ServiceName, rec)
+			if errors.Is(err, keystore.ErrKeyringNotFound) {
 				return ErrNotFound
 			}
 			return err
@@ -359,7 +357,7 @@ func (s *keychainStore) setScoped(rec, value string) error {
 	if err != nil {
 		return err
 	}
-	return withCredentialLock(dir, func() error { return keyring.Set(ServiceName, recordName(rec, s.host), value) })
+	return withCredentialLock(dir, func() error { return keystore.KeyringSet(ServiceName, recordName(rec, s.host), value) })
 }
 
 // Clear removes this host's scoped API token and WorkOS refresh, the legacy
@@ -376,13 +374,24 @@ func (s *keychainStore) Clear() error {
 }
 
 func (s *keychainStore) clearLocked() error {
+	if s.host == "" {
+		// The host-less Clear (`observer cloud logout --all-hosts`, a
+		// device reset) removes every record of this home's service, the
+		// per-host tokens included: the named list below missed them, so a
+		// host-scoped API token outlived --all-hosts in the keychain
+		// (Windows 11 Pro rerun 2026-10-25, D2).
+		if err := keystore.KeyringDeleteAll(ServiceName); err != nil {
+			return fmt.Errorf("cloudcred.Clear: %w", err)
+		}
+		return nil
+	}
 	recs := []string{recDeviceKey, recWorkOSRefresh, recAPIToken}
 	if s.host != "" {
 		recs = append(recs, recordName(recWorkOSRefresh, s.host), recordName(recAPIToken, s.host))
 	}
 	var errs []error
 	for _, rec := range recs {
-		if err := keyring.Delete(ServiceName, rec); err != nil && !errors.Is(err, keyring.ErrNotFound) {
+		if err := keystore.KeyringDelete(ServiceName, rec); err != nil && !errors.Is(err, keystore.ErrKeyringNotFound) {
 			errs = append(errs, err)
 		}
 	}

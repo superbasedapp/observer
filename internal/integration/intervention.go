@@ -317,6 +317,20 @@ var interventionDeclarations = map[string][]interventionDeclaration{
 	"qwen-code":   {dedicated("cli", interpreted(InterpreterNode), NativeUsageApproximate)},
 	"zcode":       {dedicated("cli", interpretedInvoking(nonBillableInvocation(zcodeNonBillableArguments()...), InterpreterNode), NativeUsagePresent), shared("desktop", "the Electron desktop host is shared")},
 	"zed":         {shared("ide", "Zed is the editor host and has no session-isolated worker declaration")},
+	// The 2026-10-21 capture-only wave. Process shapes from each adapter's
+	// grounding doc: npm Node entry points are interpreted, single-file
+	// native builds (Bun / Node SEA / Rust) are native. Usage availability
+	// follows the adapter's grounded token source.
+	"autohand":        {dedicated("cli", nativeOrInterpreted(InterpreterNode), NativeUsageApproximate)},
+	"codebuddy":       {dedicated("cli", interpreted(InterpreterNode), NativeUsageUnavailable)},
+	"cortex-code":     {dedicated("cli", native(), NativeUsageApproximate)},
+	"deepagents-code": {dedicated("cli", nativeOrInterpreted(InterpreterPython), NativeUsagePresent)},
+	"dimcode":         {dedicated("cli", nativeOrInterpreted(InterpreterNode), NativeUsagePresent)},
+	"dirac":           {dedicated("cli", interpreted(InterpreterNode), NativeUsagePresent)},
+	"ibm-bob":         {dedicated("cli", interpreted(InterpreterNode), NativeUsageUnavailable)},
+	"kimchi":          {dedicated("cli", native(), NativeUsagePresent)},
+	"stakpak":         {dedicated("cli", native(), NativeUsagePresent)},
+	"vtcode":          {dedicated("cli", native(), NativeUsagePresent)},
 }
 
 func dedicated(id string, binding ProcessBindingSpec, nativeUsage NativeUsageKind) interventionDeclaration {

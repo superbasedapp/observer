@@ -72,6 +72,10 @@ func checkHookParityGolden(t *testing.T, name string, v any) {
 // applies (never the writer).
 func TestHookParityGolden_InitAndAutoRegister(t *testing.T) {
 	requireFullAdapterSet(t)
+	// A Linux golden on every host (initOnlyHookTargets is per host OS).
+	prevGOOS := autoRegisterHostGOOS
+	autoRegisterHostGOOS = "linux"
+	t.Cleanup(func() { autoRegisterHostGOOS = prevGOOS })
 	out := map[string]any{}
 	for _, c := range integration.Capabilities() {
 		for _, target := range []string{c.Tool, c.Tool + "-windows"} {
@@ -97,6 +101,10 @@ func TestHookParityGolden_InitAndAutoRegister(t *testing.T) {
 // key, the function that handles it (anonymous closures are recorded by
 // their compiler name, which is stable while no closure is added before
 // them in this package's initialisers).
+// constructedClosureRE matches a closure built by a named constructor and
+// inlined into a package initialiser, capturing the constructor's name.
+var constructedClosureRE = regexp.MustCompile(`^(?:init|glob)\.([A-Za-z_][A-Za-z0-9_]*)\.func[0-9]+(?:\.[0-9]+)*$`)
+
 func TestHookParityGolden_ReceiverTable(t *testing.T) {
 	requireFullAdapterSet(t)
 	out := map[string]string{}
@@ -109,6 +117,12 @@ func TestHookParityGolden_ReceiverTable(t *testing.T) {
 			// initialisers, so only its KIND is pinned here; what it does is
 			// pinned by TestHookParityGolden_ReceiverReplies.
 			name = "closure"
+		} else if m := constructedClosureRE.FindStringSubmatch(name); m != nil {
+			// A closure RETURNED by a named constructor and inlined into an
+			// initialiser ("init.wavePromptReceiver.func294"): the number
+			// differs between GOOS builds (a platform file adds or drops an
+			// earlier closure), so only the constructor is pinned.
+			name = m[1] + " closure"
 		}
 		out[tool] = name
 	}

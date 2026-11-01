@@ -257,6 +257,21 @@ func TestBuildPrivacySocketsNonLoopbackHonesty(t *testing.T) {
 	}
 }
 
+// egressRowCompiled reports whether an egress row's component is in this
+// build, from the component catalogue (compiledOut): a published edition
+// that compiles the proxy or the pricing feed out reports their rows
+// inactive whatever the config says, so each expectation below is the
+// config's answer AND this one (lane RBFIX, the edition omit-tag sets).
+func egressRowCompiled(name string) bool {
+	switch name {
+	case "TLS pre-warm", "routing upstream probe":
+		return !compiledOut("capture.proxy")
+	case "pricing feed":
+		return !compiledOut("egress.pricing-feed")
+	}
+	return true
+}
+
 // TestBuildPrivacyEgressDefault pins the egress table against the
 // zero-config default: the always-on listener rows (proxy forwarding, TLS
 // pre-warm — default prewarm_targets is non-empty) report active; every
@@ -277,6 +292,8 @@ func TestBuildPrivacyEgressDefault(t *testing.T) {
 		"email / digest alerts":                false,
 		"remote-access notify":                 false,
 		"TLS pre-warm":                         true,
+		"pricing feed":                         true,
+		"routing upstream probe":               false,
 		"guard cloud webhooks":                 false,
 		"guard cloud LLM judge":                false,
 		"guard cloud reputation lookup":        false,
@@ -294,6 +311,7 @@ func TestBuildPrivacyEgressDefault(t *testing.T) {
 		if !ok {
 			t.Fatalf("unexpected egress row %q", r.Name)
 		}
+		want = want && egressRowCompiled(r.Name)
 		if r.Active != want {
 			t.Errorf("egress %q active = %v, want %v", r.Name, r.Active, want)
 		}
@@ -342,14 +360,103 @@ func TestBuildPrivacyEgressTLSPrewarm(t *testing.T) {
 
 			rows := buildPrivacyEgress(cfg)
 			row := findEgressRow(t, rows, "TLS pre-warm")
-			if row.Active != tt.wantActive {
-				t.Errorf("TLS pre-warm active = %v, want %v", row.Active, tt.wantActive)
+			if want := tt.wantActive && egressRowCompiled(row.Name); row.Active != want {
+				t.Errorf("TLS pre-warm active = %v, want %v", row.Active, want)
 			}
 			if !strings.Contains(row.Detail, tt.wantDetail) {
 				t.Errorf("TLS pre-warm detail = %q, want substring %q", row.Detail, tt.wantDetail)
 			}
 			if !strings.Contains(row.Detail, "No session data") {
 				t.Errorf("TLS pre-warm detail does not disclaim session data: %q", row.Detail)
+			}
+			if !strings.Contains(row.Detail, "prewarm_targets = []") {
+				t.Errorf("TLS pre-warm detail does not say how to turn it off: %q", row.Detail)
+			}
+			if !strings.Contains(row.Gate, "once at each proxy startup") {
+				t.Errorf("TLS pre-warm gate does not state its cadence: %q", row.Gate)
+			}
+		})
+	}
+}
+
+// TestBuildPrivacyEgressPricingFeed pins T-931: the default-on [pricing.feed]
+// fetch has its own row, driven by the effective config: on/off from
+// enabled+auto, the target host and URL, the cadence, and how to turn it off.
+func TestBuildPrivacyEgressPricingFeed(t *testing.T) {
+	tests := []struct {
+		name        string
+		mutate      func(*config.Config)
+		wantActive  bool
+		wantDetail  []string
+		wantGate    string
+		forbidInDet string
+	}{
+		{
+			name:       "default is on, daily, public host",
+			mutate:     func(*config.Config) {},
+			wantActive: true,
+			wantDetail: []string{"superbased.app", config.DefaultPricingFeedURL, "every 24 h", "enabled = false", "auto = false", "nothing about your sessions"},
+			wantGate:   "(now 24)",
+			// No enrolment note unless [org_client] is on.
+			forbidInDet: "[org_client].enabled = true",
+		},
+		{
+			name:       "enabled false turns it off",
+			mutate:     func(c *config.Config) { c.Pricing.Feed.Enabled = false },
+			wantActive: false,
+		},
+		{
+			name:       "auto false: manual sync only",
+			mutate:     func(c *config.Config) { c.Pricing.Feed.Auto = false },
+			wantActive: false,
+		},
+		{
+			name: "custom interval and mirror",
+			mutate: func(c *config.Config) {
+				c.Pricing.Feed.PollIntervalHours = 6
+				c.Pricing.Feed.URL = "https://prices.example.internal/feed"
+			},
+			wantActive: true,
+			wantDetail: []string{"prices.example.internal", "every 6 h"},
+			wantGate:   "(now 6)",
+		},
+		{
+			name:       "non-positive interval falls back to daily",
+			mutate:     func(c *config.Config) { c.Pricing.Feed.PollIntervalHours = 0 },
+			wantActive: true,
+			wantDetail: []string{"every 24 h"},
+		},
+		{
+			name: "org client on: enrolled nodes refuse",
+			mutate: func(c *config.Config) {
+				c.OrgClient.Enabled = true
+				c.OrgClient.OrgServerURL = "https://org.example"
+			},
+			wantActive: true,
+			wantDetail: []string{"org rail", "observer org status"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Default()
+			tt.mutate(&cfg)
+			row := findEgressRow(t, buildPrivacyEgress(cfg), "pricing feed")
+			if want := tt.wantActive && egressRowCompiled(row.Name); row.Active != want {
+				t.Errorf("pricing feed active = %v, want %v", row.Active, want)
+			}
+			for _, want := range tt.wantDetail {
+				if !strings.Contains(row.Detail, want) {
+					t.Errorf("pricing feed detail missing %q: %q", want, row.Detail)
+				}
+			}
+			if tt.wantGate != "" && !strings.Contains(row.Gate, tt.wantGate) {
+				t.Errorf("pricing feed gate missing %q: %q", tt.wantGate, row.Gate)
+			}
+			if !strings.Contains(row.Gate, "not enrolled") {
+				t.Errorf("pricing feed gate does not state the standalone-only condition: %q", row.Gate)
+			}
+			if tt.forbidInDet != "" && strings.Contains(row.Detail, tt.forbidInDet) {
+				t.Errorf("pricing feed detail unexpectedly contains %q: %q", tt.forbidInDet, row.Detail)
 			}
 		})
 	}
@@ -603,11 +710,20 @@ func TestBuildPrivacyEgressGatedRowsFlipActive(t *testing.T) {
 			mutate:  func(c *config.Config) { c.Remote.Notify.Enabled = true },
 			rowName: "remote-access notify",
 		},
+		{
+			name: "routing probe enabled",
+			mutate: func(c *config.Config) {
+				c.Routing.Enabled = true
+				c.Routing.Reliability.Probe.Enabled = true
+			},
+			rowName: "routing upstream probe",
+		},
 	}
 
 	alwaysOn := map[string]bool{
 		"proxy forwarding": true,
 		"TLS pre-warm":     true,
+		"pricing feed":     true,
 	}
 
 	for _, tt := range tests {
@@ -621,7 +737,7 @@ func TestBuildPrivacyEgressGatedRowsFlipActive(t *testing.T) {
 				also[n] = true
 			}
 			for _, r := range rows {
-				want := r.Name == tt.rowName || alwaysOn[r.Name] || also[r.Name]
+				want := (r.Name == tt.rowName || alwaysOn[r.Name] || also[r.Name]) && egressRowCompiled(r.Name)
 				if r.Active != want {
 					t.Errorf("row %q active = %v, want %v (only %q plus the always-on rows should be active)", r.Name, r.Active, want, tt.rowName)
 				}
@@ -643,8 +759,8 @@ func TestBuildPrivacyReportSchemaAndDocsURL(t *testing.T) {
 	if len(report.Sockets) == 0 {
 		t.Errorf("Sockets is empty")
 	}
-	if len(report.Egress) != 15 {
-		t.Errorf("Egress len = %d, want 15", len(report.Egress))
+	if len(report.Egress) != 17 {
+		t.Errorf("Egress len = %d, want 17", len(report.Egress))
 	}
 }
 
@@ -693,7 +809,8 @@ func TestPrivacyCmdTextOutput(t *testing.T) {
 	cfg := config.Default()
 	deps := privacyDeps{loadConfig: func() (config.Config, error) { return cfg, nil }}
 	cmd := newPrivacyCmdWith(deps)
-	cmd.SetArgs(nil)
+	// Not nil: nil makes cobra read the test binary's own os.Args.
+	cmd.SetArgs([]string{})
 
 	var out bytes.Buffer
 	cmd.SetOut(&out)
@@ -715,29 +832,37 @@ func TestPrivacyCmdTextOutput(t *testing.T) {
 		"guard cloud LLM judge",
 		"guard cloud reputation lookup",
 		"rolling conversation summarization",
-		"the one automatic call is",
-		"TLS pre-warm HEAD request",
+		"pricing feed",
+		"routing upstream probe",
+		"Two automatic calls run by default",
+		"TLS pre-warm HEAD requests",
 		privacyDocsURL,
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("output missing %q\noutput:\n%s", want, text)
 		}
 	}
-	// The old unqualified claim must be gone.
-	if strings.Contains(text, "No telemetry, no analytics, no crash reporting, no automatic phone-home.") {
-		t.Errorf("output still carries the UNQUALIFIED phone-home claim, want it qualified by the TLS pre-warm exception (F1)")
+	// 2026-10-21 public wording rule: no "no telemetry" style claims.
+	lower := strings.ToLower(text)
+	for _, banned := range []string{"no telemetry", "no automatic phone-home", "the one automatic call"} {
+		if strings.Contains(lower, banned) {
+			t.Errorf("output carries the retired claim %q", banned)
+		}
 	}
 }
 
-// TestPrivacyCmdLongTextQualifiesPhoneHomeClaim pins F1's Long-help half of
-// the qualification.
+// TestPrivacyCmdLongTextQualifiesPhoneHomeClaim pins the Long help: it names
+// both automatic calls (F1's TLS pre-warm and T-931's pricing feed), states
+// the content-consent promise, and makes no "no telemetry" claim.
 func TestPrivacyCmdLongTextQualifiesPhoneHomeClaim(t *testing.T) {
 	cmd := newPrivacyCmd()
-	if !strings.Contains(cmd.Long, "one narrow exception") {
-		t.Errorf("Long help does not name the TLS pre-warm exception: %q", cmd.Long)
+	for _, want := range []string{"TLS pre-warm", "pricing feed", "without your explicit consent"} {
+		if !strings.Contains(cmd.Long, want) {
+			t.Errorf("Long help does not mention %q: %q", want, cmd.Long)
+		}
 	}
-	if !strings.Contains(cmd.Long, "TLS pre-warm") {
-		t.Errorf("Long help does not mention TLS pre-warm: %q", cmd.Long)
+	if strings.Contains(strings.ToLower(cmd.Long), "no telemetry") {
+		t.Errorf("Long help still makes a \"no telemetry\" claim: %q", cmd.Long)
 	}
 }
 
@@ -748,7 +873,8 @@ func TestPrivacyCmdLoadConfigError(t *testing.T) {
 		return config.Config{}, errPrivacyTestBoom
 	}}
 	cmd := newPrivacyCmdWith(deps)
-	cmd.SetArgs(nil)
+	// Not nil: nil makes cobra read the test binary's own os.Args.
+	cmd.SetArgs([]string{})
 	cmd.SilenceErrors = true
 	cmd.SilenceUsage = true
 

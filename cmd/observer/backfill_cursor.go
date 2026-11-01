@@ -90,13 +90,16 @@ func backfillCursorHookUsage(ctx context.Context, db *sql.DB, roots []string, fi
 			}
 			res.FilesScanned++
 			res.EventsReplayed += len(pr.ToolEvents) + len(pr.TokenEvents) + len(pr.OutcomeUpdates)
-			if len(pr.ToolEvents) == 0 && len(pr.TokenEvents) == 0 && len(pr.OutcomeUpdates) == 0 {
+			if len(pr.ToolEvents) == 0 && len(pr.TokenEvents) == 0 && len(pr.OutcomeUpdates) == 0 && len(pr.ToolAccounts) == 0 {
 				return nil
 			}
 			ir, ierr := st.Ingest(ctx, pr.ToolEvents, pr.TokenEvents, store.IngestOptions{
 				RecordFailures:      true,
 				OutcomeUpdates:      pr.OutcomeUpdates,
 				SessionToolVersions: pr.SessionToolVersions,
+				// The adapter's tool-account observations, as the watcher
+				// forwards them (store.IngestOptions.ToolAccounts).
+				ToolAccounts: pr.ToolAccounts,
 			})
 			if ierr != nil {
 				return fmt.Errorf("%s: %w", path, ierr)

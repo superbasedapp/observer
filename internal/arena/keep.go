@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -27,10 +28,13 @@ const (
 	// KeepSquash (default): `git merge --squash` of the candidate branch,
 	// committed as one arena commit with a provenance footer.
 	KeepSquash KeepStrategy = "squash"
-	// KeepJudgeMerge: the judge harness is driven headlessly in the main
-	// repository with instructions to merge the candidate branch and
-	// commit — for candidates needing conflict resolution the operator
-	// prefers not to do by hand.
+	// KeepJudgeMerge: the judge harness is driven headlessly in a
+	// temporary keep worktree of the branch HEAD with instructions to merge
+	// the candidate branch and commit, and the verified result is
+	// fast-forwarded onto the project branch (OSH-R-006) - for candidates
+	// needing conflict resolution the operator prefers not to do by hand.
+	// It runs only where the harness may skip its own permission checks
+	// (permlane.go, audit F3).
 	KeepJudgeMerge KeepStrategy = "judge_merge"
 )
 
@@ -100,11 +104,16 @@ func (r *Runner) Keep(ctx context.Context, row *models.ArenaCandidate, projectRo
 	if landErr != nil {
 		return "", landErr
 	}
-	if err := r.opts.Store.SetCandidateKept(ctx, row.ID, sha); err != nil {
+	// Once a commit has landed the record is finalized on a context detached
+	// from the request (OSH-R-006): a client that disconnects now must not
+	// turn a completed land into a rollback, or strand the two apart.
+	fctx, fcancel := context.WithTimeout(context.WithoutCancel(ctx), keepFinishTimeout)
+	defer fcancel()
+	if err := r.opts.Store.SetCandidateKept(fctx, row.ID, sha); err != nil {
 		// The repository and DB must not disagree. Roll back only when HEAD is
 		// still exactly our clean landed commit; otherwise preserve the user's
 		// newer state and report the manual recovery requirement.
-		if rbErr := rollbackExactCleanHead(ctx, projectRoot, sha, baseHead); rbErr != nil {
+		if rbErr := rollbackExactCleanHead(fctx, projectRoot, sha, baseHead); rbErr != nil {
 			return "", fmt.Errorf("arena.Keep: land %s succeeded but store finalization failed (%w); automatic rollback also failed: %w", sha, err, rbErr)
 		}
 		return "", fmt.Errorf("arena.Keep: store finalization failed; landed commit was rolled back: %w", err)
@@ -166,19 +175,46 @@ func (r *Runner) squashKeep(ctx context.Context, row *models.ArenaCandidate, pro
 	return sha, nil
 }
 
+// keepFinishTimeout bounds the checks and the land after a judge_merge drive
+// returns. They run on their own context, detached from the request's, so a
+// client that disconnects in that window cannot strand a half-checked keep
+// (OSH-R-006); the bound keeps a wedged git from holding the keep forever.
+const keepFinishTimeout = 2 * time.Minute
+
+// keepWorktreeFor names the isolated worktree and scratch branch a
+// judge_merge keep of row works in: under the run's own workspace directory
+// (a dot name, so it can never collide with a candidate slot named after a
+// tool), on a branch beside the candidate's own.
+func (r *Runner) keepWorktreeFor(row *models.ArenaCandidate) (dir, branch string) {
+	return filepath.Join(r.opts.WorkspaceDir, row.RunID, ".keep-"+row.Tool),
+		fmt.Sprintf("arena/%s/keep-%s", row.RunID, row.Tool)
+}
+
 // judgeMergeKeep delegates the merge to the judge harness (operator ruling
-// Q2's keep-time option): the agent is driven headlessly INSIDE the main
-// repository with instructions to merge the candidate branch, resolve any
-// conflicts itself, and commit. The engine never merges on the judge's
-// behalf — it verifies outcomes honestly: a new HEAD commit on the project
-// branch with a clean tree, else an error that leaves triage to the
-// operator (a half-resolved state is reported, never silently reset).
+// Q2's keep-time option), in an ISOLATED worktree (OSH-R-006): the agent is
+// driven headlessly inside a temporary worktree of the project branch's HEAD
+// with instructions to merge the candidate branch, resolve any conflicts
+// itself, and commit. The engine never merges on the judge's behalf; it
+// verifies the outcome in that worktree (a new commit with a clean tree that
+// history-merges the candidate branch and carries the provenance footer) and
+// only then fast-forwards the real checkout to it, provided the checkout is
+// still clean and still at the HEAD the keep started from. The real checkout
+// is therefore either moved in one step to a verified commit or not touched
+// at all. A cancelled request stops the agent; the checks and the land after
+// the drive run detached from the request (keepFinishTimeout).
 func (r *Runner) judgeMergeKeep(ctx context.Context, row *models.ArenaCandidate, projectRoot string, js JudgeSpec, mode string) (string, error) {
 	if js.Tool == "" {
 		return "", errors.New("arena.judgeMergeKeep: no judge tool supplied")
 	}
-	if _, ok := integration.For(js.Tool); !ok {
+	jc, ok := integration.For(js.Tool)
+	if !ok {
 		return "", fmt.Errorf("arena.judgeMergeKeep: unknown judge tool %q", js.Tool)
+	}
+	// Refuse before any worktree exists when the merge agent has no lane
+	// it may run in here (audit F3): the drive asks again per process.
+	bypass := r.bypassFor(ctx, js.Tool)
+	if _, _, lerr := permissionArgs(jc.Headless, js.Tool, roleMerge, bypass); lerr != nil {
+		return "", fmt.Errorf("arena.judgeMergeKeep: %w", lerr)
 	}
 	dirty, err := git.IsDirty(ctx, projectRoot)
 	if err != nil {
@@ -198,25 +234,66 @@ func (r *Runner) judgeMergeKeep(ctx context.Context, row *models.ArenaCandidate,
 	if cerr != nil {
 		return "", fmt.Errorf("arena.judgeMergeKeep: %w", cerr)
 	}
+	keepDir, keepBranch := r.keepWorktreeFor(row)
+	removeKeep := func() {
+		// Detached from the request so a cancel still cleans up, and
+		// bounded so a wedged git cannot hold the keep forever (audit F7).
+		c, cancel := context.WithTimeout(context.WithoutCancel(ctx), keepFinishTimeout)
+		defer cancel()
+		_ = git.WorktreeRemove(c, projectRoot, keepDir)
+		_ = os.RemoveAll(keepDir)
+		_ = git.DeleteBranch(c, projectRoot, keepBranch)
+	}
+	// A keep that crashed earlier may have left its worktree behind; the
+	// cleanup is convergent, so clear it before adding a fresh one.
+	removeKeep()
+	if err := git.WorktreeAdd(ctx, projectRoot, keepDir, keepBranch, baseHead); err != nil {
+		return "", fmt.Errorf("arena.judgeMergeKeep: isolated keep worktree: %w", err)
+	}
+	defer removeKeep()
+
 	res, derr := driveHarness(ctx, driveRequest{
 		Tool:         js.Tool,
 		Model:        js.Model,
-		WorktreePath: projectRoot,
+		WorktreePath: keepDir,
+		SourceRoot:   projectRoot,
+		ProjectRoot:  projectRoot,
 		Prompt:       renderJudgeMergePrompt(row, mode),
 		ProxyURL:     r.opts.ProxyURL,
 		ConfigDir:    cfgDir,
 		Timeout:      DefaultTimeout,
 		Admission:    r.opts.Admission,
+		Role:         roleMerge,
+		Bypass:       bypass,
 	})
 	if res.TimedOut {
-		return "", fmt.Errorf("arena.judgeMergeKeep: judge drive timed out after %s", DefaultTimeout)
+		return "", fmt.Errorf("arena.judgeMergeKeep: judge drive timed out after %s; your checkout is untouched", DefaultTimeout)
+	}
+	if cerr := ctx.Err(); cerr != nil {
+		return "", fmt.Errorf("arena.judgeMergeKeep: cancelled before landing; your checkout is untouched: %w", cerr)
 	}
 
-	newHead, herr := git.HeadSHA(ctx, projectRoot)
+	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), keepFinishTimeout)
+	defer cancel()
+	landed, err := verifyJudgeMerge(fctx, row, keepDir, baseHead, res, derr, mode)
+	if err != nil {
+		return "", err
+	}
+	if err := landKeep(fctx, projectRoot, baseHead, landed); err != nil {
+		return "", err
+	}
+	return landed, nil
+}
+
+// verifyJudgeMerge checks the judge's result in the isolated keep worktree
+// and returns the commit to land, the provenance footer amended on when the
+// judge left it out. Nothing here touches the real checkout.
+func verifyJudgeMerge(ctx context.Context, row *models.ArenaCandidate, keepDir, baseHead string, res driveResult, derr error, mode string) (string, error) {
+	newHead, herr := git.HeadSHA(ctx, keepDir)
 	if herr != nil {
 		return "", fmt.Errorf("arena.judgeMergeKeep: %w", herr)
 	}
-	stillDirty, dirtyErr := git.IsDirty(ctx, projectRoot)
+	stillDirty, dirtyErr := git.IsDirty(ctx, keepDir)
 	if dirtyErr != nil {
 		return "", fmt.Errorf("arena.judgeMergeKeep: post-drive dirty check: %w", dirtyErr)
 	}
@@ -224,15 +301,12 @@ func (r *Runner) judgeMergeKeep(ctx context.Context, row *models.ArenaCandidate,
 	// A landed commit whose tree matches the pre-keep HEAD is an empty
 	// commit, not a land (git itself refuses to amend one).
 	if newHead != baseHead {
-		sameTree, terr := git.TreesEqual(ctx, projectRoot, baseHead, newHead)
+		sameTree, terr := git.TreesEqual(ctx, keepDir, baseHead, newHead)
 		if terr != nil {
 			return "", fmt.Errorf("arena.judgeMergeKeep: compare landed tree: %w", terr)
 		}
 		if sameTree {
-			if rbErr := rollbackExactCleanHead(ctx, projectRoot, newHead, baseHead); rbErr != nil {
-				return "", fmt.Errorf("arena.judgeMergeKeep: judge committed an unchanged tree and rollback failed: %w", rbErr)
-			}
-			return "", errors.New("arena.judgeMergeKeep: judge committed but the tree is unchanged from the base - commit rolled back")
+			return "", errors.New("arena.judgeMergeKeep: judge committed but the tree is unchanged from the base - nothing landed")
 		}
 	}
 
@@ -240,45 +314,71 @@ func (r *Runner) judgeMergeKeep(ctx context.Context, row *models.ArenaCandidate,
 	case derr != nil && newHead == baseHead:
 		return "", fmt.Errorf("arena.judgeMergeKeep: judge drive failed before landing (%w)", derr)
 	case newHead == baseHead && stillDirty:
-		return "", errors.New("arena.judgeMergeKeep: judge left conflicts unresolved and landed nothing - resolve or reset manually")
+		return "", errors.New("arena.judgeMergeKeep: judge left conflicts unresolved and landed nothing - your checkout is untouched")
 	case newHead == baseHead:
 		return "", fmt.Errorf("arena.judgeMergeKeep: judge landed no commit (exit %d): %s",
 			res.ExitCode, truncateStr(stripANSI(res.FinalAnswer), 300))
 	case stillDirty:
-		return "", fmt.Errorf("arena.judgeMergeKeep: judge committed %s but left the tree dirty - commit or clean the residue", newHead)
+		return "", fmt.Errorf("arena.judgeMergeKeep: judge committed %s but left the tree dirty - nothing landed", newHead)
 	}
-	landed, aerr := git.IsAncestor(ctx, projectRoot, row.BranchName, newHead)
+	merged, aerr := git.IsAncestor(ctx, keepDir, row.BranchName, newHead)
 	if aerr != nil {
 		return "", fmt.Errorf("arena.judgeMergeKeep: verify candidate ancestry: %w", aerr)
 	}
-	if !landed {
-		if rbErr := rollbackExactCleanHead(ctx, projectRoot, newHead, baseHead); rbErr != nil {
-			return "", fmt.Errorf("arena.judgeMergeKeep: judge commit does not contain candidate branch and rollback failed: %w", rbErr)
-		}
-		return "", errors.New("arena.judgeMergeKeep: judge changed HEAD without history-merging the candidate branch - commit rolled back")
+	if !merged {
+		return "", errors.New("arena.judgeMergeKeep: judge changed HEAD without history-merging the candidate branch - nothing landed")
+	}
+	if ok, aerr := git.IsAncestor(ctx, keepDir, baseHead, newHead); aerr != nil || !ok {
+		return "", errors.New("arena.judgeMergeKeep: judge commit does not descend from the branch head the keep started at - nothing landed")
 	}
 
 	// Ensure the provenance footer survives regardless of what message the
 	// judge wrote: amend it onto the landed commit when missing.
-	msg, merr := git.CommitMessage(ctx, projectRoot, newHead)
+	msg, merr := git.CommitMessage(ctx, keepDir, newHead)
 	if merr != nil {
-		if rbErr := rollbackExactCleanHead(ctx, projectRoot, newHead, baseHead); rbErr != nil {
-			return "", fmt.Errorf("arena.judgeMergeKeep: read landed provenance (%w); rollback failed: %w", merr, rbErr)
-		}
-		return "", fmt.Errorf("arena.judgeMergeKeep: read landed provenance; commit rolled back: %w", merr)
+		return "", fmt.Errorf("arena.judgeMergeKeep: read landed provenance; nothing landed: %w", merr)
 	}
 	if !hasArenaProvenance(msg, row, mode) {
-		amended, aerr := git.AmendCommitMessage(ctx, projectRoot,
+		amended, aerr := git.AmendCommitMessage(ctx, keepDir,
 			strings.TrimRight(msg, "\n")+"\n\n"+provenanceFooter(row, mode))
 		if aerr != nil {
-			if rbErr := rollbackExactCleanHead(ctx, projectRoot, newHead, baseHead); rbErr != nil {
-				return "", fmt.Errorf("arena.judgeMergeKeep: provenance amend failed (%w); rollback failed: %w", aerr, rbErr)
-			}
-			return "", fmt.Errorf("arena.judgeMergeKeep: provenance amend failed; commit rolled back: %w", aerr)
+			return "", fmt.Errorf("arena.judgeMergeKeep: provenance amend failed; nothing landed: %w", aerr)
 		}
 		newHead = amended
 	}
 	return newHead, nil
+}
+
+// landKeep fast-forwards the real checkout to the verified commit, only when
+// the checkout is still clean and still at the HEAD the keep started from:
+// the operator may have committed or edited while the judge worked, and a
+// keep never lands over that. A failed fast-forward changes nothing; if HEAD
+// somehow moved anyway it is put back only while it is exactly our commit
+// on a clean tree.
+func landKeep(ctx context.Context, projectRoot, baseHead, landed string) error {
+	cur, err := git.HeadSHA(ctx, projectRoot)
+	if err != nil {
+		return fmt.Errorf("arena.judgeMergeKeep: %w", err)
+	}
+	if cur != baseHead {
+		return fmt.Errorf("arena.judgeMergeKeep: your branch moved from %s to %s while the judge worked - nothing landed", baseHead, cur)
+	}
+	dirty, err := git.IsDirty(ctx, projectRoot)
+	if err != nil {
+		return fmt.Errorf("arena.judgeMergeKeep: %w", err)
+	}
+	if dirty {
+		return errors.New("arena.judgeMergeKeep: your working tree changed while the judge worked - nothing landed")
+	}
+	if ferr := git.FastForward(ctx, projectRoot, landed); ferr != nil {
+		if now, herr := git.HeadSHA(ctx, projectRoot); herr == nil && now != baseHead {
+			if rbErr := rollbackExactCleanHead(ctx, projectRoot, now, baseHead); rbErr != nil {
+				return fmt.Errorf("arena.judgeMergeKeep: land failed (%w); rollback also failed: %w", ferr, rbErr)
+			}
+		}
+		return fmt.Errorf("arena.judgeMergeKeep: land failed; your checkout is unchanged: %w", ferr)
+	}
+	return nil
 }
 
 func hasArenaProvenance(message string, row *models.ArenaCandidate, mode string) bool {
@@ -325,8 +425,9 @@ func rollbackExactCleanHead(ctx context.Context, projectRoot, landedHead, baseHe
 }
 
 // renderJudgeMergePrompt builds the judge-driven merge instruction. The
-// judge works INSIDE the main repository: merge the candidate branch,
-// resolve conflicts itself, commit with the provenance footer.
+// judge works inside the temporary keep worktree (a checkout of the
+// project branch's HEAD): merge the candidate branch, resolve conflicts
+// itself, commit with the provenance footer.
 func renderJudgeMergePrompt(row *models.ArenaCandidate, mode string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "In this git repository, merge the branch %q into the current branch and commit the result.\n", row.BranchName)

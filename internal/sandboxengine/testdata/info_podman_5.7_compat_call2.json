@@ -1,0 +1,1 @@
+{"ID": "db60ef60-5e2a-4f19-8c3d-7a4b9e0c2d17", "Containers": 0, "Driver": "overlay", "DockerRootDir": "/home/agent/.local/share/containers/storage", "Name": "sbx-host", "OperatingSystem": "ubuntu", "KernelVersion": "6.12.103", "SecurityOptions": ["name=apparmor", "name=seccomp,profile=default", "name=rootless"], "ServerVersion": "5.7.0"}

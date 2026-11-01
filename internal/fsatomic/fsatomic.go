@@ -26,8 +26,8 @@ type Options struct {
 	// TempPattern is the os.CreateTemp pattern for the same-directory temp
 	// file. Empty means ".fsatomic-*.tmp".
 	TempPattern string
-	// Fsync durably flushes the file AND the containing directory before
-	// returning. Callers that need crash-consistency set it; callers writing
+	// Fsync durably flushes the file AND (where the OS allows it, not on
+	// Windows) the containing directory before returning. Callers that need crash-consistency set it; callers writing
 	// a cache that a restart can rebuild do not.
 	Fsync bool
 	// DirPerm is the permission for a directory this call has to create.
@@ -35,6 +35,10 @@ type Options struct {
 	DirPerm os.FileMode
 	// FilePerm is the permission of the written file. Zero means 0600.
 	FilePerm os.FileMode
+	// OwnerOnly creates the temp file with CreateTempOwnerOnly, so the
+	// written file is readable by this user only on Windows too (a
+	// protected DACL; ownerfile.go). For credentials.
+	OwnerOnly bool
 }
 
 // WriteFile writes data to path atomically. On any failure the temp file is
@@ -53,7 +57,11 @@ func WriteFile(path string, data []byte, opts Options) error {
 	if err := os.MkdirAll(dir, opts.DirPerm); err != nil {
 		return fmt.Errorf("fsatomic.WriteFile: mkdir %s: %w", dir, err)
 	}
-	tmp, err := os.CreateTemp(dir, opts.TempPattern)
+	createTemp := os.CreateTemp
+	if opts.OwnerOnly {
+		createTemp = CreateTempOwnerOnly
+	}
+	tmp, err := createTemp(dir, opts.TempPattern)
 	if err != nil {
 		return fmt.Errorf("fsatomic.WriteFile: create temp in %s: %w", dir, err)
 	}
@@ -93,13 +101,7 @@ func WriteFile(path string, data []byte, opts Options) error {
 	if !opts.Fsync {
 		return nil
 	}
-	dirHandle, err := os.Open(dir)
-	if err != nil {
-		return fmt.Errorf("fsatomic.WriteFile: open dir for fsync: %w", err)
-	}
-	defer func() { _ = dirHandle.Close() }()
-	if err := dirHandle.Sync(); err != nil {
-		return fmt.Errorf("fsatomic.WriteFile: fsync dir: %w", err)
-	}
-	return nil
+	// The directory flush is per OS (syncdir_*.go): POSIX needs it for the
+	// rename to be durable; Windows cannot flush a directory handle.
+	return syncDir(dir)
 }

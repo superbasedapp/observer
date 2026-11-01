@@ -96,6 +96,80 @@ type SandboxAvailability struct {
 	// Available=false, cannot be sandboxed (A3: v1 grounds only
 	// claude-code; every other row carries an honest Note/Reason).
 	Tools map[string]SandboxToolAvail `json:"tools,omitempty"`
+	// Backends is the additive per-backend list (sandbox plan v2 section
+	// 9): every registry row, offered or planned, with its availability on
+	// this host from the one selection table (internal/sandboxselect), its
+	// verification ("beta" when not live) and its computed capture level per
+	// tier. Old clients ignore it; every field above keeps its meaning.
+	Backends []SandboxBackendAvail `json:"backends,omitempty"`
+	// Org is what the organization sets for this node's sandbox (sandbox
+	// plan v2 section 9, lane SBX-P1B): the terminals.isolation floors in
+	// force and the [terminal.sandbox] pins applied, which the Sandbox
+	// isolation card shows read-only ("Set by your organization"). Absent
+	// when the organization sets nothing, and on an older daemon.
+	Org *SandboxOrgSettings `json:"org,omitempty"`
+}
+
+// SandboxOrgSettings is SandboxAvailability.Org.
+type SandboxOrgSettings struct {
+	// Floors are the isolation floors in force, keyed by the family's wire
+	// key (min_isolation, allowed_backends, ...).
+	Floors []SandboxOrgValue `json:"floors,omitempty"`
+	// Pins are the applied settings.pin values, keyed by the
+	// [terminal.sandbox] key without its prefix (home_mode, mask_paths, ...).
+	Pins []SandboxOrgValue `json:"pins,omitempty"`
+	// Managed are the keys the in-force sandbox managed body sets on this
+	// node, each with its EFFECTIVE value (the body composed onto the local
+	// block: mask_paths is the union, a pinned key keeps its pin), keyed
+	// like Pins (lane SBX-P2E, P1c audit F10). The local value in
+	// config.toml is unchanged and applies again when the body goes.
+	Managed []SandboxOrgValue `json:"managed,omitempty"`
+	// ManagedRefused are the body keys this node did not apply; Value is
+	// the closed reason (pinned_by_org, sensitive_host_path, ...).
+	ManagedRefused []SandboxOrgValue `json:"managed_refused,omitempty"`
+}
+
+// SandboxOrgValue is one organization-set value, ready to display.
+type SandboxOrgValue struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+	Value string `json:"value"`
+}
+
+// SandboxBackendAvail is one entry of SandboxAvailability.Backends.
+type SandboxBackendAvail struct {
+	ID       string `json:"id"`
+	Label    string `json:"label"`
+	Class    string `json:"class"`
+	Location string `json:"location"`
+	// Maturity is planned, preview or shipped; a planned row is listed so
+	// the picker can say when it lands, and is never available.
+	Maturity  string `json:"maturity"`
+	Phase     string `json:"phase,omitempty"`
+	Available bool   `json:"available"`
+	// Verdict, Rule and Reason are the selection drop for an unavailable
+	// row (rule S0 to S13), empty when available.
+	Verdict string `json:"verdict,omitempty"`
+	Rule    string `json:"rule,omitempty"`
+	Reason  string `json:"reason,omitempty"`
+	// Verification is live, doc, fixture or inferred on this host; Beta is
+	// true for anything not live (and for a version outside the tested
+	// range), rendered as "beta" everywhere.
+	Verification string   `json:"verification,omitempty"`
+	Beta         bool     `json:"beta"`
+	RegisterRef  string   `json:"register_ref,omitempty"`
+	Version      string   `json:"version,omitempty"`
+	Egress       []string `json:"egress,omitempty"`
+	// CaptureByTier is the computed capture label per tier for a
+	// proxy-routed tool that holds its own credential (the common case),
+	// e.g. "full (gateway-guarded)" for internet through the gateway.
+	CaptureByTier map[string]string `json:"capture_by_tier,omitempty"`
+	// Component is the catalog id that owns the row's driver.
+	Component string `json:"component"`
+	// Hint is the driver's note about a known issue on this host that does
+	// not make the row unavailable (for example a container runtime known
+	// to fail, with the known-good one); empty when none.
+	Hint string `json:"hint,omitempty"`
 }
 
 // SandboxSourceAvail is one entry of SandboxAvailability.Sources - whether a

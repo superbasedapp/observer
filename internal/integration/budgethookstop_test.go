@@ -19,22 +19,35 @@ func TestT519BudgetHookStopMatrix(t *testing.T) {
 		"qoder": BudgetHookStopPromptAndTool, "qwen-code": BudgetHookStopPromptAndTool,
 		"zcode": BudgetHookStopPromptAndTool, "muse": BudgetHookStopPromptAndTool,
 		"kimi-code": BudgetHookStopPromptAndTool,
+		// Guard-fix (2026-10-15): copilot userPromptSubmitted, the Cline plugin
+		// beforeModel and agy's PreInvocation abort are prompt gates beside the
+		// tool gates; a budget stop never taints an agy conversation.
+		"copilot-cli": BudgetHookStopPromptAndTool, "cline-cli": BudgetHookStopPromptAndTool,
+		"antigravity-cli": BudgetHookStopPromptAndTool,
+		// Surface-gap lane w5-foreign: gates reached through another tool's
+		// registration (the Antigravity App and IDE on antigravity-cli's
+		// hooks.json; DeepSeek Harness's dsh-hooks-claude-code bridge on
+		// Observer's Claude Code hooks).
+		"antigravity": BudgetHookStopPromptAndTool, "deepseek": BudgetHookStopPromptAndTool,
 		// Pre-tool seam only: the next tool call is denied, a prompt is not.
-		"antigravity-cli": BudgetHookStopTool, "cline-cli": BudgetHookStopTool,
-		"copilot-cli": BudgetHookStopTool, "crush": BudgetHookStopTool,
+		"crush": BudgetHookStopTool,
 		"goose": BudgetHookStopTool, "grok": BudgetHookStopTool,
 		"hermes": BudgetHookStopTool, "junie": BudgetHookStopTool,
 		"mistral-code": BudgetHookStopTool, "open-interpreter": BudgetHookStopTool,
-		"pi": BudgetHookStopTool,
+		"pi": BudgetHookStopPromptAndTool, "kiro-cli": BudgetHookStopTool,
 		// No wired pre-send seam: flagged after send (D-031) unless the proxy
 		// or the process controller stops the session.
-		"aider": BudgetHookStopNone, "antigravity": BudgetHookStopNone, "chatgpt-web": BudgetHookStopNone,
+		"aider": BudgetHookStopNone, "chatgpt-web": BudgetHookStopNone,
 		"claude-web": BudgetHookStopNone, "cline": BudgetHookStopNone, "copilot": BudgetHookStopNone,
-		"copilot-web": BudgetHookStopNone, "cowork": BudgetHookStopNone, "deepseek": BudgetHookStopNone,
+		"copilot-web": BudgetHookStopNone, "cowork": BudgetHookStopNone,
 		"freebuff": BudgetHookStopNone, "gemini-web": BudgetHookStopNone, "grokbot": BudgetHookStopNone,
-		"kilo-code": BudgetHookStopNone, "kiro-cli": BudgetHookStopNone,
+		"kilo-code": BudgetHookStopNone,
 		"kiro-crew": BudgetHookStopNone, "openclaw": BudgetHookStopNone,
 		"perplexity-web": BudgetHookStopNone, "prime-agent": BudgetHookStopNone, "zed": BudgetHookStopNone,
+		// The 2026-10-21 capture-only wave (no wired hook seam).
+		"autohand": BudgetHookStopPromptAndTool, "ibm-bob": BudgetHookStopPromptAndTool, "cortex-code": BudgetHookStopPromptAndTool,
+		"codebuddy": BudgetHookStopPromptAndTool, "deepagents-code": BudgetHookStopPromptAndTool, "dimcode": BudgetHookStopPromptAndTool,
+		"dirac": BudgetHookStopPromptAndTool, "kimchi": BudgetHookStopPromptAndTool, "stakpak": BudgetHookStopNone, "vtcode": BudgetHookStopPromptAndTool,
 	}
 	for _, tool := range Tools() {
 		c, ok := For(tool)

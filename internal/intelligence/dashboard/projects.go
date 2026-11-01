@@ -391,6 +391,7 @@ func (s *Server) handleProjectDetail(w http.ResponseWriter, r *http.Request) {
 	detail, err := ComposeProjectDetail(ctx, st, ProjectDetailInput{
 		ProjectID: projectID, Days: days, Since: since, Until: until,
 		LinkWindow: s.commitLinkWindow(), CostEngine: s.opts.CostEngine, Taskflow: s.taskflowOptions(),
+		CanRescan: s.opts.CommitRescan != nil,
 	})
 	if err != nil {
 		writeErr(w, err)
@@ -398,6 +399,91 @@ func (s *Server) handleProjectDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, detail)
+}
+
+// commitRescanWait is how long POST /api/project/{id}/commit-scan waits
+// for the scan before answering "still running" (202); the scan keeps
+// going on a detached context bounded by commitRescanLimit, and the page
+// polls the detail endpoint until last_scan_at moves.
+const (
+	commitRescanWait  = 20 * time.Second
+	commitRescanLimit = 5 * time.Minute
+)
+
+// commitRescanResponse is POST /api/project/{id}/commit-scan's body: Done
+// is false when the scan is still running after commitRescanWait; Capture
+// is the project's capture health as of the answer; Error is the scan's
+// own error text when it failed (Capture then names the classified kind).
+type commitRescanResponse struct {
+	Done    bool                          `json:"done"`
+	Error   string                        `json:"error,omitempty"`
+	Capture dashapi.APIProjectCaptureInfo `json:"capture"`
+}
+
+// handleProjectCommitScan serves POST /api/project/{id}/commit-scan: the
+// Projects page's "Rescan now", the dashboard twin of `observer backfill
+// --commits --commits-project <id>`. It runs one read-only scan through
+// Options.CommitRescan (the daemon's own scanner, so it never overlaps a
+// tick) and answers with the fresh capture health. Local-only with the
+// confirm token: it runs git on this machine.
+func (s *Server) handleProjectCommitScan(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST")
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	if !requireJSONConfirm(w, r) {
+		return
+	}
+	projectID, ok := parseProjectID(r)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	st := store.New(s.db())
+	meta, ok := requireProject(r.Context(), w, r, st, projectID)
+	if !ok {
+		return
+	}
+	if s.opts.CommitRescan == nil {
+		http.Error(w, "commit scanning is not running in this process ([projects].commit_scan is off)", http.StatusServiceUnavailable)
+		return
+	}
+
+	scanCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), commitRescanLimit)
+	done := make(chan error, 1)
+	go func() {
+		defer cancel()
+		done <- s.opts.CommitRescan(scanCtx, projectID)
+	}()
+
+	resp := commitRescanResponse{}
+	timer := time.NewTimer(commitRescanWait)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		resp.Done = true
+		if err != nil {
+			resp.Error = err.Error()
+		}
+	case <-timer.C:
+	case <-r.Context().Done():
+		return
+	}
+	health, err := st.CommitScanHealth(r.Context(), projectID)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	resp.Capture = dashapi.APIProjectCaptureInfo{
+		Commits:     health.State,
+		CommitsKind: dashapi.CommitsKindFor(health),
+		CommitScan:  dashapi.CommitScanInfo(health, meta.RootPath, true),
+	}
+	if !resp.Done {
+		w.WriteHeader(http.StatusAccepted)
+	}
+	writeJSON(w, resp)
 }
 
 // handleProjectCommits serves GET /api/project/{id}/commits?days=&limit=

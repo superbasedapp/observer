@@ -183,8 +183,10 @@ type Options struct {
 
 	// --- Root redirect (bare-domain Paddle domain-review fix) ---
 	//
-	// RootRedirectURL selects the "/" (exact match only) redirect target on
-	// this server's own origin. nil ⇒ resolved from SBCI_ROOT_REDIRECT_URL,
+	// RootRedirectURL selects the marketing base that /terms, /privacy,
+	// /refund-policy and /pricing redirect under (and "/" too, but only on a
+	// server without PortalSPA; with the SPA mounted "/" always goes to
+	// /portal/). nil ⇒ resolved from SBCI_ROOT_REDIRECT_URL,
 	// defaulting to https://superbased.app/ when that env var is unset too
 	// (see rootRedirectURLFromEnv in rootredirect.go — the same
 	// nil-means-load-from-env / non-nil-means-verbatim convention RateLimit
@@ -224,13 +226,16 @@ type Server struct {
 	attestor           jobs.ProviderAttestor
 	credentials        jobs.CredentialSource
 
-	portalWorkOSEnabled  bool
-	workOSClientID       string
-	workOSAPIKey         string
-	workOSAuthorizeURL   string
-	workOSTokenURL       string
-	workOSHTTP           *http.Client
-	workOSWebhookSecret  string
+	portalWorkOSEnabled bool
+	workOSClientID      string
+	workOSAPIKey        string
+	workOSAuthorizeURL  string
+	workOSTokenURL      string
+	workOSHTTP          *http.Client
+	workOSWebhookSecret string
+	// workOSCheck is the startup self-check verdict (RunWorkOSSelfCheck),
+	// reported by GET /healthz; never consulted on a request path.
+	workOSCheck          workOSCheckState
 	paddleWebhookSecrets []string
 	paddleCheckout       PaddleCheckout
 
@@ -340,15 +345,15 @@ func New(o Options) *Server {
 	// Root redirect: nil ⇒ SBCI_ROOT_REDIRECT_URL (default
 	// https://superbased.app/); non-nil is used verbatim, including "" to
 	// disable. Validated here so New never hands Handler a target that isn't
-	// an absolute http(s) URL; a malformed value fails CLOSED (the redirect
-	// stays off, "/" stays 404) rather than serving a broken redirect.
+	// an absolute http(s) URL; a malformed value fails CLOSED (the marketing
+	// redirects stay off) rather than serving a broken redirect.
 	rawRootRedirect := rootRedirectURLFromEnv()
 	if o.RootRedirectURL != nil {
 		rawRootRedirect = *o.RootRedirectURL
 	}
 	rootRedirect, err := validateRootRedirectURL(rawRootRedirect)
 	if err != nil {
-		s.log.Error("cloudserver/api: invalid root redirect URL, leaving / at 404", "err", err)
+		s.log.Error("cloudserver/api: invalid root redirect URL, the marketing redirects stay off", "err", err)
 		rootRedirect = ""
 	}
 	s.rootRedirectURL = rootRedirect
@@ -495,9 +500,10 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("/portal/", http.StripPrefix("/portal", s.portalSPA))
 	}
 
-	// The bare origin root (see rootredirect.go). Exact "/" only — it neither
-	// touches nor precedes the /portal/ and /v1/* patterns above, and is a
-	// no-op when the redirect is disabled (rootRedirectURL == "").
+	// The bare origin root (see rootredirect.go). Exact "/" only, so it neither
+	// touches nor precedes the /portal/ and /v1/* patterns above: it sends a
+	// visitor to /portal/ when the SPA is mounted, else to the marketing base,
+	// and registers nothing when neither applies.
 	s.mountRootRedirect(mux)
 
 	// R5: the canonical-host fence wraps the WHOLE mux, so every route — present
@@ -573,6 +579,11 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	} else if s.log != nil {
 		s.log.Warn("cloudserver/api: healthz route coverage read failed", "err", covErr)
 	}
+	// workos_signin: the startup self-check verdict (T-964), report-only like
+	// the two fields above. "misconfigured" means every browser sign-in will
+	// fail until the WorkOS key is fixed; it never flips the 200, because the
+	// device API keeps working without the browser leg.
+	body["workos_signin"] = s.WorkOSSignInCheck()
 	writeJSON(w, http.StatusOK, body)
 }
 

@@ -1,0 +1,2070 @@
+{
+ "resourceSpans": [
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "CodeBuddy-CLI-2.171.0"
+      }
+     },
+     {
+      "key": "service.version",
+      "value": {
+       "stringValue": "1.0.0"
+      }
+     },
+     {
+      "key": "extName",
+      "value": {
+       "stringValue": "@tencent-ai/codebuddy-code"
+      }
+     },
+     {
+      "key": "ideType",
+      "value": {
+       "stringValue": "CLI"
+      }
+     },
+     {
+      "key": "platform",
+      "value": {
+       "stringValue": "CLI"
+      }
+     },
+     {
+      "key": "platformVersion",
+      "value": {
+       "stringValue": "2.171.0"
+      }
+     },
+     {
+      "key": "extVersion",
+      "value": {
+       "stringValue": "2.171.0"
+      }
+     }
+    ],
+    "droppedAttributesCount": 0
+   },
+   "scopeSpans": [
+    {
+     "scope": {
+      "name": "CodeBuddy-CLI-2.171.0",
+      "version": "1.0.0"
+     },
+     "spans": [
+      {
+       "traceId": "9bb48275a3f54eca8fe7b16fc68913d5",
+       "spanId": "e0ca720fe8fcc928",
+       "parentSpanId": "fc3fd8df5d4aa1bc",
+       "name": "codebuddy_code.model_request",
+       "kind": 3,
+       "startTimeUnixNano": "1792707196129000000",
+       "endTimeUnixNano": "1792707196152776467",
+       "attributes": [
+        {
+         "key": "span.type",
+         "value": {
+          "stringValue": "model_request"
+         }
+        },
+        {
+         "key": "http.method",
+         "value": {
+          "stringValue": "POST"
+         }
+        },
+        {
+         "key": "http.url",
+         "value": {
+          "stringValue": "http://127.0.0.1:4398/chat/completions"
+         }
+        },
+        {
+         "key": "model.id",
+         "value": {
+          "stringValue": "mock-model"
+         }
+        },
+        {
+         "key": "agent.name",
+         "value": {
+          "stringValue": "cli"
+         }
+        },
+        {
+         "key": "request.id",
+         "value": {
+          "stringValue": "01a165acf4c27888a52e9bfbad0810e5"
+         }
+        },
+        {
+         "key": "model.stream",
+         "value": {
+          "boolValue": true
+         }
+        },
+        {
+         "key": "conversation.request.id",
+         "value": {
+          "stringValue": "01a165acf4337deda4a35bfd3e5b52f6"
+         }
+        },
+        {
+         "key": "workbuddy.prompt_request_id",
+         "value": {
+          "stringValue": "01a165acf4337deda4a35bfd3e5b52f6"
+         }
+        },
+        {
+         "key": "workbuddy.message_id",
+         "value": {
+          "stringValue": "01a165acf4c27888a52e9bfbad0810e5"
+         }
+        },
+        {
+         "key": "workbuddy.request_id",
+         "value": {
+          "stringValue": "01a165acf4c27888a52e9bfbad0810e5"
+         }
+        },
+        {
+         "key": "http.target",
+         "value": {
+          "stringValue": "/chat/completions"
+         }
+        },
+        {
+         "key": "net.peer.name",
+         "value": {
+          "stringValue": "127.0.0.1"
+         }
+        },
+        {
+         "key": "net.peer.port",
+         "value": {
+          "intValue": 4398
+         }
+        },
+        {
+         "key": "codebuddy.conversation_request_id",
+         "value": {
+          "stringValue": "01a165acf4337deda4a35bfd3e5b52f6"
+         }
+        },
+        {
+         "key": "retry_count",
+         "value": {
+          "intValue": 0
+         }
+        },
+        {
+         "key": "http.status_code",
+         "value": {
+          "intValue": 200
+         }
+        }
+       ],
+       "droppedAttributesCount": 0,
+       "events": [],
+       "droppedEventsCount": 0,
+       "status": {
+        "code": 1
+       },
+       "links": [],
+       "droppedLinksCount": 0
+      },
+      {
+       "traceId": "9bb48275a3f54eca8fe7b16fc68913d5",
+       "spanId": "d8f3c3a1a600a32c",
+       "parentSpanId": "fc3fd8df5d4aa1bc",
+       "name": "codebuddy_code.model_stream",
+       "kind": 3,
+       "startTimeUnixNano": "1792707196153000000",
+       "endTimeUnixNano": "1792707196164536328",
+       "attributes": [
+        {
+         "key": "span.type",
+         "value": {
+          "stringValue": "model_stream"
+         }
+        },
+        {
+         "key": "model.id",
+         "value": {
+          "stringValue": "mock-model"
+         }
+        },
+        {
+         "key": "agent.name",
+         "value": {
+          "stringValue": "cli"
+         }
+        },
+        {
+         "key": "request.id",
+         "value": {
+          "stringValue": "01a165acf4c27888a52e9bfbad0810e5"
+         }
+        },
+        {
+         "key": "conversation.request.id",
+         "value": {
+          "stringValue": "01a165acf4337deda4a35bfd3e5b52f6"
+         }
+        },
+        {
+         "key": "workbuddy.prompt_request_id",
+         "value": {
+          "stringValue": "01a165acf4337deda4a35bfd3e5b52f6"
+         }
+        },
+        {
+         "key": "workbuddy.message_id",
+         "value": {
+          "stringValue": "01a165acf4c27888a52e9bfbad0810e5"
+         }
+        },
+        {
+         "key": "workbuddy.request_id",
+         "value": {
+          "stringValue": "01a165acf4c27888a52e9bfbad0810e5"
+         }
+        },
+        {
+         "key": "codebuddy.conversation_request_id",
+         "value": {
+          "stringValue": "01a165acf4337deda4a35bfd3e5b52f6"
+         }
+        },
+        {
+         "key": "first_token_ms",
+         "value": {
+          "intValue": 32
+         }
+        },
+        {
+         "key": "chunk_count",
+         "value": {
+          "intValue": 1
+         }
+        },
+        {
+         "key": "total_bytes",
+         "value": {
+          "intValue": 1483
+         }
+        },
+        {
+         "key": "stream.status",
+         "value": {
+          "stringValue": "ok"
+         }
+        },
+        {
+         "key": "workbuddy.stop_reason",
+         "value": {
+          "stringValue": "ok"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0,
+       "events": [
+        {
+         "attributes": [
+          {
+           "key": "ttft_ms",
+           "value": {
+            "intValue": 32
+           }
+          },
+          {
+           "key": "chunk_count",
+           "value": {
+            "intValue": 1
+           }
+          },
+          {
+           "key": "bytes",
+           "value": {
+            "intValue": 1483
+           }
+          }
+         ],
+         "name": "first_token_received",
+         "timeUnixNano": "1792707196158288969",
+         "droppedAttributesCount": 0
+        }
+       ],
+       "droppedEventsCount": 0,
+       "status": {
+        "code": 1
+       },
+       "links": [],
+       "droppedLinksCount": 0
+      },
+      {
+       "traceId": "9bb48275a3f54eca8fe7b16fc68913d5",
+       "spanId": "7e4dcc93eae7190b",
+       "parentSpanId": "fc3fd8df5d4aa1bc",
+       "name": "codebuddy_code.tool",
+       "kind": 3,
+       "startTimeUnixNano": "1792707196192000000",
+       "endTimeUnixNano": "1792707196281074495",
+       "attributes": [
+        {
+         "key": "span.type",
+         "value": {
+          "stringValue": "tool"
+         }
+        },
+        {
+         "key": "tool_name",
+         "value": {
+          "stringValue": "Read"
+         }
+        },
+        {
+         "key": "tool.call_id",
+         "value": {
+          "stringValue": "call_mock1"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0,
+       "events": [
+        {
+         "attributes": [
+          {
+           "key": "type",
+           "value": {
+            "stringValue": "custom_event"
+           }
+          },
+          {
+           "key": "name",
+           "value": {
+            "stringValue": "agent.tool.start_detail"
+           }
+          },
+          {
+           "key": "conversation_id",
+           "value": {
+            "stringValue": "01a165ac-f1b6-776f-b094-7e94318ef62a"
+           }
+          },
+          {
+           "key": "conversation_request_id",
+           "value": {
+            "stringValue": "01a165acf4337deda4a35bfd3e5b52f6"
+           }
+          },
+          {
+           "key": "prompt_request_id",
+           "value": {
+            "stringValue": ""
+           }
+          },
+          {
+           "key": "message_id",
+           "value": {
+            "stringValue": "01a165acf4c27888a52e9bfbad0810e5"
+           }
+          },
+          {
+           "key": "trace_id",
+           "value": {
+            "stringValue": "9bb48275a3f54eca8fe7b16fc68913d5"
+           }
+          },
+          {
+           "key": "tool_name",
+           "value": {
+            "stringValue": "Read"
+           }
+          },
+          {
+           "key": "call_id",
+           "value": {
+            "stringValue": "call_mock1"
+           }
+          },
+          {
+           "key": "capability_type",
+           "value": {
+            "stringValue": "builtin"
+           }
+          },
+          {
+           "key": "capability_id",
+           "value": {
+            "stringValue": "Read"
+           }
+          },
+          {
+           "key": "expert_id",
+           "value": {
+            "stringValue": ""
+           }
+          },
+          {
+           "key": "model",
+           "value": {
+            "stringValue": "mock-model"
+           }
+          },
+          {
+           "key": "model_name",
+           "value": {
+            "stringValue": "mock-model"
+           }
+          },
+          {
+           "key": "scene",
+           "value": {
+            "stringValue": ""
+           }
+          },
+          {
+           "key": "agent_name",
+           "value": {
+            "stringValue": "cli"
+           }
+          },
+          {
+           "key": "agent_type",
+           "value": {
+            "stringValue": "main"
+           }
+          },
+          {
+           "key": "current_turn",
+           "value": {
+            "stringValue": "1"
+           }
+          }
+         ],
+         "name": "agent.tool.start_detail",
+         "timeUnixNano": "1792707196194832473",
+         "droppedAttributesCount": 0
+        },
+        {
+         "attributes": [
+          {
+           "key": "type",
+           "value": {
+            "stringValue": "custom_event"
+           }
+          },
+          {
+           "key": "name",
+           "value": {
+            "stringValue": "agent.tool.success_detail"
+           }
+          },
+          {
+           "key": "conversation_id",
+           "value": {
+            "stringValue": "01a165ac-f1b6-776f-b094-7e94318ef62a"
+           }
+          },
+          {
+           "key": "conversation_request_id",
+           "value": {
+            "stringValue": "01a165acf4337deda4a35bfd3e5b52f6"
+           }
+          },
+          {
+           "key": "prompt_request_id",
+           "value": {
+            "stringValue": ""
+           }
+          },
+          {
+           "key": "message_id",
+           "value": {
+            "stringValue": "01a165acf4c27888a52e9bfbad0810e5"
+           }
+          },
+          {
+           "key": "trace_id",
+           "value": {
+            "stringValue": "9bb48275a3f54eca8fe7b16fc68913d5"
+           }
+          },
+          {
+           "key": "tool_name",
+           "value": {
+            "stringValue": "Read"
+           }
+          },
+          {
+           "key": "call_id",
+           "value": {
+            "stringValue": "call_mock1"
+           }
+          },
+          {
+           "key": "capability_type",
+           "value": {
+            "stringValue": "builtin"
+           }
+          },
+          {
+           "key": "capability_id",
+           "value": {
+            "stringValue": "Read"
+           }
+          },
+          {
+           "key": "expert_id",
+           "value": {
+            "stringValue": ""
+           }
+          },
+          {
+           "key": "model",
+           "value": {
+            "stringValue": "mock-model"
+           }
+          },
+          {
+           "key": "model_name",
+           "value": {
+            "stringValue": "mock-model"
+           }
+          },
+          {
+           "key": "scene",
+           "value": {
+            "stringValue": ""
+           }
+          },
+          {
+           "key": "agent_name",
+           "value": {
+            "stringValue": "cli"
+           }
+          },
+          {
+           "key": "agent_type",
+           "value": {
+            "stringValue": "main"
+           }
+          },
+          {
+           "key": "current_turn",
+           "value": {
+            "stringValue": "1"
+           }
+          },
+          {
+           "key": "duration_ms",
+           "value": {
+            "intValue": 83
+           }
+          }
+         ],
+         "name": "agent.tool.success_detail",
+         "timeUnixNano": "1792707196275212099",
+         "droppedAttributesCount": 0
+        }
+       ],
+       "droppedEventsCount": 0,
+       "status": {
+        "code": 1
+       },
+       "links": [],
+       "droppedLinksCount": 0
+      },
+      {
+       "traceId": "9bb48275a3f54eca8fe7b16fc68913d5",
+       "spanId": "0681e88aaf02c0e4",
+       "parentSpanId": "fc3fd8df5d4aa1bc",
+       "name": "codebuddy_code.tool",
+       "kind": 3,
+       "startTimeUnixNano": "1792707196198000000",
+       "endTimeUnixNano": "1792707196328709534",
+       "attributes": [
+        {
+         "key": "span.type",
+         "value": {
+          "stringValue": "tool"
+         }
+        },
+        {
+         "key": "tool_name",
+         "value": {
+          "stringValue": "Bash"
+         }
+        },
+        {
+         "key": "tool.call_id",
+         "value": {
+          "stringValue": "call_mock2"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0,
+       "events": [
+        {
+         "attributes": [
+          {
+           "key": "type",
+           "value": {
+            "stringValue": "custom_event"
+           }
+          },
+          {
+           "key": "name",
+           "value": {
+            "stringValue": "agent.tool.start_detail"
+           }
+          },
+          {
+           "key": "conversation_id",
+           "value": {
+            "stringValue": "01a165ac-f1b6-776f-b094-7e94318ef62a"
+           }
+          },
+          {
+           "key": "conversation_request_id",
+           "value": {
+            "stringValue": "01a165acf4337deda4a35bfd3e5b52f6"
+           }
+          },
+          {
+           "key": "prompt_request_id",
+           "value": {
+            "stringValue": ""
+           }
+          },
+          {
+           "key": "message_id",
+           "value": {
+            "stringValue": "01a165acf4c27888a52e9bfbad0810e5"
+           }
+          },
+          {
+           "key": "trace_id",
+           "value": {
+            "stringValue": "9bb48275a3f54eca8fe7b16fc68913d5"
+           }
+          },
+          {
+           "key": "tool_name",
+           "value": {
+            "stringValue": "Bash"
+           }
+          },
+          {
+           "key": "call_id",
+           "value": {
+            "stringValue": "call_mock2"
+           }
+          },
+          {
+           "key": "capability_type",
+           "value": {
+            "stringValue": "builtin"
+           }
+          },
+          {
+           "key": "capability_id",
+           "value": {
+            "stringValue": "Bash"
+           }
+          },
+          {
+           "key": "expert_id",
+           "value": {
+            "stringValue": ""
+           }
+          },
+          {
+           "key": "model",
+           "value": {
+            "stringValue": "mock-model"
+           }
+          },
+          {
+           "key": "model_name",
+           "value": {
+            "stringValue": "mock-model"
+           }
+          },
+          {
+           "key": "scene",
+           "value": {
+            "stringValue": ""
+           }
+          },
+          {
+           "key": "agent_name",
+           "value": {
+            "stringValue": "cli"
+           }
+          },
+          {
+           "key": "agent_type",
+           "value": {
+            "stringValue": "main"
+           }
+          },
+          {
+           "key": "current_turn",
+           "value": {
+            "stringValue": "1"
+           }
+          }
+         ],
+         "name": "agent.tool.start_detail",
+         "timeUnixNano": "1792707196204873557",
+         "droppedAttributesCount": 0
+        },
+        {
+         "attributes": [
+          {
+           "key": "type",
+           "value": {
+            "stringValue": "custom_event"
+           }
+          },
+          {
+           "key": "name",
+           "value": {
+            "stringValue": "agent.tool.success_detail"
+           }
+          },
+          {
+           "key": "conversation_id",
+           "value": {
+            "stringValue": "01a165ac-f1b6-776f-b094-7e94318ef62a"
+           }
+          },
+          {
+           "key": "conversation_request_id",
+           "value": {
+            "stringValue": "01a165acf4337deda4a35bfd3e5b52f6"
+           }
+          },
+          {
+           "key": "prompt_request_id",
+           "value": {
+            "stringValue": ""
+           }
+          },
+          {
+           "key": "message_id",
+           "value": {
+            "stringValue": "01a165acf4c27888a52e9bfbad0810e5"
+           }
+          },
+          {
+           "key": "trace_id",
+           "value": {
+            "stringValue": "9bb48275a3f54eca8fe7b16fc68913d5"
+           }
+          },
+          {
+           "key": "tool_name",
+           "value": {
+            "stringValue": "Bash"
+           }
+          },
+          {
+           "key": "call_id",
+           "value": {
+            "stringValue": "call_mock2"
+           }
+          },
+          {
+           "key": "capability_type",
+           "value": {
+            "stringValue": "builtin"
+           }
+          },
+          {
+           "key": "capability_id",
+           "value": {
+            "stringValue": "Bash"
+           }
+          },
+          {
+           "key": "expert_id",
+           "value": {
+            "stringValue": ""
+           }
+          },
+          {
+           "key": "model",
+           "value": {
+            "stringValue": "mock-model"
+           }
+          },
+          {
+           "key": "model_name",
+           "value": {
+            "stringValue": "mock-model"
+           }
+          },
+          {
+           "key": "scene",
+           "value": {
+            "stringValue": ""
+           }
+          },
+          {
+           "key": "agent_name",
+           "value": {
+            "stringValue": "cli"
+           }
+          },
+          {
+           "key": "agent_type",
+           "value": {
+            "stringValue": "main"
+           }
+          },
+          {
+           "key": "current_turn",
+           "value": {
+            "stringValue": "1"
+           }
+          },
+          {
+           "key": "duration_ms",
+           "value": {
+            "intValue": 120
+           }
+          }
+         ],
+         "name": "agent.tool.success_detail",
+         "timeUnixNano": "1792707196318015499",
+         "droppedAttributesCount": 0
+        }
+       ],
+       "droppedEventsCount": 0,
+       "status": {
+        "code": 1
+       },
+       "links": [],
+       "droppedLinksCount": 0
+      },
+      {
+       "traceId": "9bb48275a3f54eca8fe7b16fc68913d5",
+       "spanId": "7428e3a1a7d6e572",
+       "parentSpanId": "fc3fd8df5d4aa1bc",
+       "name": "codebuddy_code.tool",
+       "kind": 3,
+       "startTimeUnixNano": "1792707196333000000",
+       "endTimeUnixNano": "1792707196370663489",
+       "attributes": [
+        {
+         "key": "span.type",
+         "value": {
+          "stringValue": "tool"
+         }
+        },
+        {
+         "key": "tool_name",
+         "value": {
+          "stringValue": "Write"
+         }
+        },
+        {
+         "key": "tool.call_id",
+         "value": {
+          "stringValue": "call_mock3"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0,
+       "events": [
+        {
+         "attributes": [
+          {
+           "key": "type",
+           "value": {
+            "stringValue": "custom_event"
+           }
+          },
+          {
+           "key": "name",
+           "value": {
+            "stringValue": "agent.tool.start_detail"
+           }
+          },
+          {
+           "key": "conversation_id",
+           "value": {
+            "stringValue": "01a165ac-f1b6-776f-b094-7e94318ef62a"
+           }
+          },
+          {
+           "key": "conversation_request_id",
+           "value": {
+            "stringValue": "01a165acf4337deda4a35bfd3e5b52f6"
+           }
+          },
+          {
+           "key": "prompt_request_id",
+           "value": {
+            "stringValue": ""
+           }
+          },
+          {
+           "key": "message_id",
+           "value": {
+            "stringValue": "01a165acf4c27888a52e9bfbad0810e5"
+           }
+          },
+          {
+           "key": "trace_id",
+           "value": {
+            "stringValue": "9bb48275a3f54eca8fe7b16fc68913d5"
+           }
+          },
+          {
+           "key": "tool_name",
+           "value": {
+            "stringValue": "Write"
+           }
+          },
+          {
+           "key": "call_id",
+           "value": {
+            "stringValue": "call_mock3"
+           }
+          },
+          {
+           "key": "capability_type",
+           "value": {
+            "stringValue": "builtin"
+           }
+          },
+          {
+           "key": "capability_id",
+           "value": {
+            "stringValue": "Write"
+           }
+          },
+          {
+           "key": "expert_id",
+           "value": {
+            "stringValue": ""
+           }
+          },
+          {
+           "key": "model",
+           "value": {
+            "stringValue": "mock-model"
+           }
+          },
+          {
+           "key": "model_name",
+           "value": {
+            "stringValue": "mock-model"
+           }
+          },
+          {
+           "key": "scene",
+           "value": {
+            "stringValue": ""
+           }
+          },
+          {
+           "key": "agent_name",
+           "value": {
+            "stringValue": "cli"
+           }
+          },
+          {
+           "key": "agent_type",
+           "value": {
+            "stringValue": "main"
+           }
+          },
+          {
+           "key": "current_turn",
+           "value": {
+            "stringValue": "1"
+           }
+          }
+         ],
+         "name": "agent.tool.start_detail",
+         "timeUnixNano": "1792707196333888654",
+         "droppedAttributesCount": 0
+        },
+        {
+         "attributes": [
+          {
+           "key": "type",
+           "value": {
+            "stringValue": "custom_event"
+           }
+          },
+          {
+           "key": "name",
+           "value": {
+            "stringValue": "agent.tool.success_detail"
+           }
+          },
+          {
+           "key": "conversation_id",
+           "value": {
+            "stringValue": "01a165ac-f1b6-776f-b094-7e94318ef62a"
+           }
+          },
+          {
+           "key": "conversation_request_id",
+           "value": {
+            "stringValue": "01a165acf4337deda4a35bfd3e5b52f6"
+           }
+          },
+          {
+           "key": "prompt_request_id",
+           "value": {
+            "stringValue": ""
+           }
+          },
+          {
+           "key": "message_id",
+           "value": {
+            "stringValue": "01a165acf4c27888a52e9bfbad0810e5"
+           }
+          },
+          {
+           "key": "trace_id",
+           "value": {
+            "stringValue": "9bb48275a3f54eca8fe7b16fc68913d5"
+           }
+          },
+          {
+           "key": "tool_name",
+           "value": {
+            "stringValue": "Write"
+           }
+          },
+          {
+           "key": "call_id",
+           "value": {
+            "stringValue": "call_mock3"
+           }
+          },
+          {
+           "key": "capability_type",
+           "value": {
+            "stringValue": "builtin"
+           }
+          },
+          {
+           "key": "capability_id",
+           "value": {
+            "stringValue": "Write"
+           }
+          },
+          {
+           "key": "expert_id",
+           "value": {
+            "stringValue": ""
+           }
+          },
+          {
+           "key": "model",
+           "value": {
+            "stringValue": "mock-model"
+           }
+          },
+          {
+           "key": "model_name",
+           "value": {
+            "stringValue": "mock-model"
+           }
+          },
+          {
+           "key": "scene",
+           "value": {
+            "stringValue": ""
+           }
+          },
+          {
+           "key": "agent_name",
+           "value": {
+            "stringValue": "cli"
+           }
+          },
+          {
+           "key": "agent_type",
+           "value": {
+            "stringValue": "main"
+           }
+          },
+          {
+           "key": "current_turn",
+           "value": {
+            "stringValue": "1"
+           }
+          },
+          {
+           "key": "duration_ms",
+           "value": {
+            "intValue": 32
+           }
+          }
+         ],
+         "name": "agent.tool.success_detail",
+         "timeUnixNano": "1792707196365407453",
+         "droppedAttributesCount": 0
+        }
+       ],
+       "droppedEventsCount": 0,
+       "status": {
+        "code": 1
+       },
+       "links": [],
+       "droppedLinksCount": 0
+      },
+      {
+       "traceId": "9bb48275a3f54eca8fe7b16fc68913d5",
+       "spanId": "62d86be30ab57d2b",
+       "parentSpanId": "fc3fd8df5d4aa1bc",
+       "name": "codebuddy_code.model_request",
+       "kind": 3,
+       "startTimeUnixNano": "1792707196435000000",
+       "endTimeUnixNano": "1792707196442403589",
+       "attributes": [
+        {
+         "key": "span.type",
+         "value": {
+          "stringValue": "model_request"
+         }
+        },
+        {
+         "key": "http.method",
+         "value": {
+          "stringValue": "POST"
+         }
+        },
+        {
+         "key": "http.url",
+         "value": {
+          "stringValue": "http://127.0.0.1:4398/chat/completions"
+         }
+        },
+        {
+         "key": "model.id",
+         "value": {
+          "stringValue": "mock-model"
+         }
+        },
+        {
+         "key": "agent.name",
+         "value": {
+          "stringValue": "cli"
+         }
+        },
+        {
+         "key": "request.id",
+         "value": {
+          "stringValue": "01a165acf5f671e9adc424d513c2bf93"
+         }
+        },
+        {
+         "key": "model.stream",
+         "value": {
+          "boolValue": true
+         }
+        },
+        {
+         "key": "conversation.request.id",
+         "value": {
+          "stringValue": "01a165acf4337deda4a35bfd3e5b52f6"
+         }
+        },
+        {
+         "key": "workbuddy.prompt_request_id",
+         "value": {
+          "stringValue": "01a165acf4337deda4a35bfd3e5b52f6"
+         }
+        },
+        {
+         "key": "workbuddy.message_id",
+         "value": {
+          "stringValue": "01a165acf5f671e9adc424d513c2bf93"
+         }
+        },
+        {
+         "key": "workbuddy.request_id",
+         "value": {
+          "stringValue": "01a165acf5f671e9adc424d513c2bf93"
+         }
+        },
+        {
+         "key": "http.target",
+         "value": {
+          "stringValue": "/chat/completions"
+         }
+        },
+        {
+         "key": "net.peer.name",
+         "value": {
+          "stringValue": "127.0.0.1"
+         }
+        },
+        {
+         "key": "net.peer.port",
+         "value": {
+          "intValue": 4398
+         }
+        },
+        {
+         "key": "codebuddy.conversation_request_id",
+         "value": {
+          "stringValue": "01a165acf4337deda4a35bfd3e5b52f6"
+         }
+        },
+        {
+         "key": "retry_count",
+         "value": {
+          "intValue": 0
+         }
+        },
+        {
+         "key": "http.status_code",
+         "value": {
+          "intValue": 200
+         }
+        }
+       ],
+       "droppedAttributesCount": 0,
+       "events": [],
+       "droppedEventsCount": 0,
+       "status": {
+        "code": 1
+       },
+       "links": [],
+       "droppedLinksCount": 0
+      },
+      {
+       "traceId": "9bb48275a3f54eca8fe7b16fc68913d5",
+       "spanId": "a025d3906ff1318a",
+       "parentSpanId": "fc3fd8df5d4aa1bc",
+       "name": "codebuddy_code.model_stream",
+       "kind": 3,
+       "startTimeUnixNano": "1792707196443000000",
+       "endTimeUnixNano": "1792707196446404255",
+       "attributes": [
+        {
+         "key": "span.type",
+         "value": {
+          "stringValue": "model_stream"
+         }
+        },
+        {
+         "key": "model.id",
+         "value": {
+          "stringValue": "mock-model"
+         }
+        },
+        {
+         "key": "agent.name",
+         "value": {
+          "stringValue": "cli"
+         }
+        },
+        {
+         "key": "request.id",
+         "value": {
+          "stringValue": "01a165acf5f671e9adc424d513c2bf93"
+         }
+        },
+        {
+         "key": "conversation.request.id",
+         "value": {
+          "stringValue": "01a165acf4337deda4a35bfd3e5b52f6"
+         }
+        },
+        {
+         "key": "workbuddy.prompt_request_id",
+         "value": {
+          "stringValue": "01a165acf4337deda4a35bfd3e5b52f6"
+         }
+        },
+        {
+         "key": "workbuddy.message_id",
+         "value": {
+          "stringValue": "01a165acf5f671e9adc424d513c2bf93"
+         }
+        },
+        {
+         "key": "workbuddy.request_id",
+         "value": {
+          "stringValue": "01a165acf5f671e9adc424d513c2bf93"
+         }
+        },
+        {
+         "key": "codebuddy.conversation_request_id",
+         "value": {
+          "stringValue": "01a165acf4337deda4a35bfd3e5b52f6"
+         }
+        },
+        {
+         "key": "first_token_ms",
+         "value": {
+          "intValue": 9
+         }
+        },
+        {
+         "key": "chunk_count",
+         "value": {
+          "intValue": 1
+         }
+        },
+        {
+         "key": "total_bytes",
+         "value": {
+          "intValue": 968
+         }
+        },
+        {
+         "key": "stream.status",
+         "value": {
+          "stringValue": "ok"
+         }
+        },
+        {
+         "key": "workbuddy.stop_reason",
+         "value": {
+          "stringValue": "ok"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0,
+       "events": [
+        {
+         "attributes": [
+          {
+           "key": "ttft_ms",
+           "value": {
+            "intValue": 9
+           }
+          },
+          {
+           "key": "chunk_count",
+           "value": {
+            "intValue": 1
+           }
+          },
+          {
+           "key": "bytes",
+           "value": {
+            "intValue": 968
+           }
+          }
+         ],
+         "name": "first_token_received",
+         "timeUnixNano": "1792707196444109279",
+         "droppedAttributesCount": 0
+        }
+       ],
+       "droppedEventsCount": 0,
+       "status": {
+        "code": 1
+       },
+       "links": [],
+       "droppedLinksCount": 0
+      },
+      {
+       "traceId": "9bb48275a3f54eca8fe7b16fc68913d5",
+       "spanId": "fc3fd8df5d4aa1bc",
+       "name": "codebuddy_code.interaction",
+       "kind": 3,
+       "startTimeUnixNano": "1792707195977000000",
+       "endTimeUnixNano": "1792707196455000000",
+       "attributes": [
+        {
+         "key": "span.type",
+         "value": {
+          "stringValue": "interaction"
+         }
+        },
+        {
+         "key": "conversation.id",
+         "value": {
+          "stringValue": "01a165ac-f1b6-776f-b094-7e94318ef62a"
+         }
+        },
+        {
+         "key": "conversation.agent",
+         "value": {
+          "stringValue": "cli"
+         }
+        },
+        {
+         "key": "conversation.request.id",
+         "value": {
+          "stringValue": "01a165acf4337deda4a35bfd3e5b52f6"
+         }
+        },
+        {
+         "key": "workbuddy.prompt_request_id",
+         "value": {
+          "stringValue": ""
+         }
+        },
+        {
+         "key": "workbuddy.conversation_request_id",
+         "value": {
+          "stringValue": "01a165acf4337deda4a35bfd3e5b52f6"
+         }
+        },
+        {
+         "key": "workbuddy.message_id",
+         "value": {
+          "stringValue": ""
+         }
+        },
+        {
+         "key": "workbuddy.model",
+         "value": {
+          "stringValue": ""
+         }
+        },
+        {
+         "key": "workbuddy.agent_name",
+         "value": {
+          "stringValue": "cli"
+         }
+        },
+        {
+         "key": "user_prompt_length",
+         "value": {
+          "intValue": 42
+         }
+        },
+        {
+         "key": "assistant_output_length",
+         "value": {
+          "intValue": 51
+         }
+        }
+       ],
+       "droppedAttributesCount": 0,
+       "events": [
+        {
+         "attributes": [
+          {
+           "key": "codebuddy.request.id",
+           "value": {
+            "stringValue": "01a165acf4337deda4a35bfd3e5b52f6"
+           }
+          },
+          {
+           "key": "codebuddy.stage.agentName",
+           "value": {
+            "stringValue": "cli"
+           }
+          }
+         ],
+         "name": "codebuddy_code.cli.mcp_prewait.start",
+         "timeUnixNano": "1792707196044000000",
+         "droppedAttributesCount": 0
+        },
+        {
+         "attributes": [
+          {
+           "key": "codebuddy.request.id",
+           "value": {
+            "stringValue": "01a165acf4337deda4a35bfd3e5b52f6"
+           }
+          },
+          {
+           "key": "codebuddy.stage.agentName",
+           "value": {
+            "stringValue": "cli"
+           }
+          },
+          {
+           "key": "codebuddy.stage.aborted",
+           "value": {
+            "boolValue": false
+           }
+          },
+          {
+           "key": "codebuddy.stage.timeoutMs",
+           "value": {
+            "intValue": 2000
+           }
+          }
+         ],
+         "name": "codebuddy_code.cli.mcp_prewait.end",
+         "timeUnixNano": "1792707196046000000",
+         "droppedAttributesCount": 0
+        },
+        {
+         "attributes": [
+          {
+           "key": "codebuddy.request.id",
+           "value": {
+            "stringValue": "01a165acf4337deda4a35bfd3e5b52f6"
+           }
+          },
+          {
+           "key": "codebuddy.stage.agentName",
+           "value": {
+            "stringValue": "cli"
+           }
+          }
+         ],
+         "name": "codebuddy_code.cli.runner.dispatch",
+         "timeUnixNano": "1792707196047000000",
+         "droppedAttributesCount": 0
+        },
+        {
+         "attributes": [
+          {
+           "key": "codebuddy.request.id",
+           "value": {
+            "stringValue": "01a165acf4337deda4a35bfd3e5b52f6"
+           }
+          },
+          {
+           "key": "codebuddy.stage.promptSeq",
+           "value": {
+            "intValue": 1
+           }
+          },
+          {
+           "key": "codebuddy.stage.agentName",
+           "value": {
+            "stringValue": "cli"
+           }
+          },
+          {
+           "key": "codebuddy.stage.model",
+           "value": {
+            "stringValue": "mock-model"
+           }
+          },
+          {
+           "key": "codebuddy.stage.modelRequestId",
+           "value": {
+            "stringValue": "01a165acf4c27888a52e9bfbad0810e5"
+           }
+          },
+          {
+           "key": "codebuddy.stage.stream",
+           "value": {
+            "boolValue": true
+           }
+          }
+         ],
+         "name": "codebuddy_code.cli.model_request.attempt",
+         "timeUnixNano": "1792707196127000000",
+         "droppedAttributesCount": 0
+        },
+        {
+         "attributes": [
+          {
+           "key": "codebuddy.request.id",
+           "value": {
+            "stringValue": "01a165acf4337deda4a35bfd3e5b52f6"
+           }
+          },
+          {
+           "key": "codebuddy.stage.elapsedMs",
+           "value": {
+            "intValue": 274
+           }
+          },
+          {
+           "key": "codebuddy.stage.sinceRunnerStartMs",
+           "value": {
+            "intValue": -1
+           }
+          },
+          {
+           "key": "codebuddy.stage.promptSeq",
+           "value": {
+            "intValue": 1
+           }
+          },
+          {
+           "key": "codebuddy.stage.agentName",
+           "value": {
+            "stringValue": "cli"
+           }
+          },
+          {
+           "key": "codebuddy.stage.model",
+           "value": {
+            "stringValue": "mock-model"
+           }
+          },
+          {
+           "key": "codebuddy.stage.modelRequestId",
+           "value": {
+            "stringValue": "01a165acf4c27888a52e9bfbad0810e5"
+           }
+          }
+         ],
+         "name": "codebuddy_code.cli.model_request.send",
+         "timeUnixNano": "1792707196129000000",
+         "droppedAttributesCount": 0
+        },
+        {
+         "attributes": [
+          {
+           "key": "codebuddy.request.id",
+           "value": {
+            "stringValue": "01a165acf4337deda4a35bfd3e5b52f6"
+           }
+          },
+          {
+           "key": "codebuddy.stage.agentName",
+           "value": {
+            "stringValue": "cli"
+           }
+          },
+          {
+           "key": "codebuddy.stage.model",
+           "value": {
+            "stringValue": "mock-model"
+           }
+          },
+          {
+           "key": "codebuddy.stage.requestedModel",
+           "value": {
+            "stringValue": "mock-model"
+           }
+          },
+          {
+           "key": "codebuddy.stage.modelRequestId",
+           "value": {
+            "stringValue": "01a165acf4c27888a52e9bfbad0810e5"
+           }
+          },
+          {
+           "key": "codebuddy.stage.elapsedMs",
+           "value": {
+            "intValue": 31
+           }
+          },
+          {
+           "key": "codebuddy.stage.finishReason",
+           "value": {
+            "stringValue": "tool_calls"
+           }
+          },
+          {
+           "key": "codebuddy.stage.inputTokens",
+           "value": {
+            "intValue": 1234
+           }
+          },
+          {
+           "key": "codebuddy.stage.outputTokens",
+           "value": {
+            "intValue": 56
+           }
+          },
+          {
+           "key": "codebuddy.stage.totalTokens",
+           "value": {
+            "intValue": 1290
+           }
+          }
+         ],
+         "name": "codebuddy_code.cli.model_request.usage",
+         "timeUnixNano": "1792707196158000000",
+         "droppedAttributesCount": 0
+        },
+        {
+         "attributes": [
+          {
+           "key": "codebuddy.request.id",
+           "value": {
+            "stringValue": "01a165acf4337deda4a35bfd3e5b52f6"
+           }
+          },
+          {
+           "key": "codebuddy.stage.ttftMs",
+           "value": {
+            "intValue": 32
+           }
+          },
+          {
+           "key": "codebuddy.stage.agentName",
+           "value": {
+            "stringValue": "cli"
+           }
+          },
+          {
+           "key": "codebuddy.stage.model",
+           "value": {
+            "stringValue": "mock-model"
+           }
+          },
+          {
+           "key": "codebuddy.stage.modelRequestId",
+           "value": {
+            "stringValue": "01a165acf4c27888a52e9bfbad0810e5"
+           }
+          },
+          {
+           "key": "codebuddy.stage.chunkCount",
+           "value": {
+            "intValue": 1
+           }
+          },
+          {
+           "key": "codebuddy.stage.bytes",
+           "value": {
+            "intValue": 1483
+           }
+          }
+         ],
+         "name": "codebuddy_code.cli.model_request.first_token",
+         "timeUnixNano": "1792707196159000000",
+         "droppedAttributesCount": 0
+        },
+        {
+         "attributes": [
+          {
+           "key": "type",
+           "value": {
+            "stringValue": "custom_event"
+           }
+          },
+          {
+           "key": "name",
+           "value": {
+            "stringValue": "agent.message.success_detail"
+           }
+          },
+          {
+           "key": "conversation_id",
+           "value": {
+            "stringValue": "01a165ac-f1b6-776f-b094-7e94318ef62a"
+           }
+          },
+          {
+           "key": "conversation_request_id",
+           "value": {
+            "stringValue": "01a165acf4337deda4a35bfd3e5b52f6"
+           }
+          },
+          {
+           "key": "prompt_request_id",
+           "value": {
+            "stringValue": ""
+           }
+          },
+          {
+           "key": "message_id",
+           "value": {
+            "stringValue": "01a165acf4c27888a52e9bfbad0810e5"
+           }
+          },
+          {
+           "key": "trace_id",
+           "value": {
+            "stringValue": "9bb48275a3f54eca8fe7b16fc68913d5"
+           }
+          },
+          {
+           "key": "model",
+           "value": {
+            "stringValue": "mock-model"
+           }
+          },
+          {
+           "key": "current_turn",
+           "value": {
+            "stringValue": "1"
+           }
+          }
+         ],
+         "name": "agent.message.success_detail",
+         "timeUnixNano": "1792707196177000000",
+         "droppedAttributesCount": 0
+        },
+        {
+         "attributes": [
+          {
+           "key": "codebuddy.request.id",
+           "value": {
+            "stringValue": "01a165acf4337deda4a35bfd3e5b52f6"
+           }
+          },
+          {
+           "key": "codebuddy.stage.promptSeq",
+           "value": {
+            "intValue": 1
+           }
+          },
+          {
+           "key": "codebuddy.stage.agentName",
+           "value": {
+            "stringValue": "cli"
+           }
+          },
+          {
+           "key": "codebuddy.stage.model",
+           "value": {
+            "stringValue": "mock-model"
+           }
+          },
+          {
+           "key": "codebuddy.stage.modelRequestId",
+           "value": {
+            "stringValue": "01a165acf5f671e9adc424d513c2bf93"
+           }
+          },
+          {
+           "key": "codebuddy.stage.stream",
+           "value": {
+            "boolValue": true
+           }
+          }
+         ],
+         "name": "codebuddy_code.cli.model_request.attempt",
+         "timeUnixNano": "1792707196435000000",
+         "droppedAttributesCount": 0
+        },
+        {
+         "attributes": [
+          {
+           "key": "codebuddy.request.id",
+           "value": {
+            "stringValue": "01a165acf4337deda4a35bfd3e5b52f6"
+           }
+          },
+          {
+           "key": "codebuddy.stage.agentName",
+           "value": {
+            "stringValue": "cli"
+           }
+          },
+          {
+           "key": "codebuddy.stage.model",
+           "value": {
+            "stringValue": "mock-model"
+           }
+          },
+          {
+           "key": "codebuddy.stage.requestedModel",
+           "value": {
+            "stringValue": "mock-model"
+           }
+          },
+          {
+           "key": "codebuddy.stage.modelRequestId",
+           "value": {
+            "stringValue": "01a165acf5f671e9adc424d513c2bf93"
+           }
+          },
+          {
+           "key": "codebuddy.stage.elapsedMs",
+           "value": {
+            "intValue": 9
+           }
+          },
+          {
+           "key": "codebuddy.stage.finishReason",
+           "value": {
+            "stringValue": "stop"
+           }
+          },
+          {
+           "key": "codebuddy.stage.inputTokens",
+           "value": {
+            "intValue": 1234
+           }
+          },
+          {
+           "key": "codebuddy.stage.outputTokens",
+           "value": {
+            "intValue": 56
+           }
+          },
+          {
+           "key": "codebuddy.stage.totalTokens",
+           "value": {
+            "intValue": 1290
+           }
+          }
+         ],
+         "name": "codebuddy_code.cli.model_request.usage",
+         "timeUnixNano": "1792707196444000000",
+         "droppedAttributesCount": 0
+        },
+        {
+         "attributes": [
+          {
+           "key": "codebuddy.request.id",
+           "value": {
+            "stringValue": "01a165acf4337deda4a35bfd3e5b52f6"
+           }
+          },
+          {
+           "key": "codebuddy.stage.ttftMs",
+           "value": {
+            "intValue": 9
+           }
+          },
+          {
+           "key": "codebuddy.stage.agentName",
+           "value": {
+            "stringValue": "cli"
+           }
+          },
+          {
+           "key": "codebuddy.stage.model",
+           "value": {
+            "stringValue": "mock-model"
+           }
+          },
+          {
+           "key": "codebuddy.stage.modelRequestId",
+           "value": {
+            "stringValue": "01a165acf5f671e9adc424d513c2bf93"
+           }
+          },
+          {
+           "key": "codebuddy.stage.chunkCount",
+           "value": {
+            "intValue": 1
+           }
+          },
+          {
+           "key": "codebuddy.stage.bytes",
+           "value": {
+            "intValue": 968
+           }
+          }
+         ],
+         "name": "codebuddy_code.cli.model_request.first_token",
+         "timeUnixNano": "1792707196444000000",
+         "droppedAttributesCount": 0
+        },
+        {
+         "attributes": [
+          {
+           "key": "type",
+           "value": {
+            "stringValue": "custom_event"
+           }
+          },
+          {
+           "key": "name",
+           "value": {
+            "stringValue": "agent.request.success_detail"
+           }
+          },
+          {
+           "key": "conversation_id",
+           "value": {
+            "stringValue": "01a165ac-f1b6-776f-b094-7e94318ef62a"
+           }
+          },
+          {
+           "key": "conversation_request_id",
+           "value": {
+            "stringValue": "01a165acf4337deda4a35bfd3e5b52f6"
+           }
+          },
+          {
+           "key": "prompt_request_id",
+           "value": {
+            "stringValue": ""
+           }
+          },
+          {
+           "key": "trace_id",
+           "value": {
+            "stringValue": "9bb48275a3f54eca8fe7b16fc68913d5"
+           }
+          },
+          {
+           "key": "message_id",
+           "value": {
+            "stringValue": "01a165acf5f671e9adc424d513c2bf93"
+           }
+          },
+          {
+           "key": "model",
+           "value": {
+            "stringValue": "mock-model"
+           }
+          },
+          {
+           "key": "model_name",
+           "value": {
+            "stringValue": "mock-model"
+           }
+          },
+          {
+           "key": "scene",
+           "value": {
+            "stringValue": ""
+           }
+          },
+          {
+           "key": "agent_name",
+           "value": {
+            "stringValue": "cli"
+           }
+          },
+          {
+           "key": "agent_type",
+           "value": {
+            "stringValue": "main"
+           }
+          },
+          {
+           "key": "current_turn",
+           "value": {
+            "stringValue": "2"
+           }
+          },
+          {
+           "key": "is_custom_model",
+           "value": {
+            "stringValue": "false"
+           }
+          },
+          {
+           "key": "finish_reason",
+           "value": {
+            "stringValue": "tool_calls"
+           }
+          },
+          {
+           "key": "pin",
+           "value": {
+            "stringValue": ""
+           }
+          }
+         ],
+         "name": "agent.request.success_detail",
+         "timeUnixNano": "1792707196455000000",
+         "droppedAttributesCount": 0
+        }
+       ],
+       "droppedEventsCount": 0,
+       "status": {
+        "code": 1
+       },
+       "links": [],
+       "droppedLinksCount": 0
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

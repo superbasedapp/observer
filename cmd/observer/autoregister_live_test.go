@@ -54,7 +54,30 @@ var notGrandfathered = map[integration.HookMechanism]string{
 	integration.HookZcodeJSON:            "hook-parity Lane A4: init-only until live",
 	integration.HookMuseSettings:         "T-479 (2026-10-06): live-grounded on node 1 (admitted by the live gate)",
 	integration.HookKimiCodeTOML:         "T-378 (2026-10-07): live-grounded on node 1 (admitted by the live gate)",
+	integration.HookKiroAgentJSON:        "gfiD (2026-10-15): vendor semantics live with probe hooks, Observer's own writer not yet live-run; init-only until live",
 	integration.HookPluginShimTS:         "hook-parity Lane D (2026-10-03): a new mechanism; it joins `observer start` only by going live per row, never by grandfathering",
+	// The 2026-10-21 wave: new mechanisms, init-only until each writer's
+	// registered bindings pass a live end-to-end run (D-043).
+	integration.HookIBMBobSettings:    "2026-10-21 wave: live E2E on WSL, Windows wsl.exe bridges live 2026-10-22 (admitted by the live gate); the Windows-native shapes stay init-only (initOnlyHookTargets)",
+	integration.HookCodeBuddySettings: "2026-10-21 wave: live E2E on WSL, Windows wsl.exe bridges live 2026-10-22 (admitted by the live gate); the Windows-native shapes stay init-only (initOnlyHookTargets)",
+	integration.HookDeepAgentsJSON:    "2026-10-21 wave: live E2E on WSL, Windows wsl.exe bridges live 2026-10-22 (admitted by the live gate); the Windows-native shapes stay init-only (initOnlyHookTargets)",
+	integration.HookDimCodeJSON:       "2026-10-21 wave: live E2E on WSL, Windows wsl.exe bridges live 2026-10-22 (admitted by the live gate); the Windows-native shapes stay init-only (initOnlyHookTargets)",
+	integration.HookDiracHookFiles:    "2026-10-21 wave: live E2E on WSL, Windows wsl.exe bridges live 2026-10-22 (admitted by the live gate); the Windows-native shapes stay init-only (initOnlyHookTargets)",
+	integration.HookAutohandConfig:    "2026-10-21 wave: init-only always (initOnlyHookMechanisms: device sync)",
+	integration.HookVTCodeTOML:        "2026-10-21 wave: live E2E on WSL, Windows wsl.exe bridges live 2026-10-22 (admitted by the live gate); the Windows-native shapes stay init-only (initOnlyHookTargets)",
+	integration.HookKimchiBashHook:    "2026-10-21 wave: live E2E on WSL (admitted by the live gate); no Windows hook shape (the bash pre-gate is Linux and macOS only)",
+	integration.HookCortexHooksJSON:   "surface-gap W-2a: built, switched off until live check LC18 (DEC-12); never auto-registered while gated",
+}
+
+// TestInitOnlyMechanismsNeverAutoRegister: a mechanism on the init-only list
+// fails the `observer start` live gate even with every binding live.
+func TestInitOnlyMechanismsNeverAutoRegister(t *testing.T) {
+	for mech := range initOnlyHookMechanisms {
+		c := integration.Capability{Hook: integration.HookSpec{Mechanism: mech}}
+		if autoRegisterLiveGate(c) {
+			t.Errorf("%s: init-only mechanism passed the auto-register live gate", mech)
+		}
+	}
 }
 
 // frozenGrandfathered is the grandfather list as the 2026-10-02 ruling
@@ -188,8 +211,9 @@ func TestAutoRegisterWritesOnlyLiveBindings(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		t.Setenv("HOME", home)
-		t.Setenv("USERPROFILE", home)
+		// Every profile root and tool home stays in the throwaway home
+		// (surface-gap S-10, FU-4).
+		pinToolHomesAt(t, home)
 		return home
 	}
 
@@ -211,5 +235,31 @@ func TestAutoRegisterWritesOnlyLiveBindings(t *testing.T) {
 	autoRegisterHooks(&stdout, &stderr, "", true)
 	if _, err := os.Stat(filepath.Join(home, ".qwen", "settings.json")); err != nil {
 		t.Errorf("control: grandfathered Qwen Code was not registered: %v (stdout %q)", err, stdout.String())
+	}
+}
+
+// TestInitOnlyHookTargetsAreCurrent: every initOnlyHookTargets row names a
+// target whose mechanism the live gate would otherwise admit (a row for a
+// mechanism that is init-only anyway is dead weight), and the row keeps
+// that target off `observer start` on its host OS.
+func TestInitOnlyHookTargetsAreCurrent(t *testing.T) {
+	prev := autoRegisterHostGOOS
+	t.Cleanup(func() { autoRegisterHostGOOS = prev })
+	for _, row := range initOnlyHookTargets {
+		c, _, ok := advertisedCapability(row.target)
+		if !ok {
+			t.Errorf("%s: no registry row", row.target)
+			continue
+		}
+		if !autoRegisterLiveGate(c) {
+			t.Errorf("%s: the live gate refuses its mechanism anyway; remove the row", row.target)
+		}
+		autoRegisterHostGOOS = row.goos
+		if row.goos == "" {
+			autoRegisterHostGOOS = "linux"
+		}
+		if autoRegisterDecision(row.target, true) {
+			t.Errorf("%s on %q: still auto-registered", row.target, autoRegisterHostGOOS)
+		}
 	}
 }

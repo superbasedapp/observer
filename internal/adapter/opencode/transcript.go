@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/adapter/transcriptutil"
@@ -33,24 +32,42 @@ func (a *Adapter) ReadTranscript(ctx context.Context, sess models.Session, sourc
 	}
 	defer db.Close()
 	db.SetMaxOpenConns(1)
-	return readSessionTranscript(ctx, db, sess.ID)
+	tables, err := listTables(ctx, db)
+	if err != nil {
+		return nil, fmt.Errorf("opencode.ReadTranscript: tables: %w", err)
+	}
+	// A 1.x session (including one an OpenCode 2.x upgrade copied
+	// forward) reads from the 1.x tables; a session that only exists in
+	// the 2.x store reads from session_message.
+	schema := detectSchema(tables)
+	var msgs []models.TranscriptMessage
+	if schema.v1 {
+		if msgs, err = readSessionTranscript(ctx, db, sess.ID); err != nil {
+			return nil, err
+		}
+	}
+	if len(msgs) == 0 && schema.v2 {
+		return readSessionTranscriptV2(ctx, db, sess.ID)
+	}
+	return msgs, nil
 }
 
-// stateDBPath resolves opencode.db: a usable hint first, else the first
-// watch root holding one (D-P0.1).
+// stateDBPath resolves the session's OpenCode store: a usable hint first
+// (the session's own source file, which names its channel's store),
+// else the first watch root holding one, opencode.db before any
+// opencode-<channel>.db (D-P0.1).
 func (a *Adapter) stateDBPath(hints []string) (string, error) {
 	for _, h := range hints {
-		if strings.EqualFold(filepath.Base(h), "opencode.db") && fileExists(h) {
+		if isStoreDBName(filepath.Base(h)) && fileExists(h) {
 			return h, nil
 		}
 	}
 	for _, root := range a.roots {
-		p := filepath.Join(root, "opencode.db")
-		if fileExists(p) {
-			return p, nil
+		if stores := channelStoresIn(root); len(stores) > 0 {
+			return stores[0], nil
 		}
 	}
-	return "", fmt.Errorf("opencode.ReadTranscript: no opencode.db under any watch root")
+	return "", fmt.Errorf("opencode.ReadTranscript: no OpenCode store under any watch root")
 }
 
 func readSessionTranscript(ctx context.Context, db *sql.DB, sessionID string) ([]models.TranscriptMessage, error) {

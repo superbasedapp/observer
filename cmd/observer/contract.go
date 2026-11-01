@@ -153,7 +153,7 @@ func publicAdapterRow(c integration.Capability) contractAdapter {
 		Tool:          c.Tool,
 		Routability:   string(c.Routability),
 		HookMechanism: string(c.Hook.Mechanism),
-		HookAutoWired: c.Hook.Mechanism != integration.HookNone && c.Hook.AutoWired,
+		HookAutoWired: c.Hook.AutoWiredNow(),
 		TokenTier:     c.TokenTier.Best,
 		TokenGap:      c.TokenTier.Gap,
 		NativeRails:   nativeRailLetters(c.Native),

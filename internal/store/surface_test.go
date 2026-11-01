@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -415,5 +416,57 @@ func TestLoadSurfaceCounts(t *testing.T) {
 		if c.Tool != models.ToolCodex {
 			t.Errorf("since filter leaked %+v", c)
 		}
+	}
+}
+
+// TestLoadSurfaceSessionCounts pins the COUNT-only, one-tool query the
+// observed-surface route proof reads (AW-48): per (surface, host) session
+// counts for the named tool only, the unstamped group under the empty
+// surface, and no spend.
+func TestLoadSurfaceSessionCounts(t *testing.T) {
+	t.Parallel()
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+	pid, err := s.UpsertProject(ctx, "/tmp/surfsessioncounts", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	for i, row := range []struct {
+		id, tool string
+		surface  models.SessionSurface
+	}{
+		{"a1", models.ToolCodex, models.SessionSurface{Surface: models.SurfaceCLI, SurfaceHost: "codex-cli"}},
+		{"a2", models.ToolCodex, models.SessionSurface{Surface: models.SurfaceCLI, SurfaceHost: "codex-cli"}},
+		{"a3", models.ToolCodex, models.SessionSurface{Surface: models.SurfaceIDE, SurfaceHost: "xcode"}},
+		{"a4", models.ToolCodex, models.SessionSurface{}},
+		{"b1", models.ToolClaudeCode, models.SessionSurface{Surface: models.SurfaceCLI}},
+	} {
+		if err := s.UpsertSession(ctx, models.Session{ID: row.id, ProjectID: pid, Tool: row.tool, StartedAt: base.Add(time.Duration(i) * time.Minute)}); err != nil {
+			t.Fatal(err)
+		}
+		if row.surface.Surface != "" {
+			sf := row.surface
+			sf.SessionID = row.id
+			if _, err := s.SetSessionSurface(ctx, sf); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	got, err := s.LoadSurfaceSessionCounts(ctx, models.ToolCodex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []SurfaceCount{
+		{Tool: models.ToolCodex, Surface: "", SurfaceHost: "", Sessions: 1},
+		{Tool: models.ToolCodex, Surface: models.SurfaceCLI, SurfaceHost: "codex-cli", Sessions: 2},
+		{Tool: models.ToolCodex, Surface: models.SurfaceIDE, SurfaceHost: "xcode", Sessions: 1},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("LoadSurfaceSessionCounts(codex) = %+v, want %+v", got, want)
+	}
+	none, err := s.LoadSurfaceSessionCounts(ctx, "no-such-tool")
+	if err != nil || len(none) != 0 {
+		t.Errorf("unknown tool: %+v, %v; want none", none, err)
 	}
 }

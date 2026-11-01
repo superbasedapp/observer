@@ -1,0 +1,28 @@
+{
+  "user": {"id": "usr_fixture"},
+  "entitlement": {
+    "tier": "pro",
+    "interval": "month",
+    "freeRemaining": null,
+    "limits": {
+      "displayName": "Pro",
+      "messagesPer5h": 200,
+      "messagesPer24h": null,
+      "messagesPerWeek": 1500,
+      "messagesPerMonth": null,
+      "rpm": 30,
+      "inputTokensPerMinute": null,
+      "outputTokensPerMinute": null,
+      "requiresEligibility": false,
+      "perSeat": false,
+      "models": ["fantail"]
+    },
+    "quota": {
+      "available": true,
+      "window5h": {"used": 42, "remaining": 158, "limit": 200, "resetAt": "2025-10-09T12:00:00Z"},
+      "window24h": null,
+      "week": {"used": 1200, "remaining": 300, "limit": 1500, "resetAt": "2025-10-13T00:00:00Z"},
+      "month": null
+    }
+  }
+}

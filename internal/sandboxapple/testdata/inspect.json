@@ -1,0 +1,18 @@
+[
+  {
+    "status": "running",
+    "configuration": {
+      "id": "observer-a1b2c3d4e5f60718-1111111111111111",
+      "image": {"reference": "ghcr.io/example/agent@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
+      "labels": {"observer.run": "RunLive_0123456789abcd", "observer.install": "a1b2c3d4e5f60718"},
+      "resources": {"cpus": 4, "memoryInBytes": 4294967296},
+      "mounts": [
+        {"source": "/Users/dev/src/app", "destination": "/Users/dev/src/app", "options": [], "type": {"virtiofs": {}}},
+        {"source": "/Users/dev/.claude", "destination": "/Users/dev/.claude", "options": [], "type": {"virtiofs": {}}},
+        {"source": "/private/var/folders/xy/abc/T/obsbx/RunLive_0123456789abcd", "destination": "/tmp/.observer-sandbox-net", "options": ["ro"], "type": {"virtiofs": {}}}
+      ],
+      "networks": []
+    },
+    "networks": []
+  }
+]

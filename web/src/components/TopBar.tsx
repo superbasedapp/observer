@@ -19,6 +19,8 @@ import { useTheme } from "@/lib/theme";
 import { ThemeToggle as SharedThemeToggle } from "@shared/primitives/ThemeToggle";
 import type { CloudStatusResponse, EnrolmentStatus, SetupClaude, StatusSnapshot } from "@/lib/types";
 import { isUpdateAvailable, useUpdateCheck } from "@/lib/version";
+import { npmUpdateCommand } from "@/lib/npmCommand";
+import { useHostOS } from "@/lib/keyPlatform";
 import { orgDisplayLabel } from "@/lib/orgName";
 import { Icon, LiveDot, Tooltip } from "@/components/primitives";
 import { DensityToggle } from "@shared/primitives/DensityToggle";
@@ -33,9 +35,14 @@ import {
   withDotClass,
 } from "@/lib/liveSignals";
 import { capturePillView, type CapturePillState } from "@/lib/capturePill";
+import { cloudChipShown } from "@/lib/cloudChip";
+import { isManaged, isSettingsHidden, useGovernance } from "@/lib/governance";
+import { absentSettingsSections } from "@/lib/componentState";
+import { useComponentState } from "@/lib/useComponents";
 import { InstanceSwitcher } from "@/components/InstanceSwitcher";
 import { RemoteMachineChip } from "@/components/RemoteMachineChip";
 import { NotificationBell } from "@/components/NotificationBell";
+import { PhoneTerminalButton } from "@/components/LaunchDock";
 
 // `dashboard-refresh` is a window-level CustomEvent that useApi
 // listens for to re-fire its fetch. TopBar's Refresh button is the
@@ -205,9 +212,20 @@ export function TopBar({
         </div>
         {/* The notification bell (D-323): what needs the developer, from
             the daemon's feed. Renders nothing on a remote view. */}
+        {/* Below lg the floating terminal dock is hidden (it sat on
+            primary actions like Send); its compact top-bar button takes its
+            place (T-855). */}
+        <span className="inline-flex lg:hidden">
+          <PhoneTerminalButton />
+        </span>
         <NotificationBell />
-        <TopBarDensity />
-        <ThemeToggle />
+        {/* Display preferences are low value on a phone, where the bar
+            needs the room for the page title: below sm they live in the
+            navigation drawer instead (Sidebar, DisplayControls). */}
+        <span className="hidden items-center gap-2 sm:flex">
+          <TopBarDensity />
+          <ThemeToggle dataTour="topbar-theme" />
+        </span>
         {onHelp && (
           <span data-tour="topbar-help" className="inline-flex">
             <IconButton
@@ -224,9 +242,20 @@ export function TopBar({
 }
 
 // Light / Dark / System: the shared ThemeToggle over the shared theme state.
-function ThemeToggle() {
+function ThemeToggle({ dataTour }: { dataTour?: string }) {
   const { mode, setMode, modes } = useTheme();
-  return <SharedThemeToggle value={mode} onChange={setMode} modes={modes} dataTour="topbar-theme" />;
+  return <SharedThemeToggle value={mode} onChange={setMode} modes={modes} dataTour={dataTour} />;
+}
+
+/** DisplayControls is the density and theme pair for the phone navigation
+ *  drawer: below sm the top bar hides them so the page title has room. */
+export function DisplayControls() {
+  return (
+    <span className="flex items-center gap-2">
+      <TopBarDensity />
+      <ThemeToggle />
+    </span>
+  );
 }
 
 // Comfortable / Compact row density, beside the theme control (both are
@@ -285,6 +314,7 @@ function LastActivity({ iso }: { iso?: string }) {
 // check lives in Settings → Health.
 function UpdateAvailablePill({ current }: { current?: string }) {
   const { latest } = useUpdateCheck();
+  const hostOS = useHostOS();
   if (!isUpdateAvailable(current, latest)) return null;
   const href = `https://github.com/superbasedapp/observer/releases/tag/v${latest}`;
   return (
@@ -292,8 +322,9 @@ function UpdateAvailablePill({ current }: { current?: string }) {
       content={
         <>
           Running v{current} - v{latest} is on npm. Click to view the release
-          notes. Update with <kbd>npm i -g @superbased/observer</kbd> or{" "}
-          <kbd>pipx upgrade superbased-observer</kbd>.
+          notes. Update with <kbd>{npmUpdateCommand(hostOS)}</kbd> or{" "}
+          <kbd>pipx upgrade superbased-observer</kbd>, or run the new
+          installer from superbased.app/download.
         </>
       }
     >
@@ -344,10 +375,24 @@ function CloudAccountBadge() {
   const status = useApi<CloudStatusResponse>("/api/cloud/status", undefined, [], {
     refreshMs: 30000,
   });
+  const gov = useGovernance();
+  const components = useComponentState();
   const si = status.data?.sign_in;
   if (!si) return null;
   const signingIn = si.login_running;
   const signedIn = si.known && si.signed_in;
+  // WINNODE2 16b: shown only where Cloud Intelligence is offered (the
+  // organization did not hide its section, this build carries it, and the
+  // node is not organization-managed, whose data the personal plane cannot
+  // take). lib/cloudChip.ts holds the rule.
+  const shown = cloudChipShown({
+    sectionOffered:
+      !isSettingsHidden(gov.data, "cloud") && !absentSettingsSections(components.data?.view).includes("cloud"),
+    managed: isManaged(gov.data),
+    signedIn,
+    signingIn,
+  });
+  if (!shown) return null;
   const label = signingIn ? "Cloud: signing in…" : signedIn ? "Cloud: signed in" : "Cloud: not signed in";
   const tip = signedIn
     ? "A device-bound cloud credential is stored on this machine. Manage in Settings → Cloud Intelligence."
@@ -383,7 +428,7 @@ const CAPTURE_PILL_TONE: Record<CapturePillState, string> = {
 };
 
 function CaptureStatePill({ setup }: { setup: SetupClaude | null }) {
-  const view = capturePillView(setup?.status);
+  const view = capturePillView(setup);
   if (view.hidden) return null;
   return (
     <Tooltip content={view.tooltip}>

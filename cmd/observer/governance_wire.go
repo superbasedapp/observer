@@ -156,6 +156,7 @@ func lowerShareOptions(local store.ShareOptions, eff govern.Effective) store.Sha
 	out.TerminalDetail = eff.LowerBool("terminal_detail", local.TerminalDetail)
 	out.TaskDetail = eff.LowerBool("task_detail", local.TaskDetail)
 	out.ToolAccountDetail = eff.LowerBool("tool_account_detail", local.ToolAccountDetail)
+	out.HookActivity = eff.LowerBool("hook_activity", local.HookActivity)
 	out.ObsSummary = eff.LowerBool("obs.summary", local.ObsSummary)
 	out.ObsTraces = eff.LowerBool("obs.traces", local.ObsTraces)
 	out.ObsContent = eff.LowerBool("obs.content", local.ObsContent)
@@ -267,6 +268,11 @@ var shareRaiseFields = []shareRaiseField{
 	// extract.managed authority alone is enough to raise it — unlike
 	// codeintel_detail/process_detail/terminal_detail below.
 	{"obs.egress", func(o *store.ShareOptions) bool { return o.ObsEgress }, func(o *store.ShareOptions, v bool) { o.ObsEgress = v }},
+	// hook_activity (surface-gap DEC-5): per-session hook liveness counts.
+	// HEADLINE-gated like obs.egress (GrantsHookActivityExtraction accepts
+	// the umbrella): counts and coarse classes only; the config-dir hash
+	// rides shipsRawContent() inside the push seam.
+	{"hook_activity", func(o *store.ShareOptions) bool { return o.HookActivity }, func(o *store.ShareOptions, v bool) { o.HookActivity = v }},
 	// Highest-sensitivity per-tier extraction raises (Arc 4 P5f-h). Each
 	// gates on its OWN managed authority, NOT the umbrella extract.managed
 	// alias — by operator ruling, granting the headline tiers (cache/

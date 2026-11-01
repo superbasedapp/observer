@@ -18,6 +18,11 @@ const (
 	// UnlaunchableDesktop: a desktop or IDE app whose launch spelling is not
 	// grounded yet, so the picker has no verified way to open it.
 	UnlaunchableDesktop UnlaunchableKind = "desktop"
+	// UnlaunchableCLINoLauncher: a command-line tool with a grounded binary
+	// row (Capability.Binary) but no `observer <verb>` launcher yet, so the
+	// picker cannot start it while its sessions are still captured (the
+	// 2026-10-21 capture-only wave).
+	UnlaunchableCLINoLauncher UnlaunchableKind = "cli_no_launcher"
 	// UnlaunchableNoCLI: no standalone command at all (a web or desktop
 	// product with no launch row of any kind).
 	UnlaunchableNoCLI UnlaunchableKind = "no_cli"
@@ -60,6 +65,17 @@ var unlaunchableRules = []struct {
 		match: func(f unlaunchableFacts) bool { return f.host != "" },
 		note: func(f unlaunchableFacts) string {
 			return "Runs inside " + f.host + ". Open " + f.host + " from the IDEs group to use it."
+		},
+	},
+	// A grounded CLI binary wins over an ungrounded desktop row (FU-148): a
+	// CLI-first tool whose vendor also ships a desktop app (IBM Bob,
+	// CodeBuddy, Cortex Code) is run from a terminal today, and its GUI row
+	// is listed for the record only, so the note says so.
+	{
+		kind:  UnlaunchableCLINoLauncher,
+		match: func(f unlaunchableFacts) bool { return f.c.Binary != nil },
+		note: func(unlaunchableFacts) string {
+			return "A command line tool this dashboard has no launcher for yet. Run it in your own terminal and its sessions are still captured."
 		},
 	},
 	{

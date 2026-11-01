@@ -281,8 +281,32 @@ type RollbackInput struct {
 	// swap; CurrentSchemaVersion is what the DB is at now.
 	PreviousSchemaVersion int
 	CurrentSchemaVersion  int
+	// PreviousAppliedSteps / CurrentAppliedSteps count the migration steps
+	// a runner EXECUTED on the database (db.AppliedSteps) before the swap
+	// and now. They decide whether the target changed the schema; the
+	// versions are for display. A target that ran a late step numbered
+	// below the version leaves the versions equal but raises this count
+	// (T-979), and one that only recorded its ledger (adopted) does not.
+	PreviousAppliedSteps int
+	CurrentAppliedSteps  int
 	// HasDBBackup reports that previous_db_backup_path exists.
 	HasDBBackup bool
+}
+
+// SchemaChanged reports whether the target changed the database schema: it
+// ran at least one migration step, or (for a target whose runner keeps no
+// per-step ledger) it advanced the version record.
+func (in RollbackInput) SchemaChanged() bool {
+	return in.CurrentAppliedSteps > in.PreviousAppliedSteps || in.CurrentSchemaVersion > in.PreviousSchemaVersion
+}
+
+// schemaChange names what the target did to the schema, for a reason line.
+func (in RollbackInput) schemaChange() string {
+	if in.CurrentSchemaVersion > in.PreviousSchemaVersion {
+		return fmt.Sprintf("schema %d -> %d", in.PreviousSchemaVersion, in.CurrentSchemaVersion)
+	}
+	return fmt.Sprintf("the target ran %d migration step(s); schema version %d unchanged",
+		in.CurrentAppliedSteps-in.PreviousAppliedSteps, in.CurrentSchemaVersion)
 }
 
 // RollbackDecision is what the parent does after a failed handshake.
@@ -328,31 +352,31 @@ var rollbackRules = []rollbackRule{
 		},
 	},
 	{
-		name: "schema-advanced-no-snapshot",
+		name: "schema-changed-no-snapshot",
 		matches: func(in RollbackInput) bool {
-			return in.CurrentSchemaVersion > in.PreviousSchemaVersion && !in.HasDBBackup
+			return in.SchemaChanged() && !in.HasDBBackup
 		},
 		decide: func(in RollbackInput) RollbackDecision {
 			return RollbackDecision{
 				Refuse: true, State: StateFailed, ErrorClass: ErrorHealthcheck,
 				Reason: fmt.Sprintf(
-					"the schema advanced (%d -> %d) and no snapshot exists; restoring an older binary against a newer schema is a corruption risk",
-					in.PreviousSchemaVersion, in.CurrentSchemaVersion),
+					"the schema changed (%s) and no snapshot exists; restoring an older binary against a newer schema is a corruption risk",
+					in.schemaChange()),
 			}
 		},
 	},
 	{
-		name: "schema-advanced-with-snapshot",
+		name: "schema-changed-with-snapshot",
 		matches: func(in RollbackInput) bool {
-			return in.CurrentSchemaVersion > in.PreviousSchemaVersion && in.HasDBBackup
+			return in.SchemaChanged() && in.HasDBBackup
 		},
 		decide: func(in RollbackInput) RollbackDecision {
 			return RollbackDecision{
 				RestoreBinary: true, RestoreDB: true, DiscardsDataWindow: true,
 				State: StateRolledBack, ErrorClass: ErrorHealthcheck,
 				Reason: fmt.Sprintf(
-					"restoring the previous binary and the pre-apply snapshot (schema %d -> %d); rows ingested since the snapshot are discarded",
-					in.PreviousSchemaVersion, in.CurrentSchemaVersion),
+					"restoring the previous binary and the pre-apply snapshot (%s); rows ingested since the snapshot are discarded",
+					in.schemaChange()),
 			}
 		},
 	},
@@ -362,7 +386,7 @@ var rollbackRules = []rollbackRule{
 		decide: func(RollbackInput) RollbackDecision {
 			return RollbackDecision{
 				RestoreBinary: true, State: StateRolledBack, ErrorClass: ErrorHealthcheck,
-				Reason: "restoring the previous binary; the schema did not advance, so the database is untouched",
+				Reason: "restoring the previous binary; the target ran no migration step, so the database is untouched",
 			}
 		},
 	},

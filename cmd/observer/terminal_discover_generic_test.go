@@ -224,7 +224,7 @@ func TestUniqueSessionIdentity(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			id, root := uniqueSessionIdentity(tc.res)
-			if id != tc.wantID || root != tc.wantRt {
+			if id != tc.wantID || root != cleanRoot(tc.wantRt) {
 				t.Fatalf("uniqueSessionIdentity = (%q,%q), want (%q,%q)", id, root, tc.wantID, tc.wantRt)
 			}
 		})
@@ -278,7 +278,7 @@ func TestResolveGenericCandidate(t *testing.T) {
 			if ok != tc.wantOK {
 				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
 			}
-			if ok && (got.sessionID != tc.wantID || got.projectRoot != tc.wantRoot) {
+			if ok && (got.sessionID != tc.wantID || got.projectRoot != cleanRoot(tc.wantRoot)) {
 				t.Fatalf("candidate = %+v, want id=%q root=%q", got, tc.wantID, tc.wantRoot)
 			}
 		})
@@ -297,7 +297,7 @@ func TestResolveGenericCandidateDefaultsWithoutCursorSemantics(t *testing.T) {
 		},
 	}
 	got, ok := resolveGenericCandidate(context.Background(), a, okPath)
-	if !ok || got.sessionID != "sess-tok" || got.projectRoot != "/proj" {
+	if !ok || got.sessionID != "sess-tok" || got.projectRoot != cleanRoot("/proj") {
 		t.Fatalf("resolveGenericCandidate = (%+v,%v), want (sess-tok,/proj)/true", got, ok)
 	}
 }

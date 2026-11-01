@@ -38,7 +38,7 @@ func TestWriterThenGate(t *testing.T) {
 	if write == nil {
 		t.Fatal("writer is nil for a configured DB path")
 	}
-	write([]string{"codex", "crush"})
+	write([]string{"codex", "crush"}, nil)
 
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("sidecar not written: %v", err)
@@ -88,11 +88,11 @@ func TestWriterClearsDisallow(t *testing.T) {
 	var cfg config.Config
 	cfg.Observer.DBPath = filepath.Join(dir, "observer.db")
 	write := makeFeaturesSidecarWriter(cfg, "v-test", nil)
-	write([]string{"codex"})
+	write([]string{"codex"}, nil)
 	if err := refuseIfToolDisallowedCfg(cfg, "codex", &bytes.Buffer{}); err == nil {
 		t.Fatal("codex should be disallowed after write")
 	}
-	write(nil) // clear
+	write(nil, nil) // clear
 	if err := refuseIfToolDisallowedCfg(cfg, "codex", &bytes.Buffer{}); err != nil {
 		t.Errorf("codex should be allowed after clear, got %v", err)
 	}

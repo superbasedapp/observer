@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -414,6 +415,8 @@ func TestHookSupportedIsRegistryDriven(t *testing.T) {
 		// listed here or in `out`.
 		"gemini-cli-windows", "qwen-code-windows", "droid-windows",
 		"qoder-windows", "poolside-windows", "command-code-windows",
+		// Live check 2026-10-20: the Copilot CLI cross-OS bridge.
+		"copilot-cli-windows",
 		// hook-parity Lane D: the embedded TypeScript plugin shim
 		// (HookPluginShimTS, AutoWired) for the in-process plugin hosts with
 		// a grounded plugin directory. openclaw and deepseek share the
@@ -481,8 +484,10 @@ func TestRunBrowserExtensionStep(t *testing.T) {
 	if err := runBrowserExtensionStep(&empty, browserExtStepParams{HomeDir: home}); err != nil {
 		t.Fatalf("no-browser run errored: %v", err)
 	}
-	if empty.Len() != 0 {
-		t.Errorf("no-browser run wrote %q, want nothing", empty.String())
+	expectBrowserNoOp(t, empty.String())
+	if runtime.GOOS == "windows" {
+		expectBrowserNotShippedOnWindows(t)
+		return
 	}
 	// Create a Chrome profile dir → the step writes the host + manifest.
 	if err := os.MkdirAll(filepath.Join(home, ".config", "google-chrome"), 0o755); err != nil {
@@ -560,6 +565,10 @@ func TestRunBrowserExtensionStep_WindowsInjection(t *testing.T) {
 // Path (pointing at the vendored launcher under the observer dir) AND the
 // supplied id in allowed_origins — no placeholder, no instruction.
 func TestRunBrowserExtensionStep_WritesWorkingManifest(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		expectBrowserNotShippedOnWindows(t)
+		return
+	}
 	home := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(home, ".config", "google-chrome"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -611,6 +620,10 @@ func TestRunBrowserExtensionStep_WritesWorkingManifest(t *testing.T) {
 // path: no id → the manifest is still written (with the placeholder) AND a
 // precise follow-up instruction names the exact file + field to edit.
 func TestRunBrowserExtensionStep_PlaceholderInstruction(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		expectBrowserNotShippedOnWindows(t)
+		return
+	}
 	home := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(home, ".config", "google-chrome"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -642,6 +655,10 @@ func TestRunBrowserExtensionStep_PlaceholderInstruction(t *testing.T) {
 // TestRunBrowserExtensionStep_DryRun pins dry-run honesty: it prints the
 // would-be host path but writes NOTHING to disk.
 func TestRunBrowserExtensionStep_DryRun(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		expectBrowserNotShippedOnWindows(t)
+		return
+	}
 	home := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(home, ".config", "google-chrome"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -916,7 +933,46 @@ func TestRunBrowserExtensionStep_NoBrowserIsCleanNoOp(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("no-browser run must be a clean no-op, got: %v", err)
 	}
-	if buf.Len() != 0 {
-		t.Errorf("no-browser run wrote %q, want nothing", buf.String())
+	expectBrowserNoOp(t, buf.String())
+}
+
+// browserNotShippedLine is what the step prints on a Windows daemon, where
+// same-host native-messaging registration is not shipped (Windows 11 Pro rerun 2026-10-25, D5 group 6).
+const browserNotShippedLine = "same-host Windows native-messaging registration is not yet shipped"
+
+// expectBrowserNoOp: with no browser the step writes nothing, except on
+// Windows, where it says registration is not shipped and nothing was
+// written.
+func expectBrowserNoOp(t *testing.T, out string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		if !strings.Contains(out, browserNotShippedLine) || !strings.Contains(out, "nothing was written") {
+			t.Errorf("no-browser run on Windows wrote %q, want the not-shipped line", out)
+		}
+		return
+	}
+	if out != "" {
+		t.Errorf("no-browser run wrote %q, want nothing", out)
+	}
+}
+
+// expectBrowserNotShippedOnWindows: a Linux-layout Chrome profile in the
+// home is not a Windows browser, so the step says registration is not
+// shipped and writes no host files.
+func expectBrowserNotShippedOnWindows(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".config", "google-chrome"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	if err := runBrowserExtensionStep(&out, browserExtStepParams{HomeDir: home, ObserverBin: `C:\opt\observer.exe`}); err != nil {
+		t.Fatalf("the step errored: %v", err)
+	}
+	if !strings.Contains(out.String(), browserNotShippedLine) {
+		t.Errorf("output %q, want the not-shipped line", out.String())
+	}
+	if _, err := os.Stat(filepath.Join(home, ".observer", "browser-host")); err == nil {
+		t.Errorf("the step wrote host files on Windows")
 	}
 }

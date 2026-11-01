@@ -7,7 +7,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/guardposture"
 	"github.com/marmutapp/superbased-observer/internal/hook"
 	"github.com/marmutapp/superbased-observer/internal/hook/pluginshim"
@@ -23,10 +22,15 @@ import (
 // on the binding-driven path (a tool with bindings and no hookReceivers
 // entry, or a receiver that delegates by dialect, like Hermes).
 var bindingDialectReceivers = map[string]func(ctx context.Context, tool, event, configPath string, b integration.HookBinding){
-	hook.PluginDialectToolGate: handlePluginToolGateHook,
-	hook.PromptDialectPluginShim: func(_ context.Context, tool, event, configPath string, b integration.HookBinding) {
-		handlePromptSubmitOnlyHook(tool, tool, b.Dialect, b.NativeEvent, event, configPath)
-	},
+	hook.PluginDialectToolGate:          handlePluginToolGateHook,
+	hook.PromptDialectPluginShim:        handlePluginPromptHook,
+	hook.PromptDialectPluginShimConfirm: handlePluginPromptHook,
+}
+
+// handlePluginPromptHook serves both plugin prompt dialects: the binding's
+// dialect row decides the caps and the reply shape.
+func handlePluginPromptHook(_ context.Context, tool, event, configPath string, b integration.HookBinding) {
+	handlePromptSubmitOnlyHook(tool, tool, b.Dialect, b.NativeEvent, event, configPath)
 }
 
 // dispatchBindingDialect runs the dialect handler for (tool, event) when its
@@ -68,11 +72,12 @@ func handlePluginToolGateHook(_ context.Context, tool, event, configPath string,
 	label := tool + ":" + event
 	body, truncated := readHookBodyDetectTruncation(os.Stdin, promptSubmitBodyLimit)
 	body = bytes.TrimPrefix(body, []byte{0xEF, 0xBB, 0xBF})
+	noteHookPayload(body)
 	fmt.Fprintf(os.Stderr, "observer-hook: event=%s received bytes=%d truncated=%v at=%s\n",
 		label, len(body), truncated, time.Now().UTC().Format(time.RFC3339))
 
-	cfg, cfgErr := config.Load(config.LoadOptions{GlobalPath: configPath})
-	if cfgErr != nil && hookFailClosed(guardposture.KindConfig, body) {
+	cfg, stop, cfgErr := loadGateConfig(configPath, body, os.Stderr)
+	if stop {
 		return
 	}
 	// A truncated or unparseable body cannot be evaluated: blocked under
@@ -88,9 +93,20 @@ func handlePluginToolGateHook(_ context.Context, tool, event, configPath string,
 				return
 			}
 		} else {
-			blocked, recordAfterReply := hook.HandlePluginToolGate(
+			// A plugin envelope the gate cannot decode is not judged: under
+			// enforcement it fails closed before the gate's allow (FU-161).
+			if hook.PluginToolPayloadUndecodable(tool, body) && hookFailClosed(guardposture.KindUnparseable, body) {
+				return
+			}
+			// The security pillar's facts, as on every other tool gate
+			// (hook_security.go; lane sec-gate2).
+			enrich := securityToolGateEnrich(configPath, tool, b.NativeEvent, hookSecurityAliases(cfg, cfgErr))
+			// An allowed agent commit's trailer marker (audit finding F3)
+			// is written by the gate's allow seam, after the decision and
+			// before the allow reply (lane SEC-F2B, P-078 ruling 4).
+			blocked, recordAfterReply := hook.HandlePluginToolGateAllow(
 				tool, event, body, hook.PluginToolGateCaps(pluginToolGateCanAsk(tool, b)), enforced,
-				g, makeGuardPersist(cfg, g, label, os.Stderr), hookStdout, os.Stderr,
+				g, makeGuardPersist(cfg, g, label, os.Stderr), enrich, provenanceAgentCommitAllowed, hookStdout, os.Stderr,
 			)
 			markHookReplied()
 			if !blocked && recordAfterReply != nil {

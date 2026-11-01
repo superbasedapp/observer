@@ -15,22 +15,30 @@
 package dashboard
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/marmutapp/superbased-observer/internal/agentconfig"
 	"github.com/marmutapp/superbased-observer/internal/clientwire"
 	"github.com/marmutapp/superbased-observer/internal/codextrust"
+	"github.com/marmutapp/superbased-observer/internal/diag"
 	"github.com/marmutapp/superbased-observer/internal/hook"
 	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/models"
+	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
+	"github.com/marmutapp/superbased-observer/internal/proxyauth"
 	"github.com/marmutapp/superbased-observer/internal/proxyroute"
+	"github.com/marmutapp/superbased-observer/internal/regularfile"
 	"github.com/marmutapp/superbased-observer/internal/routeprov"
 	"github.com/marmutapp/superbased-observer/internal/shimguard"
 )
@@ -116,10 +124,11 @@ func (s *Server) undoRoute(
 		port = 8820
 	}
 	reg, err := proxyroute.NewRegistrar(proxyroute.RegisterOptions{
-		Writer:    routeprov.WriterSetup,
-		ProxyPort: port,
-		DryRun:    body.DryRun,
-		Lock:      hook.LockSettingsFile,
+		Writer:      routeprov.WriterSetup,
+		ProxyPort:   port,
+		ClientToken: s.opts.ProxyClientToken,
+		DryRun:      body.DryRun,
+		Lock:        hook.LockSettingsFile,
 	})
 	if err != nil {
 		writeErr(w, err)
@@ -189,10 +198,11 @@ func (s *Server) handleSetupCodex(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		reg, err := proxyroute.NewRegistrar(proxyroute.RegisterOptions{
-			Writer:    routeprov.WriterSetup,
-			ProxyPort: s.opts.ProxyPort,
-			DryRun:    body.DryRun,
-			Force:     body.Force,
+			Writer:      routeprov.WriterSetup,
+			ProxyPort:   s.opts.ProxyPort,
+			ClientToken: s.opts.ProxyClientToken,
+			DryRun:      body.DryRun,
+			Force:       body.Force,
 		})
 		if err != nil {
 			writeErr(w, err)
@@ -280,7 +290,8 @@ func (s *Server) codexSetupSnapshot() codexSetupSnapshot {
 	}
 	if ours, _ := providers[proxyroute.ProviderName].(map[string]any); ours != nil {
 		if base, _ := ours["base_url"].(string); base != "" {
-			out.CurrentBaseURL = base
+			// A client token in the route is masked (OSH-R-009).
+			out.CurrentBaseURL = proxyauth.Redact(base)
 		}
 	}
 
@@ -309,7 +320,7 @@ func classifyCodexStatus(s codexSetupSnapshot, desired string) (status string, w
 	}
 	// We have an observer-named provider; how does its base_url compare?
 	switch {
-	case s.CurrentBaseURL == desired:
+	case proxyauth.SameRoute(s.CurrentBaseURL, desired):
 		if s.CurrentModelProvider == proxyroute.ProviderName {
 			return "routed_to_observer", true, ""
 		}
@@ -359,8 +370,16 @@ type claudeSetupSnapshot struct {
 	//                            block); user is on ANTHROPIC_API_KEY.
 	//                            Launcher still sets ANTHROPIC_BASE_URL
 	//                            so the proxy captures.
-	//   - "claude_not_installed": `claude` not on PATH.
+	//   - "extension_ready":     no `claude` on PATH, but the Claude
+	//                            Code VS Code extension is installed
+	//                            (its install signal holds; WINNODE2
+	//                            16b). There is no launcher to run; the
+	//                            settings-file route still applies.
+	//   - "claude_not_installed": neither.
 	Status string `json:"status"`
+	// EditorExtensionInstalled reports the Claude Code editor-extension
+	// install signal (WINNODE2 16b).
+	EditorExtensionInstalled bool `json:"editor_extension_installed,omitempty"`
 
 	// Durable routing state (settings.json env block). Computed via a
 	// DryRun RegisterClaudeCode so the UI can render the exact outcome
@@ -375,6 +394,12 @@ type claudeSetupSnapshot struct {
 	// the user set deliberately); POST with force=true overrides.
 	WouldRegister      bool   `json:"would_register"`
 	WouldRegisterError string `json:"would_register_error,omitempty"`
+
+	// ObservedRoute is the traffic verdict per capture surface (OBS-1):
+	// what the node saw reach the proxy, as opposed to RoutedToObserver,
+	// which only reads the settings file. Set by the handler (it needs the
+	// request context); nil when the database is unavailable.
+	ObservedRoute *observedRouteView `json:"observed_route,omitempty"`
 }
 
 // claudeSetupPostResponse is the POST /api/setup/claude response shape;
@@ -406,7 +431,7 @@ type claudeSetupPostResponse struct {
 func (s *Server) handleSetupClaude(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, s.claudeSetupSnapshot())
+		writeJSON(w, s.claudeSetupSnapshotObserved(r.Context()))
 	case http.MethodPost:
 		var body codexSetupPostRequest // same {force, dry_run} shape
 		if r.ContentLength > 0 {
@@ -417,7 +442,7 @@ func (s *Server) handleSetupClaude(w http.ResponseWriter, r *http.Request) {
 		}
 		if body.Undo {
 			s.undoRoute(w, r, body, "claude-code",
-				func() any { return s.claudeSetupSnapshot() })
+				func() any { return s.claudeSetupSnapshotObserved(r.Context()) })
 			return
 		}
 		port := s.opts.ProxyPort
@@ -425,10 +450,11 @@ func (s *Server) handleSetupClaude(w http.ResponseWriter, r *http.Request) {
 			port = 8820
 		}
 		reg, err := proxyroute.NewRegistrar(proxyroute.RegisterOptions{
-			Writer:    routeprov.WriterSetup,
-			ProxyPort: port,
-			DryRun:    body.DryRun,
-			Force:     body.Force,
+			Writer:      routeprov.WriterSetup,
+			ProxyPort:   port,
+			ClientToken: s.opts.ProxyClientToken,
+			DryRun:      body.DryRun,
+			Force:       body.Force,
 		})
 		if err != nil {
 			writeErr(w, err)
@@ -445,18 +471,26 @@ func (s *Server) handleSetupClaude(w http.ResponseWriter, r *http.Request) {
 		}
 		if res.Error != nil {
 			resp.Error = res.Error.Error()
-			resp.Snapshot = s.claudeSetupSnapshot()
+			resp.Snapshot = s.claudeSetupSnapshotObserved(r.Context())
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusConflict)
 			_ = json.NewEncoder(w).Encode(resp)
 			return
 		}
-		resp.Snapshot = s.claudeSetupSnapshot()
+		resp.Snapshot = s.claudeSetupSnapshotObserved(r.Context())
 		writeJSON(w, resp)
 	default:
 		w.Header().Set("Allow", "GET, POST")
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
+}
+
+// claudeSetupSnapshotObserved is claudeSetupSnapshot plus the observed
+// per-surface traffic verdict, the shape GET /api/setup/claude serves.
+func (s *Server) claudeSetupSnapshotObserved(ctx context.Context) claudeSetupSnapshot {
+	snap := s.claudeSetupSnapshot()
+	snap.ObservedRoute = s.observedRoute(ctx, models.ToolClaudeCode, time.Now())
+	return snap
 }
 
 // claudeSetupSnapshot probes ~/.claude/.credentials.json (honoring
@@ -484,7 +518,10 @@ func (s *Server) claudeSetupSnapshot() claudeSetupSnapshot {
 		out.ClaudeBinaryFound = true
 		out.ClaudeBinaryPath = path
 	}
+	out.EditorExtensionInstalled = s.installSignalHolds(models.ToolClaudeCode)
 	switch {
+	case !out.ClaudeBinaryFound && out.EditorExtensionInstalled:
+		out.Status = "extension_ready"
 	case !out.ClaudeBinaryFound:
 		out.Status = "claude_not_installed"
 	case out.HasOAuthCredentials:
@@ -498,8 +535,9 @@ func (s *Server) claudeSetupSnapshot() claudeSetupSnapshot {
 	// registrar construction failure (no resolvable home) just leaves
 	// the routing fields zero.
 	if reg, err := proxyroute.NewRegistrar(proxyroute.RegisterOptions{
-		ProxyPort: port,
-		DryRun:    true,
+		ProxyPort:   port,
+		ClientToken: s.opts.ProxyClientToken,
+		DryRun:      true,
 	}); err == nil {
 		res := reg.RegisterClaudeCode()
 		out.SettingsPath = res.ConfigPath
@@ -508,7 +546,7 @@ func (s *Server) claudeSetupSnapshot() claudeSetupSnapshot {
 			out.WouldRegisterError = res.Error.Error()
 		case res.AlreadySet:
 			out.RoutedBaseURL = res.BaseURL
-			out.RoutedToObserver = res.BaseURL == proxyURL
+			out.RoutedToObserver = proxyauth.SameRoute(res.BaseURL, proxyURL)
 			if !out.RoutedToObserver {
 				out.WouldRegisterError = "ANTHROPIC_BASE_URL points at another local observer (" + res.BaseURL + "); POST with force=true to switch it here"
 			}
@@ -519,31 +557,45 @@ func (s *Server) claudeSetupSnapshot() claudeSetupSnapshot {
 	return out
 }
 
-// resolveClaudeCredentialsPath mirrors cmd/observer/claude.go's lookup
-// order. Duplicated rather than depending across the cmd→internal
-// boundary; both functions are tiny.
+// resolveClaudeCredentialsPath names Claude Code's sign-in file through the
+// one Claude config directory resolver the launcher uses
+// (agentconfig.ClaudeConfigDir, FU-138), with the relocation variables read
+// under the pinned-home rule (crossmount.HomeEnvAt): an isolated daemon reads
+// none, so the probe stays under its own home. A relative
+// CLAUDE_CONFIG_DIR / ANTHROPIC_CONFIG_DIR names no file (""), never a path
+// joined against the daemon's working directory and never the ~/.claude
+// default, which Claude Code does not read then.
 func resolveClaudeCredentialsPath() string {
-	for _, env := range []string{"CLAUDE_CONFIG_DIR", "ANTHROPIC_CONFIG_DIR"} {
-		if dir := os.Getenv(env); dir != "" {
-			return filepath.Join(dir, ".credentials.json")
-		}
-	}
 	home, err := os.UserHomeDir()
 	if err != nil {
+		home = ""
+	}
+	return claudeCredentialsPathFor(home, crossmount.HomeEnvAt(home, nil))
+}
+
+// claudeCredentialsPathFor is resolveClaudeCredentialsPath with its inputs
+// injected.
+func claudeCredentialsPathFor(home string, getenv func(string) string) string {
+	dir, _ := agentconfig.ClaudeConfigDir(agentconfig.PathEnv{GOOS: runtime.GOOS, Home: home, Getenv: getenv})
+	if dir == "" {
 		return ""
 	}
-	return filepath.Join(home, ".claude", ".credentials.json")
+	return filepath.Join(dir, ".credentials.json")
 }
+
+// claudeCredentialsMaxBytes caps the sign-in probe's read.
+const claudeCredentialsMaxBytes int64 = 1 << 20
 
 // hasOAuthAccessToken returns true when path holds a parseable JSON
 // document with a non-empty claudeAiOauth.accessToken. Missing file or
 // malformed contents return false (the snapshot just falls back to
-// api_key_ready).
+// api_key_ready). The read is the bounded regular-file read, so a FIFO or a
+// device at the path is refused instead of hanging the handler.
 func hasOAuthAccessToken(path string) bool {
 	if path == "" {
 		return false
 	}
-	body, err := os.ReadFile(path) //nolint:gosec // G703: the Claude credentials path under the operator's own home, presence check only
+	body, err := regularfile.Read(path, claudeCredentialsMaxBytes)
 	if err != nil {
 		return false
 	}
@@ -566,8 +618,10 @@ func hasOAuthAccessToken(path string) bool {
 // codex.hook_trust): it recomputes Codex's trust hash to tell a CHANGED
 // entry from a trusted one, reads `enabled = false`, and lists every
 // event Observer registers (from the integration registry) so an event a
-// newer Observer adds shows up before hooks.json carries it. Detection
-// only: Observer never trusts a hook on the user's behalf (D-148).
+// newer Observer adds shows up before hooks.json carries it. Read only:
+// the hook writer records trust for Observer's own entries when it
+// registers them (live check 2026-10-20), and this snapshot reports any
+// entry that still lacks it.
 //
 // Status values:
 //
@@ -605,6 +659,18 @@ type codexHookTrustSnapshot struct {
 	HashVerified       bool   `json:"hash_verified"`
 	FeatureFlagEnabled bool   `json:"feature_flag_enabled"`
 	Instruction        string `json:"instruction,omitempty"`
+	// GateOff is true when a tool-gate event (diag.CodexToolGateEvents) is
+	// among the events Codex will not run: Observer's Codex guard gate is
+	// then off, not degraded (live check 2026-10-20).
+	GateOff bool `json:"gate_off,omitempty"`
+	// Origin names the home this snapshot read: "native", or the foreign
+	// home (a WSL daemon's view of the Windows user's ~/.codex, which the
+	// codex-windows hook bridge registers into).
+	Origin string `json:"origin,omitempty"`
+	// OtherHomes are the snapshots of every other home carrying Observer
+	// Codex hooks. The top-level snapshot is the one that needs action
+	// first, so the card leads with it.
+	OtherHomes []codexHookTrustSnapshot `json:"other_homes,omitempty"`
 }
 
 // handleSetupCodexHooks serves /api/setup/codex-hooks (GET only).
@@ -619,16 +685,53 @@ func (s *Server) handleSetupCodexHooks(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.codexHookTrustSnapshot())
 }
 
-// codexHookTrustSnapshot reads ~/.codex/hooks.json + ~/.codex/config.toml
-// and classifies every observer Codex event. Pure read; never mutates.
+// codexHookTrustSnapshot reads every home Observer registers Codex hooks
+// into (the native ~/.codex, plus on a WSL daemon the Windows user's, see
+// diag.ForeignCodexHomes) and leads with the one that needs action. Pure
+// read; never mutates.
 func (s *Server) codexHookTrustSnapshot() codexHookTrustSnapshot {
-	out := codexHookTrustSnapshot{}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		out.Status = "no_codex"
-		return out
+		return codexHookTrustSnapshot{Status: "no_codex"}
 	}
-	codexDir := filepath.Join(home, ".codex")
+	snaps := []codexHookTrustSnapshot{codexHookTrustSnapshotAt(filepath.Join(home, ".codex"), "native")}
+	for _, h := range diag.ForeignCodexHomes("") {
+		snap := codexHookTrustSnapshotAt(filepath.Join(h.Path, ".codex"), h.OS+" home "+h.Path)
+		if !codexTrustIdle(snap.Status) {
+			snaps = append(snaps, snap)
+		}
+	}
+	lead := 0
+	for i, sn := range snaps {
+		if codexTrustNeedsAction(sn.Status) {
+			lead = i
+			break
+		}
+		if codexTrustIdle(snaps[lead].Status) && !codexTrustIdle(sn.Status) {
+			lead = i
+		}
+	}
+	out := snaps[lead]
+	for i, sn := range snaps {
+		if i != lead && !codexTrustIdle(sn.Status) {
+			out.OtherHomes = append(out.OtherHomes, sn)
+		}
+	}
+	return out
+}
+
+// codexTrustIdle reports a snapshot status with nothing to trust.
+func codexTrustIdle(status string) bool { return status == "no_codex" || status == "no_hooks" }
+
+// codexTrustNeedsAction reports a snapshot status the user must act on.
+func codexTrustNeedsAction(status string) bool {
+	return !codexTrustIdle(status) && status != "all_trusted"
+}
+
+// codexHookTrustSnapshotAt classifies the Observer Codex hooks under one
+// .codex directory.
+func codexHookTrustSnapshotAt(codexDir, origin string) codexHookTrustSnapshot {
+	out := codexHookTrustSnapshot{Origin: origin}
 	if _, err := os.Stat(codexDir); err != nil {
 		out.Status = "no_codex"
 		return out
@@ -650,17 +753,19 @@ func (s *Server) codexHookTrustSnapshot() codexHookTrustSnapshot {
 		expected = c.Hook.RegisteredEvents()
 	}
 	rep, err := codextrust.Classify(codextrust.Input{
-		HooksPath:  out.HooksFile,
-		HooksJSON:  hooksRaw,
-		ConfigTOML: cfgRaw,
-		Expected:   expected,
-		Owned:      func(cmd string) bool { return strings.Contains(cmd, " hook codex ") },
+		HooksPath:     out.HooksFile,
+		HooksJSON:     hooksRaw,
+		ConfigTOML:    cfgRaw,
+		Expected:      expected,
+		Owned:         hook.IsObserverCodexHookCommand,
+		NormalizePath: diag.CodexTrustPathKey,
 	})
 	if err != nil {
 		// A broken config.toml still lets hooks.json say what is ours.
 		rep, err = codextrust.Classify(codextrust.Input{
 			HooksPath: out.HooksFile, HooksJSON: hooksRaw, Expected: expected,
-			Owned: func(cmd string) bool { return strings.Contains(cmd, " hook codex ") },
+			Owned:         hook.IsObserverCodexHookCommand,
+			NormalizePath: diag.CodexTrustPathKey,
 		})
 		if err != nil {
 			out.Status = "no_hooks"
@@ -707,13 +812,22 @@ func (s *Server) codexHookTrustSnapshot() codexHookTrustSnapshot {
 	default:
 		out.Status = "all_trusted"
 	}
+	for _, e := range diag.CodexToolGateEvents() {
+		for _, u := range out.UntrustedEvents {
+			if u == e {
+				out.GateOff = true
+			}
+		}
+	}
 	return out
 }
 
 // codexHookTrustInstruction tells the user exactly what to do inside
 // codex, naming each event once under the action it needs. untrusted is
 // every entry codex will not run (it includes modified and disabled).
-// Observer never does it for them (D-148).
+// Re-registering (`observer init --codex`) records trust for Observer's own
+// entries again, except one the user switched off, which only /hooks turns
+// back on.
 func codexHookTrustInstruction(untrusted, modified, disabled []string) string {
 	other := map[string]bool{}
 	for _, e := range append(append([]string{}, modified...), disabled...) {
@@ -735,6 +849,10 @@ func codexHookTrustInstruction(untrusted, modified, disabled []string) string {
 	if len(disabled) > 0 {
 		parts = append(parts, "turn "+strings.Join(disabled, ", ")+" back on (switched off)")
 	}
-	return "open `codex`, run /hooks and " + strings.Join(parts, "; ") +
+	prefix := "register hooks again (the Hooks step, or `observer init --codex`; it re-records Observer's trust), or open `codex`, run /hooks and "
+	if len(never) == 0 && len(modified) == 0 {
+		prefix = "open `codex`, run /hooks and "
+	}
+	return prefix + strings.Join(parts, "; ") +
 		". Trust persists in ~/.codex/config.toml until the hook command changes."
 }

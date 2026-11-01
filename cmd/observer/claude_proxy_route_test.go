@@ -10,9 +10,14 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/marmutapp/superbased-observer/internal/hook"
+	"github.com/marmutapp/superbased-observer/internal/integration"
+	"github.com/marmutapp/superbased-observer/internal/models"
 )
 
 // reachableProxyURL starts a loopback TCP listener kept open for the test's
@@ -48,11 +53,8 @@ func writeRecordingClaudeBin(t *testing.T) (bin, argsFile string) {
 	dir := t.TempDir()
 	argsFile = filepath.Join(dir, "argv.txt")
 	bin = filepath.Join(dir, "claude")
-	script := "#!/bin/sh\n: > " + argsFile + "\nfor a in \"$@\"; do printf '%s\\n' \"$a\" >> " + argsFile + "; done\nexit 0\n"
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake claude bin: %v", err)
-	}
-	return bin, argsFile
+	script := "#!/bin/sh\n: > " + stubShPath(argsFile) + "\nfor a in \"$@\"; do printf '%s\\n' \"$a\" >> " + stubShPath(argsFile) + "; done\nexit 0\n"
+	return writeShellStub(t, bin, script), argsFile
 }
 
 // recordedArgv reads back the argv writeRecordingClaudeBin captured.
@@ -176,7 +178,7 @@ func TestWriteClaudeBypassSettings(t *testing.T) {
 	// Finding 6: keep the minted file INSIDE the test's temp dir so the test
 	// never strands an observer-claude-bypass-*.json in the real TMPDIR.
 	// os.CreateTemp("") honors $TMPDIR on this platform.
-	t.Setenv("TMPDIR", t.TempDir())
+	setTestTempDir(t, t.TempDir())
 	path, err := writeClaudeBypassSettings()
 	if err != nil {
 		t.Fatalf("writeClaudeBypassSettings: %v", err)
@@ -605,6 +607,10 @@ func TestClaudeProxyBackendProven(t *testing.T) {
 		{name: "bedrock process selector", env: func() []string { return []string{"HOME=" + t.TempDir(), "CLAUDE_CODE_USE_BEDROCK=1"} }, want: false},
 		{name: "vertex process selector", env: func() []string { return []string{"HOME=" + t.TempDir(), "CLAUDE_CODE_USE_VERTEX=true"} }, want: false},
 		{name: "foundry process selector", env: func() []string { return []string{"HOME=" + t.TempDir(), "CLAUDE_CODE_USE_FOUNDRY=1"} }, want: false},
+		// CC-10: the Claude Platform on AWS and Mantle selectors.
+		{name: "claude platform on aws process selector", env: func() []string { return []string{"HOME=" + t.TempDir(), "CLAUDE_CODE_USE_ANTHROPIC_AWS=1"} }, want: false},
+		{name: "mantle process selector", env: func() []string { return []string{"HOME=" + t.TempDir(), "CLAUDE_CODE_USE_MANTLE=1"} }, want: false},
+		{name: "claude platform on aws user setting", env: proxyEnv, settings: `{"env":{"CLAUDE_CODE_USE_ANTHROPIC_AWS":"true"}}`, want: false},
 		{name: "explicit false process selector", env: func() []string { return []string{"HOME=" + t.TempDir(), "CLAUDE_CODE_USE_VERTEX=false"} }, want: true},
 		{name: "bedrock user setting", env: proxyEnv, settings: `{"env":{"CLAUDE_CODE_USE_BEDROCK":"true"}}`, want: false},
 		{name: "disabled vertex user setting", env: proxyEnv, settings: `{"env":{"CLAUDE_CODE_USE_VERTEX":"0"}}`, want: true},
@@ -977,7 +983,7 @@ func TestRunClaudeEmptyUnset_PinWriteFailNoCapturedClaim(t *testing.T) {
 	t.Setenv("ANTHROPIC_CONFIG_DIR", "")
 	// Point TMPDIR at a non-existent dir so os.CreateTemp (and thus the pin write)
 	// fails → *bypassWriteError → direct fallback.
-	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "does-not-exist"))
+	setTestTempDir(t, filepath.Join(t.TempDir(), "does-not-exist"))
 
 	route := claudeRouteResolution{class: claudeRouteEmptyUnset, scope: claudeScopeUser, file: "user settings"}
 	var stderr bytes.Buffer
@@ -1001,7 +1007,7 @@ func TestRunClaudeEmptyUnset_PinWriteFailNoCapturedClaim(t *testing.T) {
 // signal-visible holder is published while the file is still empty (0 bytes),
 // closing the strand window. After the call the file carries its JSON body.
 func TestWriteClaudeSettingsPin_HolderSetBeforeWrite(t *testing.T) {
-	t.Setenv("TMPDIR", t.TempDir())
+	setTestTempDir(t, t.TempDir())
 	var (
 		cbCalled bool
 		cbPath   string
@@ -1033,5 +1039,24 @@ func TestWriteClaudeSettingsPin_HolderSetBeforeWrite(t *testing.T) {
 	}
 	if len(raw) == 0 {
 		t.Fatal("final pin file must carry the JSON body")
+	}
+}
+
+// TestClaudeBackendEnvKeysReadTheRegistryTable pins CC-10's one owner: the
+// launcher's selector list is the integration registry's table, the same
+// one the hook's account observations read.
+func TestClaudeBackendEnvKeysReadTheRegistryTable(t *testing.T) {
+	want := integration.ProviderSelectorEnvKeys(models.ToolClaudeCode)
+	if strings.Join(claudeBackendEnvKeys, ",") != strings.Join(want, ",") {
+		t.Fatalf("claudeBackendEnvKeys = %v, want the registry table %v", claudeBackendEnvKeys, want)
+	}
+}
+
+// TestManagedClaudeSettingsPathReadsTheOneTable pins CC-5 for the launcher:
+// its managed path is hook.ClaudeManagedPaths for this GOOS (the agentconfig
+// FileRow), not a copy of its own.
+func TestManagedClaudeSettingsPathReadsTheOneTable(t *testing.T) {
+	if got, want := managedClaudeSettingsPath(), hook.ClaudeManagedPaths(runtime.GOOS).Settings; got != want || got == "" {
+		t.Fatalf("managedClaudeSettingsPath() = %q, want %q", got, want)
 	}
 }

@@ -138,8 +138,10 @@ var gitHooksPatterns = []pathPattern{
 // observer start). Project-level .claude/settings.local.json is
 // deliberately ABSENT: the host tool itself writes it on every
 // permission grant; flagging it would be constant noise and denying
-// it would break the host tool (revisit with the G6 conformance
-// matrix).
+// it would break the host tool. The hook switch an agent could set in
+// it (disableAllHooks) is covered by CONTENT instead: R-162
+// (rules_hookswitch.go, T-910) refuses a write that turns a hook
+// switch on in any hook-bearing settings file, user or project.
 // The `~/.observer/**` glob already covers the dashboard-authored
 // trusted per-project layer dir (~/.observer/guard-project-policies/),
 // so an agent write there is denied with no new matcher — that coverage
@@ -171,7 +173,7 @@ func boundaryRules() []Rule {
 	faCfg := []EventKind{KindFileAccess, KindConfigChange}
 	shell := []EventKind{KindShellExec}
 	boundarySafe := []SafeFn{safePathAllowlisted, safeClientConfigPath}
-	return []Rule{
+	rules := []Rule{
 		{
 			ID: "R-150", Category: CategoryBoundary, Severity: SeverityWarn,
 			AppliesTo: fa, Match: matchOutsideProject(false),
@@ -347,14 +349,16 @@ func boundaryRules() []Rule {
 		},
 		{
 			ID: "R-160", Category: CategoryBoundary, Severity: SeverityCritical,
-			AppliesTo: faCfg, Match: faPathMatch(observerConfigPatterns, true),
+			AppliesTo: faCfg, Match: matchObserverConfigWriteFA,
 			Observe: DecisionFlag, Enforce: DecisionDeny,
 			Doc:    "agent modifying observer/guard/hook configuration",
 			Advice: "Guard and hook configuration is operator-owned (F4); ask the operator to change it.",
 		},
 		{
 			ID: "R-160", Category: CategoryBoundary, Severity: SeverityCritical,
-			AppliesTo: shell, MatchCmd: shPathMatch(observerConfigPatterns, true),
+			AppliesTo: shell, MatchCmd: shPathMatchBy(func(ctx *MatchContext, p string) (string, bool) {
+				return observerConfigPath(p, ctx.Cfg.Home)
+			}, true),
 			Observe: DecisionFlag, Enforce: DecisionDeny,
 			Doc:    "shell command modifying observer/guard/hook configuration",
 			Advice: "Guard and hook configuration is operator-owned (F4); ask the operator to change it.",
@@ -381,6 +385,42 @@ func boundaryRules() []Rule {
 			Advice: "Project policy edits are recorded; this in-repo file is escalate-only (§4.6 drops any loosening it attempts). Dashboard-managed project relaxations live in the R-160-protected daemon-local trusted layer, which the agent cannot write.",
 		},
 	}
+	// R-162 judges hook-bearing settings files by the content written
+	// (rules_hookswitch.go), which covers the files R-160 cannot list.
+	rules = append(rules, hookSwitchRules()...)
+	// The core agent-behaviour rules D-761 placed in Guard: git hook
+	// bypasses (R-112 to R-114, rules_githooks.go) and an agent approving
+	// its own exception (R-165, rules_selfapproval.go).
+	rules = append(rules, gitHookRules()...)
+	rules = append(rules, selfApprovalRules()...)
+	rules = append(rules, consentRecordRules()...)
+	return append(rules, protectedPathRules()...)
+}
+
+// observerConfigPath is the R-160 write judgement: observer's own
+// configuration (observerConfigPatterns), except the developer's consent
+// records, which are R-165's (consentRecordPatterns, lane sec-deps4 audit
+// finding 1): writing one is giving the consent, so it reports the
+// self-approval rule and its advice. R-165 is an integrity rule with the
+// same flag and deny, so the record is no less guarded.
+func observerConfigPath(p, home string) (string, bool) {
+	if _, ok := pathPatternMatch(p, home, consentRecordPatterns); ok {
+		return "", false
+	}
+	return pathPatternMatch(p, home, observerConfigPatterns)
+}
+
+// matchObserverConfigWriteFA is the R-160 file-access row over
+// observerConfigPath (faPathMatch's shape).
+func matchObserverConfigWriteFA(ctx *MatchContext) (bool, string) {
+	if !isWriteEvent(ctx.Event) {
+		return false, ""
+	}
+	desc, ok := observerConfigPath(ctx.Path, ctx.Cfg.Home)
+	if !ok {
+		return false, ""
+	}
+	return true, desc + " (" + ctx.Event.Target + ")"
 }
 
 // --- shared path matching ---------------------------------------------
@@ -441,6 +481,14 @@ func faPathMatch(pats []pathPattern, wantWrite bool) MatchFn {
 // run in, unitPathCandidates) and matches against the table, then
 // classifies as write or read access within the unit.
 func shPathMatch(pats []pathPattern, wantWrite bool) MatchCmdFn {
+	return shPathMatchBy(func(ctx *MatchContext, p string) (string, bool) {
+		return pathPatternMatch(p, ctx.Cfg.Home, pats)
+	}, wantWrite)
+}
+
+// shPathMatchBy is shPathMatch with the path judgement passed in (R-166
+// judges a path by its place in the project, not by its absolute form).
+func shPathMatchBy(match func(ctx *MatchContext, p string) (string, bool), wantWrite bool) MatchCmdFn {
 	return func(ctx *MatchContext, cmd *Command) (bool, string) {
 		tokens := sensitivePathTokens(cmd)
 		if len(tokens) == 0 {
@@ -455,7 +503,7 @@ func shPathMatch(pats []pathPattern, wantWrite bool) MatchCmdFn {
 				if skipBareCandidate(t, c, wantWrite) {
 					continue
 				}
-				if desc, ok := pathPatternMatch(c.path, ctx.Cfg.Home, pats); ok {
+				if desc, ok := match(ctx, c.path); ok {
 					return true, movedReason(desc+" ("+t.text+")", c.moved)
 				}
 			}
@@ -575,8 +623,20 @@ func matchCrossProjectWrite(ctx *MatchContext) (bool, string) {
 	if cur != "" && isUnder(ctx.Path, cur) {
 		return false, "" // inside the current project: never cross-bleed
 	}
+	if cur != "" && !comparableFlavors(ctx.Path, cur) {
+		// The path is in a flavor the event's own root cannot be
+		// compared with, so "outside the current project" is unknown,
+		// and a match against another root would be a guess (live: a
+		// Windows Cortex Code write beside its translated /mnt/c root
+		// hit an untranslated C:\Users\<user> project row). Same
+		// contract as R-150: unknown is not a violation.
+		return false, ""
+	}
 	for _, root := range ctx.Cfg.KnownProjectRoots {
-		if root == "" || (cur != "" && pathsEqual(root, cur)) {
+		// A known root that is not an absolute path in either flavor
+		// (FU-193's "Xcode (project unknown)", a placeholder) names no
+		// directory to bleed into (audit row 8).
+		if root == "" || !isAbsPath(root) || (cur != "" && pathsEqual(root, cur)) {
 			continue
 		}
 		if isUnder(ctx.Path, root) {

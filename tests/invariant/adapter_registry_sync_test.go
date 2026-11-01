@@ -8,9 +8,11 @@ package invariant
 
 import (
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/adapter/defaults"
+	"github.com/marmutapp/superbased-observer/internal/components"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/integration"
 )
@@ -59,6 +61,19 @@ func TestAdapterRegistrySourcesAgree(t *testing.T) {
 	allowSet := map[string]struct{}{}
 	for _, t := range config.Default().Observer.Watch.EnabledAdapters {
 		allowSet[t] = struct{}{}
+	}
+	// An adapter an omit tag compiled out of this build (a published
+	// edition, e.g. the minimal one without the browser-chat rows) keeps its
+	// registry row and its default allow-list entry but has no package in
+	// defaults.Adapters(): the catalogue names it (components.Omitted), so
+	// it is compared as present.
+	for _, id := range components.Omitted() {
+		if tool, ok := strings.CutPrefix(id, "adapter."); ok {
+			if _, inRegistry := registrySet[tool]; !inRegistry {
+				t.Errorf("compiled-out adapter %q has no integration registry row", tool)
+			}
+			defaultsSet[tool] = struct{}{}
+		}
 	}
 
 	// 1) defaults.Adapters() and the integration registry must name the

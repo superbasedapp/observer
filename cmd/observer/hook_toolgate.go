@@ -7,7 +7,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/guardposture"
 	"github.com/marmutapp/superbased-observer/internal/hook"
 	"github.com/marmutapp/superbased-observer/internal/integration"
@@ -63,6 +62,12 @@ func handleToolGateHook(tool, label string, b integration.HookBinding, stdin io.
 	setHookExpectsStdoutReply(hook.ToolGateAllowWritesStdout(b.Dialect))
 	body, truncated := readHookBodyDetectTruncation(stdin, promptSubmitBodyLimit)
 	body = bytes.TrimPrefix(body, []byte{0xEF, 0xBB, 0xBF})
+	// Another surface that runs this tool's registration (the Antigravity
+	// App and IDE on the agy hooks.json) is served as its own call
+	// (hook_surface.go, surface-gap W-2c).
+	if surface, sb, ok := hookSurfaceBinding(tool, b, body); ok {
+		tool, b, label = surface, sb, surface+":"+sb.NativeEvent
+	}
 	runToolGate(tool, label, b, body, truncated, configPath, hookStdout, os.Stderr)
 }
 
@@ -81,13 +86,21 @@ func runToolGate(tool, label string, b integration.HookBinding, body []byte, tru
 	// reason and nothing else there (T-048): Observer's diagnostics go
 	// nowhere on such a dialect.
 	diag := stderr
-	if hook.ToolGateDialectStderrReason(b.Dialect) {
+	if hook.ToolGateDialectStderrReason(b.Dialect) || hook.ToolGateDialectQuietStderr(b.Dialect) {
 		diag = io.Discard
+	}
+	// A host that reads its reason from stdout and may turn stderr text into
+	// a hook error (Copilot, WINNODE2 item 10) gets no stderr at all, the
+	// block's diagnostic line included.
+	gateStderr := stderr
+	if hook.ToolGateDialectQuietStderr(b.Dialect) {
+		gateStderr = io.Discard
 	}
 	fmt.Fprintf(diag, "observer-hook: event=%s received bytes=%d truncated=%v at=%s\n",
 		label, len(body), truncated, time.Now().UTC().Format(time.RFC3339))
-	cfg, cfgErr := config.Load(config.LoadOptions{GlobalPath: configPath})
-	if cfgErr != nil && hookFailClosed(guardposture.KindConfig, body) {
+	noteHookPayload(body)
+	cfg, stop, cfgErr := loadGateConfig(configPath, body, diag)
+	if stop {
 		return
 	}
 	req := hook.ToolGateRequest{
@@ -101,6 +114,9 @@ func runToolGate(tool, label string, b integration.HookBinding, body []byte, tru
 		Unclassified: func(native string) {
 			recordUnclassifiedToolGate(currentHookPlan(), native, hookPayloadSessionID(body), diag)
 		},
+		// The security pillar's facts and the dirty-marker raise, per
+		// event, through the hook context seam (hook_security.go).
+		Enrich: securityToolGateEnrich(configPath, tool, b.NativeEvent, hookSecurityAliases(cfg, cfgErr)),
 	}
 	if !truncated && hookPayloadUnparseable(body) && hookFailClosed(guardposture.KindUnparseable, body) {
 		return
@@ -108,10 +124,18 @@ func runToolGate(tool, label string, b integration.HookBinding, body []byte, tru
 	var res hook.ToolGateResult
 	if cfgErr == nil && cfg.Guard.Enabled && cfg.Guard.Mode != "off" {
 		if g := buildHookGuard(cfg, diag); g != nil {
-			res = hook.HandleToolGate(req, g, makeGuardPersist(cfg, g, label, diag), stdout, stderr)
+			// A sibling dialect's firing of the same action (Devin Desktop:
+			// PreToolUse and pre_run_command) is recorded once (FU-127).
+			persist := recordSiblingGateOnce(tool, b, currentHookPlan().SpoolPath, makeGuardPersist(cfg, g, label, diag))
+			res = hook.HandleToolGate(req, g, persist, stdout, gateStderr)
 		} else if hookFailClosed(guardposture.KindGuardInit, body) {
 			return
 		}
+	}
+	// JSON whose fields the gate reads do not decode was not judged: under
+	// enforcement it fails closed, never the dialect's allow (FU-161).
+	if res.Undecodable && hookFailClosed(guardposture.KindUnparseable, body) {
+		return
 	}
 	if res.Replied {
 		// A dialect that blocks by exit code (Cascade, Kiro): the code is
@@ -123,7 +147,12 @@ func runToolGate(tool, label string, b integration.HookBinding, body []byte, tru
 		}
 		return
 	}
-	hook.WriteToolGateAllow(b.Dialect, stdout)
+	// The allow path: an allowed agent commit's trailer marker (audit
+	// finding F3; a no-op unless the enrich step held one).
+	provenanceAgentCommitAllowed()
+	// A record-worthy flag rides the allow's developer notice field where
+	// the binding declares one (integration.HookBinding.WarnField).
+	hook.WriteToolGateAllowWarn(b.Dialect, res.WarnField, res.Warn, stdout)
 	markHookReplied()
 	if res.RecordAfterReply != nil {
 		res.RecordAfterReply()

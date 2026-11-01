@@ -15,13 +15,15 @@ import "strings"
 // organization hid" reads the way the sidebar does.
 
 // NavSectionIDs is the closed set of hideable/lockable node-dashboard nav
-// sections (26 today; "plans" joined with the Plans & limits page, "requests" with the request-grants design, G6,
-// and "agent-config" with adapter config P4/P5).
+// sections (28 today; "plans" joined with the Plans & limits page, "requests" with the request-grants design, G6,
+// "agent-config" with adapter config P4/P5, "messages" with admin and
+// developer messaging, T-854, and "code-security" with the security pillar's
+// Code security page).
 var NavSectionIDs = []string{
-	"overview", "live", "sessions", "actions", "projects", "security", "egress", "search",
+	"overview", "live", "sessions", "actions", "projects", "security", "code-security", "egress", "search",
 	"cost", "plans", "analysis", "tools",
 	"compression", "cache", "suggestions", "routing", "benchmarks", "discovery", "patterns",
-	"policies", "agent-config", "privacy", "terminals", "remote", "requests", "settings",
+	"policies", "agent-config", "privacy", "terminals", "remote", "messages", "requests", "settings",
 }
 
 // SettingsSectionIDs is the closed set of node-dashboard Settings
@@ -48,7 +50,13 @@ var SettingsSectionIDs = []string{
 // "requests" joined the floor with the request-grants design (D-089): the
 // page through which a developer asks for an exception must never be hidden
 // by the policy the exception is from.
-var UnhideableNavSectionIDs = []string{"settings", "privacy", "requests"}
+//
+// "messages" joined it with admin and developer messaging (D-695): the page
+// where the organization writes to the developer and the developer answers
+// is how a developer receives, so no policy may hide or lock it. Keeping it
+// on the floor also means no org body ever names it, so an older agent that
+// predates the id never meets it in a directive.
+var UnhideableNavSectionIDs = []string{"settings", "privacy", "requests", "messages"}
 
 // UnhideableSettingsSectionIDs is the same floor one level down: the
 // Settings sub-sections that render the enrolment, the grant, and the org

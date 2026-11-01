@@ -114,11 +114,14 @@ func newBackfillCmd() *cobra.Command {
 		qwenCodeRescan         bool
 		tasksRescan            bool
 		codexForkDedup         bool
+		worktreeRoots          bool
 
 		reasoningConverge        bool
 		reasoningConvergeDiscard bool
 
 		codexToolInput bool
+
+		foreignProjectRoots bool
 
 		locBackfill bool
 		locSince    string
@@ -177,6 +180,9 @@ classification.
     --antigravity-project-root  (also lifts model + token_usage from
                                  state.vscdb when network_recovery="local")
     --cowork-project-root       (v1.4.54)
+    --foreign-project-roots     (rename or merge projects rows stored
+                                 under a raw Windows / URI spelling;
+                                 dry-run unless --apply)
 
   ┌─ Per-adapter rescan catch-alls ────────────────────────────────┐
   │  Re-walk an adapter's tree to pick up parser additions or fill │
@@ -363,7 +369,7 @@ historical rows in sync with the latest schema and adapter behaviour.`,
 				!cursorUserPrompts && !cursorSubagents && !cursorHookUsage && !coworkRescan && !coworkProjectRoot && !codexRescan &&
 				!antigravityRescan && !antigravityCliRescan && !geminiCliRescan && !copilotCliRescan && !hermesRescan && !clinecliRescan && !cacheRescan && !zedRescan && !crushRescan && !qwenCodeRescan &&
 				!content && !tasksRescan &&
-				!codexForkDedup && !reasoningConverge && !codexToolInput && !locBackfill && !commitsBackfill {
+				!codexForkDedup && !worktreeRoots && !reasoningConverge && !codexToolInput && !foreignProjectRoots && !locBackfill && !commitsBackfill {
 				return fmt.Errorf("nothing to backfill - pass one of the dimension flags or --all")
 			}
 
@@ -423,8 +429,10 @@ historical rows in sync with the latest schema and adapter behaviour.`,
 				CursorSubagents        *CursorSubagentsBackfill        `json:"cursor_subagents,omitempty"`
 				CursorHookUsage        *CursorHookUsageBackfill        `json:"cursor_hook_usage,omitempty"`
 				CodexForkDedup         *CodexForkDedupBackfill         `json:"codex_fork_dedup,omitempty"`
+				WorktreeRoots          *WorktreeRootsBackfill          `json:"worktree_roots,omitempty"`
 				ReasoningConverge      *ReasoningConvergeBackfill      `json:"reasoning_converge,omitempty"`
 				CodexToolInput         *ToolInputBackfill              `json:"codex_tool_input,omitempty"`
+				ForeignProjectRoots    *store.ProjectRootRepairReport  `json:"foreign_project_roots,omitempty"`
 				Content                *ContentRescanBackfill          `json:"content,omitempty"`
 				LOC                    *LOCBackfillReport              `json:"loc,omitempty"`
 				Tasks                  *store.TaskBackfillResult       `json:"tasks,omitempty"`
@@ -499,7 +507,7 @@ historical rows in sync with the latest schema and adapter behaviour.`,
 				}
 			}
 
-			_, database, cleanup, err := loadConfigAndDB(cmd.Context(), configPath)
+			cfg, database, cleanup, err := loadConfigAndDB(cmd.Context(), configPath)
 			if err != nil {
 				return err
 			}
@@ -738,6 +746,11 @@ historical rows in sync with the latest schema and adapter behaviour.`,
 						res.DBsScanned, res.PartsExamined,
 						res.ToolOutputUpdated, res.DurationUpdated, res.MessageIDUpdated,
 					)
+					if res.V2StoresSkipped > 0 {
+						fmt.Fprintf(cmd.OutOrStdout(),
+							"opencode-parts: skipped %d OpenCode 2.x store(s): 2.x rows carry tool_output, duration and message_id from their first ingest, so there is nothing to backfill\n",
+							res.V2StoresSkipped)
+					}
 				}
 			}
 			if opencodeTokens {
@@ -1086,6 +1099,18 @@ historical rows in sync with the latest schema and adapter behaviour.`,
 				}
 			}
 
+			if worktreeRoots {
+				var wtOut io.Writer
+				if !jsonOut {
+					wtOut = cmd.OutOrStdout()
+				}
+				res, err := backfillWorktreeRoots(cmd.Context(), database, apply, wtOut)
+				if err != nil {
+					return err
+				}
+				summary.WorktreeRoots = &res
+			}
+
 			if reasoningConverge {
 				var convergeOut io.Writer
 				if !jsonOut {
@@ -1108,6 +1133,17 @@ historical rows in sync with the latest schema and adapter behaviour.`,
 					return err
 				}
 				summary.CodexToolInput = &res
+			}
+
+			if foreignProjectRoots {
+				res, err := store.New(database).RepairProjectRoots(cmd.Context(), apply)
+				if err != nil {
+					return err
+				}
+				if !jsonOut {
+					printProjectRootRepair(cmd.OutOrStdout(), res)
+				}
+				summary.ForeignProjectRoots = &res
 			}
 
 			if locBackfill {
@@ -1136,6 +1172,7 @@ historical rows in sync with the latest schema and adapter behaviour.`,
 				res, err := backfillCommits(cmd.Context(), database, commitsBackfillArgs{
 					Since:     commitsSince,
 					ProjectID: commitsProject,
+					Config:    cfg,
 				}, commitsOut)
 				if err != nil {
 					return err
@@ -1203,11 +1240,14 @@ historical rows in sync with the latest schema and adapter behaviour.`,
 	cmd.Flags().BoolVar(&reasoningConverge, "reasoning-converge", false, "Converge the B3 reasoning residue (docs/plans/b3-reasoning-convergence-plan-2026-07-31.md): the content-bearing `*.reasoning` / `cursor.thinking` task_complete rows migration 079 deliberately kept because deleting them would be lossy. Carries each row's full text onto its successor's preceding_reasoning under B3's own semantics (consumed-once / last-wins / turn-boundary-discarded / never crossing a session id / never overwriting a populated successor), then deletes the row through migration 079's dependency protocol (action_excerpts + failure_context deleted, file_state / retrieval_signals / guard_events / process_runs / process_events references NULLed). DB-only - the text already lives in the rows (target = the 200-char preview, raw_tool_output = the full body), so no source file is re-parsed. DRY-RUN BY DEFAULT; pass --apply to mutate. One transaction, so a mid-run failure can never leave a row deleted with its text uncarried. NOT part of --all (destructive). Idempotent. A row is deleted only when its bytes provably survive - see --reasoning-converge-discard-unresolved.")
 	cmd.Flags().BoolVar(&reasoningConvergeDiscard, "reasoning-converge-discard-unresolved", false, "Widen --reasoning-converge's delete to every row B3's semantics account for, including the ones whose text B3 sends nowhere (superseded by last-wins, discarded at a turn boundary, no successor in the session, or a successor whose preceding_reasoning already holds DIFFERENT text). That is the strict reading of B3 and it DESTROYS reasoning text that exists nowhere else - the dry run reports exactly how many rows and bytes. Rows whose raw_tool_output diverges from target are never deleted under either setting.")
 	cmd.Flags().BoolVar(&codexToolInput, "codex-tool-input", false, "Re-derive raw_tool_input for the codex-family rows that are genuinely MISSING one, by re-reading the rollout files the rows came from. The candidate set is grounded per action_type, not assumed: four of the six codex action types with an empty raw_tool_input (assistant_message / task_complete / turn_aborted / session_start) come from emit sites that assign no input because the event HAS none - empty is correct there and this pass never writes to them, reporting them in their own named bucket. Only edit_file (patch_apply_end.changes, which buildPatchApplyStandaloneEvent drops) and web_search are recoverable. Rows join to source records on source_event_id = the record's own call_id - never on ordinal position or timestamp. Never overwrites a populated raw_tool_input; a missing file, an absent record or an empty derived value all stay UNRESOLVED rather than gaining a fabricated value. DRY-RUN BY DEFAULT; pass --apply to mutate. One transaction. NOT part of --all. Idempotent.")
-	cmd.Flags().BoolVar(&apply, "apply", false, "Actually perform destructive deletes for --codex-fork-dedup and --reasoning-converge, and the writes for --codex-tool-input (default is dry-run, which reports what WOULD change and touches nothing).")
+	cmd.Flags().BoolVar(&worktreeRoots, "worktree-roots", false, "Move the rows that earlier builds attributed to a linked worktree's own project (a `<main>/.git/worktrees` row from before the linked-worktree fix F0-14, or a row rooted at a relative-path worktree's checkout from before relative-path worktrees were recognized) onto the main repository's project, only when the main repository is still a git repository on disk. Moves sessions, actions, api_turns, failure_context, compaction_events, file_state, file_changes and project_commits; when the old and the main project both hold a file_state path or a commit, the newer row ends on the main project and the older stays on the old row. New sessions in a worktree already land on the main project. One transaction per row; the old row is kept and marked as moved, never deleted; the main row is created with the repository's identity, and a row is left when there is none. The report lists every table. When enrolled, each moved session is queued for the org push's re-send lane. DRY-RUN BY DEFAULT; pass --apply to move. NOT part of --all. Idempotent.")
+	cmd.Flags().BoolVar(&foreignProjectRoots, "foreign-project-roots", false, "Repair projects rows stored under a foreign or undecoded spelling (a Windows hook cwd such as D:\\x on a WSL node, a file:// URI, /home/<user>/file:/C:\\x) that pre-date ingest canonicalizing roots. A row with no canonical twin is renamed in place; a row whose canonical spelling another row already holds is MERGED into it - every project_id reference (sessions, actions, file_state, ...) is re-pointed, rows the twin already holds under the same unique key are dropped (the twin's copy wins), and the bad row is deleted. Tables keyed by root path or hash are counted, never rewritten. DRY-RUN BY DEFAULT (it executes in a transaction and rolls back, so the counts are exact); pass --apply to commit. Run it on a build that canonicalizes at ingest, then restart the daemon (scripts/restart-daemon.sh) so the guard's R-151 root set reloads. NOT part of --all. Idempotent.")
+	cmd.Flags().BoolVar(&apply, "apply", false, "Actually perform destructive deletes for --codex-fork-dedup and --reasoning-converge, and the writes for --codex-tool-input, --worktree-roots and --foreign-project-roots (default is dry-run, which reports what WOULD change and touches nothing).")
 	cmd.Flags().BoolVar(&all, "all", false, "Run every supported backfill in one invocation (recommended after upgrading)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Snapshot the live DB via VACUUM INTO and run the requested backfills against the snapshot instead of the live DB. Reports what WOULD update; live DB untouched. Snapshot is deleted on exit. See docs/backfill-flag-audit-2026-05-19.md.")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Emit JSON")
 	cmd.Flags().IntVar(&limit, "limit", 0, "Stop after N source files per JSONL-walking pass (0 = all)")
+	addLOCRekeyFlag(cmd) // --loc-rekey (backfill_loc_rekey.go, SHR-8)
 	return cmd
 }
 
@@ -2325,6 +2365,21 @@ type OpenCodePartsBackfill struct {
 	ToolOutputUpdated int `json:"tool_output_updated"`
 	DurationUpdated   int `json:"duration_updated"`
 	MessageIDUpdated  int `json:"message_id_updated"`
+	// V2StoresSkipped counts OpenCode 2.x-only stores (no 1.x part
+	// table): their rows were complete at ingest, so there is nothing
+	// to backfill.
+	V2StoresSkipped int `json:"v2_stores_skipped,omitempty"`
+}
+
+// sqliteHasTable reports whether db holds a table named name. Any query
+// error reads as absent.
+func sqliteHasTable(ctx context.Context, db *sql.DB, name string) bool {
+	var n int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&n); err != nil {
+		return false
+	}
+	return n > 0
 }
 
 // backfillOpenCodeParts re-reads each opencode.db referenced by
@@ -2417,6 +2472,19 @@ func backfillOpenCodeParts(ctx context.Context, db *sql.DB) (OpenCodePartsBackfi
 			continue
 		}
 		res.DBsScanned++
+
+		// An OpenCode 2.x store with no 1.x `part` table has nothing to
+		// recover: the 2.x reader (internal/adapter/opencode/v2.go) has
+		// written duration, message id and tool output on every row since
+		// its first ingest. Count it so the summary says why it was
+		// skipped instead of reporting a silent zero (T-928).
+		if !sqliteHasTable(ctx, ocDB, "part") {
+			if sqliteHasTable(ctx, ocDB, "session_message") {
+				res.V2StoresSkipped++
+			}
+			ocDB.Close()
+			continue
+		}
 
 		partRows, err := ocDB.QueryContext(ctx, `
 			SELECT p.id, COALESCE(p.message_id, ''), p.data

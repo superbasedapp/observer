@@ -28,7 +28,7 @@ type Target struct {
 // generation, whenever PinnableKeys, ShareKeys or Features grows. target_test.go
 // fails when a key is missing from both the first-generation baseline and the
 // since tables.
-const CurrentKeyGen = 4
+const CurrentKeyGen = 5
 
 // FirstKeyGen is the key vocabulary of the first node.governance build
 // (v1.31.0).
@@ -36,8 +36,9 @@ const FirstKeyGen = 1
 
 // pinSince / shareSince / featureSince name the generation at which each key
 // joined its vocabulary; a key absent from its table has been there since
-// FirstKeyGen. Generations 1-3 are released builds (literal key lists in
-// target_test.go, taken from the tags); 4 is the first that advertises it.
+// FirstKeyGen. Generations 1-4 are released builds (literal key lists in
+// target_test.go, taken from the tags; 4, v1.36.0, is the first that
+// advertises its generation); 5 is unreleased.
 var (
 	pinSince = map[string]int{
 		"guard.strict":          3, // v1.33.0
@@ -50,6 +51,69 @@ var (
 		// D-502 (structured unenrol). Generation 4 is still unreleased: the
 		// held v1.35.0 ships as one combined release with this work (D-400).
 		"guard.budget.fail_closed": 4,
+		// lane P1 (managed route maintenance, the admin's routing switch).
+		"proxy.maintain_routes": 5,
+		// lane SBX-P1B (the sandboxed-terminal settings, sandbox plan v2
+		// section 10.1), joining the still-unreleased generation 5.
+		"terminal.sandbox.backends":                 5,
+		"terminal.sandbox.remote_allowed_hosts":     5,
+		"terminal.sandbox.mask_paths":               5,
+		"terminal.sandbox.workspace_retention_days": 5,
+		"terminal.sandbox.home_mode":                5,
+		"terminal.sandbox.default_on":               5,
+		"terminal.sandbox.allow_remote_clone":       5,
+		"terminal.sandbox.allow_worktree_source":    5,
+		"terminal.sandbox.allow_tool_config_writes": 5,
+		"terminal.sandbox.egress_allow_cidrs":       5,
+		"terminal.sandbox.egress_allow_hosts":       5,
+		"terminal.sandbox.extra_ro_binds":           5,
+		"terminal.sandbox.extra_rw_binds":           5,
+		"terminal.sandbox.prep_timeout_seconds":     5,
+		// lane SBX-P3D (vendor_forced_native).
+		"terminal.sandbox.vendor_forced_native": 5,
+		// lane SBX-UPD (live sandboxed runs across updates).
+		"terminal.sandbox.live_run_update_policy": 5,
+		// lane SBX-P3A (the container driver's settings).
+		"terminal.sandbox.oci.allow_rootful":            5,
+		"terminal.sandbox.oci.allow_devcontainer_image": 5,
+		"terminal.sandbox.oci.podman_userns":            5,
+		"terminal.sandbox.oci.stop_grace_seconds":       5,
+		// lane SBX-P3B (the org image pins).
+		"terminal.sandbox.oci.image": 5,
+		// lane SBX-P3C (the first-start install cache).
+		"terminal.sandbox.oci.install_cache": 5,
+		// lane LEFT-SBX (the install-script allowance, ruling P-136).
+		"terminal.sandbox.oci.install_scripts": 5,
+		// lane SBX-P6 (the Windows driver's settings).
+		"terminal.sandbox.mxc.stop_grace_seconds":    5,
+		"terminal.sandbox.mxc.probe_timeout_seconds": 5,
+		// lane SBX-P5 (the macOS drivers' settings).
+		"terminal.sandbox.seatbelt.allow_keychain":    5,
+		"terminal.sandbox.seatbelt.driver":            5,
+		"terminal.sandbox.apple_container.memory_mib": 5,
+		"terminal.sandbox.apple_container.cpus":       5,
+		// lane SBX-P3B (the org image pins).
+		"terminal.sandbox.apple_container.image": 5,
+		// lane SBX-P3B (the Landlock-only row's floor).
+		"terminal.sandbox.landlock.min_abi": 5,
+		// lane SBX-P7 (the hosted rows' shared settings).
+		"terminal.sandbox.hosted.min_session_minutes": 5,
+		"terminal.sandbox.hosted.max_run_minutes":     5,
+		"terminal.sandbox.hosted.daily_box_minutes":   5,
+		"terminal.sandbox.hosted.checkpoint_minutes":  5,
+		"terminal.sandbox.hosted.memory_images":       5,
+		// the LEFT-SBX merge (the opt-in hosted database export, ruling
+		// P-141).
+		"terminal.sandbox.hosted.db_export": 5,
+		// lane LEFT2-SBX (R-034: the re-adoption and MXC tier pins).
+		"terminal.sandbox.readopt.bound_minutes":      5,
+		"terminal.sandbox.readopt.checkpoint_cap_mib": 5,
+		"terminal.sandbox.windows.mxc_tier":           5,
+		// lane w6-governance (DEC-9, OBS-8a: the direct provider egress
+		// posture), joining the still-unreleased generation 5.
+		"terminal.sandbox.provider_direct": 5,
+		// lane w6-governance (CLI-1b, D6: managed command wrapping).
+		"shell_wrap.org_maintain": 5,
 	}
 	shareSince = map[string]int{
 		"full_tool_bodies":            2, // v1.32.0
@@ -63,6 +127,8 @@ var (
 		"tool_account_detail":         3, // v1.33.0
 		"intelligence.org_enrichment": 3, // v1.33.0
 		"obs.egress":                  3, // v1.33.0
+		// lane w5-wire (per-session hook liveness, DEC-5).
+		"hook_activity": 5,
 	}
 	featureSince = map[string]int{}
 )
@@ -144,6 +210,12 @@ var capabilityEra = map[int]struct{ MaxSchema, KeyGen int }{
 	// Level 7 (the Plans & limits page) builds always advertise the schema
 	// and keys tokens; this row is only the fallback for a hand-written one.
 	7: {3, 4},
+	// Level 8 (the Messages page, T-854): same as level 7.
+	8: {3, 4},
+	// Level 9 (the Tools page tabs, T-935): same as level 8.
+	9: {3, 4},
+	// Level 10 (the security pillar's Code security page): same as level 9.
+	10: {3, 4},
 }
 
 // TargetForCapabilities resolves the Target a node advertises, and false when

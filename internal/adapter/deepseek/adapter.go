@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -22,14 +23,99 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/scrub"
 )
 
-// sessionLogName is the fixed basename of every DeepSeek Harness session
-// log — the session UUID lives in the enclosing DIRECTORY, not the
-// filename (…/sessions/<cwd-slug>/session-<uuid>/session.jsonl.zstd).
+// sessionLogName is the original (unversioned) basename of a DeepSeek
+// Harness session log. The session UUID lives in the enclosing DIRECTORY,
+// not the filename (.../sessions/<cwd-slug>/session-<uuid>/session.jsonl.zstd).
+// Newer Harness builds write a VERSIONED basename instead
+// (session.v4.jsonl.zstd, observed live 2026-10-26, FU-93) with the same
+// header keys and record types; sessionLogRank accepts both.
 const sessionLogName = "session.jsonl.zstd"
 
+// sessionLogForms is the closed table of accepted session-log basenames,
+// walked top-down by sessionLogRank. Each row is a prefix and suffix; an
+// unversioned row matches prefix+suffix exactly, a versioned row requires
+// one or more decimal digits between them. Compared lower-cased.
+var sessionLogForms = []struct {
+	prefix, suffix string
+	versioned      bool
+}{
+	{prefix: "session", suffix: ".jsonl.zstd", versioned: false},
+	{prefix: "session.v", suffix: ".jsonl.zstd", versioned: true},
+}
+
+// maxVersionDigits caps the version number so a hostile or corrupt name
+// cannot overflow strconv.Atoi.
+const maxVersionDigits = 6
+
+// unversionedRank is the rank of the original session.jsonl.zstd: lower
+// than any explicit version, so session.v0.jsonl.zstd still beats it.
+const unversionedRank = -1
+
+// sessionLogRank reports whether base (a bare filename) is a DeepSeek
+// session log and, if so, its version rank: unversionedRank for
+// session.jsonl.zstd, N for session.v<N>.jsonl.zstd.
+func sessionLogRank(base string) (int, bool) {
+	lower := strings.ToLower(base)
+	for _, f := range sessionLogForms {
+		if !f.versioned {
+			if lower == f.prefix+f.suffix {
+				return unversionedRank, true
+			}
+			continue
+		}
+		if len(lower) <= len(f.prefix)+len(f.suffix) ||
+			!strings.HasPrefix(lower, f.prefix) || !strings.HasSuffix(lower, f.suffix) {
+			continue
+		}
+		digits := lower[len(f.prefix) : len(lower)-len(f.suffix)]
+		if len(digits) > maxVersionDigits || strings.Trim(digits, "0123456789") != "" {
+			continue
+		}
+		n, err := strconv.Atoi(digits)
+		if err != nil {
+			continue
+		}
+		return n, true
+	}
+	return 0, false
+}
+
+// supersedingSibling returns the basename of a session log in the same
+// directory as path that has a STRICTLY higher version rank, or "" when
+// path is the highest-versioned log there.
+//
+// The rule: one session directory is one session, so when an upgraded
+// Harness leaves more than one log beside each other (for example the old
+// session.jsonl.zstd next to a new session.v4.jsonl.zstd), only the
+// highest version is parsed and every lower one yields no events. Rows
+// dedup on (source_file, source_event_id), so parsing both files would
+// store the same session twice under two source files. A directory read
+// error is treated as "no sibling" so a transient failure never drops
+// the file being parsed.
+func supersedingSibling(path string) string {
+	own, ok := sessionLogRank(filepath.Base(path))
+	if !ok {
+		return ""
+	}
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		return ""
+	}
+	best, bestRank := "", own
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if r, ok := sessionLogRank(e.Name()); ok && r > bestRank {
+			best, bestRank = e.Name(), r
+		}
+	}
+	return best
+}
+
 // Adapter parses DeepSeek Harness session logs under
-// ~/.dsh/sessions/<cwd-slug>/session-<uuid>/session.jsonl.zstd. See the
-// package doc for the record shapes, the whole-file-rewrite storage
+// ~/.dsh/sessions/<cwd-slug>/session-<uuid>/session[.v<N>].jsonl.zstd. See
+// the package doc for the record shapes, the whole-file-rewrite storage
 // semantics, and the off-limits file list.
 type Adapter struct {
 	scrubber *scrub.Scrubber
@@ -101,11 +187,16 @@ func (a *Adapter) IsSessionFile(path string) bool {
 // match too.
 func matchesShape(path string) bool {
 	lower := strings.ReplaceAll(strings.ToLower(path), `\`, "/")
-	if filepath.Base(lower) != sessionLogName {
+	if _, ok := sessionLogRank(filepath.Base(lower)); !ok {
 		return false
 	}
 	return strings.Contains(lower, "/.dsh/sessions/")
 }
+
+// maxDecodedBytes caps one session file's zstd-decoded size (the zstd
+// default is 64 GiB, so a small file could exhaust memory). The zed
+// adapter caps one thread blob the same way.
+const maxDecodedBytes = 512 << 20
 
 // ParseSessionFile implements adapter.Adapter.
 //
@@ -117,7 +208,8 @@ func matchesShape(path string) bool {
 // store.db shape: NewOffset carries the file's current size purely as a
 // change-detection watermark (an unchanged fromOffset==fi.Size() short-
 // circuits with no work), and every changed poll re-decodes and
-// re-parses the ENTIRE file from the top. Deterministic SourceEventIDs
+// re-parses the ENTIRE file from the top. A log that a higher-versioned
+// sibling supersedes (see supersedingSibling) yields no events. Deterministic SourceEventIDs
 // (built from each line's own `seq`, exactly mirroring muse's eventKey
 // pattern) let the store's (source_file, source_event_id) UNIQUE index
 // dedup the re-emitted rows — the correctness contract lives there, not
@@ -131,17 +223,27 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 	if fi.Size() == 0 || fromOffset == fi.Size() {
 		return res, nil
 	}
+	if sib := supersedingSibling(path); sib != "" {
+		res.Warnings = append(res.Warnings, fmt.Sprintf("skipped: superseded by %s in the same session directory", sib))
+		return res, nil
+	}
 
 	compressed, err := os.ReadFile(path) //nolint:gosec // path comes from the watcher's own watch roots
 	if err != nil {
 		return adapter.ParseResult{}, fmt.Errorf("deepseek.ParseSessionFile: read %s: %w", path, err)
 	}
-	dec, err := zstd.NewReader(nil)
+	dec, err := zstd.NewReader(nil, zstd.WithDecoderMaxMemory(maxDecodedBytes))
 	if err != nil {
 		return adapter.ParseResult{}, fmt.Errorf("deepseek.ParseSessionFile: new zstd reader: %w", err)
 	}
 	defer dec.Close()
 	plain, err := dec.DecodeAll(compressed, nil)
+	if errors.Is(err, zstd.ErrDecoderSizeExceeded) {
+		// Over the cap: skipped until the file changes, never retried
+		// every tick (RB1 sweep finding A3, a decompression bomb).
+		res.Warnings = append(res.Warnings, fmt.Sprintf("skipped: the session decodes to more than %d bytes", int64(maxDecodedBytes)))
+		return res, nil
+	}
 	if err != nil {
 		// A session actively being flushed can be read mid-write; treat a
 		// decode failure as transient rather than fatal, and ask the

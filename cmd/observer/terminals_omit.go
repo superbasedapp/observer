@@ -16,6 +16,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/components"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/dashapi"
+	"github.com/marmutapp/superbased-observer/internal/diag"
 )
 
 // terminals_omit.go stands in for the terminals component's cmd wiring in a
@@ -103,6 +104,21 @@ func runAttachSession(_ context.Context, in attachLaunch) error {
 	return errors.New(msg)
 }
 
+// sandboxDoctorChecks adds nothing: the Components section of doctor
+// already says the module is not in this build.
+func sandboxDoctorChecks(context.Context, config.Config) []diag.Check { return nil }
+
+// sandboxDoctorSection adds nothing and reports no sandbox: the module is
+// not in this build.
+func sandboxDoctorSection(context.Context, config.Config, string) ([]diag.Check, bool) {
+	return nil, false
+}
+
+// newSandboxCmd registers `observer sandbox` as a compiled-out verb.
+func newSandboxCmd() *cobra.Command {
+	return compiledOutVerb("sandbox", "Sandboxes and VMs (not in this build)", "terminals.sandbox")
+}
+
 // newWorkspacesCmd registers `observer workspaces` as a compiled-out verb.
 func newWorkspacesCmd() *cobra.Command {
 	return compiledOutVerb("workspaces", "Sandbox workspaces (not in this build)", "terminals")
@@ -123,6 +139,10 @@ func newSSHCmd() *cobra.Command {
 // sandbox never sets it, but still strips a spoofed one from a child's env.
 const sandboxEnvMarker = "OBSERVER_SANDBOX"
 
+// sandboxTierRouteNotice says nothing in a build without the sandbox (no
+// launch here ever runs inside one).
+func sandboxTierRouteNotice(string, string) string { return "" }
+
 // sandboxHelperDispatch runs no helper: a build without terminals never
 // plans a sandboxed launch.
 func sandboxHelperDispatch([]string) (int, bool) { return 0, false }
@@ -138,3 +158,6 @@ func guiPreflight(id, configPath string, allowInstall func() bool) (dashapi.Tool
 // launchers treat every tool as not attach-grounded (a default-on attach is
 // a silent bare launch; an explicit --attach names the build).
 const attachInBuild = false
+
+// sandboxSignInForbiddenSeam is nil in a build without terminals.
+func sandboxSignInForbiddenSeam(string) func() bool { return nil }

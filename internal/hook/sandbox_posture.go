@@ -1,10 +1,9 @@
-//go:build !sbo_omit_terminals_sandbox
+//go:build !sbo_omit_terminals_sandbox && !sbo_omit_isolation
 
 package hook
 
 import (
-	"os"
-
+	"github.com/marmutapp/superbased-observer/internal/hookctx"
 	"github.com/marmutapp/superbased-observer/internal/sandbox"
 )
 
@@ -16,6 +15,8 @@ import (
 // outside any boundary) never sets it, so proxy-sourced events stay
 // unstamped (Sandboxed=false, an honest zero — spec §6 observability
 // posture). sandbox.EnvMarker is the single owner of the wire constant.
+// The marker is read through the hook context seam's host default
+// (internal/hookctx): the pure event builders that ask take no context.
 func sandboxedChild() bool {
-	return os.Getenv(sandbox.EnvMarker) == "1"
+	return hookctx.Process().Getenv(sandbox.EnvMarker) == "1"
 }

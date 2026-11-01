@@ -12,6 +12,14 @@ import (
 
 func runConfigCmd(t *testing.T, args ...string) (string, error) {
 	t.Helper()
+	// Never read or open the operator's real ~/.observer from tests: the
+	// global config path, the default db_path and the governance read in
+	// `config set` all resolve from the home directory (and db_path from
+	// OBSERVER_OBSERVER_DB_PATH when that is set).
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("OBSERVER_OBSERVER_DB_PATH", filepath.Join(home, ".observer", "observer.db"))
 	// Never poke a real daemon from tests (WSL2 forwards localhost).
 	orig := pokeReload
 	pokeReload = func() bool { return false }

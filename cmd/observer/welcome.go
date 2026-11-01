@@ -27,7 +27,7 @@ func printWelcome(cmd *cobra.Command) error {
 		}
 		dbPath = cfg.Observer.DBPath
 	}
-	const dashAddr = "127.0.0.1:8081"
+	dashAddr := defaultDashboardAddr
 	dashUp := portUp(dashAddr)
 	proxyUp := portUp(fmt.Sprintf("127.0.0.1:%d", proxyPort))
 	proxyInBuild := !proxyNotInBuild()
@@ -97,6 +97,11 @@ func welcomeBuildNote() string {
 		return " (" + strings.Join(missing, " and ") + " are not in this build)"
 	}
 }
+
+// defaultDashboardAddr is where `observer start` serves the dashboard unless
+// --dashboard-addr says otherwise. The welcome screen and `observer setup
+// launch` probe it to tell whether a daemon is already up.
+const defaultDashboardAddr = "127.0.0.1:8081"
 
 // portUp reports whether something is listening on a loopback addr.
 // Short timeout — this runs on every bare `observer` invocation.

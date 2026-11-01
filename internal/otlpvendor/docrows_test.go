@@ -187,7 +187,7 @@ func TestTeamGrainRowsParseButAreRefused(t *testing.T) {
 			t.Fatalf("no row for %s", tool)
 		}
 		for _, transcript := range []bool{true, false} {
-			if a := Admit(v, transcript); a.Refused == "" || a.Tokens || a.Tools || a.Content {
+			if a := Admit(v, transcript); a.Refused == "" || a.Tokens || a.Tools || a.Content || a.Timing {
 				t.Errorf("%s transcript=%v admitted: %+v", tool, transcript, a)
 			}
 		}
@@ -200,6 +200,7 @@ func TestAdmitTable(t *testing.T) {
 	copilot, _ := ForTool("copilot")
 	cc, _ := ForTool("claude-code")
 	cursor, _ := ForTool("cursor")
+	codebuddy, _ := ForTool("codebuddy")
 	for _, tc := range []struct {
 		name       string
 		v          Vendor
@@ -217,6 +218,12 @@ func TestAdmitTable(t *testing.T) {
 		{"proxied, transcript off: tools and content only", codex, false, true, Admission{Tools: true, Content: true, TokensOwner: TokensOwnedByProxy}},
 		{"proxied, transcript on: tokens dropped", codex, true, true, Admission{TokensOwner: TokensOwnedByProxy}},
 		{"proxied claude code merges by request id", cc, true, true, Admission{Tokens: true, Content: true}},
+		// AP-131 follow-up: a row declaring a transcript timing join stamps
+		// the transcript's rows while that transcript captures; the proxy
+		// route does not change it (a stamp adds no row).
+		{"transcript on, timing join declared", codebuddy, true, false, Admission{Timing: true}},
+		{"transcript off: the export turn carries its own duration", codebuddy, false, false, Admission{Tokens: true, Tools: true, Content: true}},
+		{"proxied, transcript on: timing still stamps", codebuddy, true, true, Admission{Timing: true, TokensOwner: TokensOwnedByProxy}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := AdmitWith(tc.v, AdmitInput{TranscriptCapture: tc.transcript, ProxyRouted: tc.proxied}); got != tc.want {

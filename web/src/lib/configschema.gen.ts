@@ -12,6 +12,7 @@ export type ConfigKeyPath =
   "observer.watch.poll_interval_seconds" |
   "observer.watch.max_file_size_mb" |
   "observer.watch.enabled_adapters" |
+  "observer.watch.home_walk" |
   "observer.freshness.enable_content_hashing" |
   "observer.freshness.max_hash_file_size_mb" |
   "observer.freshness.fast_path_stat_only" |
@@ -27,8 +28,11 @@ export type ConfigKeyPath =
   "observer.retention.wal_watch_minutes" |
   "observer.retention.compaction_events_days" |
   "observer.retention.compression_events_days" |
+  "observer.retention.held_max_mb" |
   "observer.hooks.timeout_ms" |
   "observer.hooks.auto_register" |
+  "observer.hooks.periodic_register" |
+  "observer.mcp.stable_command" |
   "observer.antigravity.network_recovery" |
   "observer.antigravity.dump_shape_mismatches_dir" |
   "observer.process.enabled" |
@@ -86,6 +90,10 @@ export type ConfigKeyPath =
   "proxy.chatgpt_upstream" |
   "proxy.gemini_upstream" |
   "proxy.force_chatgpt_http" |
+  "proxy.maintain_routes" |
+  "proxy.require_client_auth" |
+  "proxy.client_auth_routes" |
+  "proxy.client_token_file" |
   "proxy.prewarm_targets" |
   "proxy.upstreams" |
   "proxy.agent_upstreams" |
@@ -167,7 +175,9 @@ export type ConfigKeyPath =
   "org_client.share.terminal_detail" |
   "org_client.share.task_detail" |
   "org_client.share.tool_account_detail" |
+  "org_client.share.hook_activity" |
   "org_client.share.mcp_activity" |
+  "org_client.share.security" |
   "org_client.share.policy_state" |
   "org_client.share.obs.summary" |
   "org_client.share.obs.traces" |
@@ -180,6 +190,8 @@ export type ConfigKeyPath =
   "org_client.scope.project_root_denylist" |
   "org_client.policy.accept_families" |
   "org_client.policy.preauthorize_enforce" |
+  "org_client.policy.accept_module_families" |
+  "org_client.policy.preauthorize_module_enforce" |
   "org_client.policy.node_workspace" |
   "org_client.policy.node_environment" |
   "org_client.policy.node_service" |
@@ -234,6 +246,12 @@ export type ConfigKeyPath =
   "projects.alignment_judge" |
   "projects.skill_history" |
   "projects.skill_history_skew_seconds" |
+  "delivery.local" |
+  "delivery.poll_minutes" |
+  "delivery.mirror_cap_mb" |
+  "delivery.abandon_after_days" |
+  "delivery.count_likely" |
+  "delivery.content_overlap_min" |
   "update.enabled" |
   "update.channel" |
   "update.auto_apply" |
@@ -296,15 +314,79 @@ export type ConfigKeyPath =
   "terminal.sandbox.allow_remote_clone" |
   "terminal.sandbox.remote_allowed_hosts" |
   "terminal.sandbox.allow_worktree_source" |
+  "terminal.sandbox.vendor_forced_native" |
   "terminal.sandbox.workspaces_dir" |
   "terminal.sandbox.workspace_retention_days" |
   "terminal.sandbox.mask_paths" |
   "terminal.sandbox.extra_ro_binds" |
   "terminal.sandbox.extra_rw_binds" |
   "terminal.sandbox.prep_timeout_seconds" |
+  "terminal.sandbox.live_run_update_policy" |
   "terminal.sandbox.egress" |
   "terminal.sandbox.egress_allow_cidrs" |
+  "terminal.sandbox.egress_allow_hosts" |
+  "terminal.sandbox.provider_direct" |
   "terminal.sandbox.allow_tool_config_writes" |
+  "terminal.sandbox.pass_env" |
+  "terminal.sandbox.sign_in_seed_tools" |
+  "terminal.sandbox.allow_osc52_clipboard" |
+  "terminal.sandbox.backends" |
+  "terminal.sandbox.min_isolation" |
+  "terminal.sandbox.oci.allow_rootful" |
+  "terminal.sandbox.oci.socket" |
+  "terminal.sandbox.oci.image" |
+  "terminal.sandbox.oci.podman_userns" |
+  "terminal.sandbox.oci.stop_grace_seconds" |
+  "terminal.sandbox.oci.allow_devcontainer_image" |
+  "terminal.sandbox.oci.install_cache" |
+  "terminal.sandbox.oci.install_scripts" |
+  "terminal.sandbox.oci.install_scripts_tools" |
+  "terminal.sandbox.oci.install_script_pins" |
+  "terminal.sandbox.oci.install_versions" |
+  "terminal.sandbox.mxc.stop_grace_seconds" |
+  "terminal.sandbox.mxc.probe_timeout_seconds" |
+  "terminal.sandbox.seatbelt.allow_keychain" |
+  "terminal.sandbox.seatbelt.driver" |
+  "terminal.sandbox.apple_container.image" |
+  "terminal.sandbox.apple_container.memory_mib" |
+  "terminal.sandbox.apple_container.cpus" |
+  "terminal.sandbox.landlock.min_abi" |
+  "terminal.sandbox.hosted.min_session_minutes" |
+  "terminal.sandbox.hosted.key_custody" |
+  "terminal.sandbox.hosted.memory_images" |
+  "terminal.sandbox.hosted.checkpoint_minutes" |
+  "terminal.sandbox.hosted.max_run_minutes" |
+  "terminal.sandbox.hosted.daily_box_minutes" |
+  "terminal.sandbox.hosted.db_export" |
+  "terminal.sandbox.hosted.e2b.region" |
+  "terminal.sandbox.hosted.e2b.template" |
+  "terminal.sandbox.hosted.e2b.box_binary" |
+  "terminal.sandbox.hosted.e2b.endpoint" |
+  "terminal.sandbox.hosted.e2b.endpoint_spki_sha256" |
+  "terminal.sandbox.hosted.modal.region" |
+  "terminal.sandbox.hosted.modal.template" |
+  "terminal.sandbox.hosted.modal.box_binary" |
+  "terminal.sandbox.hosted.modal.endpoint" |
+  "terminal.sandbox.hosted.modal.endpoint_spki_sha256" |
+  "terminal.sandbox.hosted.vercel.region" |
+  "terminal.sandbox.hosted.vercel.template" |
+  "terminal.sandbox.hosted.vercel.box_binary" |
+  "terminal.sandbox.hosted.vercel.endpoint" |
+  "terminal.sandbox.hosted.vercel.endpoint_spki_sha256" |
+  "terminal.sandbox.readopt.bound_minutes" |
+  "terminal.sandbox.readopt.checkpoint_cap_mib" |
+  "terminal.sandbox.wslc.path" |
+  "terminal.sandbox.wslc.image" |
+  "terminal.sandbox.hcs.utility_vm_image" |
+  "terminal.sandbox.windows.mxc_tier" |
+  "terminal.sandbox.vm.vmm" |
+  "terminal.sandbox.vm.image_set" |
+  "terminal.sandbox.vm.vcpus" |
+  "terminal.sandbox.vm.memory_mb" |
+  "terminal.sandbox.vm.install_cache" |
+  "terminal.sandbox.vm.workspace_delivery" |
+  "terminal.sandbox.vm.cloud_hypervisor_path" |
+  "terminal.sandbox.vm.virtiofsd_path" |
   "terminal.ssh.enabled" |
   "terminal.ssh.connect_timeout_seconds" |
   "terminal.ssh.keepalive_seconds" |
@@ -336,6 +418,52 @@ export type ConfigKeyPath =
   "shell_wrap.windows.tools" |
   "shell_wrap.windows.shells" |
   "shell_wrap.windows.shim_dir" |
+  "shell_wrap.org_maintain" |
+  "shell_wrap.org_applied" |
+  "security.retention.days" |
+  "security.deps.online" |
+  "security.deps.install_wait_ms" |
+  "security.deps.min_package_age_h" |
+  "security.deps.index_download" |
+  "security.deps.unknown_action" |
+  "security.deps.online_unknown_action" |
+  "security.secrets.write_check" |
+  "security.secrets.commit_check" |
+  "security.secrets.postwrite_cap_kib" |
+  "security.mcp.tools" |
+  "security.statusline.segment" |
+  "security.notify.critical" |
+  "security.custom.schedule_hours" |
+  "security.custom.pause_on_battery" |
+  "security.feedback.after_write" |
+  "security.scan.opengrep.post_write" |
+  "security.scan.opengrep.commit_diff" |
+  "security.scan.opengrep.schedule_hours" |
+  "security.scan.opengrep.pause_on_battery" |
+  "security.scan.opengrep.feed" |
+  "security.scan.trivy.post_write" |
+  "security.scan.trivy.schedule_hours" |
+  "security.scan.trivy.run_on_battery" |
+  "security.scan.trivy.allow_repo_config" |
+  "security.scan.trivy.allow_unpinned" |
+  "security.scan.kics.post_write" |
+  "security.scan.kics.schedule_hours" |
+  "security.scan.kics.run_on_battery" |
+  "security.scan.kics.allow_repo_config" |
+  "security.scan.kics.allow_unpinned" |
+  "security.scanning.quick_scan_budget_s" |
+  "security.scanning.max_scan_staleness_min" |
+  "security.scanning.min_blocking_severity" |
+  "security.scanning.history_scan_on_enrol" |
+  "security.scanning.reflog_hold_max_age_days" |
+  "security.scanning.reflog_hold_max_entries" |
+  "security.trust.prelaunch" |
+  "messages.toast" |
+  "messages.vscode" |
+  "messages.statusline" |
+  "messages.desktop" |
+  "messages.alerts_only" |
+  "messages.read_receipts" |
   "archive.enabled" |
   "archive.path" |
   "archive.max_projects_per_pass" |
@@ -385,6 +513,7 @@ export type ConfigKeyPath =
   "guard.strict" |
   "guard.retention_days" |
   "guard.rules.disable" |
+  "guard.rules.evasion_window_seconds" |
   "guard.rules.user_policy" |
   "guard.rules.project_policy" |
   "guard.rules.trusted_project_dir" |
@@ -392,6 +521,7 @@ export type ConfigKeyPath =
   "guard.rules.cel" |
   "guard.boundary.allow_paths" |
   "guard.boundary.protected_branches" |
+  "guard.boundary.protected_path_classes" |
   "guard.taint.enabled" |
   "guard.taint.decay_turns" |
   "guard.proxy.egress_scan" |
@@ -445,6 +575,7 @@ export type ConfigKeyPath =
   "profiles.by_provider" |
   "profiles.by_tool" |
   "benchmark.retention_days" |
+  "benchmark.arena_allow_skip_permissions" |
   "email.enabled" |
   "email.host" |
   "email.port" |

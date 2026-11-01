@@ -32,7 +32,7 @@ uv tool install superbased-observer    # or: pipx install superbased-observer
 observer --version
 ```
 
-Each wheel bundles its platform's prebuilt binary (manylinux2014 x86_64 and aarch64, macOS Intel
+Each wheel bundles its platform's prebuilt binary (manylinux2014 x86_64 and aarch64, macOS 13 or later on Intel
 and Apple Silicon, win_amd64): no compile step, no download at install time, no Go toolchain. The
 same binary ships on [npm](https://www.npmjs.com/package/@superbased/observer) and the
 [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=superbased.superbased-observer)
@@ -45,10 +45,10 @@ and helps you control them.**
 
 - **Provider-exact cost, not estimates.** An optional local proxy records the tokens your provider
   returned: net input, 5-minute vs 1-hour cache writes, reasoning tokens and long-context repricing.
-- **Every coding agent in one place.** 40 adapters normalize Claude Code, Codex, Cursor, GitHub
+- **Every coding agent in one place.** 50 adapters normalize Claude Code, Codex, Cursor, GitHub
   Copilot, Gemini CLI, Cline, Aider, Kiro, Devin, OpenCode, Junie and more into one local database.
-- **Local-first, no account.** No telemetry and no sign-in. Everything lives in one SQLite file
-  under `~/.observer/`.
+- **Local-first, no account.** No sign-in. Everything lives in one SQLite file under
+  `~/.observer/`, and your session content is never uploaded without your explicit consent.
 - **Know the next bill before it lands.** Prompt-cache tracking with expiry warnings, a cost band
   for your next message, and a 5-hour and weekly limit gauge for proxied sessions.
 - **Guardrails on your own agents.** Built-in and custom rules for destructive commands, secrets
@@ -72,6 +72,13 @@ For provider-exact tokens, route your agent through the proxy: in the dashboard 
 click your tool's status pill and choose **Route through the observer proxy** (it previews the
 config change and writes only when you confirm), or run `observer claude` / `observer codex` for a
 one-off proxied session. `observer init` additionally registers the opt-in MCP server.
+
+Prefer a plain download? [superbased.app/download](https://superbased.app/download) has the
+Windows setup program, macOS and Linux downloads and every version, with SHA-256 checksums.
+
+**macOS needs version 13 Ventura or later.** Observer is built with Go 1.27, which no longer runs
+on macOS 12 Monterey. On macOS 12, stay on v1.36.0 or upgrade macOS first. v1.36.0 was meant to
+carry an advance notice of this and did not. Linux and Windows are not affected.
 
 ## What you get
 
@@ -109,9 +116,13 @@ Click any session to open its detail view. Four of its tabs:
 
 ## Privacy
 
-No telemetry and no account. SuperBased stores paths, commands and short excerpts, scrubs secrets
-before writing, and binds the proxy and dashboard to `127.0.0.1` by default. The proxy forwards your
-own requests, unchanged, to the provider you already use. See
+No account needed. Today the default install sends us no usage statistics, analytics or crash
+reports, and your session content is never uploaded without your explicit consent. SuperBased stores
+paths, commands and short excerpts, scrubs secrets before writing, and binds the proxy and dashboard
+to `127.0.0.1` by default. The proxy forwards your own requests, unchanged, to the provider you
+already use. By default SuperBased also makes a few small requests of its own that carry none of
+your data, such as a daily download of the public model price table from superbased.app (turn it
+off with `[pricing.feed] enabled = false`). See
 [PRIVACY.md](https://github.com/superbasedapp/observer/blob/main/PRIVACY.md).
 
 ## Learn more

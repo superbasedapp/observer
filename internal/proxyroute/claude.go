@@ -9,6 +9,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+
+	"github.com/marmutapp/superbased-observer/internal/proxyauth"
+	"github.com/marmutapp/superbased-observer/internal/testwriteguard"
 )
 
 // ClaudeGatewayHintEnv is Claude Code's switch for its gateway hint headers
@@ -69,8 +72,11 @@ func claudeBaseURL(port int) string {
 // applied it, so accurate api_turns capture required manual operator
 // action despite the claim of "auto-wire proxy routing".
 func (r *Registrar) RegisterClaudeCode() RegistrationResult {
-	dir := filepath.Join(r.opts.HomeDir, ".claude")
-	return r.registerClaudeCodeAt(dir, claudeBaseURL(r.opts.ProxyPort), "claude-code")
+	path, err := r.claudeSettingsPath()
+	if err != nil {
+		return RegistrationResult{Tool: "claude-code", BaseURL: claudeBaseURL(r.opts.ProxyPort), DryRun: r.opts.DryRun, Error: err}
+	}
+	return redactResult(r.registerClaudeCodeAt(filepath.Dir(path), r.clientAuthURL(claudeBaseURL(r.opts.ProxyPort)), "claude-code"))
 }
 
 // registerClaudeCodeAt is the parameterized core of RegisterClaudeCode:
@@ -136,6 +142,9 @@ func (r *Registrar) writeClaudeCodeAt(dir, want, toolLabel string) RegistrationR
 				res.Error = err
 			}
 			return res
+		case proxyauth.SameRoute(cur, want):
+			// This route in the other form (plain vs client token):
+			// rewrite it to the form this registrar writes.
 		case IsObserverBaseURL(cur) && !r.opts.Force:
 			// Another local observer install (different port). Don't
 			// clobber it — operator can pass --force to switch.
@@ -198,12 +207,21 @@ func writeClaudeEnv(dir, path string, settings map[string]json.RawMessage, env m
 // Added=true means "would remove"; AlreadySet=true means "found
 // nothing to remove."
 func (r *Registrar) UnregisterClaudeCode() RegistrationResult {
-	dir := filepath.Join(r.opts.HomeDir, ".claude")
-	path := filepath.Join(dir, "settings.json")
+	return redactResult(r.unregisterClaudeCode())
+}
+
+// unregisterClaudeCode is UnregisterClaudeCode before the client token in
+// the result is masked.
+func (r *Registrar) unregisterClaudeCode() RegistrationResult {
+	path, err := r.claudeSettingsPath()
 	res := RegistrationResult{
 		Tool:       "claude-code",
 		ConfigPath: path,
 		DryRun:     r.opts.DryRun,
+	}
+	if err != nil {
+		res.Error = err
+		return res
 	}
 
 	raw, err := os.ReadFile(path)
@@ -273,7 +291,7 @@ func (r *Registrar) UnregisterClaudeCode() RegistrationResult {
 	if r.opts.DryRun {
 		return res
 	}
-	if err := writeClaudeSettings(dir, path, settings); err != nil {
+	if err := writeClaudeSettings(filepath.Dir(path), path, settings); err != nil {
 		res.Error = err
 		return res
 	}
@@ -301,6 +319,9 @@ func isOwnClaudeBaseURL(raw string, port int) bool {
 // JSON. Mirrors internal/hook.writeJSONIndented so the two writers
 // produce diff-clean updates against the same file.
 func writeClaudeSettings(dir, path string, settings map[string]json.RawMessage) error {
+	if err := testwriteguard.Check("write", path); err != nil {
+		return fmt.Errorf("proxyroute.claude: %w", err)
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("proxyroute.claude: mkdir: %w", err)
 	}

@@ -11,7 +11,8 @@ import { EntityMultiPicker, type EntityMultiPickerOption } from "./EntityMultiPi
 // `allowFree` keeps the honest escape hatch for a field whose list is only
 // a suggestion (a model glob, a new label, a list the server could not
 // send): the typed value is offered as "Use <value>". Without it the user
-// can only pick. Clearing the chip sets "".
+// can only pick. Clearing the chip sets ""; `clearable={false}` is for a
+// value that must always be set (no clear, the pick can only be replaced).
 export function SinglePicker({
   value,
   onChange,
@@ -25,6 +26,10 @@ export function SinglePicker({
   emptyHint,
   ariaLabel,
   className,
+  hideIds,
+  clearable,
+  explicitPick,
+  onQueryChange,
 }: {
   value: string;
   onChange: (next: string) => void;
@@ -38,6 +43,14 @@ export function SinglePicker({
   emptyHint?: ReactNode;
   ariaLabel?: string;
   className?: string;
+  /** hideIds: see EntityMultiPicker (ids that are internal names stay hidden). */
+  hideIds?: boolean;
+  /** clearable: see EntityMultiPicker (false: always has a value). */
+  clearable?: boolean;
+  /** explicitPick: see EntityMultiPicker (Enter never commits an untouched suggestion). */
+  explicitPick?: boolean;
+  /** onQueryChange: see EntityMultiPicker (the typed text, on every change). */
+  onQueryChange?: (query: string) => void;
 }) {
   const opts = toPickerOptions(options);
   return (
@@ -55,6 +68,10 @@ export function SinglePicker({
       emptyHint={emptyHint}
       ariaLabel={ariaLabel}
       className={className}
+      hideIds={hideIds}
+      clearable={clearable}
+      explicitPick={explicitPick}
+      onQueryChange={onQueryChange}
     />
   );
 }

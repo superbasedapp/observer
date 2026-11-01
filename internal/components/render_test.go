@@ -52,12 +52,23 @@ func TestCompiledRegistry(t *testing.T) {
 
 // TestFullWithoutObsIsDeveloper pins the D-389 / D-408 shape: developer is
 // the full product minus Plane A observability, so a no_obs build reports
-// itself as the developer distro.
+// itself as the developer distro. D-749 Q34 adds the one later exception:
+// a library-linked scanner driver (security.scan.scalibr, security plan
+// section 4.2) is compiled only into managed and full, so the developer
+// shape is full minus obs minus that driver; lane SEC-G5's linked
+// actionlint (security.scan.actionlint) is the second.
 func TestFullWithoutObsIsDeveloper(t *testing.T) {
+	linkedDrivers := []string{"security.scan.scalibr", "security.scan.actionlint"}
 	MarkOmitted("obs")
+	for _, id := range linkedDrivers {
+		MarkOmitted(id)
+	}
 	defer func() {
 		omitMu.Lock()
 		delete(omitted, "obs")
+		for _, id := range linkedDrivers {
+			delete(omitted, id)
+		}
 		omitMu.Unlock()
 	}()
 	if got := DistroOf(Compiled(BinaryNode)); got != DistroDeveloper {

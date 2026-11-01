@@ -29,7 +29,7 @@ import (
 func writeMCPRelayProxyConfig(t *testing.T, enabled bool, anthURL string) (configPath, dbPath, bundlePath string) {
 	t.Helper()
 	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
+	setTestHome(t, tmp)
 	dbPath = filepath.Join(tmp, "observer.db")
 	bundlePath = filepath.Join(tmp, "org-policy-bundle.json")
 	configPath = filepath.Join(tmp, "config.toml")

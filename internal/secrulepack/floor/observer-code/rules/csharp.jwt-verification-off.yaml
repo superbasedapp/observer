@@ -1,0 +1,15 @@
+rules:
+  - id: csharp.jwt-verification-off
+    languages: [csharp]
+    severity: ERROR
+    message: JWT validation is set to accept tokens without a checked signature (signature validation off, unsigned tokens allowed, or a validator that accepts anything); validate the signature with a key.
+    metadata:
+      category: code_vuln
+      cwe: CWE-347
+    pattern-either:
+      - pattern: 'new TokenValidationParameters { ..., RequireSignedTokens = false, ... }'
+      - pattern: 'new TokenValidationParameters { ..., ValidateIssuerSigningKey = false, ... }'
+      - pattern: 'new TokenValidationParameters { ..., SignatureValidator = $F, ... }'
+      - pattern: $P.RequireSignedTokens = false
+      - pattern: $P.ValidateIssuerSigningKey = false
+      - pattern: $P.SignatureValidator = $F

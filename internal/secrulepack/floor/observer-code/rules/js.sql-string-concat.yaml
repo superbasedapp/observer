@@ -1,0 +1,51 @@
+rules:
+  - id: js.sql-string-concat
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: Web request input is pasted into SQL text; pass the value as a query parameter instead.
+    metadata:
+      category: code_vuln
+      cwe: CWE-89
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: $REQ.query
+              - pattern: $REQ.body
+              - pattern: $REQ.params
+              - pattern: $REQ.cookies
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(req|request|ctx\.request)$
+    pattern-sanitizers:
+      - pattern: parseInt(...)
+      - pattern: Number(...)
+      - pattern: parseFloat(...)
+    pattern-sinks:
+      - patterns:
+          - pattern: $DB.$Q($SQL, ...)
+          - metavariable-regex:
+              metavariable: $Q
+              regex: ^query$
+          - metavariable-regex:
+              metavariable: $DB
+              regex: (?i)^(.*\.)?\w*(db|database|sql\w*|sqlite\w*|pool|knex|conn|connection|sequelize|prisma|mysql\w*|postgres\w*|pg|client|tx|trx|transaction)$
+          - focus-metavariable: $SQL
+      - patterns:
+          - pattern: $DB.$Q($SQL, ...)
+          - metavariable-regex:
+              metavariable: $Q
+              regex: ^(execute|raw|prepare|\$queryRawUnsafe|\$executeRawUnsafe)$
+          - metavariable-regex:
+              metavariable: $DB
+              regex: (?i)^(.*\.)?\w*(db|database|sqlite\w*|pool|knex|conn|connection|sequelize|prisma|mysql\w*|postgres\w*|pg|tx|trx|transaction)$
+          - focus-metavariable: $SQL
+      - patterns:
+          - pattern: $DB.$Q($SQL, ...)
+          - metavariable-regex:
+              metavariable: $Q
+              regex: ^(run|all|get|exec)$
+          - metavariable-regex:
+              metavariable: $DB
+              regex: (?i)^(.*\.)?\w*(db|database|sqlite|conn|connection|stmt|statement)$
+          - focus-metavariable: $SQL

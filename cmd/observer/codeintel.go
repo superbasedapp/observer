@@ -19,6 +19,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/codeintel/parse"
 	"github.com/marmutapp/superbased-observer/internal/codeintel/surface"
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/git"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
@@ -442,20 +443,9 @@ func runCodeIntelOnStart(ctx context.Context, configPath string, notes io.Writer
 
 	// Union of already-indexed projects and every project Observer knows
 	// about from ingest, so a freshly-observed repo gets picked up.
-	seen := map[string]struct{}{}
-	var projects []string
 	known, _ := st.CodeIntelListProjects(ctx)
 	roots, _ := st.ProjectRoots(ctx)
-	for _, p := range slices.Concat(known, roots) {
-		if p == "" {
-			continue
-		}
-		if _, dup := seen[p]; dup {
-			continue
-		}
-		seen[p] = struct{}{}
-		projects = append(projects, p)
-	}
+	projects := codeIntelStartProjects(known, roots)
 	if len(projects) == 0 {
 		return
 	}
@@ -574,4 +564,25 @@ func printIndexReport(cmd *cobra.Command, rep index.Report) {
 	}
 	fmt.Fprintf(w, "%s\n  scanned %d · indexed %d · unchanged %d · skipped %d · failed %d\n  search index: %s\n",
 		rep.Project, rep.Scanned, rep.Indexed, rep.Unchanged, rep.Skipped, rep.Failed, derived)
+}
+
+// codeIntelStartProjects is the index-on-start project list: the union of
+// already-indexed projects and every observed project root, deduplicated,
+// in order. A root that is not rooted on this host (git.HostRooted: FU-193's
+// "Xcode (project unknown)", a placeholder) is skipped, so the indexer never
+// walks a folder relative to the daemon's working directory (audit row 8).
+func codeIntelStartProjects(known, roots []string) []string {
+	seen := map[string]struct{}{}
+	var projects []string
+	for _, p := range slices.Concat(known, roots) {
+		if p == "" || !git.HostRooted(p) {
+			continue
+		}
+		if _, dup := seen[p]; dup {
+			continue
+		}
+		seen[p] = struct{}{}
+		projects = append(projects, p)
+	}
+	return projects
 }

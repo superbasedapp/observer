@@ -41,7 +41,7 @@ import (
 // add each new id to navSince / settingsSince at the new level, whenever
 // NavSectionIDs or SettingsSectionIDs grows. vocablevel_test.go fails when an
 // id is missing from both the first-level baseline and the since tables.
-const CurrentVocabLevel = 7
+const CurrentVocabLevel = 10
 
 // FirstTabVocabLevel is the level at which page TABS ("<page>/<tab>",
 // vocab.go) joined the nav vocabulary (per-tab visibility, T-132). Every tab
@@ -68,6 +68,12 @@ var (
 		"requests": 6,
 		// The Plans & limits page (subscription and balance tracking).
 		"plans": 7,
+		// The admin and developer Messages page (T-854). It is on the T8
+		// floor (D-695), so no body names it, but the level stays truthful.
+		"messages": 8,
+		// The security pillar's Code security page (security pillar plan
+		// section 4.10).
+		"code-security": 10,
 	}
 	settingsSince = map[string]int{
 		"cloud": 2, // v1.33.0
@@ -82,6 +88,18 @@ var (
 		// Integration 6: the AI tool settings Organization tab (adapter
 		// config P6/P7) is unknown to level-5 (tabs lane) builds.
 		"agent-config/organization": 6,
+		// T-935: the Tools page gained tabs (Activity, and the Coverage
+		// list of every supported AI tool); level-8 builds have a tabless
+		// Tools page.
+		"tools/activity": 9,
+		"tools/coverage": 9,
+		// The Code security page's tabs (lane sec-c3) join at the page's own
+		// level: the page and its tabs ship together in the same unreleased
+		// batch (the Security Core preview), so no level-10 build has the
+		// page without them.
+		"code-security/findings":   9,
+		"code-security/exceptions": 10,
+		"code-security/baselines":  9,
 	}
 )
 

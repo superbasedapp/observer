@@ -104,6 +104,15 @@ func TestNormalize_FormatMatrix(t *testing.T) {
 		{"file URI posix", "file:///home/user/foo", "/home/user/foo", FormatFileURI},
 		{"file URI uppercase scheme", "FILE:///D:/foo", "/mnt/d/foo", FormatFileURI},
 		{"file URI with percent-encoded space", "file:///D:/Program%20Files/foo", "/mnt/d/Program Files/foo", FormatFileURI},
+		// RFC 8089 authority-less form, and the malformed drive-in-
+		// authority form a caller builds as "file://" + `C:\path`
+		// (live antigravity-cli root, 2026-09-03).
+		{"file URI single slash", "file:/C:/Users/foo", "/mnt/c/Users/foo", FormatFileURI},
+		{"file URI single slash backslashes", `file:/C:\Users\foo\proj`, "/mnt/c/Users/foo/proj", FormatFileURI},
+		{"file URI drive in authority", `file://C:\Users\foo\proj`, "/mnt/c/Users/foo/proj", FormatFileURI},
+		{"file URI drive in authority forward", "file://d:/programsx/test", "/mnt/d/programsx/test", FormatFileURI},
+		{"file URI single slash posix", "file:/home/user/foo", "/home/user/foo", FormatFileURI},
+		{"file colon without slash stays", "file:foo", "file:foo", FormatRelative},
 
 		// --- Extended-length prefix -----------------------------
 		{"extended-length", `\\?\C:\Users\foo`, "/mnt/c/Users/foo", FormatExtendedLength},
@@ -386,6 +395,46 @@ func TestNormalize_Idempotent(t *testing.T) {
 		if once != twice {
 			t.Errorf("Normalize not idempotent for %q: %q → %q", in, once, twice)
 		}
+	}
+}
+
+// TestNormalizeForeign pins the strict identity-key variant: foreign
+// and URI spellings are rewritten and cleaned, while every shape that
+// could be a native POSIX path (Git Bash `/c/`, `~`, quotes, relative,
+// synthetic `[tool]` roots) comes back byte-for-byte unchanged.
+func TestNormalizeForeign(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("canonical form is the WSL /mnt/<drive> shape")
+	}
+	tests := []struct{ name, in, want string }{
+		{"windows backslash", `C:\Users\foo`, "/mnt/c/Users/foo"},
+		{"windows trailing separator", `C:\Users\foo\`, "/mnt/c/Users/foo"},
+		{"windows forward lowercase", "d:/programsx/test", "/mnt/d/programsx/test"},
+		{"windows drive root", `C:\`, "/mnt/c"},
+		{"uri drive slash", "/c:/programsx/foo", "/mnt/c/programsx/foo"},
+		{"file URI", "file:///D:/programsx/test", "/mnt/d/programsx/test"},
+		{"file URI single slash", `file:/C:\Users\foo\proj`, "/mnt/c/Users/foo/proj"},
+		{"file URI drive authority", `file://C:\Users\foo\proj`, "/mnt/c/Users/foo/proj"},
+		{"extended length", `\\?\C:\Users\foo`, "/mnt/c/Users/foo"},
+		{"posix unchanged", "/home/user/proj", "/home/user/proj"},
+		{"posix trailing slash unchanged", "/home/user/proj/", "/home/user/proj/"},
+		{"wsl mnt unchanged", "/mnt/c/Users/foo", "/mnt/c/Users/foo"},
+		{"git bash shape unchanged", "/c/Users/foo", "/c/Users/foo"},
+		{"tilde unchanged", "~/proj", "~/proj"},
+		{"quoted unchanged", `'C:\foo'`, `'C:\foo'`},
+		{"synthetic root unchanged", "[antigravity]", "[antigravity]"},
+		{"unc server unchanged", `\\server\share`, `\\server\share`},
+		{"empty", "", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := NormalizeForeign(tc.in); got != tc.want {
+				t.Errorf("NormalizeForeign(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+			if got := NormalizeForeign(tc.want); got != tc.want {
+				t.Errorf("NormalizeForeign not idempotent on %q: got %q", tc.want, got)
+			}
+		})
 	}
 }
 

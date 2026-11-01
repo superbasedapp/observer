@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/models"
+	"github.com/marmutapp/superbased-observer/internal/testsupport/latencygate"
 )
 
 // TestExtractLatestUserPromptText pins the per-provider latest-user-turn
@@ -275,9 +276,7 @@ const extractLatencyTestHeadroom = 6
 // the ceiling is now DERIVED from the declared budget instead of a
 // disconnected magic number.
 func TestExtractLatestUserPromptText_LatencyRegression(t *testing.T) {
-	if testing.Short() {
-		t.Skip("wall-clock latency assertion skipped under -short")
-	}
+	latencygate.Gate(t) // listed, and skipped under -short and in a loaded CI shard
 	if raceDetectorOn {
 		t.Skip("wall-clock latency ceiling is not measurable under the race detector; ci.yml's static go job runs this without -race")
 	}

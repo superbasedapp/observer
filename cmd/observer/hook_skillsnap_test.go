@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"testing"
 	"time"
@@ -85,8 +86,10 @@ func TestSkillHomeLadder(t *testing.T) {
 		wantHome   string
 		wantOK     bool
 	}{
-		{"transcript names the tool's .claude", "linux", root, filepath.Join(home, ".claude", "projects", "p", "s.jsonl"), home, true},
-		{"native cwd falls back to the hook's home", "linux", root, "", home, true},
+		// The native cases run under this host's own OS: root is a path of
+		// this host (Windows 11 Pro rerun 2026-10-25, D5 group 8).
+		{"transcript names the tool's .claude", runtime.GOOS, root, filepath.Join(home, ".claude", "projects", "p", "s.jsonl"), home, true},
+		{"native cwd falls back to the hook's home", runtime.GOOS, root, "", home, true},
 		{"foreign (Windows) cwd with no transcript is unresolved", "linux", `D:\work\repo`, "", "", false},
 	}
 	for _, c := range cases {

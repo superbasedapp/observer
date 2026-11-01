@@ -295,7 +295,7 @@ func TestIdPEnrolEndToEnd_RecordsBrowserConsentWithoutATTY(t *testing.T) {
 
 	// The load-bearing consequence: the stored grant resolves MANAGED, so the
 	// managed-only authority it carries is actually honoured.
-	grant := grantFromStore(row)
+	grant := grantFromStore(row, &store.Enrolment{Tenancy: orgcontract.TenancyManaged, OrgID: row.OrgID})
 	if !govern.ManagedConsent(grant.ConsentMode) {
 		t.Fatal("the stored grant does not resolve as managed-class consent")
 	}

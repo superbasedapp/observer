@@ -18,11 +18,7 @@ import (
 // is written anywhere.
 func TestInitAllHermesOnlyWhenDetected(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("HERMES_HOME", "")
-	t.Setenv("XDG_CONFIG_HOME", "")
-	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	pinToolHomesAt(t, home)
 	t.Setenv(crossmount.EnvDisableForeignHomes, "1")
 	cfg := filepath.Join(home, ".observer", "config.toml")
 	if err := os.MkdirAll(filepath.Dir(cfg), 0o755); err != nil {

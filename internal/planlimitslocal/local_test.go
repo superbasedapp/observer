@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/planlimits"
 )
@@ -88,5 +89,58 @@ func TestReadSQLiteItemReadOnly(t *testing.T) {
 	}
 	if _, err := fakeReader(home, cfg, nil).Read(context.Background(), []planlimits.LocalSpec{missing}); !errors.Is(err, planlimits.ErrAuth) {
 		t.Errorf("missing item: %v", err)
+	}
+}
+
+// TestWildcardSegmentPicksTheNewestFile pins the one-segment wildcard a
+// per-product, per-version folder needs (JetBrains): the most recently
+// modified match wins, a partial pattern or a second wildcard is refused,
+// and no match is ErrUnavailable.
+func TestWildcardSegmentPicksTheNewestFile(t *testing.T) {
+	dir := t.TempDir()
+	write := func(product string, age time.Duration) string {
+		p := filepath.Join(dir, "JetBrains", product, "options", "q.xml")
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(product), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		at := time.Now().Add(-age)
+		if err := os.Chtimes(p, at, at); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	write("IntelliJIdea2026.1", 48*time.Hour)
+	newest := write("PyCharm2026.2", time.Hour)
+	write("GoLand2026.2", 24*time.Hour)
+	r := Reader{ConfigDir: func() (string, error) { return dir, nil }}
+	cases := []struct {
+		rel     string
+		want    string
+		wantErr error
+		bad     bool
+	}{
+		{rel: "JetBrains/*/options/q.xml", want: newest},
+		{rel: "JetBrains/*/options/missing.xml", wantErr: planlimits.ErrUnavailable},
+		{rel: "Nope/*/options/q.xml", wantErr: planlimits.ErrUnavailable},
+		{rel: "JetBrains/Py*/options/q.xml", bad: true},
+		{rel: "JetBrains/*/*/q.xml", bad: true},
+	}
+	for _, c := range cases {
+		got, err := r.Path(planlimits.LocalSpec{Base: planlimits.BaseConfig, Rel: c.rel})
+		switch {
+		case c.bad:
+			if err == nil || errors.Is(err, planlimits.ErrUnavailable) {
+				t.Errorf("%s: want a bad-path refusal, got %q %v", c.rel, got, err)
+			}
+		case c.wantErr != nil:
+			if !errors.Is(err, c.wantErr) {
+				t.Errorf("%s: err %v, want %v", c.rel, err, c.wantErr)
+			}
+		case err != nil || got != c.want:
+			t.Errorf("%s: got %q %v, want %q", c.rel, got, err, c.want)
+		}
 	}
 }

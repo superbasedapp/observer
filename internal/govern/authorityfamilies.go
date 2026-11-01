@@ -28,6 +28,13 @@ const (
 	// (`node.components`, modular packaging P4, lane MP-GOV): which
 	// components a managed node runs.
 	familyNodeComponents = "node.components"
+	// familySecurityScanning and familyTerminalsIsolation mirror
+	// policyfam.FamilySecurityScanning and FamilyTerminalsIsolation (roadmap
+	// F0-9/F0-10): the security and sandbox modules' raise-only floor
+	// families. No authority governs them (raise-only floors need none);
+	// managed consent does (managedConsentFamilies).
+	familySecurityScanning   = "security.scanning"
+	familyTerminalsIsolation = "terminals.isolation"
 )
 
 // authorityFamilyRow is one row of the authority-to-family table (CLAUDE.md
@@ -146,6 +153,7 @@ var authorityFamilyTable = []authorityFamilyRow{
 	{AuthorityExtractScope, []string{familyNodeGovernance}},
 	{AuthorityExtractPolicyState, []string{familyNodeGovernance}},
 	{AuthorityExtractObsEgress, []string{familyNodeGovernance}},
+	{AuthorityExtractHookActivity, []string{familyNodeGovernance}},
 	{AuthorityEnforceAdmission, []string{familyAdmissionInput}},
 	{AuthorityEnforceEgress, []string{familyEgressGuardrail}},
 	{AuthorityEnforceRouting, []string{familyGatewayProviders}},
@@ -158,18 +166,25 @@ var authorityFamilyTable = []authorityFamilyRow{
 	{AuthorityComponentsGovern, []string{familyNodeComponents}},
 }
 
-// exemptFromFamilyMapping is the CONSCIOUS exemption list this package's own
-// drift test (TestGovernedFamilies_EveryKnownAuthorityMapsOrIsExempt) checks
-// against: a KnownAuthority token that deliberately maps to zero families,
-// because RetiredAuthority already says it grants nothing at all.
-//
-// AuthorityCaptureRaise is RETIRED and PERMANENTLY INERT (types.go): it
-// never governs anything, so it cannot govern a policy family either. A
-// future token added here must be a similarly considered decision, not an
-// oversight — that is the whole point of keeping the list separate from a
-// silent "no match" fallthrough.
-var exemptFromFamilyMapping = map[string]bool{
-	AuthorityCaptureRaise: true,
+// exemptFromFamilyMapping is the CONSCIOUS exemption table this package's own
+// drift test (TestGovernedFamilies_EveryKnownAuthorityMapsOrIsExempt) reads:
+// a KnownAuthority token that deliberately maps to zero families, with the
+// reason it does (roadmap F0-7; JSP-1 R2: the list used to be a bare set
+// whose only premise was "retired, grants nothing", which the two module
+// tokens do not share). The test requires a non-empty reason, so a future
+// exemption is a considered decision with its reason written down, never an
+// oversight.
+var exemptFromFamilyMapping = map[string]string{
+	// AuthorityCaptureRaise is RETIRED and PERMANENTLY INERT (types.go): it
+	// never governs anything, so it cannot govern a policy family either.
+	AuthorityCaptureRaise: "retired: grants nothing",
+	// The two module enforce tokens gate a signed managed PULL (the
+	// security and sandbox rails of orgcontract.ManagedPullRails), not a
+	// policy-resource family: their families' floors are raise-only and need
+	// no authority (sandbox plan v2 M10, security plan 7.2 row 7; JSP-1: not
+	// an enforce.budget precedent, which maps to node.governance).
+	AuthorityEnforceSandbox:  "gates a managed pull, not a resource family",
+	AuthorityEnforceSecurity: "gates a managed pull, not a resource family",
 }
 
 // GovernedFamilies returns the sorted, deduplicated set of [org_client.policy]
@@ -209,7 +224,17 @@ func GovernedFamilies(authority []string) []string {
 // ManagedEnrolmentAuthoritySet carried feature.lock (the enterprise-posture
 // set never did) would otherwise leave every feature lock, tool disallow and
 // G8 grant inert on that node for good (review C156-04).
-var managedConsentFamilies = []string{familyNodeFeatures}
+//
+// security.scanning and terminals.isolation join for the same reason (roadmap
+// F0-10, JSP-1 R3): raise-only floors need no authority, so no grant token
+// governs them, and without this row the shipped start-time backfill
+// (T-354) would never offer them to a node that enrolled before they
+// existed (AA-64). A managed consent governs them on its own; individual
+// nodes are untouched (their lists stay their operator's own opt-in). The
+// node writes them only from a build that links their compilers
+// (cmd/observer's linkedManagedFamilies, audit SHR-KIT finding 1), so a
+// config.toml never names a family an older binary would refuse.
+var managedConsentFamilies = []string{familyNodeFeatures, familySecurityScanning, familyTerminalsIsolation}
 
 // ManagedGovernedFamilies is GovernedFamilies for an ACCEPTED grant on a
 // MANAGED enrolment: the token-governed families plus managedConsentFamilies.

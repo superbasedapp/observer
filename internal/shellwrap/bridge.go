@@ -103,6 +103,9 @@ var bridgeEnvRules = []bridgeEnvRule{
 	{"a gated route needs the developer's own key, which only the launcher evaluates", func(c integration.Capability, _ *integration.GUILaunchable) bool {
 		return c.Proxy.Gate != nil
 	}, nil},
+	{"an opt-in route applies only with its launcher flag, which the shim never passes", func(c integration.Capability, _ *integration.GUILaunchable) bool {
+		return c.Proxy.LaunchFlag != ""
+	}, nil},
 	{"a lane route needs the launcher's upstream check before it routes", func(c integration.Capability, _ *integration.GUILaunchable) bool {
 		return c.Proxy.Lane != nil
 	}, nil},
@@ -122,8 +125,9 @@ var bridgeEnvRules = []bridgeEnvRule{
 // the process environment. It is the ONE owner of that list - the renderer
 // bakes the names into the shim's WSLENV hand-over, and `observer shell-wrap
 // launch-env` emits values only for these names. Empty for a row whose route
-// lives only in a config file, is gated on the developer's own key, or needs
-// an upstream lane check (the honest answer there is "launches, no routing").
+// lives only in a config file, is gated on the developer's own key, needs an
+// opt-in launcher flag, or needs an upstream lane check (the honest answer
+// there is "launches, no routing").
 func BridgeEnvFor(id string) []EnvVar {
 	var g *integration.GUILaunchable
 	c, isTool := integration.For(id)

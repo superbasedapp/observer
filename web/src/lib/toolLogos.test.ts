@@ -39,10 +39,28 @@ test("the registry parse found the adapter rows", () => {
   assert.ok(ids.includes("claude-code"));
 });
 
-test("every registry tool id has a TOOL_LOGOS entry", () => {
+// Tools with no usable vendor mark yet. They render ToolGlyph's documented
+// fallback (shared/lib/toolGlyph.tsx: a MONOGRAM of the label's first
+// letter), never an invented brand mark. The gap is ledger row AP-123 in
+// docs/adapter-parity.md; the reasons are in design/brand-icons/NOTES.md
+// "Tools without a logo". Remove an id here when its logo lands (the second
+// test below fails until you do).
+//   (none right now: dirac and vtcode got logos 2026-10-22; see NOTES.md.)
+const LOGO_PENDING = new Set<string>();
+
+test("every registry tool id has a TOOL_LOGOS entry (or is a listed monogram-fallback gap)", () => {
   const logos = toolLogoKeys();
-  const missing = registryToolIds().filter((id) => !logos.has(id));
+  const missing = registryToolIds().filter((id) => !logos.has(id) && !LOGO_PENDING.has(id));
   assert.deepEqual(missing, [], `tools without a logo: ${missing.join(", ")}`);
+});
+
+test("the logo-pending list names only registry tools that still lack a logo", () => {
+  const logos = toolLogoKeys();
+  const ids = new Set(registryToolIds());
+  for (const id of LOGO_PENDING) {
+    assert.ok(ids.has(id), `${id} is not a registry tool id`);
+    assert.ok(!logos.has(id), `${id} now has a logo: drop it from LOGO_PENDING`);
+  }
 });
 
 // Product-family siblings share a token (gemini-cli -> --tool-gemini,

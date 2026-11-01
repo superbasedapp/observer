@@ -26,6 +26,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/cachetrack"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/procmodel"
+	"github.com/marmutapp/superbased-observer/internal/sandboxvocab"
 )
 
 // Sink is the write side of the proxy — the store layer implements this so
@@ -498,6 +499,15 @@ type Options struct {
 	// concrete counter (internal/quiesce.Gate) stays on the other side of
 	// the seam and internal/proxy never learns what an update is.
 	DrainGate DrainGate
+	// ClientToken is the node's proxy client token (OSH-R-009,
+	// clientauth.go). When set, a request whose path starts with
+	// /t/<token> is checked and the prefix stripped before anything else
+	// reads the path. "" (the default) leaves every request byte-identical.
+	ClientToken string
+	// RequireClientAuth refuses a request that does not carry ClientToken
+	// (the start-time proxyauth.Enforce result, never the raw config key).
+	// Inert without ClientToken.
+	RequireClientAuth bool
 }
 
 // DrainGate is the proxy's half of the node's quiescence contract.
@@ -655,6 +665,9 @@ type Proxy struct {
 	localUpstreams map[string]*url.URL
 	// agentUpstreams is Options.AgentUpstreams parsed (immutable after New).
 	agentUpstreams map[string]*url.URL
+	// routeLanes are the node-local route lanes managed route maintenance
+	// installs (routelanes.go). Hot: SetRouteLanes swaps the whole map.
+	routeLanes atomic.Pointer[map[string]*url.URL]
 	// keyPools holds the §R12.4 per-provider rotating key rings.
 	keyPools map[string]*keyPool
 	// codexVariantWarned is the per-session dedup map for the V7-2
@@ -684,6 +697,8 @@ type Proxy struct {
 	// ⇒ admission is unconditional, byte-identical to the pre-update-arc
 	// behaviour.
 	drainGate DrainGate
+	// clientAuth is the proxy client token state (clientauth.go).
+	clientAuth clientAuthState
 }
 
 // codexVariantRe matches OpenAI-shape model identifiers that belong to
@@ -910,6 +925,7 @@ func New(opts Options) (*Proxy, error) {
 		obsSem:              make(chan struct{}, obsGatewayMaxConcurrentSynthesis),
 		drainGate:           opts.DrainGate,
 	}
+	p.clientAuth.init(opts.ClientToken, opts.RequireClientAuth)
 	// atomic.Pointer has no struct-literal form (unexported internal
 	// state) — publish the initial lane table via Store, same call path
 	// SetUpstreams/SetLaneTable/SetOrgGatewayRoute use for a later hot
@@ -1310,7 +1326,12 @@ var proxyShutdownGrace = 5 * time.Second
 func (p *Proxy) ListenAndServe(ctx context.Context, addr string) error {
 	p.requireLoopbackHost.Store(hostIsLoopback(hostnameOnly(addr)))
 	if host := hostnameOnly(addr); host != "" && !hostIsLoopback(host) {
-		p.logger.Warn("proxy bound to a non-loopback address - the listener has no client auth and, when a routing key_pool is configured, will substitute the operator's own API keys on a 429; anything that can reach it can drive requests upstream", "addr", addr)
+		if p.ClientAuthEnforced() {
+			// OSH-R-009: a peer without the client token is refused.
+			p.logger.Warn("proxy bound to a non-loopback address - client authentication is enforced, so only clients holding the client token are served", "addr", addr)
+		} else {
+			p.logger.Warn("proxy bound to a non-loopback address - the listener has no client auth ([proxy].require_client_auth is off or not enforced) and, when a routing key_pool is configured, will substitute the operator's own API keys on a 429; anything that can reach it can drive requests upstream", "addr", addr)
+		}
 	}
 	srv := &http.Server{
 		Addr:              addr,
@@ -1389,6 +1410,19 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 	// state. Exact match only: a lane-prefixed variant is not a thing this
 	// path supports (see healthzPath's doc comment on why it can't collide).
 	if r.URL.Path == healthzPath {
+		serveHealthz(w, r)
+		return
+	}
+
+	// Client authentication (OSH-R-009, clientauth.go): the /t/<token>
+	// prefix is checked and stripped here, before the browser rule, lanes,
+	// routing, logs or capture read the path, so the token never goes
+	// further. Inert (a nil-free no-op) on a node with no client token.
+	if !p.applyClientAuth(w, r) {
+		return
+	}
+	if r.URL.Path == healthzPath {
+		// The liveness probe through a token-form base URL.
 		serveHealthz(w, r)
 		return
 	}
@@ -2253,6 +2287,9 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		outReq.Header.Set("X-Api-Key", gatewayVirtualKey)
 	}
+	// A sandboxed run's sentinel swapped for the user's own key (G24); no-op
+	// unless the credentials component installed an injector.
+	p.injectSandboxCredential(outReq, r)
 	// Force identity response encoding on upstream so we can parse the
 	// SSE stream and the non-streaming JSON body. Without this, claude
 	// (and most modern HTTP clients) send Accept-Encoding: gzip, br —
@@ -3143,6 +3180,15 @@ func (p *Proxy) resolveAPITurnSessionID(r *http.Request, provider string, reqBod
 	if sid == "" {
 		sid = r.Header.Get("X-Session-Id")
 	}
+	// A hosted sandbox run's relayed request (the home side of the run's
+	// relay names the run; the box cannot): the turn lands on the run's
+	// re-keyed session, the namespace its pulled transcripts land in, and
+	// never on a process the session resolver would find on this machine.
+	if run := r.Header.Get(sandboxvocab.RelayRunHeader); run != "" {
+		if rs := sandboxvocab.RelaySessionID(run, sid); rs != "" {
+			return rs
+		}
+	}
 	// PLANE BOUNDARY: the SessionResolver maps a connection's remote addr to
 	// the local CODING-AGENT process that owns the socket (Plane B). A
 	// hosted-app request that arrived on an explicit /up/<id> lane (Plane A)
@@ -3670,6 +3716,14 @@ func (p *Proxy) resolveUpstreamPrefix(r *http.Request) upstreamPrefix {
 		r.URL.RawPath = ""
 		return upstreamPrefix{id: autoLaneID}
 	}
+	// A node-local route lane (routelanes.go) is checked FIRST for its own
+	// prefix: the route was written to reach exactly the host it records, so
+	// no other table may answer for that id.
+	if routeUp := p.routeLane(id); routeUp != nil {
+		r.URL.Path = rest[slash:]
+		r.URL.RawPath = ""
+		return upstreamPrefix{up: routeUp, id: id, agent: true}
+	}
 	up, ok := upstreams[id]
 	if !ok {
 		if agentUp, isAgent := p.agentUpstreams[id]; isAgent {
@@ -4022,6 +4076,10 @@ func (p *Proxy) serveUpgradePassthrough(w http.ResponseWriter, r *http.Request, 
 			pr.Out.Host = upstream.Host
 			keepDirectorForwarding(pr)
 			pr.Out.Header.Del("X-Session-Id")
+			pr.Out.Header.Del(sandboxvocab.RelayRunHeader)
+			// A sandboxed run's relay token is the proxy's, never the
+			// provider's (audit F6), injector or not.
+			pr.Out.Header.Del(SandboxCredTokenHeader)
 			for k := range pr.Out.Header {
 				if isHostedIdentityHeader(k, p.admissionUserHeader) {
 					pr.Out.Header.Del(k)
@@ -4193,7 +4251,7 @@ func (p *Proxy) copyRequestHeaders(dst, src http.Header) {
 		if _, hop := hopByHopHeaders[k]; hop {
 			continue
 		}
-		if k == "X-Session-Id" {
+		if k == "X-Session-Id" || k == sandboxvocab.RelayRunHeader || k == SandboxCredTokenHeader {
 			continue
 		}
 		if isHostedIdentityHeader(k, p.admissionUserHeader) {

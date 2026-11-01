@@ -3,12 +3,14 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/dashapi"
 	"github.com/marmutapp/superbased-observer/internal/termfeed"
+	"github.com/marmutapp/superbased-observer/internal/termoob"
 	"github.com/marmutapp/superbased-observer/internal/termstatus"
 )
 
@@ -39,6 +41,27 @@ type runSig struct {
 	bellAt     time.Time
 	hookKind   termstatus.HookKind
 	hookAt     time.Time
+	// egressBlocked is the number of connections the run's sandbox gateway
+	// refused while the tool owned the terminal (Windows 11 Pro run 4, N2):
+	// the notices stay off the tool's screen and the run's status says it.
+	egressBlocked int
+}
+
+// sandboxEgressKind is the feed kind of a host helper's count of held
+// egress refusals.
+const sandboxEgressKind = "oob:" + string(termoob.PhaseSandboxEgressRefused)
+
+// withSandboxEgress appends the held refusals to a run's status evidence
+// (the dashboard shows it as the status badge's title).
+func withSandboxEgress(evidence string, blocked int) string {
+	if blocked <= 0 {
+		return evidence
+	}
+	noun := "connections"
+	if blocked == 1 {
+		noun = "connection"
+	}
+	return fmt.Sprintf("%s; the sandbox blocked %d %s (kept off the tool's screen)", evidence, blocked, noun)
 }
 
 // terminalStatusHub implements dashapi.TerminalStatusProvider.
@@ -145,6 +168,10 @@ func (h *terminalStatusHub) ingest(ev termfeed.Event) {
 		st.promptKind, st.promptAt = termstatus.PromptCommandFinished, ev.At
 	case ev.Kind == "pty:bell":
 		st.bellAt = ev.At
+	case ev.Kind == sandboxEgressKind:
+		if ev.Count > st.egressBlocked {
+			st.egressBlocked = ev.Count
+		}
 	case strings.HasPrefix(ev.Kind, "oob:"):
 		// Trusted lifecycle presence; kept for future hook-style weighting.
 		st.hookAt = ev.At
@@ -166,11 +193,13 @@ func (h *terminalStatusHub) compute(handle string) (dashapi.TerminalStatusResult
 		sig.Exited = true
 		sig.ExitCode = &code
 	}
+	blocked := 0
 	h.mu.Lock()
 	if st := h.sig[runID]; st != nil {
 		sig.LastPromptKind, sig.LastPromptAt = st.promptKind, st.promptAt
 		sig.LastBellAt = st.bellAt
 		sig.LastHookKind, sig.LastHookAt = st.hookKind, st.hookAt
+		blocked = st.egressBlocked
 	}
 	h.mu.Unlock()
 
@@ -179,7 +208,7 @@ func (h *terminalStatusHub) compute(handle string) (dashapi.TerminalStatusResult
 		Handle:     handle,
 		RunID:      runID,
 		Status:     string(res.Status),
-		Evidence:   res.Evidence,
+		Evidence:   withSandboxEgress(res.Evidence, blocked),
 		Confidence: string(res.Confidence),
 		AgeSeconds: res.AgeSeconds,
 	}, true

@@ -23,6 +23,8 @@ npx @superbased/observer
 Reads the session logs your coding agents already keep on disk, prints a 30-day cost table by tool
 and model, and deletes its temporary database on exit. No config, no network.
 
+On Windows PowerShell, type `npx.cmd` and `npm.cmd` instead of `npx` and `npm` (or use Command Prompt): PowerShell's default execution policy blocks the `npx.ps1` and `npm.ps1` scripts.
+
 ## Install
 
 ```bash
@@ -30,7 +32,7 @@ npm install -g @superbased/observer
 observer --version
 ```
 
-Prebuilt binaries for Linux (x64, arm64), macOS (Intel, Apple Silicon) and Windows x64. npm fetches
+Prebuilt binaries for Linux (x64, arm64), macOS 13 or later (Intel, Apple Silicon) and Windows x64. npm fetches
 only the one for your machine; there is no compile step and no postinstall download. Also on
 [PyPI](https://pypi.org/project/superbased-observer/) and the
 [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=superbased.superbased-observer)
@@ -43,10 +45,10 @@ and helps you control them.**
 
 - **Provider-exact cost, not estimates.** An optional local proxy records the tokens your provider
   returned: net input, 5-minute vs 1-hour cache writes, reasoning tokens and long-context repricing.
-- **Every coding agent in one place.** 40 adapters normalize Claude Code, Codex, Cursor, GitHub
+- **Every coding agent in one place.** 50 adapters normalize Claude Code, Codex, Cursor, GitHub
   Copilot, Gemini CLI, Cline, Aider, Kiro, Devin, OpenCode, Junie and more into one local database.
-- **Local-first, no account.** No telemetry and no sign-in. Everything lives in one SQLite file
-  under `~/.observer/`.
+- **Local-first, no account.** No sign-in. Everything lives in one SQLite file under
+  `~/.observer/`, and your session content is never uploaded without your explicit consent.
 - **Know the next bill before it lands.** Prompt-cache tracking with expiry warnings, a cost band
   for your next message, and a 5-hour and weekly limit gauge for proxied sessions.
 - **Guardrails on your own agents.** Built-in and custom rules for destructive commands, secrets
@@ -70,6 +72,13 @@ For provider-exact tokens, route your agent through the proxy: in the dashboard 
 click your tool's status pill and choose **Route through the observer proxy** (it previews the
 config change and writes only when you confirm), or run `observer claude` / `observer codex` for a
 one-off proxied session. `observer init` additionally registers the opt-in MCP server.
+
+Prefer a plain download? [superbased.app/download](https://superbased.app/download) has the
+Windows setup program, macOS and Linux downloads and every version, with SHA-256 checksums.
+
+**macOS needs version 13 Ventura or later.** Observer is built with Go 1.27, which no longer runs
+on macOS 12 Monterey. On macOS 12, stay on v1.36.0 or upgrade macOS first. v1.36.0 was meant to
+carry an advance notice of this and did not. Linux and Windows are not affected.
 
 ## What you get
 
@@ -107,9 +116,13 @@ Click any session to open its detail view. Four of its tabs:
 
 ## Privacy
 
-No telemetry and no account. SuperBased stores paths, commands and short excerpts, scrubs secrets
-before writing, and binds the proxy and dashboard to `127.0.0.1` by default. The proxy forwards your
-own requests, unchanged, to the provider you already use. See
+No account needed. Today the default install sends us no usage statistics, analytics or crash
+reports, and your session content is never uploaded without your explicit consent. SuperBased stores
+paths, commands and short excerpts, scrubs secrets before writing, and binds the proxy and dashboard
+to `127.0.0.1` by default. The proxy forwards your own requests, unchanged, to the provider you
+already use. By default SuperBased also makes a few small requests of its own that carry none of
+your data, such as a daily download of the public model price table from superbased.app (turn it
+off with `[pricing.feed] enabled = false`). See
 [PRIVACY.md](https://github.com/superbasedapp/observer/blob/main/PRIVACY.md).
 
 ## Learn more
@@ -124,6 +137,10 @@ own requests, unchanged, to the provider you already use. See
 - **`EACCES` on `npm install -g`:** point npm at a user prefix
   (`npm config set prefix ~/.npm-global` and add `~/.npm-global/bin` to `PATH`) or use a Node version
   manager such as fnm or nvm.
+- **`running scripts is disabled on this system` in PowerShell:** On Windows PowerShell, type
+  `npx.cmd` and `npm.cmd` instead of `npx` and `npm` (or use Command Prompt): PowerShell's default
+  execution policy blocks the `npx.ps1` and `npm.ps1` scripts. Changing the policy with
+  `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` also works, but is not required.
 - **`observer: command not found`:** make sure your npm global `bin` directory is on `PATH`, and that
   you installed `@superbased/observer` itself, not only a platform package.
 - **Port 8820 or 8081 already in use:** another `observer start` is running; stop it first.

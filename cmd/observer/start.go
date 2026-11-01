@@ -26,6 +26,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/db"
 	"github.com/marmutapp/superbased-observer/internal/diag"
 	"github.com/marmutapp/superbased-observer/internal/git"
+	"github.com/marmutapp/superbased-observer/internal/govern"
 	"github.com/marmutapp/superbased-observer/internal/guard"
 	"github.com/marmutapp/superbased-observer/internal/hook"
 	browseringest "github.com/marmutapp/superbased-observer/internal/ingest/browser"
@@ -94,6 +95,10 @@ func newStartCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, cancel := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer cancel()
+			// D-MU2: until the stop watchdog below is armed, a stop request
+			// still ends the process within a bound.
+			startupHandoff := startupStopGuard(ctx, startupStopBound, cmd.ErrOrStderr(), daemonHardExit)
+			defer startupHandoff()
 
 			// Record the daemon's own --config so every dashboard-launched
 			// child (`observer <tool> --config <path>`) resolves the SAME
@@ -154,6 +159,18 @@ func newStartCmd() *cobra.Command {
 				cfgForLock = applyInertOverlay(cfgForLock, comps)
 			}
 			reportComponentIssues(cmd.ErrOrStderr(), comps)
+			// D-MU1: adapter root discovery (aider's home walk) runs in the
+			// background from here on, before anything reads WatchPaths, so
+			// no listener waits on a walk that a macOS privacy prompt can
+			// block indefinitely.
+			if lockErr == nil {
+				configureAdapterDiscovery(ctx, cfgForLock, comps.AdapterActive)
+			}
+			// Before the first guard posture is signed: the security
+			// module's state rides in it (security_core.go).
+			setDaemonSecurityState(configPath, comps, slog.Default())
+			// The security.scanning floors' facts provider (lane SEC-E).
+			bindSecurityScanning(configPath, comps)
 			// Ledger MODPKG-13 (T-679): with capture.proxy inactive no proxy
 			// binds, so a route Observer left in another tool's config fails
 			// its sessions; name it and its teardown.
@@ -176,6 +193,7 @@ func newStartCmd() *cobra.Command {
 			}
 			stopWatchdog := daemonShutdownWatchdog(stopTracker, cmd.ErrOrStderr(), shutdownStackDir(stopDBPath))
 			defer stopWatchdog.Disarm()
+			startupHandoff()
 			go func() {
 				<-ctx.Done()
 				// Release the signal capture: from here a second SIGTERM or
@@ -215,12 +233,18 @@ func newStartCmd() *cobra.Command {
 				// wsl.exe bridge so they execute in the daemon's context; this
 				// guardrail surfaces an otherwise-silent split (e.g. a stale
 				// native-binary registration writing the wrong DB).
-				for _, sib := range diag.DetectCrossEnvSiblingDBs(cfgForLock.Observer.DBPath, crossmount.AllHomes()) {
-					fmt.Fprintf(cmd.ErrOrStderr(),
-						"WARN cross-env observer.db at %s (%s): this daemon reads %s. "+
-							"Rows already in that sibling DB won't appear here - re-register that tool's hooks "+
-							"via `observer init` so they run in this daemon's context.\n",
-						sib.Path, sib.Origin, cfgForLock.Observer.DBPath)
+				// Only when the watched adapters include a tool whose hooks
+				// register across OSes (live run 2, finding N4: with
+				// enabled_adapters = ["poolside"] the start still looked at
+				// the Windows mount's observer.db).
+				if crossEnvSiblingCheckApplies(cfgForLock.Observer.Watch.EnabledAdapters, config.Default().Observer.Watch.EnabledAdapters, cfgForLock.Observer.Hooks.AutoRegister) {
+					for _, sib := range diag.DetectCrossEnvSiblingDBs(cfgForLock.Observer.DBPath, crossmount.AllHomes()) {
+						fmt.Fprintf(cmd.ErrOrStderr(),
+							"WARN cross-env observer.db at %s (%s): this daemon reads %s. "+
+								"Rows already in that sibling DB won't appear here - re-register that tool's hooks "+
+								"via `observer init` so they run in this daemon's context.\n",
+							sib.Path, sib.Origin, cfgForLock.Observer.DBPath)
+					}
 				}
 
 				// DI-07: [terminal.launch].allowed_tools and
@@ -322,6 +346,17 @@ func newStartCmd() *cobra.Command {
 				} else {
 					orgClient, orgStore = bundle.client, bundle.store
 					defer bundle.cleanup()
+					persistMachineProof(orgClient, orgStore)  // WINNODE item 4
+					bindDaemonCredential(orgClient, orgStore) // WINNODE2 item 1b
+					// The security pillar wire (security plan 7.4): the org push
+					// composes security rows only while the security module is
+					// active and the share level allows (security_orgpush.go).
+					// Bound here, where the push loop is built, so a headless
+					// daemon sends them too (lane SEC-E2 audit finding 3).
+					bindSecurityOrgProviders(orgStore, comps.ModuleActive("security"))
+					// The org's baseline approvals from the security pull
+					// (lane LEFT-SHARED, security_baseline_org.go).
+					bindSecurityBaselineOrg(orgStore)
 				}
 			} else if lockErr == nil && cfgForLock.OrgClient.Enabled && comps.Active("org.client") {
 				// Reachable only when Enabled but orgClientShouldStart said
@@ -350,6 +385,14 @@ func newStartCmd() *cobra.Command {
 				return err
 			}
 			defer pCleanup()
+
+			// Lane P1: put every recorded node-local route lane into the proxy
+			// BEFORE its listener accepts, so a third-party-provider lane route
+			// written by an earlier run never meets a refused lane (HTTP 502).
+			var routeLanes *routeLaneInstaller
+			if lanePort, ok := proxyPortFromAddr(addr); ok {
+				routeLanes = installRouteLanesAtStart(p, lanePort, cmd.ErrOrStderr())
+			}
 
 			// ONE daemon-lifetime gateway.providers install seam, shared by
 			// the LKG loader, the steady-state poller AND the P0-6 reporter.
@@ -410,6 +453,7 @@ func newStartCmd() *cobra.Command {
 			// every method — see nodeFeaturesHandle.Allowed), so it is safe
 			// to construct unconditionally even when lockErr != nil.
 			nf := newNodeFeaturesHandle()
+			processNodeFeatures.Store(nf)
 			if lockErr == nil {
 				// P6 item 5: the daemon is the ONE writer of the node.features
 				// tools.disallow LKG sidecar (CLAUDE.md #4), mirroring the
@@ -431,6 +475,9 @@ func newStartCmd() *cobra.Command {
 					version,
 					startupSidecarFrom(govOutcome),
 				)
+				// T-845: the posture loop records the verified copy of what the
+				// handle writes in the MAC'd org lock and repairs the files from it.
+				setProcessGovernanceCopy(ngov.VerifiedCopy())
 				// Track C item 3: report the EFFECTIVE value of every
 				// reportable pinnable key. cfgForLock is the config this
 				// daemon process is actually running — including whatever
@@ -454,6 +501,10 @@ func newStartCmd() *cobra.Command {
 				orgClient.SetRenewalSink(renewalTracker.Observe)
 				// Component posture on the org wire (plan 6.4, T-682).
 				orgClient.SetComponentPostureProvider(componentPostureProvider(configPath, cfgForLock))
+				// Admin and developer messaging (T-854): the developer's
+				// [messages] choices, read at use time, and the opt-in
+				// desktop notification for a new admin message.
+				wireOrgMessages(orgClient, configPath)
 				// Follow a node.components policy change live: teardown of
 				// newly blocked components and the scheduled purge (T-682).
 				go newComponentPolicyFollower(configPath, orgStore, comps, slog.Default()).run(ctx)
@@ -487,24 +538,78 @@ func newStartCmd() *cobra.Command {
 					if home, herr := os.UserHomeDir(); herr == nil {
 						binaryPath, _ := absoluteBinaryPath()
 						orgClient.SetIntegrityCollector(func() orgcontract.ManagedIntegrityReport {
-							// Track C item 2: on a managed node the org is
-							// authoritative over an enforcement point for, a
-							// proxy route whose config is STILL ON THE HOST
-							// but no longer names the proxy is drift, not
-							// "this tool is simply not routed" — a tool that
-							// was never installed here still never counts
-							// (proxyroute.RouteStatus.ArtifactPresent).
-							// Resolved LIVE from the
-							// governance handle on every cycle (the
-							// SetManagedEnforce precedent), so a revoked
-							// authority stops the stricter reading at the
-							// next push rather than at the next restart.
-							absentIsDrift := ngov.Effective(ctx).GrantsAnyEnforcement()
-							rep := collectManagedIntegritySignals(dbPath, home, binaryPath, absentIsDrift)
+							// Track C item 2 + lane P1 + T-900: route drift
+							// follows the same route posture route maintenance
+							// acts on (govern.Effective.RoutePosture through
+							// routeDriftPolicy): maintained routes are drift
+							// when they do not reach this proxy, released
+							// routes never are, and with no posture only an
+							// organization route left in place can drift. T-901:
+							// "reaches this proxy" compares the route's port
+							// with this daemon's own listener. A tool never
+							// installed, or one Observer cannot route here and
+							// never routed, never counts (proxyroute.DriftedTools).
+							// Resolved LIVE from the governance handle on every
+							// cycle (the SetManagedEnforce precedent), so a
+							// changed pin or a revoked authority changes the
+							// reading at the next report, not at the next restart.
+							// T-915: the component selection is the one route
+							// maintenance acts on (routeSelection), resolved
+							// from the same config each cycle, so an installed
+							// tool the policy did not select reads as "not
+							// selected by policy" and a node whose route writer
+							// is off reads as "routing switched off by
+							// policy", never as drift.
+							listenPort, _ := proxyPortFromAddr(addr)
+							routeDrift := routeDriftPolicy(ngov.Effective(ctx).RoutePosture(), listenPort, routeSelection(componentSnapshotFor(configPath)))
+							// T-847: the hook targets this node's own
+							// auto-registration owns, each with a dry run, so
+							// a missing or weakened hook (or a deleted
+							// registry) is a located risk.
+							// T-874: compare the registry's binary_path with
+							// the registration command (what the hooks were
+							// written with and what `observer doctor`
+							// compares), plus the real binary, never with the
+							// real binary alone.
+							regCommand := binaryPath
+							if binaryPath != "" {
+								regCommand = registrationCommand(binaryPath)
+							}
+							rep := collectManagedIntegritySignals(dbPath, home, regCommand, routeDrift, hookIntegrityInputs{
+								Expected:   probeExpectedHooks(configPath, cfgForLock.Guard.Prompt.Enabled && cfgForLock.Guard.Prompt.HookLane),
+								Tracker:    hookRepairTracker,
+								Now:        time.Now(),
+								RealBinary: binaryPath,
+							})
 							// Adapter config P7: an enforced org AI tool
 							// setting that no longer holds is a closed
 							// capture-risk label (detail on the envelope).
 							agentConfigDriftRisk(ctx, orgStore, &rep)
+							// OBS-6: the routable surfaces this node ran
+							// sessions on that never reached its proxy, judged
+							// like the doctor's route.observed check. With no
+							// store the observation stays "not reported".
+							if orgStore != nil {
+								addRouteObservation(ctx, orgStore, func(since time.Time) diag.RelayJournal {
+									return diag.RelayBypassSince("", since)
+								}, time.Now(), nil, &rep)
+								// DEC-7: the tools whose hooks a settings
+								// layer switches off, and the config-layer
+								// findings that weaken capture or routing,
+								// read like the doctor's hooks.disabled and
+								// config.layers rows. With no store the
+								// reading stays "not reported".
+								addConfigLayers(ctx, storeConfigLayerSource(orgStore, home), &rep)
+							}
+							// OBS-7: tools whose captured sessions show their
+							// registered hooks never firing (hooks.liveness).
+							addHookLiveness(ctx, storeHookSilentSource(orgStore), time.Now(), &rep)
+							// CLI-1b: command wrapping the organization keeps
+							// on is not applied.
+							addShellWrapPosture(ctx, ngov.Effective(ctx).ShellWrapPosture(), configPath, &rep)
+							// S-15 (D17): a cached vendor org policy blocks
+							// Observer's MCP server or pins a tool's route.
+							addVendorPolicyRisks(home, os.Getenv, &rep)
 							return rep
 						})
 					}
@@ -698,6 +803,10 @@ func newStartCmd() *cobra.Command {
 			// (2026-10-02 budget-latency arc, P3): they kick the org push
 			// and the budget-warning re-measure exactly as a proxied turn.
 			w.SetIngestNotifier(noteIngestActivity)
+			// The first-run view's history-capture progress (T-922): the
+			// initial scan Watch starts below reports into this model and
+			// the dashboard reads it (Options.CaptureProgress).
+			captureProgress := wireCaptureProgress(w)
 
 			// Project Identity Resolver v2 (§3.1): the ONE production wiring
 			// of the lazy root-commit exec. Adapters resolve identity with
@@ -767,6 +876,12 @@ func newStartCmd() *cobra.Command {
 				cfg = applyInertOverlay(cfg, comps)
 				daemonDB = database
 				resolvedConfigPath, _ := config.ResolveGlobalPath(configPath)
+				// First-run view (T-922): record once, before the watcher's
+				// initial scan starts (ng.Go("watcher") below), whether this
+				// install is fresh. Fail-open.
+				recordFirstRunInstall(ctx, database, cfg.Observer.DBPath, slog.Default())
+				// WINNODE2 item 11: fold Windows project rows split by case.
+				mergeCaseDuplicateProjectsAtStart(ctx, database, slog.Default())
 				// Build the daemon's ONE termsession.Manager + termsvc.Service
 				// (CLAUDE.md #4) and derive the two INDEPENDENT surfaces off it:
 				// the dashboard launch manager (gated by allow_dashboard_launch)
@@ -779,6 +894,10 @@ func newStartCmd() *cobra.Command {
 					return err
 				}
 				defer surfaces.close()
+				// The sandbox posture aggregate (sandbox plan v2 section 8.4):
+				// the org push composes it only while the Sandboxes and VMs
+				// module is active and a prober exists.
+				bindSandboxCapability(ctx, orgStore, sandboxModuleActive(comps), surfaces.sandboxProber)
 				// The governance handle reads the enrolment grant through the
 				// daemon's own long-lived DB handle. It is bounded-refresh
 				// rather than event-driven because `observer enroll` writes
@@ -815,6 +934,9 @@ func newStartCmd() *cobra.Command {
 					Projects:       cfg.Projects,
 					// Plans & limits: the same service the "plans" loop below runs.
 					Plans: processPlans(cfg, database, slog.Default()),
+					// Custom scanners (security_custom_cmd.go): nil unless the
+					// security.scan.custom component is active.
+					CustomScanners: customScannersForDashboard(cmd.Context(), comps, configPath, store.New(database)),
 					// CommitAlignmentAvailability (cloud_gradecommit.go) is the
 					// SAME function `observer cloud grade-commit` itself calls,
 					// so the dashboard and the CLI never disagree about why
@@ -822,6 +944,43 @@ func newStartCmd() *cobra.Command {
 					CloudGradeAvailability: CommitAlignmentAvailability,
 					JudgeGrade:             projectsJudgeGrade,
 					JudgeGradeReason:       projectsJudgeGradeReason,
+					// Projects page "Rescan now" (commitscan_wire.go): the daemon's own
+					// commit scanner, nil when [projects].commit_scan is off.
+					CommitRescan: commitRescanWithDelivery(cfg, database),
+					// Package checks card (security_deps_dash.go): the install
+					// gate's state and the dashboard accept of its disclosure.
+					PackageChecks: packageChecksDash(resolvedConfigPath, database),
+					// Scanners card (security_scan_dash.go): the OSV database
+					// download's one-time accept (PT-19).
+					ScannerDB: scannerDBDash(resolvedConfigPath, database),
+					// SARIF upload (security_sarifimport.go): one file the
+					// developer picked, through the CLI's own import (lane SEC-P4).
+					SARIFImport: sarifImportDash(database),
+					// Code rules card (security_opengrep_dash.go): the guided
+					// install with its size consent (lane SEC-G2).
+					Opengrep: opengrepDash(resolvedConfigPath, database),
+					IaC:      iacDash(resolvedConfigPath, database),
+					// AI change records card (security_provenance_cmd.go, lane sec-f2a).
+					Provenance: provenanceDash(resolvedConfigPath, database),
+					// The one security opt-in rule (security_optin.go): the
+					// components state's security_selected (which Settings rows and
+					// the Explain button show), and the trust, git hooks and
+					// scanner routes.
+					SecuritySelected: securitySelected,
+					// The Components page's view with the modules' own rules
+					// (components_gate.go), so a removed sandbox root reads as off there
+					// as in `observer components status` (P-057).
+					ComponentStateView: componentStateView,
+					// The launch row's Observer-entry test (launch_trust_own.go), so
+					// the New Terminal trust chip leaves out what the launch leaves out.
+					RepoTrustOwn: repoTrustDashboardOwn,
+					// The launch row's conditional rows (trust_conditions.go), so the
+					// review lists N2's initializeCommand row as the launch reads it.
+					RepoTrustPaths: repoTrustDashboardPaths(resolvedConfigPath),
+					// Delivery (delivery_wire.go, D-689): the [delivery] tunables and the
+					// one process-wide delivery service the poll loop also runs.
+					Delivery:        cfg.Delivery,
+					DeliveryService: deliveryDashOption(cfg, database),
 					// Admin-controlled Plane B (spec §3.5): the ONE seam the
 					// dashboard has onto governance. nil on an ungoverned
 					// build; here it is the daemon's single install seam, so
@@ -860,8 +1019,9 @@ func newStartCmd() *cobra.Command {
 					// `observer start` always runs the watcher beside the
 					// dashboard (ng.Go("watcher") below); the sidebar keys
 					// its watcher line to this, not to Claude setup (T-585).
-					WatcherRunning: true,
-					ToolCatalog:    toolCatalog(),
+					WatcherRunning:  true,
+					CaptureProgress: captureProgress,
+					ToolCatalog:     toolCatalog(),
 					// Connected tools hooks probe: the options the
 					// auto-registration above wrote with (T-376).
 					HookRegistryOptions: hookProbeOptionsSeam(configPath),
@@ -871,9 +1031,15 @@ func newStartCmd() *cobra.Command {
 					// Cloud account seam (cloudaccount_wire.go): local sign-in probe +
 					// `observer cloud login|logout` subprocess runner behind the Settings
 					// → Cloud Intelligence Sign-in button. Spawns the CLI; links nothing new.
-					CloudAccount:     newCloudAccountSeams(resolvedConfigPath),
-					ArenaAdmission:   arenaBudgetAdmissionSeam(resolvedConfigPath),
-					ProxyPort:        cfg.Proxy.Port,
+					CloudAccount:   newCloudAccountSeams(resolvedConfigPath),
+					ArenaAdmission: arenaBudgetAdmissionSeam(resolvedConfigPath),
+					ArenaPreflight: arenaPreflightSeam(resolvedConfigPath),
+					// OSH-R-005: may an Arena drive skip the harness's permission checks.
+					ArenaPermissionBypass: arenaPermissionBypassSeam(resolvedConfigPath),
+					ProxyPort:             cfg.Proxy.Port,
+					// OSH-R-009: the Setup route writers write the client
+					// token form when the node wants client auth.
+					ProxyClientToken: daemonProxyClientToken(cfg),
 					StashDir:         cfg.Compression.Conversation.Stash.Dir,
 					GuardEnabled:     cfg.Guard.Enabled,
 					GuardMode:        cfg.Guard.Mode,
@@ -905,7 +1071,7 @@ func newStartCmd() *cobra.Command {
 					// admissionHandle (gap P0-7) shares the proxy's ONE live
 					// admission service with the dashboard policy/egress editors,
 					// so an edit hot-swaps the instance the proxy enforces.
-					ExtraRoutes: obsDashboardRoutes(ctx, cfg, configPath, database, admissionHandle, slog.Default()),
+					ExtraRoutes: append(obsDashboardRoutes(ctx, cfg, configPath, database, admissionHandle, slog.Default()), append(hostedDashboardRoutes(configPath), gatesSandboxDashboardRoutes(configPath)...)...),
 					// Embedded web-terminal launcher (docs/session-handoff.md
 					// launch section). Nil when [handoff].allow_dashboard_launch
 					// is false → endpoints 503, button hidden.
@@ -921,6 +1087,15 @@ func newStartCmd() *cobra.Command {
 					// validation. Nil unless [terminal.sandbox].enabled →
 					// endpoint reports disabled and a sandbox request 501s.
 					SandboxProber: surfaces.sandboxProber,
+					// The first-start install's version picker (lane LEFT-SBX):
+					// nil in a build without the container driver.
+					SandboxInstallVersions: sandboxInstallVersionsSeam(resolvedConfigPath),
+					// The Settings card's org forbid of sign-in seeding (lane
+					// BOXSIGNIN): the composed managed view, nil without the sandbox.
+					SandboxSignInForbidden: sandboxSignInForbiddenSeam(resolvedConfigPath),
+					// The New Terminal "project policy" line (lane sec-p2b): reads the
+					// project match record; shown only when the node holds a project delivery.
+					ProjectPolicy: terminalProjectPolicySeam(cfg, store.New(database)),
 					// Tool-binary-resolution seams (tool-binary-resolution arc
 					// §5): pre-launch verdict + guided install. Plain funcs so
 					// the dashboard package never imports internal/toolresolve.
@@ -965,21 +1140,13 @@ func newStartCmd() *cobra.Command {
 					// + dbCleanup); main() re-execs after every defer completes.
 					// Refuses up front if the config wouldn't come back
 					// (never shut down into a brick) or on an OS without execve.
-					RestartFunc: func() error {
-						if !reexecSupported() {
-							return fmt.Errorf("restart from the dashboard is not supported on this OS - relaunch the daemon manually")
-						}
-						if perr := preflightRestart(configPath); perr != nil {
-							return perr
-						}
-						restartRequested.Store(true)
-						go func() {
-							// Let the HTTP response flush before shutdown begins.
-							time.Sleep(300 * time.Millisecond)
-							cancel()
-						}()
-						return nil
-					},
+					// The restart hook lives in sandbox_liveruns.go beside the
+					// live-run gate: a restart with a live sandboxed run asks
+					// (end them, or restart when they finish) instead of
+					// ending it (sandbox plan v2 section 5.5, SBX-UPD-1).
+					RestartFunc:      daemonRestartFunc(configPath, cancel),
+					RestartPreflight: daemonRestartPreflight(configPath),
+					LiveSandboxRuns:  startLiveRuns(configPath, cancel, surfaces.mgr, database),
 					// Remote-access substrate (plan §4). Nil unless [remote] is
 					// enabled AND a pairing secret is provisioned, so a
 					// non-loopback dashboard bind stays fail-closed. Built once
@@ -1036,6 +1203,9 @@ func newStartCmd() *cobra.Command {
 					// The Requests page (request-grants G6) rides the same
 					// client: same server, same credential.
 					opts.Requests = orgClient
+					// The Messages page (T-854) too: replies and receipts
+					// go to the same server over the same credential.
+					opts.Messages = orgClient
 				}
 				dashboardServer, err = newDaemonDashboard(opts)
 				if err != nil {
@@ -1065,9 +1235,23 @@ func newStartCmd() *cobra.Command {
 				// 127.0.0.1 on the same port instead and says why once
 				// (D-514 / D-516: start with the setting off, never refuse).
 				dashboardListen = feasibleDashboardAddr(dashboardListen, remoteCtrl, cmd.ErrOrStderr())
+				noteDashboardListen(dashboardListen)
+				// The address is recorded beside the database so a CLI asking
+				// about live sandboxed runs finds this daemon however it was
+				// started (SBX-UPD audit finding 3).
+				if removeListenRecord, lerr := writeDashboardListenRecord(cfg.Observer.DBPath, dashboardListen); lerr == nil {
+					defer removeListenRecord()
+				} else {
+					slog.Default().Warn("dashboard: could not record the listen address", "err", lerr)
+				}
 				// D-514: the settings config.Load switched off because this
 				// build cannot honour them yet, one line each.
 				for _, line := range cfg.Deferred {
+					fmt.Fprintln(cmd.ErrOrStderr(), "WARN config: "+line)
+				}
+				// The sections config.Load set aside because their optional
+				// component is not active (internal/config/component_sections.go).
+				for _, line := range cfg.Inert {
 					fmt.Fprintln(cmd.ErrOrStderr(), "WARN config: "+line)
 				}
 				// Enterprise update management, daemon side (plan §3.7/§3.9).
@@ -1200,6 +1384,9 @@ func newStartCmd() *cobra.Command {
 			if orgClient != nil {
 				if pcfg, pdb, pcleanup, perr := loadConfigAndDB(ctx, configPath); perr == nil {
 					loadPolicyResourceLKG(ctx, pcfg, orgClient, store.New(pdb), admissionHandle, gw, ngov, nf, newLogger(pcfg.Observer.LogLevel))
+					// The stored security managed pull (lane SEC-E); the
+					// shared poll step fetches it from then on.
+					loadSecurityManagedAtStart(ctx, pcfg, store.New(pdb))
 					pcleanup()
 				} else {
 					fmt.Fprintf(cmd.ErrOrStderr(), "policy resource: LKG load skipped: db open failed: %v\n", perr)
@@ -1266,6 +1453,8 @@ func newStartCmd() *cobra.Command {
 				}
 				return nil
 			})
+			// A sandboxed run's projected transcripts (lane SBX-P3C, G27).
+			setSandboxProjectionWatcher(w.AddProjectionRoot)
 			ng.Go("watcher", func() error {
 				if err := w.Watch(gctx); err != nil && !errors.Is(err, context.Canceled) {
 					return fmt.Errorf("watcher: %w", err)
@@ -1317,6 +1506,15 @@ func newStartCmd() *cobra.Command {
 			// scanner (doctor + the page surface the reason honestly).
 			ng.Go("commit-scan", func() error {
 				commitScanLoop(gctx, configPath)
+				return nil
+			})
+			// Delivery (internal/deliverysvc, D-689): the code-host and
+			// mirror poll loop. It makes no network call until the user
+			// connects a code host or opts a project into a mirror schedule;
+			// until then each tick reads two small local tables. P1
+			// fail-soft like every sibling loop.
+			ng.Go("delivery", func() error {
+				deliveryLoop(gctx, configPath)
 				return nil
 			})
 			// Session quality scoring (spec §15.2, internal/intelligence/
@@ -1551,6 +1749,48 @@ func newStartCmd() *cobra.Command {
 					return nil
 				})
 			}
+			// T-849 (tamper audit fixes 7 + 8): hook maintenance on the
+			// policy-state heartbeat. On a managed node it re-runs the
+			// idempotent auto-registration (each repair is logged and
+			// reported as hook_repaired naming the tool and the file) and
+			// then reports the managed-integrity probe, instead of waiting
+			// for a restart and the 900 s push. An individual node keeps the
+			// start-only behaviour unless [observer.hooks] periodic_register
+			// says "always"; auto_register = false is always respected.
+			{
+				var managedFn func(context.Context) bool
+				var reportFn func(context.Context)
+				if orgClient != nil {
+					managedFn = orgClient.IsManagedEnrolment
+					reportFn = func(c context.Context) { orgClient.ReportManagedIntegrity(c) }
+				}
+				hm := newHookMaintenance(cfgForLock, lockErr == nil, configPath, cmd.OutOrStdout(), cmd.ErrOrStderr(), managedFn, reportFn)
+				// Lane P1: on a managed node whose organization governs an
+				// enforcement point in the API proxy, the same loop keeps the
+				// routable AI tools routed through this proxy (written once the
+				// proxy serves, repaired every heartbeat). Built only with an
+				// org client, so an individual node never writes a route.
+				if orgClient != nil {
+					hm.routes = newRouteMaintenance(configPath, addr,
+						func(c context.Context) govern.RoutePostureVerdict { return ngov.Effective(c).RoutePosture() },
+						routeLanes, cmd.OutOrStdout(), cmd.ErrOrStderr())
+					// CLI-1b (D6): the same heartbeat keeps the native
+					// command wrap applied (or removes the one it applied)
+					// when the admin pinned shell_wrap.org_maintain.
+					hm.routes = withShellWrapMaintenance(hm.routes, newShellWrapMaintenance(configPath,
+						func(c context.Context) govern.ShellWrapPostureVerdict { return ngov.Effective(c).ShellWrapPosture() },
+						cmd.OutOrStdout(), cmd.ErrOrStderr()))
+					hm.waitProxy = func(c context.Context) {
+						wctx, cancel := context.WithTimeout(c, 2*time.Minute)
+						defer cancel()
+						waitForListener(wctx, addr)
+					}
+				}
+				ng.Go("hook-maintenance", func() error {
+					hm.run(gctx)
+					return nil
+				})
+			}
 			if orgClient != nil {
 				// P0-7 router hot-reload (docs/plans/plane-a-p0-7-guard-router-
 				// hotreload-plan.md §4.4/§4.5): apply an accepted org routing
@@ -1639,6 +1879,10 @@ func newStartCmd() *cobra.Command {
 				// auth failure or ctx-cancel. Its FIRST cycle runs immediately
 				// rather than one interval later (finding H3b), so the budget
 				// rail's first real answer arrives in seconds.
+				// The module managed pulls (roadmap F0-7): only rails whose
+				// consuming module is active register, so an install that
+				// uses none makes no request (managedpull_wire.go).
+				wireManagedPullRails(ctx, orgClient, comps, ngov)
 				ng.Go("org-push", func() error {
 					_ = orgClient.PushLoop(gctx)
 					return nil
@@ -1694,7 +1938,24 @@ func newStartCmd() *cobra.Command {
 					runner.onGuardReload = func(gd *guard.Guard) {
 						publishGuardPosture(configPath, pcfg.Guard, gd, plogger)
 					}
+					// The posture loop wakes this poll the moment it finds
+					// the cached bundle edited or deleted (T-864 gap 1).
+					setProcessPolicyBundleKick(orgClient.KickPolicyBundlePoll)
+					defer setProcessPolicyBundleKick(nil)
 					_ = orgClient.PolicyPollLoop(gctx, cachePath, runner.onResult)
+					return nil
+				})
+				// The project audience matcher (project_audience.go): match
+				// records for recently active project roots, once the org
+				// delivered a v3 project-scoped bundle. Never propagates an
+				// error.
+				ng.Go("project-audience-match", func() error {
+					mcfg, mdb, mcleanup, merr := loadConfigAndDB(gctx, configPath)
+					if merr != nil {
+						return nil
+					}
+					defer mcleanup()
+					runProjectAudienceMatch(gctx, orgBundleCachePath(mcfg), store.New(mdb), orgClient.ResolveProject)
 					return nil
 				})
 				// Plane-A P0-5 Phase W (plan §6.6/§6.9): poll every v1
@@ -1877,7 +2138,7 @@ func newStartCmd() *cobra.Command {
 				if rcfg.Ingest.OTel.Enabled {
 					// The vendor table and logs handler belong to
 					// ingest.otlp (otlp_ingest.go / otlp_ingest_omit.go).
-					opts.Handler, opts.TraceHandler = wireVendorOTLPIngest(rcfg, rdb, rlogger, planeA)
+					opts.Handler, opts.TraceHandler = wireVendorOTLPIngest(gctx, rcfg, rdb, rlogger, planeA)
 				}
 				if opts.Handler == nil && opts.TraceHandler == nil {
 					return nil // nothing this build can serve
@@ -1972,6 +2233,21 @@ func newStartCmd() *cobra.Command {
 			// like every sibling: never cancels proxy/watcher/dashboard.
 			ng.Go("guard-posture", func() error {
 				guardPostureLoop(gctx, configPath)
+				return nil
+			})
+			// Code security (security pillar Phase A): the signed posture
+			// writer and the quick-scan endpoint, both moduleGates rows.
+			startSecurityModule(gctx, ng, configPath, comps)
+			// Repository trust (security Phase B): the config baseline
+			// loop, a moduleGates row of security.trust.
+			startRepoTrustBaseline(gctx, ng, configPath, comps)
+			// R-112 to R-114 (D-761): the ONE writer of
+			// guard-git-aliases.json, the per-project git alias table the
+			// hook reads so an alias that hides `--no-verify` is judged as
+			// what it runs, without the hook ever running git. P1 like
+			// every sibling.
+			ng.Go("guard-git-aliases", func() error {
+				gitAliasLoop(gctx, configPath)
 				return nil
 			})
 			// T-323: a user guard-policy.toml that does not load is
@@ -2283,6 +2559,17 @@ func announceDashboardReady(ctx context.Context, w io.Writer, listenAddr, url st
 // Enabled/HookLane checks) — a mechanism whose ENTIRE hook surface is
 // that one event has nothing to do when this is false.
 func autoRegisterHooks(stdout, stderr io.Writer, configPath string, promptLaneEnabled bool) {
+	autoRegisterHooksPass(stdout, stderr, configPath, promptLaneEnabled, false)
+}
+
+// autoRegisterHooksPass is autoRegisterHooks with the T-872 switch:
+// repairOwned is true only for a MANAGED node's heartbeat pass
+// (hookMaintenance), where an artifact Observer owns by name and installed
+// before, but that no longer reads as Observer's (a plugin overwritten with an
+// empty module, a stubbed entry under Observer's hook name), is rewritten and
+// reported as hook_repaired instead of refused. Every other caller passes
+// false and keeps the refusal.
+func autoRegisterHooksPass(stdout, stderr io.Writer, configPath string, promptLaneEnabled, repairOwned bool) {
 	// Component gate (modular packaging P1, ledger MODPKG-6): hooks are
 	// registered only while integration.hooks is active, and only for
 	// tools whose adapter is active, so a removed component's hooks never
@@ -2291,10 +2578,12 @@ func autoRegisterHooks(stdout, stderr io.Writer, configPath string, promptLaneEn
 	if !comps.Active("integration.hooks") {
 		return
 	}
-	reg, ok := newAutoRegisterRegistry(stderr, configPath)
+	reg, ok := newAutoRegisterRegistryWith(stderr, configPath, repairOwned)
 	if !ok {
 		return
 	}
+	// T-847: note a deleted hook_checksums.json before this pass recreates it.
+	reg.BeginPass(hookRepairTracker, time.Now())
 	for _, tool := range reg.Installed() {
 		if !comps.AdapterActive(tool) {
 			continue
@@ -2320,7 +2609,7 @@ func autoRepairMCP(stdout, stderr io.Writer, configPath string, comps components
 		return
 	}
 	resolvedConfig, _ := config.ResolveGlobalPath(configPath)
-	command := registrationCommand(binary)
+	command := mcpRegistrationCommand(binary, registrationStableMCPCommand(configPath))
 	reg, err := mcpregister.NewRegistrar(mcpregister.RegisterOptions{
 		BinaryPath: command,
 		ConfigPath: registrationConfigArg(resolvedConfig, ""),
@@ -2366,24 +2655,56 @@ func autoRegisterOptions(configPath string) (hook.Options, error) {
 		return hook.Options{}, err
 	}
 	resolvedConfig, _ := config.ResolveGlobalPath(configPath)
-	return hook.Options{
-		Getenv: os.Getenv,
+	opts := hook.Options{
+		WindowsPATH: hook.PersistentWindowsPATH,
+		GOOS:        autoRegisterGOOS,
 		// U1 + U5 (FIX-UPGRADE): the same command and --config argument
 		// `observer init` writes (registration.go), so the two writers no
 		// longer rewrite each other, and an npm / pip install registers the
 		// package manager's launcher, which survives an upgrade.
 		BinaryPath: registrationCommand(binary),
-		ConfigPath: registrationConfigArg(resolvedConfig, ""),
-		WSLDistro:  os.Getenv("WSL_DISTRO_NAME"),
-		SkipEvent:  autoRegisterSkipEvent,
+		// FU-214: a "-wsl" twin runs the observer.exe itself, never the
+		// launcher BinaryPath may name.
+		WSLTwinBinaryPath: registrationWSLTwinBinary(binary),
+		ConfigPath:        registrationConfigArg(resolvedConfig, ""),
+		WSLDistro:         os.Getenv("WSL_DISTRO_NAME"),
+		SkipEvent:         autoRegisterSkipEvent,
 		// T-725: a start from another binary path (or a hook written
 		// without --config) must leave an equivalent existing hook, and
 		// the user's file, untouched; only a missing or broken hook is
 		// rewritten. The dashboard probe shares this, so it reports an
 		// equivalent hook as registered.
 		KeepEquivalentHooks: true,
-	}, nil
+		// A host that fails open on a hook failure is told to fail closed
+		// while guard enforcement closes the tool gate (Goose on_failure).
+		ToolGateFailsClosed: registrationToolGateFailsClosed(configPath),
+		// AW-37: the fail-closed Windows hook bridge, for an enforcing
+		// managed node (switched off behind LC6 inside the writer).
+		WindowsBridgeFailClosed: registrationWindowsBridgeFailClosed(configPath),
+		// A managed node with repository trust selected pins the plugin
+		// shim's binary and config (security pillar plan 5.1 item 6).
+		PinPluginPaths: registrationPinPluginPaths(configPath),
+		// The security feedback's post-tool events (lane sec-h): written
+		// only while security.feedback is selected, removed when it is not.
+		Selected: registrationSelected(configPath, ""),
+	}
+	if autoRegisterWSLHost != nil {
+		autoRegisterWSLHost(&opts)
+	}
+	return opts, nil
 }
+
+// autoRegisterWSLHost, when set, makes the auto-registration registry a
+// Windows observer.exe's that sees one WSL home: a test seam only (nil in
+// production), so a test on a Linux host can drive the Windows to WSL twins
+// (FU-197) without a real \\wsl.localhost\ path. Production finds the home
+// through crossmount (a Windows host's running distros, FU-189).
+var autoRegisterWSLHost func(*hook.Options)
+
+// autoRegisterGOOS is the OS the auto-registration registry writes for: ""
+// (the running OS) in production. A test seam only, so a test on any host
+// can drive the macOS-only Xcode agent-home targets (FU-145).
+var autoRegisterGOOS = ""
 
 // hookProbeOptionsSeam is the dashboard's Options.HookRegistryOptions:
 // autoRegisterOptions with DryRun on (the dashboard forces it too).
@@ -2398,11 +2719,19 @@ func hookProbeOptionsSeam(configPath string) func() (hook.Options, error) {
 // newAutoRegisterRegistry builds the hook.Registry every auto-registration
 // writes through (autoRegisterOptions).
 func newAutoRegisterRegistry(stderr io.Writer, configPath string) (*hook.Registry, bool) {
+	return newAutoRegisterRegistryWith(stderr, configPath, false)
+}
+
+// newAutoRegisterRegistryWith is newAutoRegisterRegistry with
+// hook.Options.RepairOwnedArtifacts set to repairOwned (T-872: a managed
+// node's repair pass only).
+func newAutoRegisterRegistryWith(stderr io.Writer, configPath string, repairOwned bool) (*hook.Registry, bool) {
 	opts, err := autoRegisterOptions(configPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "auto-register: cannot resolve binary path: %v\n", err)
 		return nil, false
 	}
+	opts.RepairOwnedArtifacts = repairOwned
 	reg, err := hook.NewRegistry(opts)
 	if err != nil {
 		fmt.Fprintf(stderr, "auto-register: %v\n", err)
@@ -2442,7 +2771,7 @@ var autoRegisterOwesLive = map[string]string{
 // autoRegisterSkipEvent is `observer start`'s per-event filter (hook.Options
 // SkipEvent): skip a binding that owes its live test.
 func autoRegisterSkipEvent(tool, event string) bool {
-	base := strings.TrimSuffix(tool, "-windows")
+	base := clientwire.HookTargetBase(tool)
 	_, owes := autoRegisterOwesLive[base+" "+event]
 	return owes
 }
@@ -2454,13 +2783,20 @@ func autoRegisterTarget(reg *hook.Registry, tool string, promptLaneEnabled bool,
 	if !autoRegisterDecision(tool, promptLaneEnabled) {
 		return
 	}
-	res := reg.Register(tool)
-	if res.ConfigPath != "" {
-		if perr := reg.RecordAutoRegisterResult(res.ConfigPath, res.Error); perr != nil {
-			fmt.Fprintf(stderr, "auto-register %s: failed to persist result to hook_checksums.json: %v\n", tool, perr)
-		}
+	// T-847: Reconcile is Register plus the outcome record in
+	// hook_checksums.json (tool, result, registered events) and the repair
+	// classification the managed-integrity probe reports for a day.
+	rec := reg.Reconcile(tool, hookRepairTracker, time.Now())
+	res := rec.Result
+	if rec.RecordErr != nil {
+		fmt.Fprintf(stderr, "auto-register %s: failed to persist result to hook_checksums.json: %v\n", tool, rec.RecordErr)
 	}
 	logAutoRegisterRewrites(stdout, tool, res)
+	if len(rec.Repaired) > 0 {
+		fmt.Fprintf(stderr,
+			"WARN auto-register %s: repaired %d previously registered hook(s) in %s: %s (reported to the org as hook_repaired on a managed node)\n",
+			tool, len(rec.Repaired), res.ConfigPath, strings.Join(rec.Repaired, ", "))
+	}
 	switch {
 	case res.Error != nil:
 		fmt.Fprintf(stderr,
@@ -2470,6 +2806,26 @@ func autoRegisterTarget(reg *hook.Registry, tool string, promptLaneEnabled bool,
 		fmt.Fprintf(stdout,
 			"auto-register %s: installed %d hook(s) at %s\n",
 			tool, len(res.HooksAdded), res.ConfigPath)
+	}
+	if res.Error == nil && len(res.TrustRecorded) > 0 {
+		fmt.Fprintf(stdout, "auto-register %s: recorded host trust for Observer's own hook(s): %s\n",
+			tool, strings.Join(res.TrustRecorded, ", "))
+	}
+	if res.Error == nil && res.TrustNote != "" {
+		fmt.Fprintf(stderr, "WARN auto-register %s: %s\n", tool, res.TrustNote)
+	}
+	logAutoRegisterWarnings(stderr, tool, res)
+}
+
+// logAutoRegisterWarnings prints a registration's non-fatal warnings (e.g. a
+// Windows hook runner whose shell is not on the Windows PATH): the hooks are
+// in place, but the host may not run them as launched today.
+func logAutoRegisterWarnings(w io.Writer, tool string, res hook.RegistrationResult) {
+	if res.Error != nil {
+		return
+	}
+	for _, msg := range res.Warnings {
+		fmt.Fprintf(w, "WARN auto-register %s: %s\n", tool, msg)
 	}
 }
 
@@ -2498,7 +2854,8 @@ func logAutoRegisterRewrites(w io.Writer, tool string, res hook.RegistrationResu
 // dashboard just installed, so its hooks land without a daemon restart. A
 // successful guided install IS the detection signal for that tool, so the
 // native target is registered even before the vendor created its config
-// directory; a cross-OS "-windows" variant is registered only when detected,
+// directory; a cross-OS "-windows" variant, an Xcode agent-home target
+// (FU-145) and a WSL twin (FU-197) are registered only when detected,
 // exactly as at start. The caller applies the [observer.hooks]
 // auto_register switch (the same consent `observer start` honours).
 func autoRegisterInstalledTool(stdout, stderr io.Writer, configPath string, promptLaneEnabled bool, tool string) {
@@ -2511,7 +2868,7 @@ func autoRegisterInstalledTool(stdout, stderr io.Writer, configPath string, prom
 	}
 	autoRegisterTarget(reg, tool, promptLaneEnabled, stdout, stderr)
 	for _, t := range reg.Installed() {
-		if base, isWindows := strings.CutSuffix(t, "-windows"); isWindows && base == tool {
+		if t != tool && clientwire.HookTargetBase(t) == tool {
 			autoRegisterTarget(reg, t, promptLaneEnabled, stdout, stderr)
 		}
 	}
@@ -2546,8 +2903,48 @@ func autoRegisterDecision(tool string, promptLaneEnabled bool) bool {
 	// `observer start` writes a vendor config only when every event it
 	// registers passed a live test on a real install, or the mechanism is
 	// grandfathered. Anything else is `observer init` only (consented).
-	c, _, _ := advertisedCapability(tool)
+	if _, initOnly := initOnlyHookTarget(tool, autoRegisterHostGOOS); initOnly {
+		return false
+	}
+	// The target's own row: a "-windows" bridge's or an Xcode agent-home
+	// target's base tool (clientwire.HookTargetCapability, FU-145).
+	c, _ := clientwire.HookTargetCapability(tool)
 	return autoRegisterLiveGate(c)
+}
+
+// initOnlyHookTargets are registration targets `observer start` does not
+// write although their mechanism passed the live gate: the live run that
+// admitted the mechanism covered another OS shape of it. Each row is one
+// target on one host OS ("" = every host OS); a row goes when that shape
+// passes its own live end-to-end run.
+var initOnlyHookTargets = []struct {
+	target, goos, reason string
+}{
+	// The 2026-10-21 wave was live-run on WSL Ubuntu (Linux shape); its
+	// six "-windows" wsl.exe bridges (Windows vendor, WSL daemon) passed
+	// their own live run on 2026-10-22 and left this table. The
+	// Windows-native shapes (an observer.exe on the Windows host) have not.
+	{"ibm-bob", "windows", "the Windows-native (cmd.exe) shape was not live-run (2026-10-21 E2E was WSL-native)"},
+	{"codebuddy", "windows", "the Windows-native (Git Bash) shape was not live-run (2026-10-21 E2E was WSL-native)"},
+	{"deepagents-code", "windows", "the Windows-native (cmd.exe) shape was not live-run (2026-10-21 E2E was WSL-native)"},
+	{"dimcode", "windows", "the Windows-native (cmd.exe) shape was not live-run (2026-10-21 E2E was WSL-native)"},
+	{"dirac", "windows", "the Windows-native .ps1 shape was not live-run (2026-10-21 E2E was WSL-native)"},
+	{"vtcode", "windows", "the Windows-native (Git sh, %APPDATA% config) shape was not live-run (2026-10-21 E2E was WSL-native)"},
+}
+
+// autoRegisterHostGOOS is the host OS initOnlyHookTargets is read for (the
+// running OS; the Linux hook-parity golden pins it).
+var autoRegisterHostGOOS = runtime.GOOS
+
+// initOnlyHookTarget reports the reason target is `observer init`-only on a
+// host running goos.
+func initOnlyHookTarget(target, goos string) (string, bool) {
+	for _, row := range initOnlyHookTargets {
+		if row.target == target && (row.goos == "" || row.goos == goos) {
+			return row.reason, true
+		}
+	}
+	return "", false
 }
 
 // hookRegistrationWanted is the capability-shaped registration gate shared
@@ -2584,9 +2981,28 @@ var grandfatheredAutoRegister = map[integration.HookMechanism]string{
 	// It is `observer init` only until its bindings go live.
 }
 
+// initOnlyHookMechanisms are the mechanisms `observer start` never writes,
+// live or not: each is `observer init` only (consented), for the reason
+// given.
+var initOnlyHookMechanisms = map[integration.HookMechanism]string{
+	// Autohand device sync mirrors the hooks member of config.json between
+	// a user's devices, and a pre-tool hook that fails BLOCKS the call: a
+	// hook written on one OS (its binary path) would block every tool on a
+	// synced device of another OS. Writing it needs the user's consent.
+	integration.HookAutohandConfig: "Autohand device sync mirrors config.json hooks across devices, and a failing pre-tool hook blocks every tool there",
+}
+
 // autoRegisterLiveGate reports whether `observer start` may write c's
 // mechanism: every registered binding live, or a grandfathered mechanism.
 func autoRegisterLiveGate(c integration.Capability) bool {
+	// A writer built but switched off until a live check passes (DEC-12)
+	// is never written, by `observer start` or anything else.
+	if c.Hook.LiveGate.Waiting() {
+		return false
+	}
+	if _, initOnly := initOnlyHookMechanisms[c.Hook.Mechanism]; initOnly {
+		return false
+	}
 	if c.Hook.RegisteredAllLive() {
 		return true
 	}
@@ -2603,10 +3019,15 @@ func autoRegisterRemediation(tool string) string {
 	initFlags := map[string]string{
 		"claude-code":         "--claude-code",
 		"claude-code-windows": "--claude-code",
+		"claude-code-xcode":   "--claude-code",
+		"claude-code-wsl":     "--claude-code",
 		"cursor":              "--cursor",
 		"cursor-windows":      "--cursor",
+		"cursor-wsl":          "--cursor",
 		"codex":               "--codex",
 		"codex-windows":       "--codex",
+		"codex-xcode":         "--codex",
+		"codex-wsl":           "--codex",
 	}
 	if flag, ok := initFlags[tool]; ok {
 		return fmt.Sprintf("run: observer init %s --force (or clear the conflicting hooks entry by hand)", flag)
@@ -2643,6 +3064,46 @@ func autoRegisterRemediation(tool string) string {
 // Returns "" when unwatched is empty (nothing to warn about); otherwise a
 // single "WARN "-prefixed, newline-terminated line matching the sibling
 // cross-env-DB WARN's style.
+// crossEnvSiblingCheckApplies reports whether the cross-env observer.db
+// check runs at start. A sibling database is written by a hook of a tool
+// registered from the other OS, so with the watched adapters restricted
+// (an explicit enabled_adapters list that leaves out a default adapter) the
+// foreign mounts are looked at only when the list keeps a tool whose hooks
+// register as a cross-OS bridge (integration.HookSpec.CrossOSBridge, a
+// capability, never a tool name) AND hooks auto-register at start; a
+// restricted list with auto-registration off (live run 2, finding N4:
+// enabled_adapters = ["poolside"], auto_register = false, yet the start
+// stat'd the Windows mount's observer.db) is left alone. An empty list, or
+// one naming every default, watches everything and always checks.
+func crossEnvSiblingCheckApplies(enabled, defaults []string, autoRegister bool) bool {
+	if len(enabled) == 0 {
+		return true
+	}
+	have := make(map[string]bool, len(enabled))
+	for _, tool := range enabled {
+		have[tool] = true
+	}
+	restricted := false
+	for _, d := range defaults {
+		if !have[d] {
+			restricted = true
+			break
+		}
+	}
+	if !restricted {
+		return true
+	}
+	if !autoRegister {
+		return false
+	}
+	for _, tool := range enabled {
+		if c, ok := integration.For(tool); ok && c.Hook.CrossOSBridge {
+			return true
+		}
+	}
+	return false
+}
+
 func allowedNotWatchedWarning(unwatched []string, enabledLen, defaultLen int) string {
 	if len(unwatched) == 0 {
 		return ""

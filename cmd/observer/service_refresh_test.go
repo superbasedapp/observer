@@ -172,7 +172,7 @@ func TestServiceUpgradeKeepsArguments(t *testing.T) {
 		t.Skip("systemd units are Linux-only")
 	}
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	saved := systemdAvailable
 	systemdAvailable = func() bool { return true }
 	t.Cleanup(func() { systemdAvailable = saved })
@@ -224,7 +224,7 @@ func TestServiceInstallWithoutNowOnARunningUnit(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("systemd units are Linux-only")
 	}
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	saved := systemdAvailable
 	systemdAvailable = func() bool { return true }
 	t.Cleanup(func() { systemdAvailable = saved })

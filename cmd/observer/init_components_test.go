@@ -99,7 +99,7 @@ func TestWireAIClientsReadsTheDefaultConfig(t *testing.T) {
 // selection lands in [components] before any wiring, a dry run writes
 // nothing, and an unknown id is refused while the rest applies.
 func TestInitComponentFlagsWriteTheBlock(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	pinToolHomes(t)
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.toml")
 	if err := os.WriteFile(cfgPath, []byte("# keep me\n"), 0o600); err != nil {

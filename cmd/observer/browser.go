@@ -20,6 +20,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/browserhost"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/fsatomic"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
@@ -825,7 +826,10 @@ func updateBrowserHealth(ctx context.Context, path, site string, mutate func(bro
 // (lockFileExclusive) blocked indefinitely, so a wedged contender could hold
 // a hook child past the 40s host cap and get it killed mid-write —
 // reintroducing the very teardown loss the work deadline exists to prevent.
-const browserHealthLockTimeout = 5 * time.Second
+//
+// A var, not a const, only so tests can shorten the wait; production never
+// assigns it.
+var browserHealthLockTimeout = 5 * time.Second
 
 // browserHealthLockPollInterval is how long withBrowserHealthLock sleeps
 // between NONBLOCKING lock attempts while contended. Short enough that a
@@ -1184,8 +1188,10 @@ func resolveBrowserIngestToken(cfg config.Config) (string, error) {
 // account can read or redirect (P3-27): a symlink or any non-regular file is
 // refused (fail closed); a file another account owns is refused; a regular
 // file of ours with group or other bits is repaired to 0600 before use. A new
-// file is created with O_EXCL, so a file planted between the check and the
-// write is never written through.
+// file is created exclusively, so a file planted between the check and the
+// write is never written through, and owner-only on every OS
+// (fsatomic.CreateOwnerOnly: 0600, or on Windows a protected DACL granting
+// this user and SYSTEM only, R-160).
 func resolveLocalTokenFile(path string) (string, error) {
 	tok, err := readLocalTokenFile(path)
 	if err != nil || tok != "" {
@@ -1196,10 +1202,12 @@ func resolveLocalTokenFile(path string) (string, error) {
 		return "", fmt.Errorf("generate token: %w", err)
 	}
 	tok = hex.EncodeToString(buf)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	// 0700: a directory this creates holds a credential (audit F6 of lane
+	// p1proxyauth); an existing directory keeps its own mode.
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil { //nolint:gosec // G703: false positive; this node's own local token file from its config or ~/.observer default, the operator's own path
 		return "", fmt.Errorf("mkdir: %w", err)
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // G304: path derived from the daemon's own config dir.
+	f, err := fsatomic.CreateOwnerOnly(path)
 	if errors.Is(err, os.ErrExist) {
 		// An empty token file of ours (checked above), or a concurrent
 		// creator: take a token another process wrote, else replace the
@@ -1207,10 +1215,10 @@ func resolveLocalTokenFile(path string) (string, error) {
 		if again, rerr := readLocalTokenFile(path); rerr != nil || again != "" {
 			return again, rerr
 		}
-		if rmErr := os.Remove(path); rmErr != nil {
+		if rmErr := os.Remove(path); rmErr != nil { //nolint:gosec // G703: false positive; this node's own local token file from its config or ~/.observer default, the operator's own path
 			return "", fmt.Errorf("replace empty token file: %w", rmErr)
 		}
-		f, err = os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // G304: as above.
+		f, err = fsatomic.CreateOwnerOnly(path)
 	}
 	if err != nil {
 		return "", fmt.Errorf("persist token: %w", err)
@@ -1228,7 +1236,7 @@ func resolveLocalTokenFile(path string) (string, error) {
 // readLocalTokenFile reads an existing token file under the rules above. A
 // missing file is ("", nil); an empty one is ("", nil) too.
 func readLocalTokenFile(path string) (string, error) {
-	info, err := os.Lstat(path)
+	info, err := os.Lstat(path) //nolint:gosec // G703: false positive; this node's own local token file from its config or ~/.observer default, the operator's own path
 	if errors.Is(err, os.ErrNotExist) {
 		return "", nil
 	}

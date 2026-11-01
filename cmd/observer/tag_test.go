@@ -34,7 +34,7 @@ func newTagCLIFixtureIDs(t *testing.T, sessionIDs ...string) string {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "observer.db")
 	cfgPath := filepath.Join(dir, "config.toml")
-	if err := os.WriteFile(cfgPath, []byte("[observer]\ndb_path = \""+dbPath+"\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("[observer]\ndb_path = \""+filepath.ToSlash(dbPath)+"\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

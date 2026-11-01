@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -90,7 +91,7 @@ func writeLaunchConfig(t *testing.T, tool, path string) string {
 	t.Helper()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.toml")
-	body := "[launch.tools." + tool + "]\npath = \"" + path + "\"\n"
+	body := "[launch.tools." + tool + "]\npath = \"" + filepath.ToSlash(path) + "\"\n"
 	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -129,7 +130,9 @@ func TestResolveToolBin(t *testing.T) {
 		swapResolveEnv(t, fakeEnv("linux", false, "/home/u", nil,
 			[]string{"/usr/bin"}, map[string]fs.FileMode{"/usr/bin/opencode": exeBin}))
 		got, err := resolveToolBin("opencode", "", "--opencode-path", cfgPath, io.Discard)
-		if err != nil || got != binPath {
+		// The configured path comes back as written (slash form in the
+		// TOML); compare it in the host form.
+		if err != nil || filepath.FromSlash(got) != binPath {
 			t.Fatalf("got (%q, %v), want (%q, nil)", got, err, binPath)
 		}
 	})
@@ -143,6 +146,7 @@ func TestResolveToolBin(t *testing.T) {
 	})
 
 	t.Run("verdict ok returns bin silently", func(t *testing.T) {
+		skipLinuxFakeOnWindows(t)
 		swapResolveEnv(t, fakeEnv("linux", false, "/home/u", nil,
 			[]string{"/usr/bin"}, map[string]fs.FileMode{"/usr/bin/opencode": exeBin}))
 		var stderr strings.Builder
@@ -156,6 +160,7 @@ func TestResolveToolBin(t *testing.T) {
 	})
 
 	t.Run("shadowed prints a note and returns the native bin", func(t *testing.T) {
+		skipLinuxFakeOnWindows(t)
 		swapResolveEnv(t, fakeEnv("linux", true, "/home/u", nil,
 			[]string{"/mnt/c/npm", "/usr/bin"},
 			map[string]fs.FileMode{
@@ -173,6 +178,7 @@ func TestResolveToolBin(t *testing.T) {
 	})
 
 	t.Run("foreign_only errors with the install command", func(t *testing.T) {
+		skipLinuxFakeOnWindows(t)
 		swapResolveEnv(t, fakeEnv("linux", true, "/home/u", nil,
 			[]string{"/mnt/c/npm"},
 			map[string]fs.FileMode{"/mnt/c/npm/opencode": exeBin}))
@@ -268,12 +274,13 @@ func TestAgentRuntimeEnv(t *testing.T) {
 
 	t.Run("relocates config/cache/state + pkg caches, never data", func(t *testing.T) {
 		got := agentRuntimeEnv("/opt/agent-runtime")
+		// The dirs are host paths, joined with the host's separator.
 		want := map[string]string{
-			"XDG_CONFIG_HOME":       "/opt/agent-runtime/config",
-			"XDG_CACHE_HOME":        "/opt/agent-runtime/cache",
-			"XDG_STATE_HOME":        "/opt/agent-runtime/state",
-			"npm_config_cache":      "/opt/agent-runtime/npm",
-			"BUN_INSTALL_CACHE_DIR": "/opt/agent-runtime/bun",
+			"XDG_CONFIG_HOME":       filepath.Join("/opt/agent-runtime", "config"),
+			"XDG_CACHE_HOME":        filepath.Join("/opt/agent-runtime", "cache"),
+			"XDG_STATE_HOME":        filepath.Join("/opt/agent-runtime", "state"),
+			"npm_config_cache":      filepath.Join("/opt/agent-runtime", "npm"),
+			"BUN_INSTALL_CACHE_DIR": filepath.Join("/opt/agent-runtime", "bun"),
 		}
 		for k, v := range want {
 			if got[k] != v {
@@ -336,5 +343,16 @@ func TestEnvValue(t *testing.T) {
 	}
 	if got := envValue(env, "Z"); got != "" {
 		t.Errorf("envValue absent = %q, want empty", got)
+	}
+}
+
+// skipLinuxFakeOnWindows skips a case whose fake environment models a Linux
+// host with POSIX paths: the resolver joins with the host's separator, so on
+// Windows the fake's paths never match (Windows 11 Pro rerun 2026-10-25,
+// D5 group 4).
+func skipLinuxFakeOnWindows(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake models a Linux host with POSIX paths")
 	}
 }

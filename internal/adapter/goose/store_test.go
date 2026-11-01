@@ -3,7 +3,6 @@ package goose
 import (
 	"context"
 	"database/sql"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -62,36 +61,8 @@ func TestIsForeignMountPathAndMirror(t *testing.T) {
 		t.Fatalf("foreign path %q not classified foreign", srcDB)
 	}
 
-	// Stage a fake SQLite trio and mirror it. The bytes need not be valid
-	// SQLite — stageMirrorIfForeign only copies files.
-	if err := os.MkdirAll(filepath.Dir(srcDB), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for _, suffix := range []string{"", "-wal", "-shm"} {
-		if err := os.WriteFile(srcDB+suffix, []byte("data"+suffix), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	mirror, err := stageMirrorIfForeign(srcDB)
-	if err != nil {
-		t.Fatalf("stageMirrorIfForeign: %v", err)
-	}
-	if mirror == srcDB {
-		t.Fatal("foreign source was not mirrored")
-	}
-	if _, err := os.Stat(mirror); err != nil {
-		t.Fatalf("mirror db not created: %v", err)
-	}
-
-	// Second call: mirror is up-to-date, returns the same path.
-	again, err := stageMirrorIfForeign(srcDB)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if again != mirror {
-		t.Errorf("up-to-date mirror re-staged to a different path: %q vs %q", again, mirror)
-	}
+	// The mirror itself (filtered staging, reuse, refresh) is pinned by
+	// mirror_filter_test.go and internal/adapter/mirrorbase.
 }
 
 func TestMissingMessagesTable(t *testing.T) {

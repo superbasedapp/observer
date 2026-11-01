@@ -19,7 +19,9 @@ import (
 )
 
 // cloud_egress_test.go pins the egress invariants for the cloud-intelligence
-// spine. It has TWO halves:
+// spine. Its lanes (internal/cloudclient behind internal/cloudgateway) are
+// also rows of the node's one declared-egress lane list, egress_lanes_test.go.
+// It has TWO halves:
 //
 //   - IMPORT-GRAPH guards (TestCloudDaemonPathsCannotReachCloudClient,
 //     TestCloudClientIsolatedToConsentGateway): the always-on daemon paths cannot

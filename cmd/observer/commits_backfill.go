@@ -44,6 +44,10 @@ type CommitsProjectReport struct {
 type commitsBackfillArgs struct {
 	Since     string
 	ProjectID int64
+	// Config is the loaded config: its [delivery] section decides whether
+	// each scanned project's landing step (D-689) runs after the scan, so a
+	// backfill fills the Delivery tab as well as the commit ledger.
+	Config config.Config
 }
 
 // commitsSinceDays matches a bare "<N>d" relative-days shorthand
@@ -106,12 +110,19 @@ func backfillCommits(ctx context.Context, database *sql.DB, args commitsBackfill
 	}
 
 	sc := newCommitScanner(st, config.ProjectsConfig{CommitLinkWindowDays: 14}, nil)
+	// The delivery landing step (nil when [delivery].local is off), run
+	// once per successfully scanned project, unthrottled.
+	reevaluate := deliveryReevaluateFunc(st, args.Config, nil)
 
 	for _, r := range roots {
-		res, serr := sc.FullScan(ctx, commitscan.Root{ProjectID: r.ID, RootPath: r.RootPath}, since, 0)
+		res, serr := sc.FullScan(ctx, commitscan.Root{ProjectID: r.ID, RootPath: commitScanRoot(r.RootPath)}, since, 0)
 		pr := CommitsProjectReport{ProjectID: r.ID, CommitsSeen: res.CommitsSeen, Inserted: res.Inserted}
 		if serr != nil {
 			pr.Error = serr.Error()
+		} else if reevaluate != nil {
+			if lerr := reevaluate(ctx, r.ID); lerr != nil {
+				pr.Error = "commits scanned; delivery evaluation failed: " + lerr.Error()
+			}
 		}
 		rep.Projects[r.RootPath] = pr
 		rep.ProjectsScanned++

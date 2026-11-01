@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -110,7 +111,9 @@ func TestCollectArtifactStatesInstalledMachine(t *testing.T) {
 	if s := stateOf(t, states, "artifact.plugin-shims"); s.State != artifactstate.StateInstalled || s.Leftover {
 		t.Errorf("shims: %+v", s)
 	}
-	if s := stateOf(t, states, "artifact.node-inspection"); s.State != artifactstate.StateInstalled {
+	// The node-inspection broker is a Linux Unix socket under /run; Windows
+	// has no such artifact (Windows 11 Pro rerun 2026-10-25, D5 group 8).
+	if s := stateOf(t, states, "artifact.node-inspection"); runtime.GOOS != "windows" && s.State != artifactstate.StateInstalled {
 		t.Errorf("node-inspection: %+v", s)
 	}
 	warned := map[string]bool{}

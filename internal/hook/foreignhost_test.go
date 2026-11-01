@@ -45,6 +45,20 @@ func TestForeignClaudeHookHost(t *testing.T) {
 			`{"session_id":"g1","sessionId":"g1","hook_event_name":"SessionEnd","hookEventName":"session_end","cwd":"/r","workspaceRoot":"/r"}`,
 			"grok", true,
 		},
+		{
+			// DeepSeek Harness dsh-hooks-claude-code 0.2.1-rc.3 base():
+			// transcript_path is always the empty literal.
+			"deepseek_harness_replay",
+			`{"session_id":"7b0d4c1e-2222-4333-8444-555566667777","transcript_path":"","hook_event_name":"PreToolUse","cwd":"/home/dev/repo","tool_name":"bash","tool_input":{"command":"ls"},"tool_use_id":"call_1"}`,
+			"deepseek", true,
+		},
+		{
+			// No transcript_path key at all (the Devin CLI doc example's
+			// shape) is not DeepSeek's empty literal and stays genuine.
+			"transcript_path_absent_is_not_deepseek",
+			`{"session_id":"s1","hook_event_name":"PreToolUse","tool_name":"exec","tool_input":{"command":"ls"},"prompt_id":"p1"}`,
+			"", false,
+		},
 		{"unidentified_lower_case_event", `{"session_id":"x1","hook_event_name":"afterSomething"}`, "unidentified", true},
 		{"unidentified_camel_session_only", `{"sessionId":"x2","hook_event_name":"Stop"}`, "unidentified", true},
 		{"unidentified_conversation_only", `{"conversation_id":"x3","hook_event_name":"Stop"}`, "unidentified", true},
@@ -70,10 +84,15 @@ func TestClassifyClaudeHookPayload(t *testing.T) {
 		wantTool   string
 		wantReply  string
 	}{
-		{"cursor_prompt", `{"session_id":"c","hook_event_name":"beforeSubmitPrompt","cursor_version":"2026.10.01"}`, ForeignNeutral, "", "{\"continue\":true}\n"},
-		{"cursor_pre_tool", `{"session_id":"c","hook_event_name":"preToolUse","cursor_version":"2026.10.01"}`, ForeignNeutral, "", "{}\n"},
-		{"cursor_session_end_no_version", `{"session_id":"c","hook_event_name":"sessionEnd"}`, ForeignNeutral, "", "{}\n"},
+		// No registration probe: the cursor rows take their unregistered
+		// action (FU-122); TestCursorReplayNeutralOnlyWhileRegistered pins
+		// the neutral answer while the registration is present.
+		{"cursor_prompt", `{"session_id":"c","hook_event_name":"beforeSubmitPrompt","cursor_version":"2026.10.01"}`, ForeignReroute, "cursor", "{\"continue\":true}\n"},
+		{"cursor_pre_tool", `{"session_id":"c","hook_event_name":"preToolUse","cursor_version":"2026.10.01"}`, ForeignReroute, "cursor", "{}\n"},
+		{"cursor_session_end_no_version", `{"session_id":"c","hook_event_name":"sessionEnd"}`, ForeignReroute, "cursor", "{}\n"},
 		{"grok_dispatch", `{"session_id":"g","sessionId":"g","hook_event_name":"Stop","hookEventName":"stop"}`, ForeignDispatch, "grok", "{}\n"},
+		{"deepseek_prompt_reroute", `{"session_id":"d","transcript_path":"","hook_event_name":"UserPromptSubmit","cwd":"/r","prompt":"hi"}`, ForeignReroute, "deepseek", "{}\n"},
+		{"deepseek_pre_tool_reroute", `{"session_id":"d","transcript_path":"","hook_event_name":"PreToolUse","cwd":"/r","tool_name":"pwsh","tool_input":{"command":"dir"}}`, ForeignReroute, "deepseek", "{}\n"},
 		{"unidentified_noop", `{"sessionId":"x","hook_event_name":"Stop"}`, ForeignNoop, "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

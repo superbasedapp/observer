@@ -1,8 +1,10 @@
 package hook
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -31,7 +33,7 @@ func TestRegisterPluginShim(t *testing.T) {
 	}{
 		{"opencode", ".config/opencode/plugins/superbased-observer.ts", []string{"chat.message", "tool.execute.before"}},
 		{"kilo-code-cli", ".config/kilo/plugin/superbased-observer.ts", []string{"chat.message", "tool.execute.before"}},
-		{"pi", ".pi/agent/extensions/superbased-observer.ts", []string{"tool_call"}},
+		{"pi", ".pi/agent/extensions/superbased-observer.ts", []string{"input", "tool_call"}},
 	}
 	for _, c := range cases {
 		t.Run(c.tool, func(t *testing.T) {
@@ -49,7 +51,7 @@ func TestRegisterPluginShim(t *testing.T) {
 			if err != nil || !pluginshim.LooksLikeObserverShim(data) {
 				t.Fatalf("shim not written: %v", err)
 			}
-			for _, want := range []string{`"tool":"` + c.tool + `"`, `"bin":"/opt/observer/bin/observer"`, `"posture":"` + filepath.Join(home, ".observer", "guard-posture.json") + `"`} {
+			for _, want := range []string{`"tool":"` + c.tool + `"`, `"bin":"/opt/observer/bin/observer"`, `"posture":` + jsonString(filepath.Join(home, ".observer", "guard-posture.json"))} {
 				if !strings.Contains(string(data), want) {
 					t.Errorf("shim lacks %s", want)
 				}
@@ -163,7 +165,14 @@ func TestInstalledDetectsPluginShimHosts(t *testing.T) {
 	if got := r.InstalledOutOfBand(); len(got) != 0 {
 		t.Fatalf("InstalledOutOfBand() = %v with no Hermes home", got)
 	}
-	if err := os.MkdirAll(filepath.Join(home, ".hermes"), 0o755); err != nil {
+	// The platform default: ~/.hermes, or on Windows %LOCALAPPDATA%\hermes
+	// whose fallback (no LOCALAPPDATA) is ~/AppData/Local/hermes, as Hermes
+	// itself resolves it (hermes_constants._platform_default_hermes_home).
+	hermesHome := filepath.Join(home, ".hermes")
+	if runtime.GOOS == "windows" {
+		hermesHome = filepath.Join(home, "AppData", "Local", "hermes")
+	}
+	if err := os.MkdirAll(hermesHome, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if got := r.InstalledOutOfBand(); len(got) != 1 || got[0] != "hermes" {
@@ -193,4 +202,11 @@ func TestRegisterPluginShimUngroundedHosts(t *testing.T) {
 			t.Fatalf("%s: %+v", tool, res)
 		}
 	}
+}
+
+// jsonString is s as a JSON string literal (a Windows path's backslashes
+// are escaped in the shim, so the test compares that spelling).
+func jsonString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }

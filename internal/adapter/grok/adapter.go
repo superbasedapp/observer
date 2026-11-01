@@ -65,8 +65,15 @@ func (a *Adapter) WatchPaths() []string { return a.roots }
 // defaultRoots returns ~/.grok/sessions and ~/.grok/logs under every
 // cross-mount-resolved $HOME, so a WSL2 observer picks up Windows-side
 // sessions on /mnt/c/Users/<u>/.grok and vice versa.
+//
+// GROK_HOME ("the default home directory", docs.x.ai/build/settings) adds
+// its sessions and logs on the native side, resolved through the
+// grok/user-config artifact the hook writer uses (S-17).
 func defaultRoots() []string {
 	var roots []string
+	if d := adapter.RelocatedToolHome("grok/user-config", 0); d != "" {
+		roots = append(roots, filepath.Join(d, "sessions"), filepath.Join(d, "logs"))
+	}
 	for _, h := range crossmount.AllHomes() {
 		roots = append(
 			roots,

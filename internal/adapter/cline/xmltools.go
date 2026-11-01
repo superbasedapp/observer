@@ -378,7 +378,7 @@ func (a *Adapter) xmlToolEvent(
 	// same way extractTarget does for the tool_use path, so an XML
 	// call and a block call render one identical target string.
 	if c.tool.targetChild == "path" && target != "" && projectRoot != "" {
-		target = git.RelativePath(projectRoot, target)
+		target = git.CheckoutRelativePath(projectRoot, target)
 	}
 	return models.ToolEvent{
 		SourceFile:    sourceFile,

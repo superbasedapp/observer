@@ -35,8 +35,8 @@ func sparseDBFile(t *testing.T, size int64) string {
 // pragma was never issued.
 func TestCheckDBIntegrityGated(t *testing.T) {
 	ctx := context.Background()
-	live := routingGapDB(t)
-	closed := routingGapDB(t)
+	live := diagTestDB(t)
+	closed := diagTestDB(t)
 	_ = closed.Close()
 
 	big := sparseDBFile(t, int64(1)<<30+1) // just over a 1 GB cap
@@ -120,7 +120,7 @@ func TestCheckDBIntegrityGated(t *testing.T) {
 // hides a known result.
 func TestCheckDBIntegrityGatedCarriesLastVerdict(t *testing.T) {
 	ctx := context.Background()
-	live := routingGapDB(t)
+	live := diagTestDB(t)
 	if err := db.RunStartupMaintenance(ctx, live); err != nil {
 		t.Fatal(err)
 	}

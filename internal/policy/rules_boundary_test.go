@@ -51,6 +51,32 @@ func TestBoundaryRules_FileAccess(t *testing.T) {
 			name: "R-151 near-miss: write own project", kind: KindFileAccess, actionType: "write_file",
 			target: "/home/u/proj/x.go", known: []string{"/home/u/proj", "/home/u/other"},
 		},
+		{
+			// Live 2026-10-22: a Windows tool names its file natively while
+			// the daemon stores its root translated, and an untranslated
+			// home-dir project row sat in the known set. The write is in
+			// the session's own project, so neither rule may fire.
+			name: "R-151 near-miss: windows write in translated own root", kind: KindFileAccess, actionType: "write_file",
+			target: `C:\Users\u\probe\hello.py`, home: "/home/u",
+			cwd: "/mnt/c/Users/u/probe", root: "/mnt/c/Users/u/probe",
+			known: []string{"/mnt/c/Users/u/probe", `C:\Users\u`},
+		},
+		{
+			name: "R-151 hit: windows write into translated sibling", kind: KindFileAccess, actionType: "write_file",
+			target: `C:\Users\u\sibling\main.go`, home: "/home/u",
+			cwd: "/mnt/c/Users/u/probe", root: "/mnt/c/Users/u/probe",
+			known:    []string{"/mnt/c/Users/u/probe", "/mnt/c/Users/u/sibling"},
+			wantRule: "R-151", wantEnforce: DecisionAsk,
+		},
+		{
+			// Path and the session's root share no flavor (no drvfs
+			// mount to fold): outside-the-project is unknown, so the
+			// Windows-shaped known root must not be matched either.
+			name: "R-151 near-miss: incomparable own root", kind: KindFileAccess, actionType: "write_file",
+			target: `C:\Users\u\x.go`, home: "/home/u",
+			cwd: "/home/u/proj", root: "/home/u/proj",
+			known: []string{"/home/u/proj", `C:\Users\u`},
+		},
 
 		// --- R-152: sensitive paths ---
 		{name: "R-152 hit: read ssh key", kind: KindFileAccess, actionType: "read_file", target: "~/.ssh/id_rsa", wantRule: "R-152", wantEnforce: DecisionAsk},
@@ -240,4 +266,27 @@ func TestBoundaryRules_Shell(t *testing.T) {
 		{name: "R-161 sh hit: tee project policy", cmd: "tee .observer/guard-policy.toml", wantRule: "R-161", wantEnforce: DecisionFlag},
 	}
 	runRuleCases(t, cases, KindShellExec, "run_command")
+}
+
+// TestCrossProjectBleedIgnoresANonPathKnownRoot (audit row 8, FU-193): a
+// known project root that is not an absolute path in either flavor (the
+// stored "Xcode (project unknown)") is no directory to bleed into, so a
+// path that merely starts with that name is never an R-151 hit; a real
+// known root still is.
+func TestCrossProjectBleedIgnoresANonPathKnownRoot(t *testing.T) {
+	t.Parallel()
+	const unknown = "Xcode (project unknown)"
+	e, err := New(Config{Mode: ModeEnforce, Home: "/home/u", KnownProjectRoots: []string{unknown, "/home/u/other"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev := func(target, root string) Event {
+		return Event{Kind: KindFileAccess, ActionType: "write_file", Target: target, Cwd: root, ProjectRoot: root, SessionID: "s1", Now: time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)}
+	}
+	if v := e.Evaluate(ev(unknown+"/notes.txt", "")); v.RuleID == "R-151" {
+		t.Errorf("a non-path known root bled: %+v", v)
+	}
+	if v := e.Evaluate(ev("/home/u/other/main.go", "/home/u/proj")); v.RuleID != "R-151" {
+		t.Errorf("a real known root no longer bleeds: %+v", v)
+	}
 }

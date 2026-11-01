@@ -1,0 +1,25 @@
+rules:
+  - id: csharp.sql-string-concat
+    languages: [csharp]
+    severity: ERROR
+    message: SQL text is built from a string with values pasted in; use parameters (SqlParameter, FromSqlInterpolated or ExecuteSqlInterpolated) instead.
+    metadata:
+      category: code_vuln
+      cwe: CWE-89
+    patterns:
+      - pattern-either:
+          - patterns:
+              - pattern-either:
+                  - pattern: new $CMD($Q, ...)
+                  - pattern: $CMD.CommandText = $Q
+              - metavariable-regex:
+                  metavariable: $CMD
+                  regex: ^(SqlCommand|SqliteCommand|SQLiteCommand|NpgsqlCommand|MySqlCommand|OracleCommand|OleDbCommand|OdbcCommand|\w*[Cc]md|\w*[Cc]ommand)$
+          - patterns:
+              - pattern: $DB.$M($Q, ...)
+              - metavariable-regex:
+                  metavariable: $M
+                  regex: ^(ExecuteSqlRaw|ExecuteSqlRawAsync|FromSqlRaw|SqlQueryRaw|Query|QueryAsync|QueryFirst|QueryFirstOrDefault|QuerySingle|QueryFirstAsync|QueryFirstOrDefaultAsync|Execute|ExecuteAsync|ExecuteScalar|ExecuteScalarAsync)$
+      - metavariable-regex:
+          metavariable: $Q
+          regex: (?is)^(\$@?"\s*(select|insert|update|delete|with|replace|merge)\b.*\{.*|@?"\s*(select|insert|update|delete|with|replace|merge)\b.*\+\s*[^"\s+@$].*|string\.Format\(\s*@?"\s*(select|insert|update|delete|with|replace|merge)\b.*)$

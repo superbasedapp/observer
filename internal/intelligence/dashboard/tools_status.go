@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -74,7 +75,40 @@ func (s *Server) handleToolsStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "GET only", http.StatusMethodNotAllowed)
 		return
 	}
+	out, _ := s.toolStatusRows(r.Context())
 
+	missingDefaults, missingNote := s.missingDefaultAdapters()
+	resp := map[string]any{
+		"tools":        out,
+		"generated_at": time.Now().UTC().Format(time.RFC3339),
+		// missing_default_adapters/_remediation/_note are the Invariant
+		// #51 diagnostic (a default adapter absent from this operator's
+		// explicit enabled_adapters list — grokbot's 2026-09-22 capture
+		// gap was exactly this). Every row above ALREADY carries the
+		// per-tool fact via Enabled==false; these three top-level fields
+		// add the SAME fact pre-filtered to "missing from the compiled-in
+		// defaults" (as opposed to a non-default tool, or a default the
+		// operator deliberately turned off) plus the one-command fix, so
+		// the Connected-tools panel can render a single actionable
+		// banner instead of making the operator infer it row by row.
+		"missing_default_adapters": missingDefaults,
+	}
+	if len(missingDefaults) > 0 {
+		resp["missing_default_remediation"] = config.AdoptDefaultsRemediationCmd
+	}
+	if missingNote != "" {
+		resp["missing_default_note"] = missingNote
+	}
+	writeJSON(w, resp)
+}
+
+// toolStatusRows builds the Connected-tools rows: the union of the injected
+// adapter catalog and any tool with rows in the actions table, sorted by
+// tool name. configLoaded reports whether config.toml was readable (when it
+// was not, every row's Enabled is false because nothing says otherwise). It
+// is the one builder /api/tools/status and the first-run view
+// (/api/firstrun, T-922) share, so the two never disagree about a tool.
+func (s *Server) toolStatusRows(ctx context.Context) (out []toolStatusRow, configLoaded bool) {
 	type activity struct {
 		lastSeen string
 		count    int64
@@ -83,7 +117,7 @@ func (s *Server) handleToolsStatus(w http.ResponseWriter, r *http.Request) {
 	// s.opts.DB, not s.db(): the connected-tools matrix describes THIS
 	// machine's real capture activity even while demo mode is active.
 	if s.opts.DB != nil {
-		rows, err := s.opts.DB.QueryContext(r.Context(),
+		rows, err := s.opts.DB.QueryContext(ctx,
 			`SELECT tool, MAX(timestamp), COUNT(*) FROM actions GROUP BY tool`)
 		if err == nil {
 			defer rows.Close()
@@ -100,12 +134,13 @@ func (s *Server) handleToolsStatus(w http.ResponseWriter, r *http.Request) {
 
 	enabled := map[string]bool{}
 	if cfg, err := loadConfigForDashboard(s.opts.ConfigPath); err == nil {
+		configLoaded = true
 		for _, name := range cfg.Observer.Watch.EnabledAdapters {
 			enabled[name] = true
 		}
 	}
 
-	out := make([]toolStatusRow, 0, len(s.opts.ToolCatalog)+4)
+	out = make([]toolStatusRow, 0, len(s.opts.ToolCatalog)+4)
 	covered := map[string]bool{}
 	hooks := s.hookProber()
 	wanted := s.hookWantedFunc()
@@ -142,30 +177,7 @@ func (s *Server) handleToolsStatus(w http.ResponseWriter, r *http.Request) {
 	slices.SortFunc(out, func(a, b toolStatusRow) int {
 		return strings.Compare(a.Tool, b.Tool)
 	})
-
-	missingDefaults, missingNote := s.missingDefaultAdapters()
-	resp := map[string]any{
-		"tools":        out,
-		"generated_at": time.Now().UTC().Format(time.RFC3339),
-		// missing_default_adapters/_remediation/_note are the Invariant
-		// #51 diagnostic (a default adapter absent from this operator's
-		// explicit enabled_adapters list — grokbot's 2026-09-22 capture
-		// gap was exactly this). Every row above ALREADY carries the
-		// per-tool fact via Enabled==false; these three top-level fields
-		// add the SAME fact pre-filtered to "missing from the compiled-in
-		// defaults" (as opposed to a non-default tool, or a default the
-		// operator deliberately turned off) plus the one-command fix, so
-		// the Connected-tools panel can render a single actionable
-		// banner instead of making the operator infer it row by row.
-		"missing_default_adapters": missingDefaults,
-	}
-	if len(missingDefaults) > 0 {
-		resp["missing_default_remediation"] = config.AdoptDefaultsRemediationCmd
-	}
-	if missingNote != "" {
-		resp["missing_default_note"] = missingNote
-	}
-	writeJSON(w, resp)
+	return out, configLoaded
 }
 
 // missingDefaultAdapters reports which compiled-in default adapters
@@ -259,6 +271,11 @@ type wiringPart struct {
 	Register bool   `json:"register"`
 	Remove   bool   `json:"remove"`
 	Note     string `json:"note,omitempty"`
+	// Tradeoff is what the tool switches off while the route is in force
+	// (integration.RouteTradeoff, the CC-11 sentence), shown in the route
+	// consent before the write (surface-gap FU-24). Additive; older web
+	// builds ignore it.
+	Tradeoff string `json:"tradeoff,omitempty"`
 }
 
 // toolWiring is the per-row action set the Connected tools Set up wizard
@@ -288,7 +305,7 @@ func wiringFor(tool string, wanted func(tool string) bool) *toolWiring {
 		w.Hooks.Note = "nothing to register right now: this tool's hooks serve only gates that are off (the prompt-submit hook lane) or still owe a live test"
 	}
 	if rs, ok := routeSetups[tool]; ok && clientwire.RouteSupported(tool) {
-		w.Route = wiringPart{Register: true, Remove: clientwire.RouteRemovable(tool)}
+		w.Route = wiringPart{Register: true, Remove: clientwire.RouteRemovable(tool), Tradeoff: integration.RouteTradeoff(tool)}
 		w.RouteEndpoint = rs.endpoint
 	}
 	if clientwire.TelemetrySupported(tool) {
@@ -374,6 +391,16 @@ var hookCellRules = []struct {
 				d += " (" + c.Hook.Note + ")"
 			}
 			return d
+		},
+	},
+	{
+		// DEC-12: a writer built but switched off until a live check
+		// passes; the dashboard never runs it (not even as a dry run).
+		name: "waiting on a live check",
+		when: func(c integration.Capability) bool { return c.Hook.LiveGate.Waiting() },
+		kind: hookCellUnprobed,
+		detail: func(c integration.Capability) string {
+			return "hook writer " + c.Hook.LiveGate.Text() + "; Observer does not write it yet"
 		},
 	},
 	{

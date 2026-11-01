@@ -2,12 +2,9 @@ package kilocode
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -80,10 +77,14 @@ func (a *CLIAdapter) IsSessionFile(path string) bool {
 // ParseSessionFile implements adapter.Adapter.
 func (a *CLIAdapter) ParseSessionFile(ctx context.Context, path string, fromOffset int64) (adapter.ParseResult, error) {
 	dbPath := resolveDBPath(path)
-	latest, err := latestWatermark(ctx, dbPath)
+	latest, ready, err := latestWatermark(ctx, dbPath)
 	if err != nil {
 		return adapter.ParseResult{}, fmt.Errorf("kilocode.ParseSessionFile: latest watermark: %w", err)
 	}
+	if !ready {
+		return adapter.NotReadyResult(models.ToolKiloCodeCLI, dbPath, fromOffset, notReadyDetail), nil
+	}
+	adapter.ClearNotReady(models.ToolKiloCodeCLI, dbPath)
 	res := adapter.ParseResult{NewOffset: latest}
 	if latest <= fromOffset {
 		return res, nil
@@ -1191,13 +1192,28 @@ type kiloResolvedRoot struct {
 	identity git.Identity
 }
 
-func latestWatermark(ctx context.Context, path string) (int64, error) {
+// coreTables are the tables every reader of this adapter queries. A
+// kilo.db without all of them (a store Kilo is still bootstrapping, or a
+// future storage generation) is not ready: latestWatermark reports it
+// instead of failing with "no such table" on every scan.
+var coreTables = []string{"message", "part", "session"}
+
+// notReadyDetail is the once-per-file warning for a kilo.db without the
+// core tables.
+const notReadyDetail = "no session/message/part tables yet; skipping until they appear"
+
+func latestWatermark(ctx context.Context, path string) (int64, bool, error) {
 	db, err := openReadOnlyDB(path)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	defer db.Close()
 
+	for _, t := range coreTables {
+		if !tableExists(ctx, db, t) {
+			return 0, false, nil
+		}
+	}
 	var latest int64
 	row := db.QueryRowContext(ctx, `
 		SELECT MAX(v) FROM (
@@ -1208,9 +1224,9 @@ func latestWatermark(ctx context.Context, path string) (int64, error) {
 			SELECT COALESCE(MAX(time_updated), 0) AS v FROM session
 		)`)
 	if err := row.Scan(&latest); err != nil {
-		return 0, err
+		return 0, false, err
 	}
-	return latest, nil
+	return latest, true, nil
 }
 
 func openReadOnlyDB(path string) (*sql.DB, error) {
@@ -1222,77 +1238,28 @@ func openReadOnlyDB(path string) (*sql.DB, error) {
 	return sql.Open("sqlite", dsn)
 }
 
-// stageMirrorIfForeign mirrors the opencode adapter's pattern verbatim:
-// foreign-mount kilo.db reads via /mnt/c on WSL2 (or via
-// \\wsl.localhost\... on Windows) need a local mirror because
-// modernc.org/sqlite returns SQLITE_IOERR_SHORT_READ when the source
-// is actively being written across the mount boundary. Stages the
-// trio (.db + -wal + -shm) into a per-source cache dir under
-// mirrorbase.Base().
+// stageMirrorIfForeign returns srcDB unchanged when it is native. A foreign-mount
+// store (a Windows-side store read by a WSL observer over /mnt/c, or
+// the reverse), which modernc.org/sqlite cannot open in place while the
+// vendor process writes its WAL, is read through a filtered local
+// mirror built by mirrorbase.Stage: only the tables in mirrorSpec are
+// kept, so the store's other tables (credentials included) never leave
+// the vendor's file.
 func stageMirrorIfForeign(srcDB string) (string, error) {
 	if !isForeignMountPath(srcDB) {
 		return srcDB, nil
 	}
-	base, err := mirrorbase.Base()
-	if err != nil || base == "" {
-		base = filepath.Join(os.TempDir(), "superbased-observer")
-	}
-	sum := sha256.Sum256([]byte(srcDB))
-	mirrorDir := filepath.Join(base, "kilocode-mirror", hex.EncodeToString(sum[:8]))
-	if err := os.MkdirAll(mirrorDir, 0o700); err != nil {
-		return "", fmt.Errorf("mkdir mirror: %w", err)
-	}
-	dstDB := filepath.Join(mirrorDir, "kilo.db")
-	if mirrorUpToDate(srcDB, dstDB) {
-		return dstDB, nil
-	}
-	for _, suffix := range []string{"", "-wal", "-shm"} {
-		src := srcDB + suffix
-		dst := dstDB + suffix
-		data, err := os.ReadFile(src)
-		if err != nil {
-			if os.IsNotExist(err) {
-				_ = os.Remove(dst)
-				continue
-			}
-			return "", fmt.Errorf("read %s: %w", src, err)
-		}
-		if err := os.WriteFile(dst, data, 0o600); err != nil { //nolint:gosec // G703: dst is a private staging copy under the adapter's own temp dir
-			return "", fmt.Errorf("write %s: %w", dst, err)
-		}
-	}
-	return dstDB, nil
+	return mirrorbase.Stage(context.Background(), srcDB, mirrorSpec)
 }
 
-func mirrorUpToDate(srcDB, dstDB string) bool {
-	if !filesMatch(srcDB, dstDB) {
-		return false
-	}
-	if sw, err := os.Stat(srcDB + "-wal"); err == nil {
-		if !filesMatchInfo(sw, dstDB+"-wal") {
-			return false
-		}
-	}
-	return true
-}
-
-func filesMatch(src, dst string) bool {
-	s, err := os.Stat(src)
-	if err != nil {
-		return false
-	}
-	return filesMatchInfo(s, dst)
-}
-
-func filesMatchInfo(srcInfo os.FileInfo, dst string) bool {
-	d, err := os.Stat(dst)
-	if err != nil {
-		return false
-	}
-	if srcInfo.Size() != d.Size() {
-		return false
-	}
-	return !srcInfo.ModTime().After(d.ModTime())
+// mirrorSpec is the allow-list mirror of the Kilo CLI store (kilo.db): every table this
+// package queries and nothing else. A query on a new table must add it
+// here, or the foreign-mount mirror silently lacks it;
+// mirrortest.AssertSpecCoversQueries pins that.
+var mirrorSpec = mirrorbase.Spec{
+	Dir:    "kilocode-mirror",
+	File:   "kilo.db",
+	Tables: []string{"session", "message", "part", "todo", "project"},
 }
 
 // allHomesFunc is the test seam over crossmount.AllHomes.

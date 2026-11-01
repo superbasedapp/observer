@@ -47,6 +47,9 @@ const (
 	SectionActions  Section = "actions"
 	SectionProjects Section = "projects"
 	SectionSecurity Section = "security"
+	// SectionCodeSecurity is the security pillar's Code security page,
+	// beside Guard's page (security pillar plan section 4.10).
+	SectionCodeSecurity Section = "code-security"
 
 	SectionSearch      Section = "search"
 	SectionCost        Section = "cost"
@@ -69,16 +72,19 @@ const (
 	SectionRemote      Section = "remote"
 	SectionSettings    Section = "settings"
 	SectionRequests    Section = "requests"
+	// SectionMessages is the admin and developer Messages page (T-854). It
+	// sits on the unhideable floor (D-695), so its routes are never refused.
+	SectionMessages Section = "messages"
 )
 
 // AllSections is the closed set, for the coverage test and for callers that
 // need to validate a section id.
 var AllSections = []Section{
 	SectionOverview, SectionLive, SectionSessions, SectionActions, SectionProjects, SectionSecurity,
-	SectionEgress, SectionSearch, SectionCost, SectionPlans, SectionAnalysis, SectionTools,
+	SectionCodeSecurity, SectionEgress, SectionSearch, SectionCost, SectionPlans, SectionAnalysis, SectionTools,
 	SectionCompression, SectionCache, SectionSuggestions, SectionRouting,
 	SectionBenchmarks, SectionDiscovery, SectionPatterns, SectionPolicies, SectionAgentConfig,
-	SectionPrivacy, SectionTerminals, SectionRemote, SectionRequests, SectionSettings,
+	SectionPrivacy, SectionTerminals, SectionRemote, SectionMessages, SectionRequests, SectionSettings,
 }
 
 // configSectionPrefix is the one route whose SUB-resource is itself a
@@ -106,47 +112,9 @@ func (s *Server) governanceGuard(mux *http.ServeMux, sections map[string]Section
 			return
 		}
 		_, pattern := mux.Handler(r)
-		registered := sections[pattern]
-		unsafe := isUnsafeMethod(strings.ToUpper(r.Method))
-		// Every HIDDEN (404) rule is one function, concealment, which the
-		// SPA's concealed-route list is computed from too (T-401), so the UI
-		// cannot fetch a route this guard would refuse as hidden.
-		if c := concealment(registered, r.URL.Path, !unsafe, eff); c.hidden {
-			writeGovernanceRefusal(w, http.StatusNotFound, "governance_hidden", c.section, eff, c.message)
+		if ref := s.governanceRouteRefusal(r, sections[pattern], eff); ref.status != 0 {
+			writeGovernanceRefusal(w, ref.status, ref.code, ref.section, eff, ref.message)
 			return
-		}
-		sec, sub := registered.Split()
-		if sec != SectionNone && !nodegov.IsUnhideableNavSection(string(sec)) &&
-			s.navSectionReadOnly(r.Context(), eff, sec) && unsafe && !isReadShapedPost(r) {
-			writeGovernanceRefusal(w, http.StatusConflict, "governance_read_only", string(sec), eff,
-				"This setting is pinned by your organization and cannot be changed here.")
-			return
-		}
-		// A tab a page-access grant shows on an otherwise visible page is
-		// read-only too (T-435): the grant shows it, it never unlocks it.
-		if tab := registered.Tab(); tab != "" && sec != SectionNone && unsafe && !isReadShapedPost(r) {
-			if id := nodegov.NavTabID(string(sec), tab); tabGrantReadOnly(eff, id) {
-				writeGovernanceRefusal(w, http.StatusConflict, "governance_read_only", id, eff,
-					"Your organization shows this part of the page to you read-only.")
-				return
-			}
-		}
-		if id := settingsSubsectionFor(sub, r.URL.Path); id != "" && !nodegov.IsUnhideableSettingsSection(id) &&
-			eff.IsSettingsSectionReadOnly(id) && unsafe && !isReadShapedPost(r) && !isOrgDecidedSettingsPost(r) {
-			writeGovernanceRefusal(w, http.StatusConflict, "governance_read_only", id, eff,
-				"This setting is pinned by your organization and cannot be changed here.")
-			return
-		}
-		// Restoring a config backup rewrites the WHOLE file, every Settings
-		// section at once, so it cannot be attributed to one section: it is
-		// refused whenever any section is hidden or read-only on this machine
-		// (a restore would otherwise be the way round every lock).
-		if r.URL.Path == configBackupPath && unsafe {
-			if v := eff.DashboardVisibility(); len(v.HiddenSettings)+len(v.ReadOnlySettings) > 0 {
-				writeGovernanceRefusal(w, http.StatusConflict, "governance_read_only", "config_restore", eff,
-					"Restoring a config backup is turned off because your organization manages some settings on this machine.")
-				return
-			}
 		}
 		// The generic batched write (PUT /api/config/keys) has no <id> in its
 		// path and would sail straight past the rule above — the plan's §4.5
@@ -163,6 +131,55 @@ func (s *Server) governanceGuard(mux *http.ServeMux, sections map[string]Section
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// routeRefusal is governanceRouteRefusal's answer: status 0 means the
+// request passes.
+type routeRefusal struct {
+	status                 int
+	code, section, message string
+}
+
+// governanceRouteRefusal is the ONE set of route rules governanceGuard
+// applies before the body-reading config-keys rule: the hidden rules
+// (concealment), the read-only page, tab and Settings subsection rules and
+// the config-backup restore rule. A handler that must say whether a write it
+// offers would be refused (the trust chip's accept_allowed) asks this with
+// the write's request, so the answer cannot drift from the guard.
+func (s *Server) governanceRouteRefusal(r *http.Request, registered Section, eff govern.Effective) routeRefusal {
+	unsafe := isUnsafeMethod(strings.ToUpper(r.Method))
+	// Every HIDDEN (404) rule is one function, concealment, which the
+	// SPA's concealed-route list is computed from too (T-401), so the UI
+	// cannot fetch a route this guard would refuse as hidden.
+	if c := concealment(registered, r.URL.Path, !unsafe, eff); c.hidden {
+		return routeRefusal{status: http.StatusNotFound, code: "governance_hidden", section: c.section, message: c.message}
+	}
+	sec, sub := registered.Split()
+	if sec != SectionNone && !nodegov.IsUnhideableNavSection(string(sec)) &&
+		s.navSectionReadOnly(r.Context(), eff, sec) && unsafe && !isReadShapedPost(r) {
+		return routeRefusal{status: http.StatusConflict, code: "governance_read_only", section: string(sec), message: "This setting is pinned by your organization and cannot be changed here."}
+	}
+	// A tab a page-access grant shows on an otherwise visible page is
+	// read-only too (T-435): the grant shows it, it never unlocks it.
+	if tab := registered.Tab(); tab != "" && sec != SectionNone && unsafe && !isReadShapedPost(r) {
+		if id := nodegov.NavTabID(string(sec), tab); tabGrantReadOnly(eff, id) {
+			return routeRefusal{status: http.StatusConflict, code: "governance_read_only", section: id, message: "Your organization shows this part of the page to you read-only."}
+		}
+	}
+	if id := settingsSubsectionFor(sub, r.URL.Path); id != "" && !nodegov.IsUnhideableSettingsSection(id) &&
+		eff.IsSettingsSectionReadOnly(id) && unsafe && !isReadShapedPost(r) && !isOrgDecidedSettingsPost(r) {
+		return routeRefusal{status: http.StatusConflict, code: "governance_read_only", section: id, message: "This setting is pinned by your organization and cannot be changed here."}
+	}
+	// Restoring a config backup rewrites the WHOLE file, every Settings
+	// section at once, so it cannot be attributed to one section: it is
+	// refused whenever any section is hidden or read-only on this machine
+	// (a restore would otherwise be the way round every lock).
+	if r.URL.Path == configBackupPath && unsafe {
+		if v := eff.DashboardVisibility(); len(v.HiddenSettings)+len(v.ReadOnlySettings) > 0 {
+			return routeRefusal{status: http.StatusConflict, code: "governance_read_only", section: "config_restore", message: "Restoring a config backup is turned off because your organization manages some settings on this machine."}
+		}
+	}
+	return routeRefusal{}
 }
 
 // settingsSharedRoutes is the closed list of routes registered under the
@@ -258,7 +275,8 @@ type concealed struct {
 // concealment is the ONE owner of the guard's HIDDEN rules (T-401): the
 // route registered as `registered`, requested at path, is refused 404 when
 //
-//  1. its nav page is hidden (never a floor page),
+//  1. its nav page is hidden (never a floor page), unless it is a READ that
+//     a shown page shares (sharedReadSections),
 //  2. the one tab that owns it exclusively is hidden (WithTab),
 //  3. its Settings subsection (declared at registration, or the <id> of
 //     /api/config/section/<id>) is hidden (never a floor subsection; T8's
@@ -275,7 +293,7 @@ type concealed struct {
 func concealment(registered Section, path string, safeMethod bool, eff govern.Effective) concealed {
 	sec, sub := registered.Split()
 	if sec != SectionNone && !nodegov.IsUnhideableNavSection(string(sec)) {
-		if eff.IsNavSectionHidden(string(sec)) {
+		if eff.IsNavSectionHidden(string(sec)) && !(safeMethod && sharedReadShown(path, eff)) {
 			return concealed{true, string(sec), "This page is managed by your organization and is not available on this machine."}
 		}
 		if tab := registered.Tab(); tab != "" {
@@ -293,6 +311,27 @@ func concealment(registered Section, path string, safeMethod bool, eff govern.Ef
 		}
 	}
 	return concealed{}
+}
+
+// sharedReadSections lists the routes whose READ another page also makes, so
+// the read passes while the route's own page is hidden and any page listed
+// here is shown (lane gov-tabs, roadmap section 8 item 4). The write stays
+// with the registered page alone. Exact paths only, one row with its reason
+// in the comment; TestSharedReadSectionsAreRegistered pins each row.
+var sharedReadSections = map[string][]Section{
+	// The New Terminal dialog (Terminals page) reads the trust chip for the
+	// chosen directory; accepting trust stays a Code security action.
+	"/api/security/trust": {SectionTerminals},
+}
+
+// sharedReadShown reports whether a page that shares path's read is shown.
+func sharedReadShown(path string, eff govern.Effective) bool {
+	for _, sec := range sharedReadSections[path] {
+		if nodegov.IsUnhideableNavSection(string(sec)) || !eff.IsNavSectionHidden(string(sec)) {
+			return true
+		}
+	}
+	return false
 }
 
 // concealedRoutes lists the API routes a READ of which concealment refuses on
@@ -717,6 +756,7 @@ var shareLocalTable = map[string]func(config.Config) any{
 	"terminal_detail":     func(c config.Config) any { return c.OrgClient.Share.TerminalDetail },
 	"task_detail":         func(c config.Config) any { return c.OrgClient.Share.TaskDetail },
 	"tool_account_detail": func(c config.Config) any { return c.OrgClient.Share.ToolAccountDetail },
+	"hook_activity":       func(c config.Config) any { return c.OrgClient.Share.HookActivity },
 	"policy_state":        func(c config.Config) any { return c.OrgClient.Share.PolicyState },
 	// intelligence.org_enrichment roots under [intelligence], not
 	// [org_client.share] - the reason the getter takes the whole config.

@@ -42,6 +42,7 @@ const (
 	MethodBinary           = updatespec.MethodBinary
 	MethodBinaryReadOnly   = updatespec.MethodBinaryReadOnly
 	MethodBrew             = updatespec.MethodBrew
+	MethodInstaller        = updatespec.MethodInstaller
 	MethodNPM              = updatespec.MethodNPM
 	MethodPip              = updatespec.MethodPip
 	MethodRPM              = updatespec.MethodRPM
@@ -56,16 +57,18 @@ const (
 	ReasonRequiredStop     = updatespec.ReasonRequiredStop
 	ReasonUnsignedArtifact = updatespec.ReasonUnsignedArtifact
 	ReasonWindow           = updatespec.ReasonWindow
-	StateApplied           = updatespec.StateApplied
-	StateApplying          = updatespec.StateApplying
-	StateAvailable         = updatespec.StateAvailable
-	StateBlocked           = updatespec.StateBlocked
-	StateDownloading       = updatespec.StateDownloading
-	StateFailed            = updatespec.StateFailed
-	StateIdle              = updatespec.StateIdle
-	StateRolledBack        = updatespec.StateRolledBack
-	StateStaleManifest     = updatespec.StateStaleManifest
-	StateVerified          = updatespec.StateVerified
+	// ReasonDeferredLiveSandbox: sandboxed terminal runs are live.
+	ReasonDeferredLiveSandbox = updatespec.ReasonDeferredLiveSandbox
+	StateApplied              = updatespec.StateApplied
+	StateApplying             = updatespec.StateApplying
+	StateAvailable            = updatespec.StateAvailable
+	StateBlocked              = updatespec.StateBlocked
+	StateDownloading          = updatespec.StateDownloading
+	StateFailed               = updatespec.StateFailed
+	StateIdle                 = updatespec.StateIdle
+	StateRolledBack           = updatespec.StateRolledBack
+	StateStaleManifest        = updatespec.StateStaleManifest
+	StateVerified             = updatespec.StateVerified
 )
 
 // Functions and variables re-exported from github.com/marmutapp/superbased-observer/internal/updatespec.

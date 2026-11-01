@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -19,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/mcpaccess"
@@ -27,11 +27,6 @@ import (
 	famcp "github.com/marmutapp/superbased-observer/internal/policyfam/mcpaccess"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
-
-// updateMCPHelp regenerates testdata/mcp_help/*.golden:
-//
-//	go test ./cmd/observer -run TestMCPCmd_HelpGolden -update-mcp-help
-var updateMCPHelp = flag.Bool("update-mcp-help", false, "rewrite the observer mcp help goldens instead of comparing")
 
 // mcpNodeTree15_0 is doc3 §15.0's node tree, copied verbatim:
 //
@@ -206,8 +201,17 @@ func TestMCPCmd_TreeMatchesCanonical15_0(t *testing.T) {
 	}
 }
 
-// TestMCPCmd_HelpGolden pins `observer mcp --help` and every verb's help.
-func TestMCPCmd_HelpGolden(t *testing.T) {
+// TestMCPCmd_HelpIsComplete is the structural help check for `observer
+// mcp` and every section 15.0 verb (it replaced the byte-for-byte help
+// goldens; wording is owned by the copy checks). Each renders --help, has a
+// one-line description, documents every flag it declares, and uses no em or
+// en dash.
+func TestMCPCmd_HelpIsComplete(t *testing.T) {
+	mcp := newMCPCmd()
+	cmds := map[string]*cobra.Command{"": mcp}
+	for _, sub := range mcp.Commands() {
+		cmds[sub.Name()] = sub
+	}
 	cases := append([]string{""}, mcpNodeTree15_0...)
 	for _, verb := range cases {
 		name := "mcp"
@@ -217,28 +221,61 @@ func TestMCPCmd_HelpGolden(t *testing.T) {
 			args = []string{"mcp", verb, "--help"}
 		}
 		t.Run(name, func(t *testing.T) {
+			c, ok := cmds[verb]
+			if !ok {
+				t.Fatalf("observer mcp has no %q verb", verb)
+			}
+			if strings.TrimSpace(c.Short) == "" {
+				t.Errorf("%s has no one-line description (Short)", name)
+			}
+			c.LocalFlags().VisitAll(func(f *pflag.Flag) {
+				if strings.TrimSpace(f.Usage) == "" {
+					t.Errorf("%s flag --%s has no usage text", name, f.Name)
+				}
+			})
 			out, err := runMCPCLI(t, args...)
 			if err != nil {
 				t.Fatal(err)
 			}
-			path := filepath.Join("testdata", "mcp_help", name+".golden")
-			if *updateMCPHelp {
-				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(path, []byte(out), 0o644); err != nil {
-					t.Fatal(err)
-				}
-				return
+			if !strings.Contains(out, "Usage:") {
+				t.Errorf("%s --help rendered no usage:\n%s", name, out)
 			}
-			want, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatalf("read golden: %v (run `go test ./cmd/observer -run TestMCPCmd_HelpGolden -update-mcp-help`)", err)
-			}
-			if out != string(want) {
-				t.Fatalf("help drifted from %s:\n--- got ---\n%s\n--- want ---\n%s", path, out, want)
+			if strings.ContainsAny(out, "\u2013\u2014") {
+				t.Errorf("%s --help contains an em or en dash:\n%s", name, out)
 			}
 		})
+	}
+}
+
+// mcpWriteVerbFlags is the required-flags table for the mcp verbs that
+// rewrite AI client config (TESTSLOW 6: the help goldens that pinned these
+// flag names are gone). One row per verb.
+var mcpWriteVerbFlags = []struct {
+	verb  string
+	flags []string
+}{
+	{"wrap", []string{"config", "no-remote"}},
+	{"unwrap", []string{"config"}},
+}
+
+// TestMCPCmd_WriteVerbsKeepTheirFlags: each write verb still declares the
+// flags its row names.
+func TestMCPCmd_WriteVerbsKeepTheirFlags(t *testing.T) {
+	cmds := map[string]*cobra.Command{}
+	for _, sub := range newMCPCmd().Commands() {
+		cmds[sub.Name()] = sub
+	}
+	for _, r := range mcpWriteVerbFlags {
+		c, ok := cmds[r.verb]
+		if !ok {
+			t.Errorf("observer mcp has no %q verb", r.verb)
+			continue
+		}
+		for _, name := range r.flags {
+			if c.LocalFlags().Lookup(name) == nil {
+				t.Errorf("mcp %s: flag --%s is gone", r.verb, name)
+			}
+		}
 	}
 }
 

@@ -49,7 +49,7 @@ func writeGuardConfig(t *testing.T, mode string) string {
 // hook could not read in full must now be held for the human (ask) while the
 // guard enforces, and keep the plain approve when it does not.
 func TestHandleClaudeCodePreToolTruncatedFailsClosedWhenEnforcing(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	payload := oversizedWritePayload(t, "/home/u/.bashrc")
 
 	t.Run("enforce", func(t *testing.T) {

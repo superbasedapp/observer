@@ -208,22 +208,58 @@ func TestSplitHostPortFromURL(t *testing.T) {
 	}
 }
 
-func TestClaudeCredentialsPath_HonorsConfigDirEnv(t *testing.T) {
-	t.Setenv("CLAUDE_CONFIG_DIR", "/tmp/fake-claude")
+// TestClaudeVerifyFailsOnARelativeConfigDir: `observer claude --verify`
+// with a relative CLAUDE_CONFIG_DIR (a launch that refuses, FU-131) FAILs
+// naming the variable, with the launch refusal's own wording, and never
+// prints a credentials PASS for an empty path.
+func TestClaudeVerifyFailsOnARelativeConfigDir(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join("rel", "claude"))
 	t.Setenv("ANTHROPIC_CONFIG_DIR", "")
-	// filepath.ToSlash normalizes the Windows-host separators (the daemon
-	// runs on Linux/WSL where the join is already '/'): the invariant under
-	// test is that the configured dir is honored, not the OS separator.
-	got := claudeCredentialsPath()
-	if !strings.HasPrefix(filepath.ToSlash(got), "/tmp/fake-claude") {
+	path, refused := claudeCredentialsLookup()
+	if path != "" || refused != "CLAUDE_CONFIG_DIR" {
+		t.Fatalf("claudeCredentialsLookup = (%q, %q), want (\"\", CLAUDE_CONFIG_DIR)", path, refused)
+	}
+	var out strings.Builder
+	err := runClaudeVerify(&out, claudeVerifyResult{
+		ProxyURL: "http://127.0.0.1:1", ProxyReachable: true, CredentialsPath: path, RefusedEnv: refused,
+	})
+	got := out.String()
+	if err == nil {
+		t.Fatalf("verify passed: %s", got)
+	}
+	if !strings.Contains(got, "  FAIL  "+claudeRelativeConfigDirMsg("CLAUDE_CONFIG_DIR")) {
+		t.Errorf("no FAIL naming the variable:\n%s", got)
+	}
+	if strings.Contains(got, "credentials file at  ") || strings.Contains(got, "PASS  no Pro/Max") {
+		t.Errorf("a credentials PASS for an empty path:\n%s", got)
+	}
+}
+
+func TestClaudeCredentialsPath_HonorsConfigDirEnv(t *testing.T) {
+	// Absolute on every OS (a relocation value must be absolute, FU-131).
+	claudeDir := filepath.Join(t.TempDir(), "fake-claude")
+	anthropicDir := filepath.Join(t.TempDir(), "fake-anthropic")
+	t.Setenv("CLAUDE_CONFIG_DIR", claudeDir)
+	t.Setenv("ANTHROPIC_CONFIG_DIR", "")
+	if got := claudeCredentialsPath(); got != filepath.Join(claudeDir, ".credentials.json") {
 		t.Errorf("CLAUDE_CONFIG_DIR not honored: %q", got)
 	}
 
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
-	t.Setenv("ANTHROPIC_CONFIG_DIR", "/tmp/fake-anthropic")
-	got = claudeCredentialsPath()
-	if !strings.HasPrefix(filepath.ToSlash(got), "/tmp/fake-anthropic") {
+	t.Setenv("ANTHROPIC_CONFIG_DIR", anthropicDir)
+	if got := claudeCredentialsPath(); got != filepath.Join(anthropicDir, ".credentials.json") {
 		t.Errorf("ANTHROPIC_CONFIG_DIR not honored: %q", got)
+	}
+
+	// FU-138: the credentials lookup shares the settings.json resolver, so
+	// a relative value (which claude reads against its own working
+	// directory) names no file, as claudeUserSettingsPath refuses it.
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join("rel", "claude"))
+	if got := claudeCredentialsPath(); got != "" {
+		t.Errorf("relative CLAUDE_CONFIG_DIR: got %q, want \"\"", got)
+	}
+	if p, refused := claudeUserSettingsPath(os.Getenv, os.UserHomeDir); p != "" || refused != "CLAUDE_CONFIG_DIR" {
+		t.Errorf("claudeUserSettingsPath with a relative CLAUDE_CONFIG_DIR = (%q, %q)", p, refused)
 	}
 }
 

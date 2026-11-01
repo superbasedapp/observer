@@ -21,7 +21,7 @@ func TestComponentPolicyFollowerTearsDownNewlyBlockedOnce(t *testing.T) {
 	requireComponents(t, "codeintel", "terminals")
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.toml")
-	if err := os.WriteFile(cfgPath, []byte("[observer]\ndb_path = \""+filepath.Join(dir, "none.db")+"\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("[observer]\ndb_path = \""+filepath.ToSlash(filepath.Join(dir, "none.db"))+"\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	// "remote" was already inactive at start; "codeintel" and "terminals"

@@ -42,9 +42,10 @@ import (
 type ideDeps struct {
 	// spawn starts the detached app (spawnDetached in production).
 	spawn func(argv []string, dir string, env []string) (*os.Process, error)
-	// admit is the managed-budget launch admission
-	// (enforceBudgetControlledLaunch in production).
-	admit func(ctx context.Context, configPath, id string, ev budgetLaunchEvidence) error
+	// admit is the launch admission (enforceBudgetControlledLaunchIn in
+	// production); dir is the absolute folder the app opens, "" for a bare
+	// launch (the gates then read the working directory).
+	admit func(ctx context.Context, configPath, id string, ev budgetLaunchEvidence, dir string) error
 	// refuseDisallowed is the org tools.disallow gate
 	// (refuseIfToolDisallowedDB in production).
 	refuseDisallowed func(dbPath, tool string, stderr io.Writer) error
@@ -54,10 +55,14 @@ type ideDeps struct {
 	environ func() []string
 }
 
+// ideCmdDeps are the seams the cobra command runs with (a test swaps the
+// spawn and keeps the real gates).
+var ideCmdDeps = defaultIDEDeps
+
 func defaultIDEDeps() ideDeps {
 	return ideDeps{
 		spawn:            spawnDetached,
-		admit:            enforceBudgetControlledLaunch,
+		admit:            enforceBudgetControlledLaunchIn,
 		refuseDisallowed: refuseIfToolDisallowedDB,
 		reachable:        proxyReachable,
 		environ:          os.Environ,
@@ -128,7 +133,7 @@ func newIDECmd() *cobra.Command {
 			if len(positional) == 2 {
 				opts.projectDir = positional[1]
 			}
-			return runIDELaunch(cmd.Context(), opts, defaultIDEDeps())
+			return runIDELaunch(cmd.Context(), opts, ideCmdDeps())
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "observer config.toml path (default ~/.observer/config.toml)")
@@ -186,7 +191,9 @@ func runIDELaunch(ctx context.Context, opts ideOptions, deps ideDeps) error {
 				return err
 			}
 		}
-		if err := deps.admit(ctx, opts.configPath, id, guiBudgetEvidence(id)); err != nil {
+		// FU-190: the folder the app opens is the launch directory the trust
+		// gate checks; with none, the working directory.
+		if err := deps.admit(ctx, opts.configPath, id, guiBudgetEvidence(id), projectDir); err != nil {
 			return err
 		}
 	}
@@ -248,7 +255,7 @@ func resolveIDEProjectDir(dir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("observer ide: project dir %q: %w", dir, err)
 	}
-	fi, err := os.Stat(abs)
+	fi, err := os.Stat(abs) //nolint:gosec // G703: a metadata read of the user's own local path; no privilege boundary is crossed
 	if err != nil {
 		return "", fmt.Errorf("observer ide: project dir %q: %w", dir, err)
 	}
@@ -310,7 +317,7 @@ func renderIDEWrap(w io.Writer, v ideWrapView) {
 		fmt.Fprintf(w, "  wrap: %s already set in env; using yours\n", k)
 	}
 	if len(v.applied) > 0 {
-		fmt.Fprintf(w, "  wrap: routing via %s (set %s)\n", v.proxyURL, strings.Join(v.applied, ", "))
+		fmt.Fprintf(w, "  wrap: routing via %s (set %s)\n", redactRouteURL(v.proxyURL), strings.Join(v.applied, ", "))
 	}
 	if v.plan.WrapNote != "" {
 		fmt.Fprintf(w, "  wrap caveat: %s\n", v.plan.WrapNote)

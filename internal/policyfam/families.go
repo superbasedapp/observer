@@ -54,10 +54,64 @@ const (
 	FamilyNodeFeatures = "node.features"
 )
 
-// SupportedFamilies is the v1 closed enum, in a stable order. New families
-// are appended last so an index into this slice stays stable across
+// familyRow is one row of the family table: a family's name and whether
+// its compiler is linked only through the seam in linked.go (a family whose
+// compiler belongs to an optional component). The NAME is known in every
+// build, so a body of a family whose compiler a build omits NACKs with
+// ErrFamilyNotLinked instead of being unknown.
+type familyRow struct {
+	Name       string
+	LinkedOnly bool
+}
+
+// familyTable is the v1 closed family table, in a stable order. New families
+// are appended last so an index into SupportedFamilies stays stable across
 // releases for any caller that persisted one.
-var SupportedFamilies = []string{FamilyAdmissionInput, FamilyEgressGuardrail, FamilyGatewayProviders, FamilyNodeGovernance, FamilyNodeFeatures, FamilyPlaneBAdmission, FamilyMCPAccess, FamilyNodeComponents}
+var familyTable = []familyRow{
+	{Name: FamilyAdmissionInput},
+	{Name: FamilyEgressGuardrail},
+	{Name: FamilyGatewayProviders},
+	{Name: FamilyNodeGovernance},
+	{Name: FamilyNodeFeatures},
+	{Name: FamilyPlaneBAdmission},
+	{Name: FamilyMCPAccess, LinkedOnly: true},
+	{Name: FamilyNodeComponents},
+	// The two module families of the security and sandbox tracks (roadmap
+	// F0-9). Both are linked-only: until the security lane (phase E) and
+	// the sandbox lane (P1b) add their pair files, every body of either
+	// family NACKs with ErrFamilyNotLinked.
+	{Name: FamilySecurityScanning, LinkedOnly: true},
+	{Name: FamilyTerminalsIsolation, LinkedOnly: true},
+}
+
+// SupportedFamilies is the v1 closed enum, in a stable order: familyTable's
+// names.
+var SupportedFamilies = func() []string {
+	out := make([]string, len(familyTable))
+	for i, r := range familyTable {
+		out[i] = r.Name
+	}
+	return out
+}()
+
+// FamilySecurityScanning is the security module's scanner-floor family
+// (security plan 4.9): raise-only floors, linked from a security pair file.
+const FamilySecurityScanning = "security.scanning"
+
+// FamilyTerminalsIsolation is the sandbox module's isolation-floor family
+// (b9 v2 plan 8.2): raise-only floors, linked from a sandbox pair file.
+const FamilyTerminalsIsolation = "terminals.isolation"
+
+// IsLinkedOnlyFamily reports whether a supported family's compiler is linked
+// only through the seam in linked.go.
+func IsLinkedOnlyFamily(family string) bool {
+	for _, r := range familyTable {
+		if r.Name == family {
+			return r.LinkedOnly
+		}
+	}
+	return false
+}
 
 // FamilyNodeComponents is the managed component-set family `node.components`
 // (modular packaging plan 6.2, lane MP-GOV): which components an
@@ -83,8 +137,8 @@ const FamilyMCPAccess = "tools.mcp_access"
 
 // IsSupportedFamily reports whether family is one of the v1 closed set.
 func IsSupportedFamily(family string) bool {
-	for _, f := range SupportedFamilies {
-		if f == family {
+	for _, r := range familyTable {
+		if r.Name == family {
 			return true
 		}
 	}
@@ -141,10 +195,6 @@ func CompileFamilyBody(family string, raw []byte, maxBytes int64) (spec any, can
 			return nil, nil, cerr
 		}
 		return s, canon, nil
-	case FamilyMCPAccess:
-		// Linked through the seam (linked.go): ErrFamilyNotLinked in a
-		// build without Agent Access.
-		return compileLinked(family, raw, maxBytes)
 	case FamilyNodeComponents:
 		// LENIENT on this, the agent accept path (the node.governance
 		// precedent): an exact component id this build does not know is
@@ -158,6 +208,12 @@ func CompileFamilyBody(family string, raw []byte, maxBytes int64) (spec any, can
 		}
 		return s, canon, nil
 	default:
+		// Every linked-only family (tools.mcp_access, security.scanning,
+		// terminals.isolation) compiles through the seam (linked.go):
+		// ErrFamilyNotLinked in a build without its compiler.
+		if IsLinkedOnlyFamily(family) {
+			return compileLinked(family, raw, maxBytes)
+		}
 		return nil, nil, fmt.Errorf("policyfam.CompileFamilyBody: unsupported family %q", family)
 	}
 }
@@ -245,8 +301,6 @@ func SpecRequestsEnforceMode(family string, spec any) bool {
 		return true
 	case FamilyPlaneBAdmission:
 		return planebadmission.Enforces(spec.(planebadmission.PolicySpec)) //nolint:forcetypeassert // caller contract: spec came from CompileFamilyBody(family, ...)
-	case FamilyMCPAccess:
-		return linkedEnforces(family, spec)
 	case FamilyNodeComponents:
 		// node.components has no mode field: blocking or requiring a
 		// component changes what the node runs the moment it resolves, so
@@ -256,6 +310,9 @@ func SpecRequestsEnforceMode(family string, spec any) bool {
 		_ = spec.(nodecomponents.PolicySpec) //nolint:forcetypeassert // caller contract: spec came from CompileFamilyBody(family, ...)
 		return true
 	default:
+		if IsLinkedOnlyFamily(family) {
+			return linkedEnforces(family, spec)
+		}
 		panic(fmt.Sprintf("policyfam.SpecRequestsEnforceMode: unsupported family %q", family))
 	}
 }

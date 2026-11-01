@@ -83,13 +83,14 @@ func TestRoleSplitDeployedGrants(t *testing.T) {
 		{"portal_consent_choices", "INSERT"},
 		{"provider_attestations", "INSERT"}, // admission gate records at enqueue
 		{"structural_snapshots", "INSERT"},
-		{"result_revisions", "INSERT"}, // W6c: the correction append (0018)
-		{"result_revisions", "UPDATE"}, // W6c: the deletion tombstone
-		{"result_revisions", "SELECT"}, // W6c: ETag + Sessions detail
-		{"account_profiles", "INSERT"}, // 0033: the sign-in leg upserts the display identity
-		{"account_profiles", "UPDATE"}, // 0033: ON CONFLICT DO UPDATE on every re-login
-		{"account_profiles", "SELECT"}, // 0033: the /portal/api/session bootstrap reads it
-		{"sbci_migrations", "SELECT"},  // 0036: /healthz schema block + schema-check on the service DSN
+		{"result_revisions", "INSERT"},  // W6c: the correction append (0018)
+		{"result_revisions", "UPDATE"},  // W6c: the deletion tombstone
+		{"result_revisions", "SELECT"},  // W6c: ETag + Sessions detail
+		{"account_profiles", "INSERT"},  // 0033: the sign-in leg upserts the display identity
+		{"account_profiles", "UPDATE"},  // 0033: ON CONFLICT DO UPDATE on every re-login
+		{"account_profiles", "SELECT"},  // 0033: the /portal/api/session bootstrap reads it
+		{"sbci_migrations", "SELECT"},   // 0036: /healthz schema block + schema-check on the service DSN
+		{"budget_pool_spend", "SELECT"}, // 0044: the reservation's spend-ceiling check
 	}
 	for _, c := range apiHas {
 		if !tablePriv(t, pool, "sbci_api", c.table, c.priv) {
@@ -134,6 +135,10 @@ func TestRoleSplitDeployedGrants(t *testing.T) {
 		{"cloud_sessions", "SELECT"},
 		{"account_plans", "SELECT"},
 		{"plans", "SELECT"},
+		// 0044 (T-946): read the ceiling, add each job's provider cost.
+		{"budget_pool_spend", "SELECT"},
+		{"budget_pool_spend", "INSERT"},
+		{"budget_pool_spend", "UPDATE"},
 	}
 	for _, c := range workerHas {
 		if !tablePriv(t, pool, "sbci_worker", c.table, c.priv) {

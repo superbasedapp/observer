@@ -14,6 +14,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/testwriteguard"
 )
 
 // hermesProviderName is the user-config provider entry the launcher ensures
@@ -816,20 +817,26 @@ type hermesHomeInputs struct {
 	userHome     string   // os.UserHomeDir()
 	localAppData string   // %LOCALAPPDATA% (Windows only)
 	windows      bool     // runtime.GOOS == "windows"
+	// suffix is HERMES_DATA_DIR_SUFFIX: a literal suffix on the default
+	// directory name only (hermes_constants._platform_default_hermes_home;
+	// the agentconfig hermes rows carry the same rule).
+	suffix string
 }
 
 // hermesPlatformDefaultHome mirrors
 // hermes_constants._get_platform_default_hermes_home: ~/.hermes on POSIX,
-// %LOCALAPPDATA%\hermes (falling back to ~/AppData/Local/hermes) on Windows.
+// %LOCALAPPDATA%\hermes (falling back to ~/AppData/Local/hermes) on Windows,
+// each name followed by HERMES_DATA_DIR_SUFFIX.
 func hermesPlatformDefaultHome(in hermesHomeInputs) string {
+	suffix := strings.TrimSpace(in.suffix)
 	if in.windows {
 		base := strings.TrimSpace(in.localAppData)
 		if base == "" {
 			base = filepath.Join(in.userHome, "AppData", "Local")
 		}
-		return filepath.Join(base, "hermes")
+		return filepath.Join(base, "hermes"+suffix)
 	}
-	return filepath.Join(in.userHome, ".hermes")
+	return filepath.Join(in.userHome, ".hermes"+suffix)
 }
 
 // hermesDefaultRoot mirrors hermes_constants.get_default_hermes_root — the
@@ -948,13 +955,38 @@ func hermesConfigPath(args []string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("hermesConfigPath: %w", err)
 	}
-	return hermesConfigPathFor(hermesResolveHome(hermesHomeInputs{
+	return hermesConfigPathFor(hermesResolveHome(hermesProcessInputs(args, home))), nil
+}
+
+// hermesProcessInputs are hermesHomeInputs read from this process's
+// environment.
+func hermesProcessInputs(args []string, home string) hermesHomeInputs {
+	return hermesHomeInputs{
 		args:         args,
 		env:          os.Getenv(hermesHomeEnv),
 		userHome:     home,
 		localAppData: os.Getenv("LOCALAPPDATA"),
 		windows:      runtime.GOOS == "windows",
-	})), nil
+		suffix:       os.Getenv("HERMES_DATA_DIR_SUFFIX"),
+	}
+}
+
+// hermesInstallHome is the Hermes home `observer init --hermes` installs
+// into: the same profile-aware ladder the launcher uses (a sticky
+// <root>/active_profile selects its profile home), with no --profile
+// argument, so the plugin lands in the home a bare `hermes` opens
+// (surface-gap S-17: init was not profile-aware). An empty or relative
+// HERMES_HOME leaves the choice to the hook package's own ladder ("").
+func hermesInstallHome() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	in := hermesProcessInputs(nil, home)
+	if env := strings.TrimSpace(in.env); env != "" && !filepath.IsAbs(env) {
+		return ""
+	}
+	return hermesResolveHome(in)
 }
 
 // hermesConfiguredModel reads hermes' own configured default model out of the
@@ -1031,6 +1063,9 @@ func ensureHermesObserverProvider(path, baseURL, keyEnv string) error {
 	// Back up before the rewrite (yaml reserialization is lossier than JSON;
 	// same .bak-before-overwrite discipline used elsewhere) so the
 	// operator's prior config is recoverable.
+	if err := testwriteguard.Check("write", path); err != nil {
+		return err
+	}
 	if err := os.WriteFile(path+".bak", data, 0o600); err != nil { //nolint:gosec // G703: the operator's own hermes config path
 		return fmt.Errorf("backup %s: %w", path, err)
 	}

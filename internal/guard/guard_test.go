@@ -27,10 +27,17 @@ func guardCfg() config.GuardConfig {
 // os.ErrNotExist like the real filesystem.
 func fsMap(files map[string]string) func(string) ([]byte, error) {
 	return func(path string) ([]byte, error) {
-		// Normalize separators so map keys stay platform-stable.
+		// Normalize separators on both sides so map keys stay
+		// platform-stable: a fixture may key a file by a slash literal or
+		// by a filepath.Join result (backslashes on Windows).
 		key := strings.ReplaceAll(path, "\\", "/")
 		if body, ok := files[key]; ok {
 			return []byte(body), nil
+		}
+		for k, body := range files {
+			if strings.ReplaceAll(k, "\\", "/") == key {
+				return []byte(body), nil
+			}
 		}
 		return nil, os.ErrNotExist
 	}

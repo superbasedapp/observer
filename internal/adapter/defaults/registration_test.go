@@ -26,6 +26,7 @@ func TestAdaptersCanonicalOrder(t *testing.T) {
 		"devin", "qoder", "aider", "goose", "droid", "open-interpreter", "command-code", "muse",
 		"prime-agent", "junie", "zcode", "mistral-code", "freebuff", "grokbot", "kiro-crew",
 		"poolside", "zed", "chatgpt-web", "claude-web", "perplexity-web", "gemini-web", "copilot-web",
+		"autohand", "ibm-bob", "cortex-code", "codebuddy", "deepagents-code", "dimcode", "dirac", "kimchi", "stakpak", "vtcode",
 	}
 	// In a build with adapter omit tags the expected list is the canonical
 	// one minus what the binary reports compiled out (consistency within

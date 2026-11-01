@@ -14,6 +14,8 @@ import (
 
 	keyring "github.com/zalando/go-keyring"
 
+	"github.com/marmutapp/superbased-observer/internal/keystore"
+
 	"github.com/marmutapp/superbased-observer/internal/dpop/jose"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -80,7 +82,7 @@ func seedAAKeyKeychain(t *testing.T) AgentAccessKey {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := keyring.Set(aakTestService, recAgentAccessKey, v); err != nil {
+	if err := keyring.Set(keystore.Namespace(aakTestService), recAgentAccessKey, v); err != nil {
 		t.Fatal(err)
 	}
 	return k
@@ -165,7 +167,7 @@ func TestAgentAccessKeyStoreBackendSelection(t *testing.T) {
 				t.Fatalf("load = %v (same=%v)", err, err == nil && sameAAKey(t, got, *want))
 			}
 			// The write landed in the selected backend only.
-			_, kcErr := keyring.Get(aakTestService, recAgentAccessKey)
+			_, kcErr := keyring.Get(keystore.Namespace(aakTestService), recAgentAccessKey)
 			_, fErr := os.Lstat(aakFilePath(dir))
 			if tc.wantFile && fErr != nil {
 				t.Fatalf("file backend but no file: %v", fErr)
@@ -300,7 +302,7 @@ func TestAgentAccessKeyClearRemovesBoth(t *testing.T) {
 			t.Fatalf("clear #%d: %v", i+1, err)
 		}
 	}
-	if _, err := keyring.Get(aakTestService, recAgentAccessKey); !errors.Is(err, keyring.ErrNotFound) {
+	if _, err := keyring.Get(keystore.Namespace(aakTestService), recAgentAccessKey); !errors.Is(err, keyring.ErrNotFound) {
 		t.Fatalf("keychain record survived clear: %v", err)
 	}
 	if _, err := os.Lstat(aakFilePath(dir)); !errors.Is(err, os.ErrNotExist) {
@@ -421,7 +423,7 @@ func TestUnenrollClearsAgentAccessKey(t *testing.T) {
 				t.Fatalf("key file survived unenrol: %v", err)
 			}
 			if tc.keychain {
-				if _, err := keyring.Get(aakTestService, recAgentAccessKey); !errors.Is(err, keyring.ErrNotFound) {
+				if _, err := keyring.Get(keystore.Namespace(aakTestService), recAgentAccessKey); !errors.Is(err, keyring.ErrNotFound) {
 					t.Fatalf("keychain record survived unenrol: %v", err)
 				}
 			}

@@ -418,6 +418,14 @@ var fileEditableRules = []fileEditableRule{
 		"Observer shows this file but has no safe editor for its format.",
 	},
 	{
+		func(_ FileRow, s FileSnapshot, _ Access) bool { return s.Resolved.Status == PathEnvUnset },
+		"The tool reads this file only while its environment variable names a directory, and that variable is not set here.",
+	},
+	{
+		func(_ FileRow, s FileSnapshot, _ Access) bool { return s.Resolved.Status == PathRelocationUnresolved },
+		"The tool's relocation variable holds a relative path, read against a working directory Observer cannot know, so Observer writes nothing (not the default location either).",
+	},
+	{
 		func(_ FileRow, s FileSnapshot, _ Access) bool { return s.Resolved.Status != PathResolved },
 		"No concrete file on this machine (select a project, or the tool has no such file on this OS).",
 	},

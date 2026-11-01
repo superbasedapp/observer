@@ -45,6 +45,7 @@ func handleCursorHook(ctx context.Context, event, configPath string) {
 		// with no database open; only then is the row captured.
 		body, _ := readHookBodyDetectTruncation(os.Stdin, defaultHookBodyLimit)
 		body = bytes.TrimPrefix(body, []byte{0xEF, 0xBB, 0xBF})
+		noteHookPayload(body)
 		hook.HandleCursorEvent(event, nil, scrub.New(), bytes.NewReader(body), hookStdout, os.Stderr, 0)
 		markHookReplied()
 		if cursoradapter.ThoughtMintsRow(body) {
@@ -62,14 +63,14 @@ func handleCursorHook(ctx context.Context, event, configPath string) {
 		captureCursorAfterReply(ctx, event, body, configPath)
 		return
 	}
-	cfg, err := config.Load(config.LoadOptions{GlobalPath: configPath})
+	cfg, stop, err := loadGateConfig(configPath, nil, os.Stderr)
+	if stop {
+		return
+	}
 	if err != nil {
-		// Fall back to approve-only, except a gate event under
-		// enforcement, which fails closed (section 5.7).
+		// Fall back to approve-only (a gate event under enforcement has
+		// failed closed above, section 5.7).
 		fmt.Fprintf(os.Stderr, "observer-hook: cursor config: %v\n", err)
-		if hookFailClosed(guardposture.KindConfig, nil) {
-			return
-		}
 		hook.HandleApprove("cursor:"+event, os.Stdin, hookStdout, os.Stderr)
 		markHookReplied()
 		return
@@ -112,6 +113,7 @@ func handleCursorHook(ctx context.Context, event, configPath string) {
 	body, truncated := readHookBodyDetectTruncation(os.Stdin, promptSubmitBodyLimit)
 	body = bytes.TrimPrefix(body, []byte{0xEF, 0xBB, 0xBF})
 	hook.DumpHookShape(models.ToolCursor, event, body)
+	noteHookPayload(body)
 
 	if !truncated && hookPayloadUnparseable(body) && hookFailClosed(guardposture.KindUnparseable, body) {
 		return
@@ -126,6 +128,10 @@ func handleCursorHook(ctx context.Context, event, configPath string) {
 	// sessionStart can carry an armed session handoff as
 	// additional_context (context_inject binding, handoff_hook.go).
 	cursorOut := wrapSessionStartContext(ctx, hookStdout, models.ToolCursor, event, body, configPath)
+	// postToolUse can carry the security feedback lines as
+	// additional_context (lane sec-h, security_feedback.go); unchanged
+	// unless security.feedback is selected.
+	cursorOut = securityPostFeedbackWriter(ctx, cursorOut, models.ToolCursor, event, body, configPath)
 	if g != nil {
 		st := hookCaptureStore(database, cfg.Compression.Indexing)
 		persist := func(v guard.ActionVerdict) {
@@ -148,7 +154,15 @@ func handleCursorHook(ctx context.Context, event, configPath string) {
 		if event != cursoradapter.EventBeforeSubmitPrompt || promptGuardEnabled(cfg) {
 			gd = g
 		}
-		hook.HandleCursorEventGuarded(event, gd, persist, st, sc, bytes.NewReader(body), truncated, cursorOut, os.Stderr, cfg.Observer.Hooks.HookTimeout())
+		// A payload Cursor's gate cannot decode where it reads it was not
+		// judged: under enforcement it fails closed (FU-161).
+		if gd != nil && hook.CursorPayloadUndecodable(event, body) && hookFailClosed(guardposture.KindUnparseable, body) {
+			return
+		}
+		enrich := securityToolGateEnrich(configPath, models.ToolCursor, event, hookSecurityAliases(cfg, nil))
+		// The allow seam writes an allowed agent commit's trailer marker
+		// before the reply (lane SEC-F2B, P-078 ruling 3).
+		hook.HandleCursorEventGated(event, gd, persist, enrich, provenanceAgentCommitAllowed, st, sc, bytes.NewReader(body), truncated, cursorOut, os.Stderr, cfg.Observer.Hooks.HookTimeout())
 	} else {
 		hook.HandleCursorEvent(event, hookCaptureStore(database, cfg.Compression.Indexing), sc, bytes.NewReader(body), cursorOut, os.Stderr, cfg.Observer.Hooks.HookTimeout())
 	}
@@ -164,8 +178,11 @@ func handleCursorHook(ctx context.Context, event, configPath string) {
 	// process, so the claude-code ancestor-walk resolves cursor's pid
 	// verbatim (no pid rides in the payload). Best-effort + fail-open -
 	// the reply already went out above.
-	seedCursorSessionPidbridge(ctx, event, body, os.Getppid(), defaultAncestors,
+	seedCursorSessionPidbridge(ctx, event, body, hookContext(ctx).ParentPID(), hookContext(ctx).Ancestors,
 		makePidbridgeWriter(configPath), sc, os.Stderr)
+	if event == cursoradapter.EventSessionStart && !cursoradapter.IsRemoteAgentPayload(body) {
+		recordSessionStartTrust(ctx, models.ToolCursor, body, configPath, os.Stderr)
+	}
 }
 
 // captureCursorAfterReply runs the cursor capture half (rows, outcomes,

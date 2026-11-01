@@ -375,89 +375,179 @@ func TestMistralVibeWriter(t *testing.T) {
 	}
 }
 
-// TestClineHookFileWriter: ~/.cline/hooks/PreToolUse is an executable
-// script Observer owns, registered for the Cline CLI (T-342: the CLI reads
-// the directory, so its verdicts are recorded under cline-cli); a user's PreToolUse under any extension the SDK
-// reads is a --force conflict, and unregister never deletes a user file.
-func TestClineHookFileWriter(t *testing.T) {
+// TestClineGuardWriter (guard-fix lane B, FU-154): the Cline CLI guard is
+// the plugin in the plugins directory (beforeModel + beforeTool) plus the
+// PreToolUse gate file, an executable that execs Observer's cline-cli gate
+// (the Cline CLI runs hook files and no plugin). It is idempotent, removed
+// by unregister, honours CLINE_DIR, and never touches a PreToolUse of the
+// developer's own.
+func TestClineGuardWriter(t *testing.T) {
 	if clineHooksUnsupportedOS(runtime.GOOS) {
-		t.Skip("Cline hook files are macOS / Linux only")
+		t.Skip("the Cline guard is macOS / Linux only")
 	}
 	r := toolGateRegistry(t, false, ".cline")
-	path := filepath.Join(r.opts.HomeDir, ".cline", "hooks", "PreToolUse")
+	plugin := filepath.Join(r.opts.HomeDir, ".cline", "plugins", "superbased-observer-guard.js")
+	keep := filepath.Join(r.opts.HomeDir, ".cline", "hooks", "PreToolUse")
 	res := r.Register("cline-cli")
-	if res.Error != nil || strings.Join(res.HooksAdded, ",") != "PreToolUse" || res.ConfigPath != path {
+	if res.Error != nil || strings.Join(res.HooksAdded, ",") != "beforeModel,beforeTool,PreToolUse" || res.ConfigPath != plugin {
 		t.Fatalf("Register = %+v", res)
 	}
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(plugin)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "#!/usr/bin/env bash\n" + clineHookMarker + "\nexec /opt/observer/bin/observer hook cline-cli PreToolUse\n"
-	if string(raw) != want {
-		t.Fatalf("script = %q, want %q", raw, want)
+	mustContain(t, raw, `"shape":"cline"`, `"beforeModel":"prompt_gate"`, `"beforeTool":"tool_gate"`, `"ask":true`, `"bin":"/opt/observer/bin/observer"`)
+	wantGate := "#!/usr/bin/env bash\n" + clineHookMarker + "\nexec /opt/observer/bin/observer hook cline-cli PreToolUse\n"
+	if got, _ := os.ReadFile(keep); string(got) != wantGate {
+		t.Fatalf("gate file = %q, want %q", got, wantGate)
 	}
-	if fi, _ := os.Stat(path); fi.Mode().Perm()&0o111 == 0 {
-		t.Errorf("script mode %v is not executable", fi.Mode())
+	if fi, err := os.Stat(keep); err != nil || fi.Mode().Perm() != 0o755 {
+		t.Fatalf("gate file mode = %v (%v), want 0755", fi.Mode(), err)
 	}
-	if again := r.Register("cline-cli"); again.Error != nil || len(again.AlreadySet) != 1 {
+	if !clineHookIsObservers([]byte(wantGate)) {
+		t.Error("the gate file does not read as Observer's")
+	}
+	if again := r.Register("cline-cli"); again.Error != nil || len(again.HooksAdded) != 0 || len(again.AlreadySet) != 3 {
 		t.Fatalf("re-register = %+v", again)
 	}
-	if un := r.Unregister("cline-cli"); un.Error != nil || len(un.HooksRemoved) != 1 {
+	un := r.Unregister("cline-cli")
+	if un.Error != nil || strings.Join(un.HooksRemoved, ",") != "beforeModel,beforeTool,PreToolUse" {
 		t.Fatalf("Unregister = %+v", un)
 	}
-	if _, err := os.Stat(path); err == nil {
-		t.Error("script kept after unregister")
+	for _, p := range []string{plugin, keep} {
+		if _, err := os.Stat(p); err == nil {
+			t.Errorf("%s kept after unregister", p)
+		}
 	}
 
-	user := path + ".sh"
+	// A developer's own PreToolUse already keeps hooks.jsonl on: Observer
+	// writes the plugin only, and unregister keeps the user's file.
+	user := keep + ".sh"
 	if err := os.WriteFile(user, []byte("#!/bin/sh\necho mine\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if res := r.Register("cline-cli"); res.Error == nil || !strings.Contains(res.Error.Error(), "--force") {
-		t.Fatalf("Register beside a user PreToolUse.sh = %+v, want a --force conflict", res)
+	if res := r.Register("cline-cli"); res.Error != nil || strings.Join(res.HooksAdded, ",") != "beforeModel,beforeTool" {
+		t.Fatalf("Register beside a user PreToolUse.sh = %+v", res)
 	}
-	if err := os.WriteFile(path, []byte("#!/bin/sh\necho mine too\n"), 0o755); err != nil {
+	if _, err := os.Stat(keep); err == nil {
+		t.Error("keep-alive written beside the user's own PreToolUse")
+	}
+	if err := os.WriteFile(keep, []byte("#!/bin/sh\necho mine too\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if un := r.Unregister("cline-cli"); un.Error != nil || len(un.HooksRemoved) != 0 || len(un.HooksKept) != 1 {
+	if un := r.Unregister("cline-cli"); un.Error != nil || len(un.HooksKept) != 1 {
 		t.Fatalf("Unregister over a user script = %+v, want it kept", un)
 	}
-	if _, err := os.Stat(path); err != nil {
+	if _, err := os.Stat(keep); err != nil {
 		t.Errorf("user script deleted: %v", err)
 	}
 }
 
-// TestClineHookFileWriterUpgradesLegacyScript (T-342): a script an earlier
-// version wrote for `observer hook cline` is Observer's own, so registering
-// the cline-cli gate rewrites it without --force, and unregister removes it.
-func TestClineHookFileWriterUpgradesLegacyScript(t *testing.T) {
+// TestClineGuardWriterHonoursClineDir: $CLINE_DIR moves the plugins
+// directory (the vendor's own override).
+func TestClineGuardWriterHonoursClineDir(t *testing.T) {
 	if clineHooksUnsupportedOS(runtime.GOOS) {
-		t.Skip("Cline hook files are macOS / Linux only")
+		t.Skip("the Cline guard is macOS / Linux only")
+	}
+	home := t.TempDir()
+	alt := filepath.Join(t.TempDir(), "cline-data")
+	r := pluginShimRegistry(t, home, false, func(k string) string {
+		if k == "CLINE_DIR" {
+			return alt
+		}
+		return ""
+	})
+	res := r.Register("cline-cli")
+	if want := filepath.Join(alt, "plugins", "superbased-observer-guard.js"); res.Error != nil || res.ConfigPath != want {
+		t.Fatalf("Register = %+v, want the plugin at %s", res, want)
+	}
+}
+
+// TestClineKeepAliveHonoursClineDir: the PreToolUse keep-alive goes under
+// the same $CLINE_DIR the SDK and CLI scan ($CLINE_DIR/hooks), not under
+// ~/.cline/hooks, and an unregister removes it there (S-6; red on the old
+// writer, which joined HomeDir only).
+func TestClineKeepAliveHonoursClineDir(t *testing.T) {
+	if clineHooksUnsupportedOS(runtime.GOOS) {
+		t.Skip("the Cline guard is macOS / Linux only")
+	}
+	home := t.TempDir()
+	alt := filepath.Join(t.TempDir(), "cline-home")
+	r := pluginShimRegistry(t, home, false, func(k string) string {
+		if k == "CLINE_DIR" {
+			return " " + alt + " " // the vendor trims the value
+		}
+		return ""
+	})
+	if res := r.Register("cline-cli"); res.Error != nil {
+		t.Fatalf("Register: %v", res.Error)
+	}
+	keep := filepath.Join(alt, "hooks", "PreToolUse")
+	if got, err := os.ReadFile(keep); err != nil || !clineHookIsObservers(got) {
+		t.Fatalf("keep-alive not at %s: %v", keep, err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".cline", "hooks")); err == nil {
+		t.Error("a hooks dir was written under ~/.cline although CLINE_DIR moved it")
+	}
+	if res := r.Unregister("cline-cli"); res.Error != nil {
+		t.Fatalf("Unregister: %v", res.Error)
+	}
+	if _, err := os.Stat(keep); err == nil {
+		t.Error("unregister left the keep-alive under $CLINE_DIR")
+	}
+}
+
+// TestClineGuardWriterReplacesLegacyGate: a PreToolUse script an earlier
+// version wrote (a gate for `observer hook cline` or a stale one, or the
+// no-verdict keep-alive) is Observer's own: registering replaces it with
+// the current gate file (FU-154); with a user PreToolUse beside it,
+// Observer's script is removed instead.
+func TestClineGuardWriterReplacesLegacyGate(t *testing.T) {
+	if clineHooksUnsupportedOS(runtime.GOOS) {
+		t.Skip("the Cline guard is macOS / Linux only")
+	}
+	keepAlive := "#!/usr/bin/env bash\n" + clineKeepAliveMarker + "\ncat >/dev/null\nexit 0\n"
+	for name, legacy := range map[string]string{
+		"cline":      "#!/usr/bin/env bash\n" + clineHookMarker + "\nexec /opt/observer/bin/observer hook cline PreToolUse\n",
+		"moved":      "#!/usr/bin/env bash\n" + clineHookMarker + "\nexec /usr/lib/observer-old/observer hook cline-cli PreToolUse\n",
+		"keep-alive": keepAlive,
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := toolGateRegistry(t, false, ".cline")
+			path := filepath.Join(r.opts.HomeDir, ".cline", "hooks", "PreToolUse")
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(legacy), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if res := r.Register("cline-cli"); res.Error != nil {
+				t.Fatalf("Register over the legacy gate = %+v", res)
+			}
+			if raw, _ := os.ReadFile(path); string(raw) != string(r.clineGateScript()) {
+				t.Fatalf("PreToolUse = %q, want the gate file", raw)
+			}
+			if err := os.WriteFile(path, []byte(legacy), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path+".py", []byte("print('mine')\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if res := r.Register("cline-cli"); res.Error != nil {
+				t.Fatalf("Register over the legacy gate beside a user hook = %+v", res)
+			}
+			if _, err := os.Stat(path); err == nil {
+				t.Error("legacy gate kept beside the user's own PreToolUse")
+			}
+			if err := os.WriteFile(path, []byte(legacy), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if un := r.Unregister("cline-cli"); un.Error != nil || !strings.Contains(strings.Join(un.HooksRemoved, ","), "PreToolUse") {
+				t.Fatalf("Unregister of the legacy gate = %+v, want it removed", un)
+			}
+		})
 	}
 	r := toolGateRegistry(t, false, ".cline")
-	path := filepath.Join(r.opts.HomeDir, ".cline", "hooks", "PreToolUse")
-	legacy := "#!/usr/bin/env bash\n" + clineHookMarker + "\nexec /opt/observer/bin/observer hook cline PreToolUse\n"
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte(legacy), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	res := r.Register("cline-cli")
-	if res.Error != nil || strings.Join(res.HooksAdded, ",") != "PreToolUse" {
-		t.Fatalf("Register over the legacy script = %+v, want PreToolUse rewritten", res)
-	}
-	raw, _ := os.ReadFile(path)
-	if want := "#!/usr/bin/env bash\n" + clineHookMarker + "\nexec /opt/observer/bin/observer hook cline-cli PreToolUse\n"; string(raw) != want {
-		t.Fatalf("script = %q, want %q", raw, want)
-	}
-	if err := os.WriteFile(path, []byte(legacy), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if un := r.Unregister("cline-cli"); un.Error != nil || len(un.HooksRemoved) != 1 {
-		t.Fatalf("Unregister of the legacy script = %+v, want it removed", un)
-	}
 	if res := r.Register("cline"); res.Error == nil {
 		t.Errorf("Register(cline) = %+v, want unsupported: the extension row registers no hook", res)
 	}
@@ -475,6 +565,16 @@ func TestClineHooksUnsupportedOnWindows(t *testing.T) {
 func TestInstalledDetectsToolGateVendors(t *testing.T) {
 	for _, row := range installedToolGateDirs {
 		t.Run(row.tool, func(t *testing.T) {
+			if len(row.dirs) == 0 {
+				// Detected only through its artifact-resolved home
+				// (homeArtifacts), so a relocation variable moves the
+				// signal; the tool's own test covers that path
+				// (TestCortexInstallFollowsTheArtifact).
+				if _, ok := homeArtifacts[row.tool]; !ok {
+					t.Fatalf("%s has no install directory and no homeArtifacts row, so it can never be detected", row.tool)
+				}
+				return
+			}
 			r := toolGateRegistry(t, false, filepath.Join(row.dirs[0]...))
 			for _, tool := range r.Installed() {
 				if tool == row.tool {
@@ -493,5 +593,52 @@ func TestInstalledDetectsToolGateVendors(t *testing.T) {
 		return false
 	}() {
 		t.Error("~/.agents alone (shared by every Open Plugins host) must not read as a goose install")
+	}
+}
+
+// TestClineGateFileSkipIsReported (audit-report-arc-w11 row 6): a developer's
+// own PreToolUse hook file keeps Observer from writing its gate file, and
+// that is reported as a not-applicable skip of the gate and a Warning on the
+// cline-cli result naming the file, so the plugin's events do not read as
+// covering a Cline CLI that loads no plugins. The file is kept byte for byte.
+func TestClineGateFileSkipIsReported(t *testing.T) {
+	if clineHooksUnsupportedOS(runtime.GOOS) {
+		t.Skip("the Cline guard is macOS / Linux only")
+	}
+	r := toolGateRegistry(t, false, ".cline")
+	user := filepath.Join(r.opts.HomeDir, ".cline", "hooks", "PreToolUse.sh")
+	if err := os.MkdirAll(filepath.Dir(user), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const mine = "#!/bin/sh\necho mine\n"
+	if err := os.WriteFile(user, []byte(mine), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gate := r.registerClineGateFile()
+	if !gate.Skipped || gate.SkipKind != SkipNotApplicable || !strings.Contains(gate.SkipReason, user) || len(gate.HooksAdded)+len(gate.AlreadySet) != 0 {
+		t.Fatalf("gate = %+v, want a not-applicable skip naming %s", gate, user)
+	}
+	res := r.Register("cline-cli")
+	if res.Error != nil || res.Skipped {
+		t.Fatalf("Register = %+v", res)
+	}
+	warned := false
+	for _, w := range res.Warnings {
+		if strings.Contains(w, user) && strings.Contains(w, "NOT gated") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("no Warning names %s: %v", user, res.Warnings)
+	}
+	if got, _ := os.ReadFile(user); string(got) != mine {
+		t.Errorf("the developer's file changed: %q", got)
+	}
+	// Without the developer's file there is no such warning.
+	if err := os.Remove(user); err != nil {
+		t.Fatal(err)
+	}
+	if res := r.Register("cline-cli"); len(res.Warnings) != 0 {
+		t.Errorf("Warnings without a developer file: %v", res.Warnings)
 	}
 }

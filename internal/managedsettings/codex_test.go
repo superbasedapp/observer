@@ -24,7 +24,7 @@ func TestGenerateCodex_Defaults(t *testing.T) {
 		`openai_base_url = "http://127.0.0.1:8820/v1"`,
 		"[features]",
 		"hooks = true",
-		"[mcp_servers.superbased-observer]",
+		"[mcp_servers." + CodexMCPServerName + "]",
 		`command = "npx"`,
 		`args = ["-y", "@superbased/observer", "serve"]`,
 	} {
@@ -41,11 +41,12 @@ func TestGenerateCodex_Defaults(t *testing.T) {
 	assertParseableTOML(t, "managed_config.toml", arts.ManagedConfigTOML)
 	assertParseableTOML(t, "requirements.toml", arts.RequirementsTOML)
 
-	// requirements.toml is conservative: the unconfirmed MCP-allowlist key
-	// ships commented (an invented live key would silently no-op).
+	// requirements.toml is conservative: the MCP identity rule ships
+	// commented (a live mcp_servers table disables every server it does not
+	// name).
 	rq := string(arts.RequirementsTOML)
-	if !strings.Contains(rq, `# allowed_mcp_servers = ["superbased-observer"]`) {
-		t.Errorf("requirements.toml should ship the allowlist key commented:\n%s", rq)
+	if !strings.Contains(rq, "# [mcp_servers."+CodexMCPServerName+".identity]") {
+		t.Errorf("requirements.toml should ship the identity rule commented:\n%s", rq)
 	}
 	if strings.Contains(rq, "\nallow_managed_hooks_only = true") {
 		t.Errorf("requirements.toml should NOT enforce managed-hooks-only by default:\n%s", rq)
@@ -63,6 +64,7 @@ func TestGenerateCodex_OTelAndEnforce(t *testing.T) {
 		IncludeMCP:              true,
 		IncludeProxyRoute:       true,
 		EnforceManagedHooksOnly: true,
+		ManagedHooks:            testCodexManagedHooks(),
 	})
 	if err != nil {
 		t.Fatalf("GenerateCodex: %v", err)
@@ -91,7 +93,7 @@ func TestGenerateCodex_MCPOnly(t *testing.T) {
 	if strings.Contains(mc, "openai_base_url") {
 		t.Errorf("proxy route should be omitted when IncludeProxyRoute=false:\n%s", mc)
 	}
-	if !strings.Contains(mc, "[mcp_servers.superbased-observer]") {
+	if !strings.Contains(mc, "[mcp_servers."+CodexMCPServerName+"]") {
 		t.Errorf("MCP pin missing:\n%s", mc)
 	}
 }

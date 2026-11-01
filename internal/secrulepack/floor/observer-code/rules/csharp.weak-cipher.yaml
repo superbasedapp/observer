@@ -1,0 +1,16 @@
+rules:
+  - id: csharp.weak-cipher
+    languages: [csharp]
+    severity: WARNING
+    message: A broken or weak cipher (DES, 3DES, RC2) or ECB mode is used; use AesGcm or ChaCha20Poly1305.
+    metadata:
+      category: code_vuln
+      cwe: CWE-327
+    pattern-either:
+      - pattern: DES.Create(...)
+      - pattern: TripleDES.Create(...)
+      - pattern: RC2.Create(...)
+      - pattern: new DESCryptoServiceProvider()
+      - pattern: new TripleDESCryptoServiceProvider()
+      - pattern: new RC2CryptoServiceProvider()
+      - pattern: CipherMode.ECB

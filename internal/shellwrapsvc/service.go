@@ -10,12 +10,14 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/fsatomic"
+	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/shellwrap"
 )
 
@@ -84,7 +86,20 @@ type Service struct {
 	// bridge shim runs (the Windows program for SideHost, the distro for
 	// SideWSL). nil = unknown.
 	WindowsInstalled func(id string, side shellwrap.Side) bool
+
+	// OrgMaintained reports whether this node's organization maintains the
+	// native target's wrap (surface-gap CLI-1b, D6: a managed node whose
+	// admin pinned shell_wrap.org_maintain ON). While it does, a request
+	// that would remove the native wrap (Disable, or an Apply of no tool)
+	// is refused with ErrOrgMaintained unless the organization itself makes
+	// it. nil = never (an individual node, and every test that does not set
+	// it).
+	OrgMaintained func() bool
 }
+
+// ErrOrgMaintained refuses a developer's removal of a wrap the organization
+// maintains on this managed node (CLI-1b).
+var ErrOrgMaintained = errors.New("your organization keeps command wrapping on for every installed tool on this managed machine, so it cannot be turned off or narrowed here (`observer shell-wrap enable all` keeps it); ask your administrator")
 
 // Target names whose shells a call manages.
 type Target string
@@ -121,6 +136,12 @@ type Request struct {
 	Shells []string `json:"shells"`
 	// DryRun computes the changes and writes nothing.
 	DryRun bool `json:"dry_run"`
+	// ByOrganization marks an apply the managed daemon makes for the
+	// organization (CLI-1b). It is recorded as [shell_wrap].org_applied, so
+	// only such a wrap is removed when the organization releases it. Never
+	// decoded from a request body: a dashboard or CLI apply is the
+	// developer's own.
+	ByOrganization bool `json:"-"`
 }
 
 // Change is one file-level effect of an apply.
@@ -524,7 +545,7 @@ func (s Service) Apply(ctx context.Context, req Request) (Outcome, error) {
 	if err != nil {
 		return Outcome{}, err
 	}
-	return s.reconcile(ctx, req.Target, shellwrap.Selection{Tools: req.Tools, Shells: shells}, req.DryRun, false)
+	return s.reconcile(ctx, req.Target, shellwrap.Selection{Tools: req.Tools, Shells: shells}, req.DryRun, false, req.ByOrganization)
 }
 
 // Disable removes every native-target shim and marked block, restoring each
@@ -536,12 +557,74 @@ func (s Service) Disable(ctx context.Context, dryRun bool) (Outcome, error) {
 
 // DisableFor is Disable for one target.
 func (s Service) DisableFor(ctx context.Context, target Target, dryRun bool) (Outcome, error) {
-	return s.reconcile(ctx, target, shellwrap.Selection{}, dryRun, true)
+	return s.reconcile(ctx, target, shellwrap.Selection{}, dryRun, true, false)
 }
 
-func (s Service) reconcile(ctx context.Context, target Target, sel shellwrap.Selection, dryRun, disable bool) (Outcome, error) {
+// ReleaseOrganization removes the native target's wrap when, and only when,
+// the managed daemon applied it for the organization ([shell_wrap].
+// org_applied, CLI-1b). A wrap the developer applied is theirs and is left
+// alone. released reports whether a wrap was removed.
+func (s Service) ReleaseOrganization(ctx context.Context) (out Outcome, released bool, err error) {
+	home, err := s.home()
+	if err != nil {
+		return Outcome{}, false, err
+	}
+	cfg, err := s.loadConfig(s.configPath(home))
+	if err != nil {
+		return Outcome{}, false, err
+	}
+	if !cfg.ShellWrap.OrgApplied {
+		return Outcome{}, false, nil
+	}
+	out, err = s.reconcile(ctx, TargetNative, shellwrap.Selection{}, false, true, true)
+	return out, err == nil, err
+}
+
+// orgBlocksRemoval reports whether the organization's maintained wrap
+// refuses this reconcile: the native target, not made by the organization,
+// while it maintains it, and a request that would leave less than the
+// organization's selection (every installed CLI tool, shellwrap.AllTools):
+// a disable, an empty selection, or a selection that does not ask for
+// AllTools (a narrower one would otherwise read in sync and never be put
+// back).
+func (s Service) orgBlocksRemoval(target Target, sel shellwrap.Selection, disable, byOrg bool) bool {
+	if target != TargetNative || byOrg || s.OrgMaintained == nil {
+		return false
+	}
+	narrows := disable || !slices.Contains(sel.Tools, shellwrap.AllTools)
+	return narrows && s.OrgMaintained()
+}
+
+// OrgSelectionCovered reports whether a native status already carries the
+// organization's selection (CLI-1b): every CLI row AllTools would wrap (an
+// installed terminal row, or one whose install state is unknown) is
+// selected, and every detected shell is planned. The managed maintenance
+// and the shell_wrap_missing check read it beside the status's own sync
+// state, so a narrower choice recorded before the pin is not read as the
+// organization's wrap.
+func OrgSelectionCovered(st shellwrap.Status) bool {
+	for _, t := range st.Tools {
+		if t.Kind != integration.LaunchKindTerminal {
+			continue
+		}
+		if (t.Installed == nil || *t.Installed) && !t.Selected {
+			return false
+		}
+	}
+	for _, sh := range st.DetectedShells {
+		if !slices.Contains(st.PlannedShells, sh) {
+			return false
+		}
+	}
+	return true
+}
+
+func (s Service) reconcile(ctx context.Context, target Target, sel shellwrap.Selection, dryRun, disable, byOrg bool) (Outcome, error) {
 	if err := ctx.Err(); err != nil {
 		return Outcome{}, err
+	}
+	if s.orgBlocksRemoval(target, sel, disable, byOrg) {
+		return Outcome{}, ErrOrgMaintained
 	}
 	applyMu.Lock()
 	defer applyMu.Unlock()
@@ -591,7 +674,7 @@ func (s Service) reconcile(ctx context.Context, target Target, sel shellwrap.Sel
 	if err := execute(changes, localDir, plan.Empty()); err != nil {
 		return out, err
 	}
-	if err := recordChoice(cfgPath, cfg, plan, sel, disable, target); err != nil {
+	if err := recordChoice(cfgPath, cfg, plan, sel, disable, target, byOrg); err != nil {
 		out.Notes = append(out.Notes, "the files were applied but the choice was not recorded in "+cfgPath+": "+err.Error())
 	}
 	if written := countWritten(changes); written > 0 {
@@ -821,7 +904,7 @@ func setTargetView(cfg *config.Config, t Target, v config.ShellWrapTargetConfig)
 // recordChoice writes the target's [shell_wrap] keys through
 // config.PatchFile (scalar line edits: comments and untouched lines survive
 // byte-for-byte).
-func recordChoice(path string, cfg config.Config, plan shellwrap.Plan, sel shellwrap.Selection, disable bool, target Target) error {
+func recordChoice(path string, cfg config.Config, plan shellwrap.Plan, sel shellwrap.Selection, disable bool, target Target, byOrg bool) error {
 	var patches []config.Patch
 	prefix := targetConfigPrefix(target)
 	set := func(dotted string, v bool) {
@@ -835,6 +918,14 @@ func recordChoice(path string, cfg config.Config, plan shellwrap.Plan, sel shell
 	enabled := !disable && !plan.Empty()
 	view.Enabled = enabled
 	set("enabled", enabled)
+	// The native target's provenance (CLI-1b): set by the organization's
+	// apply, cleared by any other write (the developer then owns the wrap).
+	if target == TargetNative {
+		if orgApplied := byOrg && enabled; orgApplied != cfg.ShellWrap.OrgApplied {
+			set("org_applied", orgApplied)
+			cfg.ShellWrap.OrgApplied = orgApplied
+		}
+	}
 	if !disable {
 		chosen := map[string]bool{}
 		for _, t := range plan.Tools {

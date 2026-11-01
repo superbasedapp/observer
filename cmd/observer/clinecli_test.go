@@ -26,6 +26,10 @@ import (
 
 const clineTestBaseURL = "http://127.0.0.1:8820/v1"
 
+// clineLauncherEnvOverride, when set by a test, is the CLINE_* environment
+// clineLauncherRun launches with (default: none set).
+var clineLauncherEnvOverride map[string]string
+
 // clineTestOpenAI is the proxy's fixed OpenAI upstream in these tests (the
 // [proxy].openai_upstream default).
 const clineTestOpenAI = "https://api.openai.com"
@@ -330,7 +334,10 @@ func clineLauncherRun(t *testing.T, home string, args ...string) ([]string, stri
 		agentRuntimeDir = originalRuntimeDir
 		daemonLoginPathDirs = originalLoginPathDirs
 	})
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
+	for _, k := range []string{"CLINE_DIR", "CLINE_DATA_DIR", "CLINE_PROVIDER_SETTINGS_PATH"} {
+		t.Setenv(k, clineLauncherEnvOverride[k])
+	}
 	dir := t.TempDir()
 	cfgPath := writeCopilotCLITestConfig(t, dir)
 	argvPath := filepath.Join(dir, "argv.out")

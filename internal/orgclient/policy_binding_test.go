@@ -68,7 +68,14 @@ func TestFetchPolicyBundle_Binding(t *testing.T) {
 		if res.Status != PolicyRejected || res.RejectCode != RejectSigInvalid {
 			t.Fatalf("another member's bundle = %+v, want rejected sig_invalid", res)
 		}
-		if len(caps) != 1 || caps[0] != orgcontract.PolicyBindingCapability {
+		// project-families-v1 rides along where security.scanning is
+		// linked (lane sec-p3, projectFamiliesAdvertised).
+		wantCaps := 2
+		if projectFamiliesAdvertised() {
+			wantCaps = 3
+		}
+		if len(caps) != wantCaps || caps[0] != orgcontract.PolicyBindingCapability || caps[1] != orgcontract.PolicyBindingV3Capability ||
+			(wantCaps == 3 && caps[2] != orgcontract.ProjectFamiliesCapability) {
 			t.Fatalf("the fetch advertised %q, want the binding capability", caps)
 		}
 		if _, err := os.Stat(cachePath); err == nil {

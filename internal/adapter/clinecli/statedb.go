@@ -305,16 +305,17 @@ func loadMessagesJSON(s *sessionRow, rootDir string) {
 	}
 }
 
-// deriveRootDir returns the parent of `.../data/db/sessions.db`,
-// which is the cline data dir (`<CLINE_DIR>/data`). Used as the
-// fallback when sessions.messages_path doesn't resolve.
+// deriveRootDir returns the parent of `.../db/sessions.db`, which is the
+// cline data dir (`<CLINE_DIR>/data`, or a relocated $CLINE_DATA_DIR of any
+// name, FU-30). Used as the fallback when sessions.messages_path doesn't
+// resolve.
 func deriveRootDir(dbPath string) string {
 	abs := filepath.ToSlash(dbPath)
-	idx := strings.LastIndex(abs, "/data/db/sessions.db")
-	if idx < 0 {
+	idx := strings.LastIndex(abs, "/db/sessions.db")
+	if idx <= 0 || idx+len("/db/sessions.db") != len(abs) {
 		return ""
 	}
-	return filepath.FromSlash(abs[:idx+len("/data")])
+	return filepath.FromSlash(abs[:idx])
 }
 
 // parseISO8601ms converts an ISO 8601 timestamp to UnixMilli for

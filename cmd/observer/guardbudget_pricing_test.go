@@ -45,7 +45,7 @@ func TestGuardBudgetPricerPinsOneTableForWholeRead(t *testing.T) {
 func TestGuardBudgetAccountingCarriesDurablePricingWitness(t *testing.T) {
 	ctx := context.Background()
 	_, dbPath := writeManagedBudgetLaunchFixture(t, false, "enforce")
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatal(err)

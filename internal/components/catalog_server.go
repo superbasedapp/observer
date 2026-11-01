@@ -197,6 +197,100 @@ func serverRows() []Component {
 			Note:          "Off by default and inert when off in every deployment shape (docs/agent-access.md). Without it (-tags sbo_omit_org_agentaccess) a node push is still accepted by member key: its MCP relay rows are dropped with a counted, logged reason, never a 400 (ruling D-504), and a tools.mcp_access policy publish is refused because its compiler is not in the image.",
 		},
 		{
+			// Security pillar Phase E (security plan 4.2, lane SEC-E): "off
+			// until configured". E1 builds the server half of the
+			// security.scanning family compiler (its pair file
+			// internal/policyfam/family_securityscanning.go) and the
+			// GET /api/agent/security managed pull's body provider and admin
+			// API, mounted only while [security].enabled. Ingest, fleet views,
+			// alerts and exports join in the later E lanes.
+			ID: "org.security", Class: ClassServer, Binary: BinaryOrg,
+			Title:     "Code security (org)",
+			About:     "The org half of the Code security module: the security.scanning floors family and the enforce.security managed pull that switches security parts on for managed nodes.",
+			Levels:    l1Done,
+			Routes:    []string{"/api/org/security/managed", "/api/org/security/manifests", "/api/org/security/findings", "/api/org/security/rollup", "/api/org/security/coverage", "/api/org/security/exceptions", "/api/org/security/settings", "/api/org/security/export"},
+			Packages:  []string{"internal/orgserver/secmanaged", "internal/orgserver/secmanifests", "internal/policyfam/securityscanning", "internal/orgserver/secorg"},
+			Ledger:    []string{"SECP-10"},
+			Stability: StabilityPreview,
+			Images:    img(ImageOff, ImageOut),
+			Note:      "Off by default ([security].enabled in the server config). Without it, or in an image built with -tags sbo_omit_org_security, GET /api/agent/security answers the managed-pull kit's 404 not_supported (a node keeps its own values and never clears on it) and a security.scanning publish is refused because its compiler is not in the image.",
+		},
+		{
+			// Security pillar Phase E (security plan 4.2 and 8.3, lane
+			// SEC-E4): "off until configured", the org server's first
+			// outbound lookup lane. [security.relay].enabled mounts
+			// POST /api/agent/security/lookup, the agent content route
+			// /api/agent/security/content/ and the admin API
+			// /api/org/security/relay; the org's super admin then picks the
+			// mode (off, relay or mirror). Its declared egress is the server
+			// lane org.security.relay (tests/invariant/server_egress_lanes_test.go):
+			// the exact hosts of internal/secfeed/online, only in relay mode
+			// and for `observer-org security mirror sync`.
+			ID: "org.security.relay", Class: ClassServer, Binary: BinaryOrg,
+			Title:         "Code security relay and mirror",
+			About:         "Answers managed nodes' online package checks (relay mode, querying the public sources on their behalf) or from the org's imported mirror (mirror mode, air-gapped), and serves the mirrored security content.",
+			Levels:        l1Done,
+			Routes:        []string{"/api/agent/security/lookup", "/api/agent/security/content", "/api/org/security/relay"},
+			Packages:      []string{"internal/orgserver/secrelay", "internal/secfeed", "internal/secfeed/online"},
+			DirectModules: []string{"golang.org/x/mod", "github.com/BurntSushi/toml", "gopkg.in/yaml.v3"},
+			Requires:      []string{"org.security"},
+			Surface:       Surface{Egress: []Egress{{Host: "api.osv.dev, the public package registries, superbased.app", Purpose: "Relayed package checks and mirror sync", Gate: "config", Trigger: TriggerOptIn}}},
+			Ledger:        []string{"SECP-26"},
+			Stability:     StabilityPreview,
+			Images:        img(ImageOff, ImageOut),
+			Note:          "Off by default ([security.relay].enabled in the server config, then a relay mode chosen by the super admin). Without it, or in an image built with -tags sbo_omit_org_security_relay, the lookup and content routes answer 404 not_supported and a managed node keeps showing online_unknown or not scanned, never a public fallback (X19).",
+		},
+		{
+			// Security pillar Phase F2 (security plan 4.2, 7.9 F2 and 7.10,
+			// lane SEC-F2B): "off until configured". [security.ci].enabled
+			// (with [security].enabled) mounts the node key enrolment route
+			// POST /api/agent/security/change-key, the two CI routes behind a
+			// CI credential (an ingest credential of the Plane A machine
+			// identity tables scoped to ci:verify) and the admin API of the
+			// web2 Change records page, and hands secorg the ingest step that
+			// countersigns each change record and keeps the replay store. No
+			// egress: the CI job fetches from the server, the server reaches
+			// nothing.
+			ID: "org.security.ci", Class: ClassServer, Binary: BinaryOrg,
+			Title:     "Code security CI check and change records",
+			About:     "Certifies managed nodes' change-record keys, countersigns each AI change record the org receives, keeps the replay store and the revocation list, and serves the signed CI policy, the change record lookup and pinned drivers from the security mirror to a CI job holding a CI credential.",
+			Levels:    l1Done,
+			Routes:    []string{"/api/agent/security/change-key", "/api/ci/security/policy", "/api/ci/security/change-records", "/api/ci/security/content", "/api/org/security/change-records", "/api/org/security/change-keys", "/api/org/security/ci"},
+			Packages:  []string{"internal/orgserver/secci"},
+			Requires:  []string{"org.security"},
+			Ledger:    []string{"SECP-31", "SECP-32"},
+			Stability: StabilityPreview,
+			Images:    img(ImageOff, ImageOut),
+			Note:      "Off by default ([security.ci].enabled in the server config, with [security].enabled). Without it, or in an image built with -tags sbo_omit_org_security_ci, the enrolment and CI routes answer 404 not_supported, web2's Change records page says the check is off (and is hidden from the sidebar in an image without the component) and change records are stored exactly as before (no countersign, no replay store).",
+		},
+		{
+			// Lane GATES-SEC (security plan 4.2 and 7.9 "Later (Q16)", gap
+			// G5, operator ruling P-129): the org's own GitHub App, posting a
+			// superbased/security commit status from the uploaded CI results.
+			// It only adds a check: no other check, status, branch protection
+			// or ruleset is touched. Off until [security.githubapp].enabled
+			// (with [security].enabled and [security.ci].enabled), and posts
+			// nothing until a second, different admin approved its connection.
+			ID: "org.security.githubapp", Class: ClassServer, Binary: BinaryOrg,
+			Title:    "GitHub App commit status",
+			About:    "Takes the CI verify results the workflow's separate upload job sends under the CI credential and a GitHub Actions OIDC token of the policy repository's workflow (the token binds the repository, the commit and the run attempt) and, through the org's own GitHub App (four-eyes approved), posts one superbased/security commit status per result: pass success, fail failure, no verdict error. Polls the result table; no webhook receiver.",
+			Levels:   l1Done,
+			Routes:   []string{"/api/ci/security/results", "/api/org/security/githubapp"},
+			Packages: []string{"internal/orgserver/secghapp", "internal/orgserver/secghapp/ghapi"},
+			Requires: []string{"org.security.ci"},
+			Surface: Surface{Egress: []Egress{{
+				Host: "api.github.com", Purpose: "mint an installation token, list the installation's repositories and post the superbased/security commit status",
+				Gate: "config: [security.githubapp].enabled, and a connection two different admins approved", Trigger: TriggerOptIn,
+			}, {
+				Host: "token.actions.githubusercontent.com", Purpose: "read GitHub Actions' published OIDC key set (cached an hour) to check a CI result upload's token",
+				Gate: "config: [security.githubapp].enabled, on a CI result upload", Trigger: TriggerOptIn,
+			}}},
+			Ledger:    []string{"SECP-35"},
+			Stability: StabilityPreview,
+			Images:    img(ImageOff, ImageOut),
+			Note:      "Off by default ([security.githubapp].enabled, with [security].enabled and [security.ci].enabled). Without it, or in an image built with -tags sbo_omit_org_security_githubapp, the result upload and the App routes answer 404 not_supported and nothing reaches GitHub.",
+		},
+		{
 			ID: "org.assistant", Class: ClassServer, Binary: BinaryOrg,
 			Title:         "Admin assistant",
 			About:         "The admin chat assistant, its closed tool table and judge warm-up, calling a configured model provider.",
@@ -221,6 +315,8 @@ func serverRows() []Component {
 		pollerRow("org.pollers.cursor", "Cursor admin poller", "Polls the Cursor admin API.", "internal/orgserver/cursoradminpoll", "internal/orgserver/cursoradmin"),
 		pollerRow("org.pollers.copilot", "Copilot analytics poller", "Polls GitHub Copilot engagement, seats and billing.", "internal/orgserver/copilotanalytics"),
 		pollerRow("org.pollers.m365", "M365 Copilot analytics poller", "Polls Microsoft 365 Copilot usage through an Entra app.", "internal/orgserver/m365copilotanalytics"),
+		pollerRow("org.pollers.cortex", "Snowflake Cortex Code usage poller", "Reads the Cortex Code usage views in the customer's Snowflake account over the SQL API.", "internal/orgserver/cortexanalytics"),
+		pollerRow("org.pollers.kimchi", "Cast AI usage poller (Kimchi)", "Polls the Cast AI billing model usage report (org-wide, Kimchi among it).", "internal/orgserver/kimchianalytics"),
 		{
 			ID: "org.email", Class: ClassServer, Binary: BinaryOrg,
 			Title: "Org email",

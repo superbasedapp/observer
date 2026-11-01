@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -10,6 +11,8 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/orgenrol"
+	"github.com/marmutapp/superbased-observer/internal/retention"
+	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
 // enrolmentStatusResponse is the wire shape of GET /api/enrolment/status.
@@ -29,6 +32,19 @@ type enrolmentStatusResponse struct {
 	// parked and NO telemetry is reaching the org server. Absent is the normal
 	// case; the UI must not render a scary state for a merely-idle push loop.
 	PushPaused *pushPausedDTO `json:"push_paused,omitempty"`
+	// RetentionHeld is present ONLY when node retention is keeping rows past
+	// [observer.retention].max_age_days because the org push has not accepted
+	// them yet (T-830). Absent is the normal case; a non-zero count means a
+	// stuck or slow push the developer should look at.
+	RetentionHeld *retentionHeldDTO `json:"retention_held,omitempty"`
+}
+
+// retentionHeldDTO is the T-830 "retention held N rows awaiting push" count.
+type retentionHeldDTO struct {
+	Rows       int64 `json:"rows"`
+	Actions    int64 `json:"actions"`
+	Sessions   int64 `json:"sessions"`
+	MaxAgeDays int   `json:"max_age_days"`
 }
 
 type lastPushDTO struct {
@@ -97,7 +113,39 @@ func (s *Server) handleEnrolmentStatus(w http.ResponseWriter, r *http.Request) {
 			Until:  st.PushPaused.Until.UTC().Format(time.RFC3339),
 		}
 	}
+	if st.Enrolled {
+		resp.RetentionHeld = s.retentionHeld(r.Context())
+	}
 	writeJSON(w, resp)
+}
+
+// retentionHeld counts the rows node retention is keeping only because the
+// org push has not accepted them (T-830). Best-effort: a config or count
+// failure omits the field rather than failing the status endpoint, and zero
+// held rows omit it too. The caller has already established org mode is on
+// (OrgClient non-nil) and the node is enrolled.
+func (s *Server) retentionHeld(ctx context.Context) *retentionHeldDTO {
+	if s.opts.DB == nil {
+		return nil
+	}
+	cfg, err := loadConfigForDashboard(s.opts.ConfigPath)
+	if err != nil {
+		return nil
+	}
+	f, err := store.New(s.opts.DB).LoadRetentionPushFloor(ctx, true)
+	if err != nil || !f.Held {
+		return nil
+	}
+	maxAge := cfg.Observer.Retention.MaxAgeDays
+	held, err := retention.CountHeldForPush(ctx, s.opts.DB, maxAge,
+		&retention.PushHold{
+			ActionsCursor: f.ActionsCursor, SessionsCursor: f.SessionsCursor,
+			GuardEventsCursor: f.GuardEventsCursor, GuardMaxAgeDays: cfg.Guard.RetentionDays,
+		})
+	if err != nil || held.Total() == 0 {
+		return nil
+	}
+	return &retentionHeldDTO{Rows: held.Total(), Actions: held.Actions, Sessions: held.Sessions, MaxAgeDays: maxAge}
 }
 
 // handleEnrolmentLastPayload serves GET /api/enrolment/last-payload: the exact

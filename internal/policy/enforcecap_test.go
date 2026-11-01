@@ -25,8 +25,10 @@ func TestEnforceOffOverrideCapsAtFlag(t *testing.T) {
 		{"enforce mode uncapped", ModeEnforce, nil, DecisionDeny, ""},
 		{"enforce mode capped", ModeEnforce, []Override{{RuleID: "R-101", EnforceOff: true, Source: "user"}}, DecisionFlag, "user"},
 		{"observe mode per-rule enforced", ModeObserve, []Override{{RuleID: "R-101", Enforced: true, Source: "user"}}, DecisionDeny, ""},
+		// Both from the user layer: an org-pinned row is a floor a user
+		// cap may not lower (OSH-R-014, TestOrgFloorBackstop).
 		{"observe mode capped clears enforced", ModeObserve, []Override{
-			{RuleID: "R-101", Enforced: true, Source: "org"},
+			{RuleID: "R-101", Enforced: true, Source: "user"},
 			{RuleID: "R-101", EnforceOff: true, Source: "user"},
 		}, DecisionFlag, "user"},
 		{"later enforce clears cap", ModeEnforce, []Override{

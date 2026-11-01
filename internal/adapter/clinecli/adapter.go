@@ -29,8 +29,12 @@ import (
 // finding) via a SessionHookChecker analogous to the cursor adapter's
 // at internal/adapter/cursor/scan.go:51-87.
 type Adapter struct {
-	scrubber  *scrub.Scrubber
-	roots     []string
+	scrubber *scrub.Scrubber
+	roots    []string
+	// dataRoots are Cline data dirs watched directly (a relocated
+	// CLINE_DATA_DIR, FU-30): their store is <dataRoot>/db, sessions and
+	// logs, with no data/ segment.
+	dataRoots []string
 	hookCheck SessionHookChecker
 }
 
@@ -39,9 +43,17 @@ type Adapter struct {
 // scrubber.
 func New() *Adapter {
 	return &Adapter{
-		scrubber: scrub.New(),
-		roots:    defaultRoots(),
+		scrubber:  scrub.New(),
+		roots:     defaultRoots(),
+		dataRoots: defaultDataRoots(),
 	}
+}
+
+// WithDataRoots sets the directly watched Cline data dirs (tests; New reads
+// CLINE_DATA_DIR). Returns the adapter for chaining.
+func (a *Adapter) WithDataRoots(dirs ...string) *Adapter {
+	a.dataRoots = dirs
+	return a
 }
 
 // NewWithOptions customises scrubber and roots for tests. Pass nil
@@ -93,7 +105,12 @@ func (a *Adapter) ConfigureHookDedup(hasRows func(ctx context.Context, sessionID
 func (*Adapter) Name() string { return models.ToolClineCLI }
 
 // WatchPaths implements adapter.Adapter.
-func (a *Adapter) WatchPaths() []string { return a.roots }
+func (a *Adapter) WatchPaths() []string {
+	if len(a.dataRoots) == 0 {
+		return a.roots
+	}
+	return append(append([]string(nil), a.roots...), a.dataRoots...)
+}
 
 // IsSessionFile implements adapter.Adapter. Matches two families of
 // files under a `<root>/data/` subtree:
@@ -134,8 +151,15 @@ func (a *Adapter) IsSessionFile(path string) bool {
 	if strings.HasSuffix(normalized, legacySuffix) && adapter.UnderAnyWatchRoot(path, a.WatchPaths()) {
 		return true
 	}
-	for _, root := range a.WatchPaths() {
+	for _, root := range a.roots {
 		if filepath.Clean(path) == filepath.Join(root, relative) {
+			return true
+		}
+	}
+	// A relocated data dir holds the same files without the data/ segment.
+	inData := strings.TrimPrefix(filepath.ToSlash(relative), "data/")
+	for _, root := range a.dataRoots {
+		if filepath.Clean(path) == filepath.Join(root, filepath.FromSlash(inData)) {
 			return true
 		}
 	}

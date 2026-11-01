@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -639,7 +640,10 @@ func TestGuidanceUsage_JoinsSkillsAndLoads(t *testing.T) {
 		t.Errorf("skills = %d keys (%v), want 2 (empty target contributes none)", len(u.Skills), u.Skills)
 	}
 
-	loadKey := guidanceUsageRoot + "/CLAUDE.md"
+	// Files is keyed by filepath.Clean of the loaded path, the key the
+	// dashboard looks it up by (filepath.Clean of the scanned AbsPath), so
+	// on Windows it is spelled with backslashes.
+	loadKey := filepath.Clean(guidanceUsageRoot + "/CLAUDE.md")
 	if got := u.Files[loadKey].Count; got != 2 {
 		t.Errorf("files[%s].Count = %d, want 2 (path cleaned before keying)", loadKey, got)
 	}

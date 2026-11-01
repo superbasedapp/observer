@@ -1,0 +1,1890 @@
+{
+	"$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+	"version": "2.1.0",
+	"runs": [
+		{
+			"tool": {
+				"driver": {
+					"name": "KICS",
+					"version": "development",
+					"fullName": "Keeping Infrastructure as Code Secure",
+					"informationUri": "https://www.kics.io/",
+					"rules": [
+						{
+							"id": "38c5ee0d-7f22-4260-ab72-5073048df100",
+							"name": "S3 Bucket ACL Allows Read Or Write to All Users",
+							"shortDescription": {
+								"text": "S3 Bucket ACL Allows Read Or Write to All Users"
+							},
+							"fullDescription": {
+								"text": "S3 Buckets should not be readable and writable to all users"
+							},
+							"defaultConfiguration": {
+								"level": "error"
+							},
+							"helpUri": "https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket",
+							"relationships": [
+								{
+									"target": {
+										"id": "CAT001",
+										"index": 10,
+										"toolComponent": {
+											"name": "Categories",
+											"guid": "58cdcc6f-fe41-4724-bfb3-131a93df4c3f"
+										}
+									}
+								}
+							],
+							"properties": {
+								"riskScore": "9.1"
+							}
+						},
+						{
+							"id": "dd29336b-fe57-445b-a26e-e6aa867ae609",
+							"name": "Container Is Privileged",
+							"shortDescription": {
+								"text": "Container Is Privileged"
+							},
+							"fullDescription": {
+								"text": "Privileged containers lack essential security restrictions and should be avoided by removing the 'privileged' flag or by changing its value to false"
+							},
+							"defaultConfiguration": {
+								"level": "error"
+							},
+							"helpUri": "https://kubernetes.io/docs/concepts/workloads/pods/#privileged-mode-for-containers",
+							"relationships": [
+								{
+									"target": {
+										"id": "CAT007",
+										"index": 12,
+										"toolComponent": {
+											"name": "Categories",
+											"guid": "58cdcc6f-fe41-4724-bfb3-131a93df4c3f"
+										}
+									}
+								}
+							],
+							"properties": {
+								"riskScore": "7.7"
+							}
+						},
+						{
+							"id": "fd54f200-402c-4333-a5a4-36ef6709af2f",
+							"name": "Missing User Instruction",
+							"shortDescription": {
+								"text": "Missing User Instruction"
+							},
+							"fullDescription": {
+								"text": "Always set a user in the runtime stage of your Dockerfile. Without it, the container defaults to root, even if earlier build stages define a user."
+							},
+							"defaultConfiguration": {
+								"level": "error"
+							},
+							"helpUri": "https://docs.docker.com/engine/reference/builder/#user",
+							"relationships": [
+								{
+									"target": {
+										"id": "CAT005",
+										"index": 5,
+										"toolComponent": {
+											"name": "Categories",
+											"guid": "58cdcc6f-fe41-4724-bfb3-131a93df4c3f"
+										}
+									}
+								}
+							],
+							"properties": {
+								"riskScore": "7.7"
+							}
+						},
+						{
+							"id": "5572cc5e-1e4c-4113-92a6-7a8a3bd25e6d",
+							"name": "Privilege Escalation Allowed",
+							"shortDescription": {
+								"text": "Privilege Escalation Allowed"
+							},
+							"fullDescription": {
+								"text": "Containers should not run with allowPrivilegeEscalation in order to prevent them from gaining more privileges than their parent process"
+							},
+							"defaultConfiguration": {
+								"level": "error"
+							},
+							"helpUri": "https://kubernetes.io/docs/tasks/configure-pod-container/security-context/",
+							"relationships": [
+								{
+									"target": {
+										"id": "CAT007",
+										"index": 12,
+										"toolComponent": {
+											"name": "Categories",
+											"guid": "58cdcc6f-fe41-4724-bfb3-131a93df4c3f"
+										}
+									}
+								}
+							],
+							"properties": {
+								"riskScore": "7.7"
+							}
+						},
+						{
+							"id": "cf34805e-3872-4c08-bf92-6ff7bb0cfadb",
+							"name": "Container Running As Root",
+							"shortDescription": {
+								"text": "Container Running As Root"
+							},
+							"fullDescription": {
+								"text": "Containers should only run as non-root user. This limits the exploitability of security misconfigurations and restricts an attacker's possibilities in case of compromise"
+							},
+							"defaultConfiguration": {
+								"level": "warning"
+							},
+							"helpUri": "https://kubernetes.io/docs/tasks/configure-pod-container/security-context/",
+							"relationships": [
+								{
+									"target": {
+										"id": "CAT004",
+										"index": 1,
+										"toolComponent": {
+											"name": "Categories",
+											"guid": "58cdcc6f-fe41-4724-bfb3-131a93df4c3f"
+										}
+									}
+								}
+							],
+							"properties": {
+								"riskScore": "5.8"
+							}
+						},
+						{
+							"id": "02323c00-cdc3-4fdc-a310-4f2b3e7a1660",
+							"name": "Container Running With Low UID",
+							"shortDescription": {
+								"text": "Container Running With Low UID"
+							},
+							"fullDescription": {
+								"text": "Check if containers are running with low UID, which might cause conflicts with the host's user table."
+							},
+							"defaultConfiguration": {
+								"level": "warning"
+							},
+							"helpUri": "https://kubernetes.io/docs/tasks/configure-pod-container/security-context/",
+							"relationships": [
+								{
+									"target": {
+										"id": "CAT004",
+										"index": 1,
+										"toolComponent": {
+											"name": "Categories",
+											"guid": "58cdcc6f-fe41-4724-bfb3-131a93df4c3f"
+										}
+									}
+								}
+							],
+							"properties": {
+								"riskScore": "4.9"
+							}
+						},
+						{
+							"id": "b14d1bc4-a208-45db-92f0-e21f8e2588e9",
+							"name": "Memory Limits Not Defined",
+							"shortDescription": {
+								"text": "Memory Limits Not Defined"
+							},
+							"fullDescription": {
+								"text": "Memory limits should be defined for each container. This prevents potential resource exhaustion by ensuring that containers consume not more than the designated amount of memory"
+							},
+							"defaultConfiguration": {
+								"level": "warning"
+							},
+							"helpUri": "https://kubernetes.io/docs/tasks/configure-pod-container/assign-memory-resource/",
+							"relationships": [
+								{
+									"target": {
+										"id": "CAT011",
+										"index": 13,
+										"toolComponent": {
+											"name": "Categories",
+											"guid": "58cdcc6f-fe41-4724-bfb3-131a93df4c3f"
+										}
+									}
+								}
+							],
+							"properties": {
+								"riskScore": "5.5"
+							}
+						},
+						{
+							"id": "229588ef-8fde-40c8-8756-f4f2b5825ded",
+							"name": "Memory Requests Not Defined",
+							"shortDescription": {
+								"text": "Memory Requests Not Defined"
+							},
+							"fullDescription": {
+								"text": "Memory requests should be defined for each container. This allows the kubelet to reserve the requested amount of system resources and prevents over-provisioning on individual nodes"
+							},
+							"defaultConfiguration": {
+								"level": "warning"
+							},
+							"helpUri": "https://kubernetes.io/docs/tasks/configure-pod-container/assign-memory-resource/",
+							"relationships": [
+								{
+									"target": {
+										"id": "CAT011",
+										"index": 13,
+										"toolComponent": {
+											"name": "Categories",
+											"guid": "58cdcc6f-fe41-4724-bfb3-131a93df4c3f"
+										}
+									}
+								}
+							],
+							"properties": {
+								"riskScore": "5.5"
+							}
+						},
+						{
+							"id": "dbbc6705-d541-43b0-b166-dd4be8208b54",
+							"name": "NET_RAW Capabilities Not Being Dropped",
+							"shortDescription": {
+								"text": "NET_RAW Capabilities Not Being Dropped"
+							},
+							"fullDescription": {
+								"text": "Containers should drop 'ALL' or at least 'NET_RAW' capabilities"
+							},
+							"defaultConfiguration": {
+								"level": "warning"
+							},
+							"helpUri": "https://kubernetes.io/docs/tasks/configure-pod-container/security-context/",
+							"relationships": [
+								{
+									"target": {
+										"id": "CAT007",
+										"index": 12,
+										"toolComponent": {
+											"name": "Categories",
+											"guid": "58cdcc6f-fe41-4724-bfb3-131a93df4c3f"
+										}
+									}
+								}
+							],
+							"properties": {
+								"riskScore": "6.2"
+							}
+						},
+						{
+							"id": "a659f3b5-9bf0-438a-bd9a-7d3a6427f1e3",
+							"name": "Readiness Probe Is Not Configured",
+							"shortDescription": {
+								"text": "Readiness Probe Is Not Configured"
+							},
+							"fullDescription": {
+								"text": "Check if Readiness Probe is not configured."
+							},
+							"defaultConfiguration": {
+								"level": "warning"
+							},
+							"helpUri": "https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/#define-readiness-probes",
+							"relationships": [
+								{
+									"target": {
+										"id": "CAT002",
+										"index": 11,
+										"toolComponent": {
+											"name": "Categories",
+											"guid": "58cdcc6f-fe41-4724-bfb3-131a93df4c3f"
+										}
+									}
+								}
+							],
+							"properties": {
+								"riskScore": "5.1"
+							}
+						},
+						{
+							"id": "f861041c-8c9f-4156-acfc-5e6e524f5884",
+							"name": "S3 Bucket Logging Disabled",
+							"shortDescription": {
+								"text": "S3 Bucket Logging Disabled"
+							},
+							"fullDescription": {
+								"text": "Server Access Logging should be enabled on S3 Buckets so that all changes are logged and trackable"
+							},
+							"defaultConfiguration": {
+								"level": "warning"
+							},
+							"helpUri": "https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket",
+							"relationships": [
+								{
+									"target": {
+										"id": "CAT010",
+										"index": 6,
+										"toolComponent": {
+											"name": "Categories",
+											"guid": "58cdcc6f-fe41-4724-bfb3-131a93df4c3f"
+										}
+									}
+								}
+							],
+							"properties": {
+								"riskScore": "5.1"
+							}
+						},
+						{
+							"id": "568a4d22-3517-44a6-a7ad-6a7eed88722c",
+							"name": "S3 Bucket Without Versioning",
+							"shortDescription": {
+								"text": "S3 Bucket Without Versioning"
+							},
+							"fullDescription": {
+								"text": "S3 bucket should have versioning enabled"
+							},
+							"defaultConfiguration": {
+								"level": "warning"
+							},
+							"helpUri": "https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket#versioning",
+							"relationships": [
+								{
+									"target": {
+										"id": "CAT003",
+										"index": 8,
+										"toolComponent": {
+											"name": "Categories",
+											"guid": "58cdcc6f-fe41-4724-bfb3-131a93df4c3f"
+										}
+									}
+								}
+							],
+							"properties": {
+								"riskScore": "5.7"
+							}
+						},
+						{
+							"id": "f377b83e-bd07-4f48-a591-60c82b14a78b",
+							"name": "Seccomp Profile Is Not Configured",
+							"shortDescription": {
+								"text": "Seccomp Profile Is Not Configured"
+							},
+							"fullDescription": {
+								"text": "Containers should be configured with a secure Seccomp profile to restrict potentially dangerous syscalls"
+							},
+							"defaultConfiguration": {
+								"level": "warning"
+							},
+							"helpUri": "https://kubernetes.io/docs/tutorials/security/seccomp/#create-pod-that-uses-the-container-runtime-default-seccomp-profile",
+							"relationships": [
+								{
+									"target": {
+										"id": "CAT007",
+										"index": 12,
+										"toolComponent": {
+											"name": "Categories",
+											"guid": "58cdcc6f-fe41-4724-bfb3-131a93df4c3f"
+										}
+									}
+								}
+							],
+							"properties": {
+								"riskScore": "6.8"
+							}
+						},
+						{
+							"id": "591ade62-d6b0-4580-b1ae-209f80ba1cd9",
+							"name": "Service Account Name Undefined Or Empty",
+							"shortDescription": {
+								"text": "Service Account Name Undefined Or Empty"
+							},
+							"fullDescription": {
+								"text": "A Kubernetes Pod should have a Service Account defined so to restrict Kubernetes API access, which means the attribute 'serviceAccountName' should be defined and not empty."
+							},
+							"defaultConfiguration": {
+								"level": "warning"
+							},
+							"helpUri": "https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/",
+							"relationships": [
+								{
+									"target": {
+										"id": "CAT008",
+										"index": 3,
+										"toolComponent": {
+											"name": "Categories",
+											"guid": "58cdcc6f-fe41-4724-bfb3-131a93df4c3f"
+										}
+									}
+								}
+							],
+							"properties": {
+								"riskScore": "6.8"
+							}
+						},
+						{
+							"id": "48471392-d4d0-47c0-b135-cdec95eb3eef",
+							"name": "Service Account Token Automount Not Disabled",
+							"shortDescription": {
+								"text": "Service Account Token Automount Not Disabled"
+							},
+							"fullDescription": {
+								"text": "Service Account Tokens are automatically mounted even if not necessary"
+							},
+							"defaultConfiguration": {
+								"level": "warning"
+							},
+							"helpUri": "https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/#use-the-default-service-account-to-access-the-api-server",
+							"relationships": [
+								{
+									"target": {
+										"id": "CAT008",
+										"index": 3,
+										"toolComponent": {
+											"name": "Categories",
+											"guid": "58cdcc6f-fe41-4724-bfb3-131a93df4c3f"
+										}
+									}
+								}
+							],
+							"properties": {
+								"riskScore": "6.8"
+							}
+						},
+						{
+							"id": "d3499f6d-1651-41bb-a9a7-de925fea487b",
+							"name": "Unpinned Package Version in Apk Add",
+							"shortDescription": {
+								"text": "Unpinned Package Version in Apk Add"
+							},
+							"fullDescription": {
+								"text": "Package version pinning reduces the range of versions that can be installed, reducing the chances of failure due to unanticipated changes"
+							},
+							"defaultConfiguration": {
+								"level": "warning"
+							},
+							"helpUri": "https://docs.docker.com/develop/develop-images/dockerfile_best-practices/",
+							"relationships": [
+								{
+									"target": {
+										"id": "CAT013",
+										"index": 4,
+										"toolComponent": {
+											"name": "Categories",
+											"guid": "58cdcc6f-fe41-4724-bfb3-131a93df4c3f"
+										}
+									}
+								}
+							],
+							"properties": {
+								"riskScore": "5.7"
+							}
+						},
+						{
+							"id": "611ab018-c4aa-4ba2-b0f6-a448337509a6",
+							"name": "Using Unrecommended Namespace",
+							"shortDescription": {
+								"text": "Using Unrecommended Namespace"
+							},
+							"fullDescription": {
+								"text": "Namespaces like 'default', 'kube-system' or 'kube-public' should not be used"
+							},
+							"defaultConfiguration": {
+								"level": "warning"
+							},
+							"helpUri": "https://kubernetes.io/docs/concepts/overview/working-with-objects/kubernetes-objects/",
+							"relationships": [
+								{
+									"target": {
+										"id": "CAT007",
+										"index": 12,
+										"toolComponent": {
+											"name": "Categories",
+											"guid": "58cdcc6f-fe41-4724-bfb3-131a93df4c3f"
+										}
+									}
+								}
+							],
+							"properties": {
+								"riskScore": "5.5"
+							}
+						},
+						{
+							"id": "4ac0e2b7-d2d2-4af7-8799-e8de6721ccda",
+							"name": "CPU Limits Not Set",
+							"shortDescription": {
+								"text": "CPU Limits Not Set"
+							},
+							"fullDescription": {
+								"text": "CPU limits should be set because if the system has CPU time free, a container is guaranteed to be allocated as much CPU as it requests"
+							},
+							"defaultConfiguration": {
+								"level": "note"
+							},
+							"helpUri": "https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/",
+							"relationships": [
+								{
+									"target": {
+										"id": "CAT011",
+										"index": 13,
+										"toolComponent": {
+											"name": "Categories",
+											"guid": "58cdcc6f-fe41-4724-bfb3-131a93df4c3f"
+										}
+									}
+								}
+							],
+							"properties": {
+								"riskScore": "2.9"
+							}
+						},
+						{
+							"id": "ca469dd4-c736-448f-8ac1-30a642705e0a",
+							"name": "CPU Requests Not Set",
+							"shortDescription": {
+								"text": "CPU Requests Not Set"
+							},
+							"fullDescription": {
+								"text": "CPU requests should be set to ensure the sum of the resource requests of the scheduled Containers is less than the capacity of the node"
+							},
+							"defaultConfiguration": {
+								"level": "note"
+							},
+							"helpUri": "https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/#",
+							"relationships": [
+								{
+									"target": {
+										"id": "CAT011",
+										"index": 13,
+										"toolComponent": {
+											"name": "Categories",
+											"guid": "58cdcc6f-fe41-4724-bfb3-131a93df4c3f"
+										}
+									}
+								}
+							],
+							"properties": {
+								"riskScore": "2.9"
+							}
+						},
+						{
+							"id": "b03a748a-542d-44f4-bb86-9199ab4fd2d5",
+							"name": "Healthcheck Instruction Missing",
+							"shortDescription": {
+								"text": "Healthcheck Instruction Missing"
+							},
+							"fullDescription": {
+								"text": "Ensure that HEALTHCHECK is being used. The HEALTHCHECK instruction tells Docker how to test a container to check that it is still working"
+							},
+							"defaultConfiguration": {
+								"level": "note"
+							},
+							"helpUri": "https://docs.docker.com/engine/reference/builder/#healthcheck",
+							"relationships": [
+								{
+									"target": {
+										"id": "CAT007",
+										"index": 12,
+										"toolComponent": {
+											"name": "Categories",
+											"guid": "58cdcc6f-fe41-4724-bfb3-131a93df4c3f"
+										}
+									}
+								}
+							],
+							"properties": {
+								"riskScore": "3.6"
+							}
+						},
+						{
+							"id": "e592a0c5-5bdb-414c-9066-5dba7cdea370",
+							"name": "IAM Access Analyzer Not Enabled",
+							"shortDescription": {
+								"text": "IAM Access Analyzer Not Enabled"
+							},
+							"fullDescription": {
+								"text": "IAM Access Analyzer should be enabled and configured to continuously monitor resource permissions"
+							},
+							"defaultConfiguration": {
+								"level": "note"
+							},
+							"helpUri": "https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/accessanalyzer_analyzer",
+							"relationships": [
+								{
+									"target": {
+										"id": "CAT004",
+										"index": 1,
+										"toolComponent": {
+											"name": "Categories",
+											"guid": "58cdcc6f-fe41-4724-bfb3-131a93df4c3f"
+										}
+									}
+								}
+							],
+							"properties": {
+								"riskScore": "3.5"
+							}
+						},
+						{
+							"id": "7c81d34c-8e5a-402b-9798-9f442630e678",
+							"name": "Image Without Digest",
+							"shortDescription": {
+								"text": "Image Without Digest"
+							},
+							"fullDescription": {
+								"text": "Images should be specified together with their digests to ensure integrity"
+							},
+							"defaultConfiguration": {
+								"level": "note"
+							},
+							"helpUri": "https://kubernetes.io/docs/concepts/containers/images/#updating-images",
+							"relationships": [
+								{
+									"target": {
+										"id": "CAT007",
+										"index": 12,
+										"toolComponent": {
+											"name": "Categories",
+											"guid": "58cdcc6f-fe41-4724-bfb3-131a93df4c3f"
+										}
+									}
+								}
+							],
+							"properties": {
+								"riskScore": "4.1"
+							}
+						},
+						{
+							"id": "583053b7-e632-46f0-b989-f81ff8045385",
+							"name": "Invalid Image Tag",
+							"shortDescription": {
+								"text": "Invalid Image Tag"
+							},
+							"fullDescription": {
+								"text": "Image tag must be defined and not be empty or equal to latest."
+							},
+							"defaultConfiguration": {
+								"level": "note"
+							},
+							"helpUri": "https://kubernetes.io/docs/concepts/containers/images/#updating-images",
+							"relationships": [
+								{
+									"target": {
+										"id": "CAT013",
+										"index": 4,
+										"toolComponent": {
+											"name": "Categories",
+											"guid": "58cdcc6f-fe41-4724-bfb3-131a93df4c3f"
+										}
+									}
+								}
+							],
+							"properties": {
+								"riskScore": "3.6"
+							}
+						},
+						{
+							"id": "8b36775e-183d-4d46-b0f7-96a6f34a723f",
+							"name": "Missing AppArmor Profile",
+							"shortDescription": {
+								"text": "Missing AppArmor Profile"
+							},
+							"fullDescription": {
+								"text": "Containers should be configured with an AppArmor profile to enforce fine-grained access control over low-level system resources"
+							},
+							"defaultConfiguration": {
+								"level": "note"
+							},
+							"helpUri": "https://kubernetes.io/docs/tutorials/clusters/apparmor/",
+							"relationships": [
+								{
+									"target": {
+										"id": "CAT001",
+										"index": 10,
+										"toolComponent": {
+											"name": "Categories",
+											"guid": "58cdcc6f-fe41-4724-bfb3-131a93df4c3f"
+										}
+									}
+								}
+							],
+							"properties": {
+								"riskScore": "3.3"
+							}
+						},
+						{
+							"id": "268ca686-7fb7-4ae9-b129-955a2a89064e",
+							"name": "No Drop Capabilities for Containers",
+							"shortDescription": {
+								"text": "No Drop Capabilities for Containers"
+							},
+							"fullDescription": {
+								"text": "Sees if Kubernetes Drop Capabilities exists to ensure containers security context"
+							},
+							"defaultConfiguration": {
+								"level": "note"
+							},
+							"helpUri": "https://kubernetes.io/docs/concepts/workloads/pods/init-containers/",
+							"relationships": [
+								{
+									"target": {
+										"id": "CAT004",
+										"index": 1,
+										"toolComponent": {
+											"name": "Categories",
+											"guid": "58cdcc6f-fe41-4724-bfb3-131a93df4c3f"
+										}
+									}
+								}
+							],
+							"properties": {
+								"riskScore": "3.6"
+							}
+						},
+						{
+							"id": "4a20ebac-1060-4c81-95d1-1f7f620e983b",
+							"name": "Pod or Container Without LimitRange",
+							"shortDescription": {
+								"text": "Pod or Container Without LimitRange"
+							},
+							"fullDescription": {
+								"text": "Each namespace should have a LimitRange policy associated to ensure that resource allocations of Pods, Containers and PersistentVolumeClaims do not exceed the defined boundaries"
+							},
+							"defaultConfiguration": {
+								"level": "note"
+							},
+							"helpUri": "https://kubernetes.io/docs/concepts/policy/limit-range/",
+							"relationships": [
+								{
+									"target": {
+										"id": "CAT007",
+										"index": 12,
+										"toolComponent": {
+											"name": "Categories",
+											"guid": "58cdcc6f-fe41-4724-bfb3-131a93df4c3f"
+										}
+									}
+								}
+							],
+							"properties": {
+								"riskScore": "2.8"
+							}
+						},
+						{
+							"id": "48a5beba-e4c0-4584-a2aa-e6894e4cf424",
+							"name": "Pod or Container Without ResourceQuota",
+							"shortDescription": {
+								"text": "Pod or Container Without ResourceQuota"
+							},
+							"fullDescription": {
+								"text": "Each namespace should have a ResourceQuota policy associated to limit the total amount of resources Pods, Containers and PersistentVolumeClaims can consume"
+							},
+							"defaultConfiguration": {
+								"level": "note"
+							},
+							"helpUri": "https://kubernetes.io/docs/concepts/policy/resource-quotas/",
+							"relationships": [
+								{
+									"target": {
+										"id": "CAT007",
+										"index": 12,
+										"toolComponent": {
+											"name": "Categories",
+											"guid": "58cdcc6f-fe41-4724-bfb3-131a93df4c3f"
+										}
+									}
+								}
+							],
+							"properties": {
+								"riskScore": "2.8"
+							}
+						},
+						{
+							"id": "a97a340a-0063-418e-b3a1-3028941d0995",
+							"name": "Pod or Container Without Security Context",
+							"shortDescription": {
+								"text": "Pod or Container Without Security Context"
+							},
+							"fullDescription": {
+								"text": "A security context defines privilege and access control settings for a Pod or Container"
+							},
+							"defaultConfiguration": {
+								"level": "note"
+							},
+							"helpUri": "https://kubernetes.io/docs/tasks/configure-pod-container/security-context/",
+							"relationships": [
+								{
+									"target": {
+										"id": "CAT007",
+										"index": 12,
+										"toolComponent": {
+											"name": "Categories",
+											"guid": "58cdcc6f-fe41-4724-bfb3-131a93df4c3f"
+										}
+									}
+								}
+							],
+							"properties": {
+								"riskScore": "3.6"
+							}
+						},
+						{
+							"id": "a9c2f49d-0671-4fc9-9ece-f4e261e128d0",
+							"name": "Root Container Not Mounted Read-only",
+							"shortDescription": {
+								"text": "Root Container Not Mounted Read-only"
+							},
+							"fullDescription": {
+								"text": "Check if the root container filesystem is not being mounted as read-only."
+							},
+							"defaultConfiguration": {
+								"level": "note"
+							},
+							"helpUri": "https://kubernetes.io/docs/tasks/configure-pod-container/security-context/",
+							"relationships": [
+								{
+									"target": {
+										"id": "CAT005",
+										"index": 5,
+										"toolComponent": {
+											"name": "Categories",
+											"guid": "58cdcc6f-fe41-4724-bfb3-131a93df4c3f"
+										}
+									}
+								}
+							],
+							"properties": {
+								"riskScore": "3.6"
+							}
+						},
+						{
+							"id": "ae9c56a6-3ed1-4ac0-9b54-31267f51151d",
+							"name": "Apk Add Using Local Cache Path",
+							"shortDescription": {
+								"text": "Apk Add Using Local Cache Path"
+							},
+							"fullDescription": {
+								"text": "When installing packages, use the '--no-cache' switch to avoid the need to use '--update' and remove '/var/cache/apk/*'"
+							},
+							"defaultConfiguration": {
+								"level": "none"
+							},
+							"helpUri": "https://docs.docker.com/engine/reference/builder/#run",
+							"relationships": [
+								{
+									"target": {
+										"id": "CAT013",
+										"index": 4,
+										"toolComponent": {
+											"name": "Categories",
+											"guid": "58cdcc6f-fe41-4724-bfb3-131a93df4c3f"
+										}
+									}
+								}
+							],
+							"properties": {
+								"riskScore": "0.0"
+							}
+						},
+						{
+							"id": "ade74944-a674-4e00-859e-c6eab5bde441",
+							"name": "Liveness Probe Is Not Defined",
+							"shortDescription": {
+								"text": "Liveness Probe Is Not Defined"
+							},
+							"fullDescription": {
+								"text": "In case of an unresponsive container, a Liveness Probe can help your application become more available since it restarts the container. However, it can lead to cascading failures. Define one if you really need it"
+							},
+							"defaultConfiguration": {
+								"level": "none"
+							},
+							"helpUri": "https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#when-should-you-use-a-liveness-probe",
+							"relationships": [
+								{
+									"target": {
+										"id": "CAT002",
+										"index": 11,
+										"toolComponent": {
+											"name": "Categories",
+											"guid": "58cdcc6f-fe41-4724-bfb3-131a93df4c3f"
+										}
+									}
+								}
+							],
+							"properties": {
+								"riskScore": "0.0"
+							}
+						},
+						{
+							"id": "e38a8e0a-b88b-4902-b3fe-b0fcb17d5c10",
+							"name": "Resource Not Using Tags",
+							"shortDescription": {
+								"text": "Resource Not Using Tags"
+							},
+							"fullDescription": {
+								"text": "AWS services resource tags are an essential part of managing components. As a best practice, the field 'tags' should have additional tags defined other than 'Name'"
+							},
+							"defaultConfiguration": {
+								"level": "none"
+							},
+							"helpUri": "https://registry.terraform.io/providers/hashicorp/aws/latest/docs/guides/resource-tagging",
+							"relationships": [
+								{
+									"target": {
+										"id": "CAT004",
+										"index": 1,
+										"toolComponent": {
+											"name": "Categories",
+											"guid": "58cdcc6f-fe41-4724-bfb3-131a93df4c3f"
+										}
+									}
+								}
+							],
+							"properties": {
+								"riskScore": "0.0"
+							}
+						}
+					]
+				}
+			},
+			"results": [
+				{
+					"ruleId": "38c5ee0d-7f22-4260-ab72-5073048df100",
+					"ruleIndex": 0,
+					"kind": "fail",
+					"message": {
+						"text": "'acl' is equal 'public-read'",
+						"properties": {
+							"platform": "Terraform",
+							"riskScore": "9.1"
+						}
+					},
+					"locations": [
+						{
+							"physicalLocation": {
+								"artifactLocation": {
+									"uri": "infra/main.tf"
+								},
+								"region": {
+									"startLine": 3
+								}
+							}
+						}
+					]
+				},
+				{
+					"ruleId": "dd29336b-fe57-445b-a26e-e6aa867ae609",
+					"ruleIndex": 1,
+					"kind": "fail",
+					"message": {
+						"text": "metadata.name={{demo}}.spec.containers.name={{app}}.securityContext.privileged is true",
+						"properties": {
+							"platform": "Kubernetes",
+							"riskScore": "7.7"
+						}
+					},
+					"locations": [
+						{
+							"physicalLocation": {
+								"artifactLocation": {
+									"uri": "k8s/pod.yaml"
+								},
+								"region": {
+									"startLine": 10
+								}
+							}
+						}
+					]
+				},
+				{
+					"ruleId": "fd54f200-402c-4333-a5a4-36ef6709af2f",
+					"ruleIndex": 2,
+					"kind": "fail",
+					"message": {
+						"text": "The 'Dockerfile' does not contain any 'USER' instruction",
+						"properties": {
+							"platform": "Dockerfile",
+							"riskScore": "7.7"
+						}
+					},
+					"locations": [
+						{
+							"physicalLocation": {
+								"artifactLocation": {
+									"uri": "Dockerfile"
+								},
+								"region": {
+									"startLine": 1
+								}
+							}
+						}
+					]
+				},
+				{
+					"ruleId": "5572cc5e-1e4c-4113-92a6-7a8a3bd25e6d",
+					"ruleIndex": 3,
+					"kind": "fail",
+					"message": {
+						"text": "metadata.name={{demo}}.spec.containers.name={{app}}.securityContext.allowPrivilegeEscalation is undefined",
+						"properties": {
+							"platform": "Kubernetes",
+							"riskScore": "7.7"
+						}
+					},
+					"locations": [
+						{
+							"physicalLocation": {
+								"artifactLocation": {
+									"uri": "k8s/pod.yaml"
+								},
+								"region": {
+									"startLine": 9
+								}
+							}
+						}
+					]
+				},
+				{
+					"ruleId": "cf34805e-3872-4c08-bf92-6ff7bb0cfadb",
+					"ruleIndex": 4,
+					"kind": "fail",
+					"message": {
+						"text": "metadata.name={{demo}}.spec.containers.name={{app}}.securityContext.runAsUser is 0 and 'runAsNonRoot' is false",
+						"properties": {
+							"platform": "Kubernetes",
+							"riskScore": "5.8"
+						}
+					},
+					"locations": [
+						{
+							"physicalLocation": {
+								"artifactLocation": {
+									"uri": "k8s/pod.yaml"
+								},
+								"region": {
+									"startLine": 7
+								}
+							}
+						}
+					]
+				},
+				{
+					"ruleId": "02323c00-cdc3-4fdc-a310-4f2b3e7a1660",
+					"ruleIndex": 5,
+					"kind": "fail",
+					"message": {
+						"text": "metadata.name={{demo}}.spec.containers.name={{app}}.securityContext.runAsUser is undefined",
+						"properties": {
+							"platform": "Kubernetes",
+							"riskScore": "4.9"
+						}
+					},
+					"locations": [
+						{
+							"physicalLocation": {
+								"artifactLocation": {
+									"uri": "k8s/pod.yaml"
+								},
+								"region": {
+									"startLine": 7
+								}
+							}
+						}
+					]
+				},
+				{
+					"ruleId": "b14d1bc4-a208-45db-92f0-e21f8e2588e9",
+					"ruleIndex": 6,
+					"kind": "fail",
+					"message": {
+						"text": "metadata.name={{demo}}.spec.containers.name={{app}}.resources.limits.memory is undefined",
+						"properties": {
+							"platform": "Kubernetes",
+							"riskScore": "5.5"
+						}
+					},
+					"locations": [
+						{
+							"physicalLocation": {
+								"artifactLocation": {
+									"uri": "k8s/pod.yaml"
+								},
+								"region": {
+									"startLine": 7
+								}
+							}
+						}
+					]
+				},
+				{
+					"ruleId": "229588ef-8fde-40c8-8756-f4f2b5825ded",
+					"ruleIndex": 7,
+					"kind": "fail",
+					"message": {
+						"text": "metadata.name={{demo}}.spec.containers.name={{app}}.resources.requests.memory is undefined",
+						"properties": {
+							"platform": "Kubernetes",
+							"riskScore": "5.5"
+						}
+					},
+					"locations": [
+						{
+							"physicalLocation": {
+								"artifactLocation": {
+									"uri": "k8s/pod.yaml"
+								},
+								"region": {
+									"startLine": 7
+								}
+							}
+						}
+					]
+				},
+				{
+					"ruleId": "dbbc6705-d541-43b0-b166-dd4be8208b54",
+					"ruleIndex": 8,
+					"kind": "fail",
+					"message": {
+						"text": "metadata.name={{demo}}.spec.containers.name={{app}}.securityContext.capabilities.drop is undefined",
+						"properties": {
+							"platform": "Kubernetes",
+							"riskScore": "6.2"
+						}
+					},
+					"locations": [
+						{
+							"physicalLocation": {
+								"artifactLocation": {
+									"uri": "k8s/pod.yaml"
+								},
+								"region": {
+									"startLine": 9
+								}
+							}
+						}
+					]
+				},
+				{
+					"ruleId": "a659f3b5-9bf0-438a-bd9a-7d3a6427f1e3",
+					"ruleIndex": 9,
+					"kind": "fail",
+					"message": {
+						"text": "metadata.name={{demo}}.spec.containers.name={{app}}.readinessProbe is undefined",
+						"properties": {
+							"platform": "Kubernetes",
+							"riskScore": "5.1"
+						}
+					},
+					"locations": [
+						{
+							"physicalLocation": {
+								"artifactLocation": {
+									"uri": "k8s/pod.yaml"
+								},
+								"region": {
+									"startLine": 7
+								}
+							}
+						}
+					]
+				},
+				{
+					"ruleId": "f861041c-8c9f-4156-acfc-5e6e524f5884",
+					"ruleIndex": 10,
+					"kind": "fail",
+					"message": {
+						"text": "'logging' is undefined or null",
+						"properties": {
+							"platform": "Terraform",
+							"riskScore": "5.1"
+						}
+					},
+					"locations": [
+						{
+							"physicalLocation": {
+								"artifactLocation": {
+									"uri": "infra/main.tf"
+								},
+								"region": {
+									"startLine": 1
+								}
+							}
+						}
+					]
+				},
+				{
+					"ruleId": "568a4d22-3517-44a6-a7ad-6a7eed88722c",
+					"ruleIndex": 11,
+					"kind": "fail",
+					"message": {
+						"text": "'versioning' is undefined or null",
+						"properties": {
+							"platform": "Terraform",
+							"riskScore": "5.7"
+						}
+					},
+					"locations": [
+						{
+							"physicalLocation": {
+								"artifactLocation": {
+									"uri": "infra/main.tf"
+								},
+								"region": {
+									"startLine": 1
+								}
+							}
+						}
+					]
+				},
+				{
+					"ruleId": "f377b83e-bd07-4f48-a591-60c82b14a78b",
+					"ruleIndex": 12,
+					"kind": "fail",
+					"message": {
+						"text": "metadata.name={{demo}}.spec.containers.name={{app}}.securityContext.seccompProfile.type is undefined",
+						"properties": {
+							"platform": "Kubernetes",
+							"riskScore": "6.8"
+						}
+					},
+					"locations": [
+						{
+							"physicalLocation": {
+								"artifactLocation": {
+									"uri": "k8s/pod.yaml"
+								},
+								"region": {
+									"startLine": 9
+								}
+							}
+						}
+					]
+				},
+				{
+					"ruleId": "591ade62-d6b0-4580-b1ae-209f80ba1cd9",
+					"ruleIndex": 13,
+					"kind": "fail",
+					"message": {
+						"text": "metadata.name=demo.spec.serviceAccountName is undefined",
+						"properties": {
+							"platform": "Kubernetes",
+							"riskScore": "6.8"
+						}
+					},
+					"locations": [
+						{
+							"physicalLocation": {
+								"artifactLocation": {
+									"uri": "k8s/pod.yaml"
+								},
+								"region": {
+									"startLine": 5
+								}
+							}
+						}
+					]
+				},
+				{
+					"ruleId": "48471392-d4d0-47c0-b135-cdec95eb3eef",
+					"ruleIndex": 14,
+					"kind": "fail",
+					"message": {
+						"text": "metadata.name={{demo}}.spec.automountServiceAccountToken is undefined",
+						"properties": {
+							"platform": "Kubernetes",
+							"riskScore": "6.8"
+						}
+					},
+					"locations": [
+						{
+							"physicalLocation": {
+								"artifactLocation": {
+									"uri": "k8s/pod.yaml"
+								},
+								"region": {
+									"startLine": 5
+								}
+							}
+						}
+					]
+				},
+				{
+					"ruleId": "d3499f6d-1651-41bb-a9a7-de925fea487b",
+					"ruleIndex": 15,
+					"kind": "fail",
+					"message": {
+						"text": "RUN instruction apk add curl does not use package pinning form",
+						"properties": {
+							"platform": "Dockerfile",
+							"riskScore": "5.7"
+						}
+					},
+					"locations": [
+						{
+							"physicalLocation": {
+								"artifactLocation": {
+									"uri": "Dockerfile"
+								},
+								"region": {
+									"startLine": 2
+								}
+							}
+						}
+					]
+				},
+				{
+					"ruleId": "611ab018-c4aa-4ba2-b0f6-a448337509a6",
+					"ruleIndex": 16,
+					"kind": "fail",
+					"message": {
+						"text": "metadata.namespace is undefined or null",
+						"properties": {
+							"platform": "Kubernetes",
+							"riskScore": "5.5"
+						}
+					},
+					"locations": [
+						{
+							"physicalLocation": {
+								"artifactLocation": {
+									"uri": "k8s/pod.yaml"
+								},
+								"region": {
+									"startLine": 4
+								}
+							}
+						}
+					]
+				},
+				{
+					"ruleId": "4ac0e2b7-d2d2-4af7-8799-e8de6721ccda",
+					"ruleIndex": 17,
+					"kind": "fail",
+					"message": {
+						"text": "spec.containers.name=app doesn't have resources defined",
+						"properties": {
+							"platform": "Kubernetes",
+							"riskScore": "2.9"
+						}
+					},
+					"locations": [
+						{
+							"physicalLocation": {
+								"artifactLocation": {
+									"uri": "k8s/pod.yaml"
+								},
+								"region": {
+									"startLine": 7
+								}
+							}
+						}
+					]
+				},
+				{
+					"ruleId": "ca469dd4-c736-448f-8ac1-30a642705e0a",
+					"ruleIndex": 18,
+					"kind": "fail",
+					"message": {
+						"text": "spec.containers.name=app doesn't have resources defined",
+						"properties": {
+							"platform": "Kubernetes",
+							"riskScore": "2.9"
+						}
+					},
+					"locations": [
+						{
+							"physicalLocation": {
+								"artifactLocation": {
+									"uri": "k8s/pod.yaml"
+								},
+								"region": {
+									"startLine": 7
+								}
+							}
+						}
+					]
+				},
+				{
+					"ruleId": "b03a748a-542d-44f4-bb86-9199ab4fd2d5",
+					"ruleIndex": 19,
+					"kind": "fail",
+					"message": {
+						"text": "Dockerfile doesn't contain instruction 'HEALTHCHECK'",
+						"properties": {
+							"platform": "Dockerfile",
+							"riskScore": "3.6"
+						}
+					},
+					"locations": [
+						{
+							"physicalLocation": {
+								"artifactLocation": {
+									"uri": "Dockerfile"
+								},
+								"region": {
+									"startLine": 1
+								}
+							}
+						}
+					]
+				},
+				{
+					"ruleId": "e592a0c5-5bdb-414c-9066-5dba7cdea370",
+					"ruleIndex": 20,
+					"kind": "fail",
+					"message": {
+						"text": "'aws_accessanalyzer_analyzer' is undefined",
+						"properties": {
+							"platform": "Terraform",
+							"riskScore": "3.5"
+						}
+					},
+					"locations": [
+						{
+							"physicalLocation": {
+								"artifactLocation": {
+									"uri": "infra/main.tf"
+								},
+								"region": {
+									"startLine": 1
+								}
+							}
+						}
+					]
+				},
+				{
+					"ruleId": "7c81d34c-8e5a-402b-9798-9f442630e678",
+					"ruleIndex": 21,
+					"kind": "fail",
+					"message": {
+						"text": "metadata.name={{demo}}.spec.containers.name={{app}}.image does not include an image digest",
+						"properties": {
+							"platform": "Kubernetes",
+							"riskScore": "4.1"
+						}
+					},
+					"locations": [
+						{
+							"physicalLocation": {
+								"artifactLocation": {
+									"uri": "k8s/pod.yaml"
+								},
+								"region": {
+									"startLine": 8
+								}
+							}
+						}
+					]
+				},
+				{
+					"ruleId": "583053b7-e632-46f0-b989-f81ff8045385",
+					"ruleIndex": 22,
+					"kind": "fail",
+					"message": {
+						"text": "metadata.name={{demo}}.spec.containers.name={{app}}.image tag is not provided or latest",
+						"properties": {
+							"platform": "Kubernetes",
+							"riskScore": "3.6"
+						}
+					},
+					"locations": [
+						{
+							"physicalLocation": {
+								"artifactLocation": {
+									"uri": "k8s/pod.yaml"
+								},
+								"region": {
+									"startLine": 8
+								}
+							}
+						}
+					]
+				},
+				{
+					"ruleId": "8b36775e-183d-4d46-b0f7-96a6f34a723f",
+					"ruleIndex": 23,
+					"kind": "fail",
+					"message": {
+						"text": "metadata.name={{demo}}.annotations does not specify an AppArmor profile for container {{app}}",
+						"properties": {
+							"platform": "Kubernetes",
+							"riskScore": "3.3"
+						}
+					},
+					"locations": [
+						{
+							"physicalLocation": {
+								"artifactLocation": {
+									"uri": "k8s/pod.yaml"
+								},
+								"region": {
+									"startLine": 4
+								}
+							}
+						}
+					]
+				},
+				{
+					"ruleId": "268ca686-7fb7-4ae9-b129-955a2a89064e",
+					"ruleIndex": 24,
+					"kind": "fail",
+					"message": {
+						"text": "metadata.name={{demo}}.spec.containers.name={{app}}.securityContext.capabilities is undefined",
+						"properties": {
+							"platform": "Kubernetes",
+							"riskScore": "3.6"
+						}
+					},
+					"locations": [
+						{
+							"physicalLocation": {
+								"artifactLocation": {
+									"uri": "k8s/pod.yaml"
+								},
+								"region": {
+									"startLine": 9
+								}
+							}
+						}
+					]
+				},
+				{
+					"ruleId": "4a20ebac-1060-4c81-95d1-1f7f620e983b",
+					"ruleIndex": 25,
+					"kind": "fail",
+					"message": {
+						"text": "metadata.name={{demo}} does not have a 'LimitRange' policy associated",
+						"properties": {
+							"platform": "Kubernetes",
+							"riskScore": "2.8"
+						}
+					},
+					"locations": [
+						{
+							"physicalLocation": {
+								"artifactLocation": {
+									"uri": "k8s/pod.yaml"
+								},
+								"region": {
+									"startLine": 4
+								}
+							}
+						}
+					]
+				},
+				{
+					"ruleId": "48a5beba-e4c0-4584-a2aa-e6894e4cf424",
+					"ruleIndex": 26,
+					"kind": "fail",
+					"message": {
+						"text": "metadata.name={{demo}} does not have a 'ResourceQuota' policy associated",
+						"properties": {
+							"platform": "Kubernetes",
+							"riskScore": "2.8"
+						}
+					},
+					"locations": [
+						{
+							"physicalLocation": {
+								"artifactLocation": {
+									"uri": "k8s/pod.yaml"
+								},
+								"region": {
+									"startLine": 4
+								}
+							}
+						}
+					]
+				},
+				{
+					"ruleId": "a97a340a-0063-418e-b3a1-3028941d0995",
+					"ruleIndex": 27,
+					"kind": "fail",
+					"message": {
+						"text": "metadata.name={{demo}}.spec does not have a security context",
+						"properties": {
+							"platform": "Kubernetes",
+							"riskScore": "3.6"
+						}
+					},
+					"locations": [
+						{
+							"physicalLocation": {
+								"artifactLocation": {
+									"uri": "k8s/pod.yaml"
+								},
+								"region": {
+									"startLine": 5
+								}
+							}
+						}
+					]
+				},
+				{
+					"ruleId": "a9c2f49d-0671-4fc9-9ece-f4e261e128d0",
+					"ruleIndex": 28,
+					"kind": "fail",
+					"message": {
+						"text": "metadata.name={{demo}}.spec.containers.name={{app}}.securityContext.readOnlyRootFilesystem is undefined",
+						"properties": {
+							"platform": "Kubernetes",
+							"riskScore": "3.6"
+						}
+					},
+					"locations": [
+						{
+							"physicalLocation": {
+								"artifactLocation": {
+									"uri": "k8s/pod.yaml"
+								},
+								"region": {
+									"startLine": 9
+								}
+							}
+						}
+					]
+				},
+				{
+					"ruleId": "ae9c56a6-3ed1-4ac0-9b54-31267f51151d",
+					"ruleIndex": 29,
+					"kind": "informational",
+					"message": {
+						"text": "'RUN' contains 'apk add' command without '--no-cache' switch",
+						"properties": {
+							"platform": "Dockerfile",
+							"riskScore": "0.0"
+						}
+					},
+					"locations": [
+						{
+							"physicalLocation": {
+								"artifactLocation": {
+									"uri": "Dockerfile"
+								},
+								"region": {
+									"startLine": 2
+								}
+							}
+						}
+					]
+				},
+				{
+					"ruleId": "ade74944-a674-4e00-859e-c6eab5bde441",
+					"ruleIndex": 30,
+					"kind": "informational",
+					"message": {
+						"text": "metadata.name={{demo}}.spec.containers.name={{app}}.livenessProbe is undefined",
+						"properties": {
+							"platform": "Kubernetes",
+							"riskScore": "0.0"
+						}
+					},
+					"locations": [
+						{
+							"physicalLocation": {
+								"artifactLocation": {
+									"uri": "k8s/pod.yaml"
+								},
+								"region": {
+									"startLine": 7
+								}
+							}
+						}
+					]
+				},
+				{
+					"ruleId": "e38a8e0a-b88b-4902-b3fe-b0fcb17d5c10",
+					"ruleIndex": 31,
+					"kind": "informational",
+					"message": {
+						"text": "aws_s3_bucket[{{logs}}].tags is undefined or null",
+						"properties": {
+							"platform": "Terraform",
+							"riskScore": "0.0"
+						}
+					},
+					"locations": [
+						{
+							"physicalLocation": {
+								"artifactLocation": {
+									"uri": "infra/main.tf"
+								},
+								"region": {
+									"startLine": 1
+								}
+							}
+						}
+					]
+				}
+			],
+			"taxonomies": [
+				{
+					"guid": "58cdcc6f-fe41-4724-bfb3-131a93df4c3f",
+					"name": "Categories",
+					"fullDescription": {
+						"text": "This taxonomy contains the types an issue can assume"
+					},
+					"shortDescription": {
+						"text": "Vulnerabilities categories"
+					},
+					"taxa": [
+						{
+							"name": "Undefined Category",
+							"id": "CAT000",
+							"shortDescription": {
+								"text": "Category is not defined"
+							},
+							"fullDescription": {
+								"text": "Category is not defined"
+							}
+						},
+						{
+							"name": "Best Practices",
+							"id": "CAT004",
+							"shortDescription": {
+								"text": "Metadata management"
+							},
+							"fullDescription": {
+								"text": "Metadata management"
+							}
+						},
+						{
+							"name": "Encryption",
+							"id": "CAT006",
+							"shortDescription": {
+								"text": "Data Security and Encryption configuration"
+							},
+							"fullDescription": {
+								"text": "Data Security and Encryption configuration"
+							}
+						},
+						{
+							"name": "Insecure Defaults",
+							"id": "CAT008",
+							"shortDescription": {
+								"text": "Configurations that are insecure by default"
+							},
+							"fullDescription": {
+								"text": "Configurations that are insecure by default"
+							}
+						},
+						{
+							"name": "Supply-Chain",
+							"id": "CAT013",
+							"shortDescription": {
+								"text": "Dependency version management"
+							},
+							"fullDescription": {
+								"text": "Dependency version management"
+							}
+						},
+						{
+							"name": "Build Process",
+							"id": "CAT005",
+							"shortDescription": {
+								"text": "Insecure configurations when building/deploying"
+							},
+							"fullDescription": {
+								"text": "Insecure configurations when building/deploying"
+							}
+						},
+						{
+							"name": "Observability",
+							"id": "CAT010",
+							"shortDescription": {
+								"text": "Logging and Monitoring"
+							},
+							"fullDescription": {
+								"text": "Logging and Monitoring"
+							}
+						},
+						{
+							"name": "Secret Management",
+							"id": "CAT012",
+							"shortDescription": {
+								"text": "Secret and Key management"
+							},
+							"fullDescription": {
+								"text": "Secret and Key management"
+							}
+						},
+						{
+							"name": "Backup",
+							"id": "CAT003",
+							"shortDescription": {
+								"text": "Survivability and Recovery"
+							},
+							"fullDescription": {
+								"text": "Survivability and Recovery"
+							}
+						},
+						{
+							"name": "Networking and Firewall",
+							"id": "CAT009",
+							"shortDescription": {
+								"text": "Network port exposure and firewall configuration"
+							},
+							"fullDescription": {
+								"text": "Network port exposure and firewall configuration"
+							}
+						},
+						{
+							"name": "Access Control",
+							"id": "CAT001",
+							"shortDescription": {
+								"text": "Service permission and identity management"
+							},
+							"fullDescription": {
+								"text": "Service permission and identity management"
+							}
+						},
+						{
+							"name": "Availability",
+							"id": "CAT002",
+							"shortDescription": {
+								"text": "Reliability and Scalability"
+							},
+							"fullDescription": {
+								"text": "Reliability and Scalability"
+							}
+						},
+						{
+							"name": "Insecure Configurations",
+							"id": "CAT007",
+							"shortDescription": {
+								"text": "Configurations which expose the application unnecessarily"
+							},
+							"fullDescription": {
+								"text": "Configurations which expose the application unnecessarily"
+							}
+						},
+						{
+							"name": "Resource Management",
+							"id": "CAT011",
+							"shortDescription": {
+								"text": "Resource and privilege limit configuration"
+							},
+							"fullDescription": {
+								"text": "Resource and privilege limit configuration"
+							}
+						},
+						{
+							"name": "Structure and Semantics",
+							"id": "CAT014",
+							"shortDescription": {
+								"text": "Malformed document structure or inadequate semantics"
+							},
+							"fullDescription": {
+								"text": "Malformed document structure or inadequate semantics"
+							}
+						},
+						{
+							"name": "Bill Of Materials",
+							"id": "CAT015",
+							"shortDescription": {
+								"text": "List of resources provisioned"
+							},
+							"fullDescription": {
+								"text": "List of resources provisioned"
+							}
+						}
+					]
+				}
+			]
+		}
+	]
+}

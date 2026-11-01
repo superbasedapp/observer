@@ -101,6 +101,32 @@ func TestParsePolicyFile_MatcherVocabulary(t *testing.T) {
 			},
 			decided: policy.DecisionFlag, // ask degrades to flag in observe
 		},
+		{
+			name: "sink git_commit keys on the parsed intent",
+			rule: "decision = 'flag'\nmatch.sink = 'git_commit'",
+			hit: policy.Event{
+				Kind: policy.KindShellExec, ActionType: "run_command",
+				Target: "git -C sub commit-tree HEAD^{tree} -m x",
+			},
+			miss: policy.Event{
+				Kind: policy.KindShellExec, ActionType: "run_command",
+				Target: "git push origin main",
+			},
+			decided: policy.DecisionFlag,
+		},
+		{
+			name: "sink git_commit on an MCP commit tool",
+			rule: "decision = 'flag'\nmatch.sink = 'git_commit'",
+			hit: policy.Event{
+				Kind: policy.KindMCPCall, ActionType: "mcp_call",
+				Target: "mcp__github__push_files",
+			},
+			miss: policy.Event{
+				Kind: policy.KindMCPCall, ActionType: "mcp_call",
+				Target: "mcp__github__get_file_contents",
+			},
+			decided: policy.DecisionFlag,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

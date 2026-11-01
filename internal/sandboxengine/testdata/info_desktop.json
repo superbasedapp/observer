@@ -1,0 +1,1 @@
+{"ID":"b1f2","Name":"docker-desktop","OperatingSystem":"Docker Desktop","KernelVersion":"6.6.32-linuxkit","SecurityOptions":["name=seccomp,profile=unconfined","name=cgroupns"],"DockerRootDir":"/var/lib/docker"}

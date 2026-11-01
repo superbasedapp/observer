@@ -1,0 +1,11 @@
+# latency-tests.txt: the wall-clock latency tests (item 20 of the test-time
+# plan). Each calls internal/testsupport/latencygate.Gate, which fails a test
+# missing from this list and skips it under -short or SBO_SKIP_LATENCY_TESTS=1
+# (set by the CI test shards). ci.yml's go job runs exactly these, without
+# -race, in its "latency regressions (no race)" step.
+#
+# <module-relative package> TAB <top-level test name>
+internal/guard	TestScanProxyRequest_LatencyRegression
+internal/guard	TestExtractLatestUserPromptText_LatencyRegression
+internal/routing	TestDecideHotPathBudget
+internal/scrub	TestDetectPII_LatencyRegression

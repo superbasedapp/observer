@@ -3,8 +3,6 @@ package proxyroute
 import (
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/marmutapp/superbased-observer/internal/cfgfmt"
@@ -17,12 +15,17 @@ import (
 const qwenDefaultBaseURL = "https://api.openai.com/v1"
 
 // resolveQwenConfigPath returns <qwen-home>/settings.json. Precedence:
-// QWEN_HOME env > homeDir/.qwen.
-func resolveQwenConfigPath(homeDir string) string {
-	if env := strings.TrimSpace(os.Getenv("QWEN_HOME")); env != "" {
-		return filepath.Join(env, "settings.json")
-	}
-	return filepath.Join(homeDir, ".qwen", "settings.json")
+// QWEN_HOME env > homeDir/.qwen (the qwen-code/user-settings artifact's
+// rule). The inspector passes its inspection environment; the writers
+// resolve with the registrar's own lookup (qwenConfigPath).
+func resolveQwenConfigPath(homeDir string, getenv func(string) string) (string, error) {
+	return routeArtifactPath("proxyroute.qwen-code", qwenConfigArtifact, homeDir, getenv)
+}
+
+// qwenConfigPath is the settings.json this registrar routes, resolved with
+// RegisterOptions.Getenv.
+func (r *Registrar) qwenConfigPath(what string) (string, error) {
+	return routeArtifactPath(what, qwenConfigArtifact, r.opts.HomeDir, r.opts.Getenv)
 }
 
 // RegisterQwenCode points Qwen Code at the observer proxy by rewriting
@@ -66,9 +69,13 @@ func (r *Registrar) RegisterQwenCode() RegistrationResult {
 // writeQwenCode is RegisterQwenCode without the provenance record.
 func (r *Registrar) writeQwenCode() RegistrationResult {
 	const what = "proxyroute.qwencode"
-	path := resolveQwenConfigPath(r.opts.HomeDir)
+	path, perr := r.qwenConfigPath(what)
 	want := openAICompatProxyURL(r.opts.ProxyPort)
 	res := RegistrationResult{Tool: "qwen-code", ConfigPath: path, BaseURL: want, DryRun: r.opts.DryRun}
+	if perr != nil {
+		res.Error = perr
+		return res
+	}
 
 	raw, err := readOwnedRouteFile(what, path)
 	if errors.Is(err, errRouteFileMissing) {

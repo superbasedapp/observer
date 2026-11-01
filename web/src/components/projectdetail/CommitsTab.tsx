@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Icon, IdLink, Pill, Table, Tooltip } from "@/components/primitives";
 import { CodeCommentSplit } from "@shared/primitives/CodeCommentSplit";
 import { ownerReasonMeta, SHARE_BASIS_TIP } from "@/components/projectdetail/commitOwner";
@@ -35,6 +35,14 @@ export function CommitsTab({ projectId, win }: { projectId: number; win: WindowP
     [projectId, windowKey(win)],
   );
   const rows = commits.data?.rows ?? [];
+  // A deep link from the Delivery tab (`?sha=<sha>`) opens that commit.
+  const [params] = useSearchParams();
+  const wantSHA = params.get("sha");
+  useEffect(() => {
+    if (!wantSHA) return;
+    const hit = rows.find((c) => c.sha.startsWith(wantSHA) || wantSHA.startsWith(c.sha));
+    if (hit) setExpanded(hit.id);
+  }, [wantSHA, rows]);
   const truncationNote = describeTruncation(commits.data, "commits");
 
   return (

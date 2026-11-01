@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -42,7 +43,7 @@ func pluginReplyOf(t *testing.T, out string) hook.PluginReply {
 // plugin deny (which the shim / Hermes plugin maps onto the host block), a
 // benign call gets the plugin allow, both exit 0 with exactly one reply.
 func TestPluginToolGateDialects(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	cases := []struct {
 		tool, event, mode string
 		toolName          string
@@ -54,7 +55,9 @@ func TestPluginToolGateDialects(t *testing.T) {
 		{"opencode", "tool.execute.before", "enforce", "bash", map[string]any{"command": "ls -la"}, "allow", true},
 		{"opencode", "tool.execute.before", "enforce", "read", map[string]any{"filePath": "~/.ssh/id_rsa"}, "deny", true},
 		{"kilo-code-cli", "tool.execute.before", "enforce", "bash", map[string]any{"command": "cat ~/.ssh/id_rsa"}, "deny", true},
-		{"pi", "tool_call", "enforce", "bash", map[string]any{"command": "cat ~/.ssh/id_rsa"}, "deny", true},
+		// pi maps ask onto ctx.ui.confirm (the shim blocks where there is
+		// no UI), so the overridable credential read stays an ask.
+		{"pi", "tool_call", "enforce", "bash", map[string]any{"command": "cat ~/.ssh/id_rsa"}, "ask", true},
 		{"pi", "tool_call", "enforce", "read", map[string]any{"path": "notes.txt"}, "allow", true},
 		// Hermes maps ask onto its own approval prompt.
 		{"hermes", "pre_tool_call", "enforce", "terminal", map[string]any{"command": "cat ~/.ssh/id_rsa"}, "ask", true},
@@ -98,7 +101,7 @@ func TestPluginToolGateDialects(t *testing.T) {
 // TestPluginToolGateFailureSemantics: garbage and truncated payloads are
 // blocked with a reason under enforcement and allowed otherwise.
 func TestPluginToolGateFailureSemantics(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	for _, mode := range []string{"enforce", "observe"} {
 		for name, body := range map[string]string{
 			"garbage":   "not json at all",
@@ -128,7 +131,7 @@ func TestPluginToolGateFailureSemantics(t *testing.T) {
 // dialect: a secret is withheld (deny) under the prompt lane, a clean prompt
 // passes; a non-prompt event on the dialect answers allow.
 func TestPluginPromptGate(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	dir := t.TempDir()
 	cp := filepath.Join(dir, "config.toml")
 	writeFileT(t, cp, "[guard]\nenabled = true\nmode = \"enforce\"\n[guard.prompt]\nenabled = true\nhook_lane = true\n")
@@ -147,13 +150,65 @@ func TestPluginPromptGate(t *testing.T) {
 	}
 }
 
+// TestPluginPromptGateWarnAndConfirm: both plugin prompt seams answer a
+// stop with a reason that never echoes the secret, and under
+// [guard.prompt] mode = "warn" an allow that carries the notice as message
+// (the shim toasts / notifies it). pi `input` rides the confirm dialect.
+func TestPluginPromptGateWarnAndConfirm(t *testing.T) {
+	home := t.TempDir()
+	setTestHome(t, home)
+	// The reconsider-once store lives in the default DB under ~/.observer.
+	if err := os.MkdirAll(filepath.Join(home, ".observer"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	secret := "ghp_" + strings.Repeat("a1B2", 9)
+	for _, host := range []struct{ tool, event string }{{"opencode", "chat.message"}, {"pi", "input"}} {
+		b, ok := resolveHookBinding(host.tool, host.event)
+		if !ok || !b.Wired {
+			t.Fatalf("%s %s: binding = %+v %v, want a wired plugin prompt binding", host.tool, host.event, b, ok)
+		}
+		// github_pat ships as "block"; the detector row is set to the mode
+		// under test so the global mode is what the seam resolves.
+		for mode, want := range map[string]string{"ask-once": "ask", "warn": "allow", "block": "deny"} {
+			t.Run(host.tool+"/"+mode, func(t *testing.T) {
+				dir := t.TempDir()
+				cp := filepath.Join(dir, "config.toml")
+				writeFileT(t, cp, "[guard]\nenabled = true\nmode = \"enforce\"\n[guard.prompt]\nenabled = true\nhook_lane = true\nmode = \""+mode+
+					"\"\n[guard.prompt.detectors]\ngithub_pat = \""+mode+"\"\n")
+				body, _ := json.Marshal(map[string]any{"host": host.tool, "event": host.event, "session_id": host.tool + "-" + mode, "cwd": dir, "prompt": "deploy with token " + secret})
+				out, exits := runPluginHook(t, host.tool, host.event, cp, string(body))
+				r := pluginReplyOf(t, out)
+				if len(exits) != 0 {
+					t.Fatalf("exits = %v, want none", exits)
+				}
+				if strings.Contains(out, secret) {
+					t.Fatalf("reply %s echoes the secret", out)
+				}
+				if r.Decision != want {
+					t.Fatalf("reply = %+v, want decision %q", r, want)
+				}
+				if want == "allow" && r.Message == "" {
+					t.Fatalf("warn reply = %+v, want the notice as message", r)
+				}
+				if want != "allow" && r.Reason == "" {
+					t.Fatalf("stop reply = %+v, want a reason", r)
+				}
+			})
+		}
+	}
+	if b, _ := resolveHookBinding("pi", "input"); b.Dialect != hook.PromptDialectPluginShimConfirm {
+		t.Fatalf("pi input dialect = %q, want the confirm dialect", b.Dialect)
+	}
+}
+
 // TestPluginBindingsHaveAReceiver: every Wired plugin-dialect binding is
 // served by bindingDialectReceivers (the dispatch the shim relies on).
 func TestPluginBindingsHaveAReceiver(t *testing.T) {
 	n := 0
 	for _, c := range integration.Capabilities() {
 		for _, b := range c.Hook.Bindings {
-			if !b.Wired || (b.Dialect != hook.PluginDialectToolGate && b.Dialect != hook.PromptDialectPluginShim) {
+			if !b.Wired || (b.Dialect != hook.PluginDialectToolGate && b.Dialect != hook.PromptDialectPluginShim &&
+				b.Dialect != hook.PromptDialectPluginShimConfirm) {
 				continue
 			}
 			n++

@@ -43,9 +43,27 @@ func isAbsPath(p string) bool {
 // relative path), drive letters lowercased, and trailing separators
 // trimmed (except on a bare root). A preserved leading "~" segment
 // passes through so unexpanded home-relative forms remain matchable.
+//
+// A UNC path (`\\server\share\x`, WINNODE item 2) keeps its leading `\\`
+// and has forward slashes after it (`\\server/share/x`): folding it to
+// `/server/share/x`, as this function once did, made a network share look
+// like a POSIX path, so it never compared against a Windows project root and
+// a recursive delete of a share was allowed. The share (`\\server/share`) is
+// its root: ".." clamps there. An extended-length prefix (`\\?\`) is
+// dropped, so `\\?\C:\x` is `c:/x` and `\\?\UNC\server\share` is the UNC
+// path. Only the backslash spelling is UNC: a POSIX `//x` stays `/x`.
 func normPath(p string) string {
 	if p == "" {
 		return ""
+	}
+	if rest, ok := strings.CutPrefix(p, `\\?\`); ok {
+		p = rest
+		if hasFoldPrefix(p, `UNC\`) {
+			p = `\\` + p[4:]
+		}
+	}
+	if rest, ok := strings.CutPrefix(p, uncPrefix); ok {
+		return normUNC(rest)
 	}
 	s := strings.ReplaceAll(p, `\`, "/")
 	drive := ""
@@ -86,6 +104,35 @@ func normPath(p string) string {
 	default:
 		return joined
 	}
+}
+
+// uncPrefix is the leading `\\` a normalized UNC path keeps (normPath).
+const uncPrefix = `\\`
+
+// normUNC normalizes the part of a UNC path after its `\\`: forward
+// slashes, "." and empty segments dropped, ".." resolved lexically and
+// clamped at the share (the first two segments are the server and share).
+func normUNC(rest string) string {
+	segs := strings.Split(strings.ReplaceAll(rest, `\`, "/"), "/")
+	out := make([]string, 0, len(segs))
+	for _, seg := range segs {
+		switch seg {
+		case "", ".":
+			continue
+		case "..":
+			if len(out) > 2 {
+				out = out[:len(out)-1]
+			}
+		default:
+			out = append(out, seg)
+		}
+	}
+	return uncPrefix + strings.Join(out, "/")
+}
+
+// isUNCPath reports whether p names a UNC location (normalized or raw).
+func isUNCPath(p string) bool {
+	return strings.HasPrefix(normPath(p), uncPrefix)
 }
 
 // expandHome rewrites a leading home reference — "~", "~/", "$HOME",
@@ -270,12 +317,61 @@ func resolvePath(target, home, cwd, projectRoot string) string {
 }
 
 // comparableFlavors reports whether two normalized paths can be
-// meaningfully compared: both Windows-shaped or both POSIX-shaped.
-// Mixed flavors mean a missing crossmount translation at the
-// boundary; rules treat that as unknown (no hit) rather than
-// guessing.
+// meaningfully compared: both Windows-shaped, both POSIX-shaped, or
+// one Windows-shaped and the other the WSL drvfs mount of a drive
+// (see alignFlavors). Any other mix means a missing crossmount
+// translation at the boundary; rules treat that as unknown (no hit)
+// rather than guessing.
 func comparableFlavors(a, b string) bool {
-	return isWindowsPath(a) == isWindowsPath(b)
+	_, _, ok := alignFlavors(a, b)
+	return ok
+}
+
+// drvfsFold rewrites a WSL drvfs mount path (`/mnt/c`, `/mnt/c/...`)
+// to the drive form the same directory has on the Windows side
+// (`c:/`, `c:/...`). Purely lexical, like everything in this file: the
+// daemon stores a Windows tool's project root translated (`/mnt/c/x`)
+// while the tool's own payload names files natively (`C:\x\f.go`), and
+// both must compare as one location on any host.
+func drvfsFold(p string) (string, bool) {
+	if len(p) < 6 || !strings.HasPrefix(p, "/mnt/") || !isASCIILetter(p[5]) {
+		return p, false
+	}
+	rest := p[6:]
+	if rest != "" && rest[0] != '/' {
+		return p, false // `/mnt/cache`: a directory, not a drive mount
+	}
+	if rest == "" {
+		rest = "/"
+	}
+	return strings.ToLower(p[5:6]) + ":" + rest, true
+}
+
+// alignFlavors returns a and b in one comparable flavor: unchanged
+// when they already share one, or with the POSIX side folded to its
+// drive form when it is a drvfs mount and the other is Windows-shaped.
+// ok is false when the two have no common flavor.
+//
+// A UNC path is comparable with every path: with another UNC path it is a
+// Windows path like any other, and with a drive or POSIX path it never
+// shares a location (isUnder and pathsEqual answer false), so the
+// outside-the-project arms see a share as outside a drive or POSIX project,
+// as they always saw it outside a POSIX one.
+func alignFlavors(a, b string) (string, string, bool) {
+	if isUNCPath(a) || isUNCPath(b) {
+		return a, b, true
+	}
+	wa, wb := isWindowsPath(a), isWindowsPath(b)
+	switch {
+	case wa == wb:
+		return a, b, true
+	case wa:
+		f, ok := drvfsFold(b)
+		return a, f, ok
+	default:
+		f, ok := drvfsFold(a)
+		return f, b, ok
+	}
 }
 
 // pathsEqual reports whether two normalized paths refer to the same
@@ -283,26 +379,40 @@ func comparableFlavors(a, b string) bool {
 // Windows-shaped.
 func pathsEqual(a, b string) bool {
 	a, b = normPath(a), normPath(b)
-	if isWindowsPath(a) || isWindowsPath(b) {
+	var ok bool
+	if a, b, ok = alignFlavors(a, b); !ok {
+		return false
+	}
+	if foldCase(a, b) {
 		return strings.EqualFold(a, b)
 	}
 	return a == b
 }
 
+// foldCase reports whether two aligned paths compare case-insensitively:
+// either is Windows-shaped and neither is UNC. UNC paths keep the
+// case-sensitive comparison they had while normPath folded them to POSIX
+// look-alikes, so no outside-the-project verdict on a share loosens
+// (WINNODE item 2; a share named in two cases reads as two places).
+func foldCase(a, b string) bool {
+	return (isWindowsPath(a) || isWindowsPath(b)) && !isUNCPath(a) && !isUNCPath(b)
+}
+
 // isUnder reports whether child is root itself or lexically beneath
 // it. Both arguments are normalized first; comparison is
 // case-insensitive when either side is Windows-shaped. Mixed flavors
-// are never under each other (see comparableFlavors).
+// are never under each other unless alignFlavors can fold them onto
+// one (a drvfs mount against its drive).
 func isUnder(child, root string) bool {
 	c, r := normPath(child), normPath(root)
 	if c == "" || r == "" {
 		return false
 	}
-	if !comparableFlavors(c, r) {
+	var ok bool
+	if c, r, ok = alignFlavors(c, r); !ok {
 		return false
 	}
-	ci := isWindowsPath(c) || isWindowsPath(r)
-	if ci {
+	if foldCase(c, r) {
 		c, r = strings.ToLower(c), strings.ToLower(r)
 	}
 	if c == r {
@@ -315,18 +425,22 @@ func isUnder(child, root string) bool {
 }
 
 // isFilesystemRoot reports whether the normalized path is a
-// filesystem root: "/" or a bare drive ("c:", "c:/").
+// filesystem root: "/", a bare drive ("c:", "c:/") or a bare UNC share
+// (`\\server/share`, or the server alone).
 func isFilesystemRoot(p string) bool {
 	p = normPath(p)
 	if p == "/" {
 		return true
+	}
+	if rest, ok := strings.CutPrefix(p, uncPrefix); ok {
+		return strings.Count(rest, "/") <= 1
 	}
 	return len(p) >= 2 && len(p) <= 3 && p[1] == ':' && isASCIILetter(p[0]) &&
 		(len(p) == 2 || p[2] == '/')
 }
 
 // isRootDepthGlob reports whether the normalized path is a
-// root-depth wildcard — "/*", "c:/*" or "<home>/*" — the
+// root-depth wildcard ("/*", "c:/*", `\\server/share/*` or "<home>/*"), the
 // everything-at-once delete shapes R-101 treats as catastrophic.
 func isRootDepthGlob(p, home string) bool {
 	p = normPath(p)
@@ -334,6 +448,9 @@ func isRootDepthGlob(p, home string) bool {
 		return true
 	}
 	if len(p) == 4 && p[1] == ':' && isASCIILetter(p[0]) && p[2] == '/' && p[3] == '*' {
+		return true
+	}
+	if share, ok := strings.CutSuffix(p, "/*"); ok && strings.HasPrefix(share, uncPrefix) && isFilesystemRoot(share) {
 		return true
 	}
 	return home != "" && pathsEqual(strings.TrimSuffix(p, "/*"), home) && strings.HasSuffix(p, "/*")

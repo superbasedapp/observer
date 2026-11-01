@@ -1,4 +1,4 @@
-// Package prove is the OPERATOR-ONLY, FIXTURE-ONLY Foundry proving lane
+// Package prove is the OPERATOR-ONLY, FIXTURE-ONLY inference proving lane
 // (remediation plan §3 W3a / divergence E3, FA3).
 //
 // # What it is for
@@ -6,7 +6,7 @@
 // Before any real developer evidence may reach the provider, the operator must
 // be able to demonstrate that the whole inference path actually works end to
 // end: route resolve → ContentLogging attestation → dialect verification →
-// Foundry call → normalize/scrub/ground. That demonstration cannot be done with
+// provider call (Foundry or Anthropic) → normalize/scrub/ground. That demonstration cannot be done with
 // customer evidence (there is no approval yet), and it must not be done with a
 // parallel re-implementation (a copy proves the copy, not the shipped path).
 //
@@ -23,7 +23,7 @@
 //     an ordinary account's admission path is untouched and REMAINS
 //     credential-absent pre-approval.
 //
-//   - The provider credential is an EXPLICIT parameter (Options.FoundryAPIKey).
+//   - The provider credential is an EXPLICIT parameter (Options.APIKey).
 //     This package never constructs or consults the worker's credential seam,
 //     and reads NO environment at all (it does not import "os"), so it cannot
 //     pick up the worker's own key variable — the production worker's

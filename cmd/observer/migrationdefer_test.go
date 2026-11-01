@@ -62,13 +62,32 @@ func TestMigrationCmdClassOfRealCommands(t *testing.T) {
 // TestMigrationDeferNotice pins the message: it names the daemon's version
 // (or that it is older), both schema versions and the restart advice.
 func TestMigrationDeferNotice(t *testing.T) {
-	got := migrationDeferNotice(diag.LockInfo{PID: 42}, 147, 161, "1.36.0")
+	got := migrationDeferNotice(diag.LockInfo{PID: 42}, 147, 161, []int{148, 161}, "1.36.0")
 	for _, want := range []string{"an older build (pid 42)", "schema 147", "v1.36.0 (schema 161)", "Restart the daemon to finish the upgrade", "route off first"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("notice %q lacks %q", got, want)
 		}
 	}
-	if got := migrationDeferNotice(diag.LockInfo{PID: 7, Version: "1.35.0"}, 157, 161, "1.36.0"); !strings.Contains(got, "v1.35.0 (pid 7)") {
+	if got := migrationDeferNotice(diag.LockInfo{PID: 7, Version: "1.35.0"}, 157, 161, []int{161}, "1.36.0"); !strings.Contains(got, "v1.35.0 (pid 7)") {
 		t.Errorf("notice %q does not name the daemon version", got)
+	}
+}
+
+// TestMigrationDeferNoticeNamesLateSteps pins the late-step wording (T-979):
+// when every pending step sits at or below the daemon's schema version, the
+// notice names the steps instead of printing "schema N ... schema N".
+func TestMigrationDeferNoticeNamesLateSteps(t *testing.T) {
+	got := migrationDeferNotice(diag.LockInfo{PID: 9, Version: "1.36.0"}, 176, 176, []int{170}, "1.37.0")
+	for _, want := range []string{
+		"this observer (v1.37.0) has 1 pending database step(s) (170)",
+		"the running daemon, v1.36.0 (pid 9), has not run",
+		"Restart the daemon to finish the upgrade",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("notice %q lacks %q", got, want)
+		}
+	}
+	if strings.Contains(got, "schema 176") {
+		t.Errorf("notice %q compares two equal schema versions", got)
 	}
 }

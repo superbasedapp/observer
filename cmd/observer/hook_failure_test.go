@@ -270,9 +270,9 @@ func TestHookFailureSemantics(t *testing.T) {
 					}
 					// T-048: the host shows a stderr-reason block's stderr as
 					// the reason, so a timeout writes the reason and nothing
-					// else there.
-					if d.stderrReason && k.kind == guardposture.KindTimeout && h.stderr.String() != reason+"\n" {
-						t.Errorf("stderr-reason dialect timeout: stderr %q, want exactly the reason", h.stderr.String())
+					// else there, after the DEC-1 header on one line.
+					if d.stderrReason && k.kind == guardposture.KindTimeout && h.stderr.String() != "Blocked by Observer guard: "+reason+"\n" {
+						t.Errorf("stderr-reason dialect timeout: stderr %q, want exactly the header and the reason on one line", h.stderr.String())
 					}
 					if !d.stderrReason && d.blockCode != 0 {
 						t.Errorf("%s: blocks by exit %d without a stderr reason (T-048)", d.name, d.blockCode)
@@ -295,6 +295,23 @@ func TestHookFailureSemantics(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+// preseedMigratedDB materializes a migrated schema at path from the test DB
+// template (dbtemplate), so a receiver or launcher under test that opens
+// path finds a current schema instead of replaying the whole migration
+// chain (about 9s per open under -race). The code under test still opens
+// the file itself through its own path; only the migration replay is
+// skipped.
+func preseedMigratedDB(t *testing.T, path string) {
+	t.Helper()
+	database, err := dbtemplate.Open(context.Background(), db.Options{Path: path})
+	if err != nil {
+		t.Fatalf("preseed %s: %v", path, err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatalf("close preseeded %s: %v", path, err)
 	}
 }
 
@@ -413,9 +430,10 @@ func TestResolveHookFailurePlan(t *testing.T) {
 		{"claude-code", "post-tool", false, integration.HookCapToolObserve},         // not a gate
 		{"codex", "PreToolUse", true, integration.HookCapToolGate},                  // wired tool gate (hook-parity A1)
 		{"codex", "PermissionRequest", false, integration.HookCapPermissionObserve}, // not a gate
-		{"antigravity-cli", "PreInvocation", false, integration.HookCapPromptGate},  // warn-only seam
+		{"antigravity-cli", "PreInvocation", true, integration.HookCapPromptGate},   // the abort blocks (guard-enforcement fix 2026-10-15)
 		{"kimi-code", "PreToolUse", true, integration.HookCapToolGate},              // wired tool gate (T-378)
-		{"kiro-cli", "preToolUse", false, integration.HookCapToolGate},              // vendor-only binding
+		{"kiro-cli", "preToolUse", true, integration.HookCapToolGate},               // wired tool gate (gfiD)
+		{"kiro-crew", "PreToolUse", false, integration.HookCapToolGate},             // vendor-only binding
 		{"no-such-tool", "PreToolUse", false, ""},
 	} {
 		plan := resolveHookFailurePlan(tc.tool, tc.event, cp)
@@ -456,8 +474,10 @@ func TestResolveHookFailurePlan(t *testing.T) {
 // wires resolves from its registered argv and either has a fail-closed
 // reply or is a seam that cannot block at all (named here with the reason).
 func TestEveryWiredGateBindingHasAFailurePlan(t *testing.T) {
+	// agy PreInvocation blocks with the {"injectSteps":[{}]} abort since the
+	// guard-enforcement fix (2026-10-15); Kiro CLI userPromptSubmit cannot.
 	cannotBlock := map[string]string{
-		"antigravity-preinvocation": "warn-only seam (PreInvocation has no block)",
+		"kiro-cli": "warn-only seam (Kiro CLI userPromptSubmit cannot block, gfiD 2026-10-15)",
 	}
 	for _, c := range integration.Capabilities() {
 		for _, b := range c.Hook.Bindings {
@@ -727,6 +747,9 @@ func TestGuardPostureWriterSkipsUnchanged(t *testing.T) {
 // running the pre-authentication binary through an upgrade, or a tamper,
 // never blocks a node whose config does not enforce.
 func TestPostureForgeryCannotOpenAGate(t *testing.T) {
+	// The hook reads the org bundle under the home; the process temp home's
+	// .observer is a file (FU-20), which reads as an unverifiable org layer.
+	pinToolHomes(t)
 	const (
 		guardOff     = "[guard]\nenabled = false\n"
 		guardObserve = "[guard]\nenabled = true\nmode = \"observe\"\n"

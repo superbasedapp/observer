@@ -75,6 +75,7 @@ var copilotLayers = []Layer{
 			"shortcut and enabled plugins lock; sandbox settings only restrict (most restrictive across sources); a model is a default the user " +
 			"can change per conversation. MDM values are flat dotted names holding strings (JSON text for lists and objects); the same " +
 			"com.github.copilot / GitHubCopilot policy also reaches Copilot in VS Code. POSIX files must be root-owned, not group- or " +
-			"world-writable, and not a symlink.",
+			"world-writable, and not a symlink. Hooks are not a managed key: Copilot CLI 1.0.105 ignored disableAllHooks there (MAC-6, FU-196), as " +
+			"GitHub's key list (re-fetched 2026-10-30) has no hooks entry, so this layer cannot turn a node's hooks off.",
 	},
 }

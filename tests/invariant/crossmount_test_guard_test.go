@@ -46,7 +46,7 @@ func TestCrossmountTestGuard_StructuralPins(t *testing.T) {
 			[]string{"crossmount.EnvDisableForeignHomes + \"=1\""},
 		},
 		{
-			filepath.Join("cmd", "observer", "sandbox_helpers_main_test.go"),
+			filepath.Join("cmd", "observer", "testmain_test.go"),
 			[]string{"os.Setenv(crossmount.EnvDisableForeignHomes, \"1\")"},
 		},
 	}
@@ -62,5 +62,36 @@ func TestCrossmountTestGuard_StructuralPins(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestCmdObserverTestMainIsUntagged (RB1 gate): cmd/observer's TestMain pins
+// every home, stubs the daemon lanes and runs the write guard, so it must
+// build in every edition. It lived in a sandbox-tagged file, and the minimal
+// edition ran the package with none of that and wrote into the real home.
+func TestCmdObserverTestMainIsUntagged(t *testing.T) {
+	root := repoRoot(t)
+	matches, err := filepath.Glob(filepath.Join(root, "cmd", "observer", "*_test.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := 0
+	for _, p := range matches {
+		src, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(src), "\nfunc TestMain(m *testing.M) {") {
+			continue
+		}
+		found++
+		for _, line := range strings.SplitN(string(src), "\npackage ", 2)[:1] {
+			if strings.Contains(line, "//go:build") {
+				t.Errorf("%s holds TestMain behind a build constraint; it must build in every edition", filepath.Base(p))
+			}
+		}
+	}
+	if found != 1 {
+		t.Fatalf("found %d TestMain functions in cmd/observer, want exactly 1", found)
 	}
 }

@@ -35,6 +35,13 @@ import (
 func writeCloudTestConfig(t *testing.T) (string, string, string) {
 	t.Helper()
 	dir := t.TempDir()
+	// Each test is its own Observer home, so its keychain entries live in
+	// their own namespace of the test binary's in-memory keyring and never
+	// meet another test's (Windows 11 Pro rerun 2026-10-25, D2: on Windows
+	// these tests read and wrote the user's real Credential Manager).
+	for _, k := range []string{"HOME", "USERPROFILE"} {
+		t.Setenv(k, dir)
+	}
 	dbPath := filepath.Join(dir, "observer.db")
 	cfgPath := filepath.Join(dir, "config.toml")
 	body := "[observer]\ndb_path = \"" + filepath.ToSlash(dbPath) + "\"\n"
@@ -1340,7 +1347,14 @@ func TestCloudStatusReportsSignInPresenceWithoutNetwork(t *testing.T) {
 		t.Errorf("fresh node must say there is no sign-in and name the recovery:\n%s", out)
 	}
 
-	cred := cloudcred.Open(dir, nil)
+	// The sign-in is seeded for the host status reads: an unscoped legacy
+	// record is adopted only where the credential lock is real (unix), so
+	// seeding it unscoped tested the adoption, not the status line, and
+	// failed on Windows.
+	// The gateway keys credentials by the base URL's host name, port
+	// excluded (cloudgateway.hostFromBaseURL).
+	host := strings.ToLower(strings.Split(strings.TrimPrefix(srv.URL, "http://"), ":")[0])
+	cred := cloudcred.OpenForHost(dir, host, nil)
 	if err := cred.SaveWorkOSRefresh("rt-1"); err != nil {
 		t.Fatalf("seed refresh: %v", err)
 	}

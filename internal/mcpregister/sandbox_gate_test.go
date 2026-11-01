@@ -3,6 +3,7 @@ package mcpregister
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -24,7 +25,7 @@ func forceMCPCrossmount(t *testing.T, homes []crossmount.HomeRoot) {
 func mkWinClineHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
-	if err := os.MkdirAll(filepath.Dir(locate.ClineSettingsPath(home, crossmount.OSWindows)), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(locate.ClineLegacySettingsPath(home, crossmount.OSWindows)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return home
@@ -85,7 +86,7 @@ func TestSandboxGate_ClineWindowsProductionUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := locate.ClineSettingsPath(winHome, crossmount.OSWindows)
+	want := testClineMCPPath(winHome, runtime.GOOS, nil)
 	if got := r.detectWindowsClineSettings(); got != want {
 		t.Errorf("production detectWindowsClineSettings() = %q, want %q (auto-detect must be unchanged)", got, want)
 	}
@@ -116,7 +117,7 @@ func TestSandboxGate_ClineWindowsUncontainedOverrideSkips(t *testing.T) {
 	if !strings.Contains(res.SkipReason, "WindowsClineHome") || !strings.Contains(res.SkipReason, "OUTSIDE") {
 		t.Errorf("SkipReason should name the uncontained override, got %q", res.SkipReason)
 	}
-	if _, err := os.Stat(locate.ClineSettingsPath(outside, crossmount.OSWindows)); err == nil {
+	if _, err := os.Stat(testClineMCPPath(outside, runtime.GOOS, nil)); err == nil {
 		t.Error("settings written into the uncontained override home")
 	}
 }

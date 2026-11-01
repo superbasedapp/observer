@@ -51,8 +51,11 @@ func (t *clientwireTeardown) RemoveToolWiring(tool string, parts []string, dryRu
 		targets = installed
 	} else {
 		targets = []string{tool}
+		// The tool's other homes follow it: the cross-OS "-windows"
+		// bridge, an Xcode agent home (FU-145) and a WSL twin (FU-197),
+		// each only where Installed detected it.
 		for _, x := range installed {
-			if base, isWin := strings.CutSuffix(x, "-windows"); isWin && base == tool {
+			if x != tool && clientwire.HookTargetBase(x) == tool {
 				targets = append(targets, x)
 			}
 		}
@@ -76,6 +79,15 @@ func summarizeRemoval(m clientwire.Removal) StepOutcome {
 		}
 		if len(h.HooksKept) > 0 {
 			o.NeedsAttention = append(o.NeedsAttention, fmt.Sprintf("hooks you wrote kept in %s: %s", h.ConfigPath, strings.Join(h.HooksKept, ",")))
+		}
+		if len(h.FilesKeptForeign) > 0 {
+			o.NeedsAttention = append(o.NeedsAttention, "files kept (not written by Observer): "+strings.Join(h.FilesKeptForeign, ", "))
+		}
+		if len(h.TrustRemoved) > 0 {
+			o.Detail = append(o.Detail, "trust records: "+strings.Join(h.TrustRemoved, ","))
+		}
+		if h.TrustNote != "" {
+			o.NeedsAttention = append(o.NeedsAttention, h.TrustNote)
 		}
 	}
 	if mc := m.MCP; mc != nil {

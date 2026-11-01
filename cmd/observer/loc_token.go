@@ -82,7 +82,7 @@ func resolveLocEditorToken(path string, log *slog.Logger) string {
 // directory + rename) so a daemon killed mid-write never leaves a truncated
 // secret behind for the extension to read.
 func readOrCreateLocEditorToken(path string) (string, error) {
-	switch data, err := os.ReadFile(path); {
+	switch data, err := os.ReadFile(path); { //nolint:gosec // G703: reads the user's own local file with the user's own rights
 	case err == nil:
 		if tok := strings.TrimSpace(string(data)); tok != "" {
 			return tok, nil
@@ -105,7 +105,7 @@ func readOrCreateLocEditorToken(path string) (string, error) {
 	// the directory it lands in must not be group- or world-traversable
 	// either. MkdirAll leaves an EXISTING directory's mode alone, so this
 	// never tightens ~/.observer behind the operator's back.
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil { //nolint:gosec // G703: writes under the user's own local state with the user's own rights
 		return "", fmt.Errorf("ensure loc editor token dir: %w", err)
 	}
 	tmp, err := os.CreateTemp(dir, ".loc-editor-token-*")
@@ -114,8 +114,8 @@ func readOrCreateLocEditorToken(path string) (string, error) {
 	}
 	tmpName := tmp.Name()
 	defer func() {
-		if _, statErr := os.Stat(tmpName); statErr == nil {
-			_ = os.Remove(tmpName)
+		if _, statErr := os.Stat(tmpName); statErr == nil { //nolint:gosec // G703: a metadata read of the user's own local path; no privilege boundary is crossed
+			_ = os.Remove(tmpName) //nolint:gosec // G703: writes under the user's own local state with the user's own rights
 		}
 	}()
 	// CreateTemp already makes the file 0600; Chmod is belt-and-braces for
@@ -131,7 +131,7 @@ func readOrCreateLocEditorToken(path string) (string, error) {
 	if err := tmp.Close(); err != nil {
 		return "", fmt.Errorf("close loc editor token temp: %w", err)
 	}
-	if err := os.Rename(tmpName, path); err != nil {
+	if err := os.Rename(tmpName, path); err != nil { //nolint:gosec // G703: writes under the user's own local state with the user's own rights
 		return "", fmt.Errorf("rename loc editor token: %w", err)
 	}
 	return tok, nil

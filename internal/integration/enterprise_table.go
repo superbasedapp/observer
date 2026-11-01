@@ -1377,4 +1377,57 @@ var enterpriseAnswers = map[string]EnterpriseAnswer{
 		"poolside.platform.api_keys",
 		"poolside.selfhosted.prometheus",
 	}},
+	// The 2026-10-21 capture-only wave. Each Phase-0 grounding (the adapter
+	// doc named in SourcesSearched) found no vendor admin console, org
+	// analytics API or usage export to catalogue for seven of them (None
+	// below). The other three carried org hints; the native-console Phase 0
+	// (docs/plans/native-console-wave-2026-10-21-phase0.md, 2026-10-22) found
+	// vendor surfaces for them, and AP-135 (2026-10-23) catalogued them in
+	// internal/vendorsurface (groups snowflake, ibm, castai), so cortex-code,
+	// ibm-bob and kimchi answer Surfaces.
+	"cortex-code": {Surfaces: []vendorsurface.SurfaceID{
+		"snowflake.account.cortex_code_daily_credit_limit",
+		"snowflake.account_usage.cortex_code_cli_usage_history",
+		"snowflake.account_usage.cortex_code_desktop_usage_history",
+		"snowflake.account_usage.cortex_code_snowsight_usage_history",
+		"snowflake.account_usage.snowflake_coco_usage_history",
+		"snowflake.cortexcode.ai_observability_events",
+		"snowflake.cortexcode.managed_settings",
+		"snowflake.organization_usage.cortex_code_cli_usage_history",
+	}},
+	"ibm-bob": {Surfaces: []vendorsurface.SurfaceID{
+		"ibm.bob.activity_log",
+		"ibm.bob.admin_policy",
+		"ibm.bob.bobalytics_export",
+		"ibm.bob.otlp_traces",
+	}},
+	"kimchi": {Surfaces: []vendorsurface.SurfaceID{
+		"castai.ai_optimizer.billing_model_usage_report",
+		"castai.ai_optimizer.chat_completions_usage_report",
+		"castai.ai_optimizer.cli_analytics",
+		"castai.console.spend_caps",
+		"castai.kimchi.org_policy",
+		"castai.kimchi.otlp_export",
+	}},
+	"autohand": {None: &EnterpriseNone{Checked: "2026-10-21", SourcesSearched: []string{
+		"docs/autohand-adapter.md",
+	}}},
+	"codebuddy": {None: &EnterpriseNone{Checked: "2026-10-21", SourcesSearched: []string{
+		"docs/codebuddy-adapter.md",
+	}}},
+	"deepagents-code": {None: &EnterpriseNone{Checked: "2026-10-21", SourcesSearched: []string{
+		"docs/deepagents-adapter.md",
+	}}},
+	"dimcode": {None: &EnterpriseNone{Checked: "2026-10-21", SourcesSearched: []string{
+		"docs/dimcode-adapter.md",
+	}}},
+	"dirac": {None: &EnterpriseNone{Checked: "2026-10-21", SourcesSearched: []string{
+		"docs/dirac-adapter.md",
+	}}},
+	"stakpak": {None: &EnterpriseNone{Checked: "2026-10-21", SourcesSearched: []string{
+		"docs/stakpak-adapter.md",
+	}}},
+	"vtcode": {None: &EnterpriseNone{Checked: "2026-10-21", SourcesSearched: []string{
+		"docs/vtcode-adapter.md",
+	}}},
 }

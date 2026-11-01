@@ -259,19 +259,17 @@ func TestResolveIdentity_Worktree(t *testing.T) {
 	if !wtID.IsWorktree {
 		t.Error("linked worktree must report IsWorktree = true")
 	}
-	// NOTE: findGitRoot's worktree root resolution has a known,
-	// pre-existing defect (a linked worktree's ".git" file's "gitdir:"
-	// value points at the main repo's PER-WORKTREE admin dir —
-	// "<main>/.git/worktrees/<name>" — and filepath.Dir of that strips
-	// only the "<name>" segment, landing on ".../worktrees" rather than
-	// the main repo root). See internal/workspace's documented "blocked
-	// on a pre-existing worktree-attribution bug" note. Resolve's public
-	// behaviour must stay byte-identical (this task's hard rule), so
-	// ResolveIdentity inherits the same Root value — only the new
-	// IsWorktree bit is asserted precisely here; fixing Root resolution
-	// is out of W1's scope.
-	if wtID.Root == "" {
-		t.Error("worktree Root must not be empty")
+	// F0-14: a linked worktree attributes to the main repository's top
+	// level; CheckoutRoot is the worktree itself. The full battery is in
+	// linkedworktree_test.go.
+	if wtID.Root != mainID.Root {
+		t.Errorf("worktree Root = %q, want the main repository's %q", wtID.Root, mainID.Root)
+	}
+	if want, _ := filepath.EvalSymlinks(wtPath); wtID.CheckoutRoot != want {
+		t.Errorf("worktree CheckoutRoot = %q, want %q", wtID.CheckoutRoot, want)
+	}
+	if wtID.Branch != "identity/wt1" {
+		t.Errorf("worktree Branch = %q, want identity/wt1", wtID.Branch)
 	}
 }
 

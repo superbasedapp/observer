@@ -236,6 +236,22 @@ func intelConsentReportKey(orgID string, rep orgcontract.IntelConsentReport) str
 	return orgID + "|" + string(raw)
 }
 
+// sweepUnconsentedIntelCache runs the T-155d sweep on a node that is not
+// managed. A managed node keeps its cache (the org is the controller), a
+// node its org switched to enterprise included (P-205); the store's own
+// check covers a managed enrolment only, so a read error here falls through
+// to it.
+func (c *Client) sweepUnconsentedIntelCache(ctx context.Context) {
+	if managed, err := NodeManaged(ctx, c.store); err == nil && managed {
+		return
+	}
+	if n, err := c.store.SweepUnconsentedOrgIntelCache(ctx, time.Now().UTC()); err != nil {
+		c.logger.Warn("org intelligence cache sweep failed", "err", err)
+	} else if n > 0 {
+		c.logger.Info("org intelligence results pulled without consent were removed from this machine", "count", n)
+	}
+}
+
 // runIntelConsentCycle is the per-push-cycle consent work: refresh the
 // requirement document, run the T-155d sweep of results cached without
 // consent, and report the node's consent posture when it changed. Every step
@@ -244,11 +260,7 @@ func (c *Client) runIntelConsentCycle(ctx context.Context) {
 	if _, err := c.RefreshIntelRequirement(ctx); err != nil && !errors.Is(err, ErrNotEnrolled) && !errors.Is(err, context.Canceled) {
 		c.logger.Debug("org intelligence requirement fetch failed", "err", err)
 	}
-	if n, err := c.store.SweepUnconsentedOrgIntelCache(ctx, time.Now().UTC()); err != nil {
-		c.logger.Warn("org intelligence cache sweep failed", "err", err)
-	} else if n > 0 {
-		c.logger.Info("org intelligence results pulled without consent were removed from this machine", "count", n)
-	}
+	c.sweepUnconsentedIntelCache(ctx)
 	if c.intelConsentSource == nil {
 		return
 	}

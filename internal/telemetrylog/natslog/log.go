@@ -56,16 +56,26 @@ const (
 // Connect (external server) or Embedded (in-process server). It is safe for
 // concurrent Publish/Subscribe/Stats calls; Close is idempotent.
 type Log struct {
-	nc   *nats.Conn
-	js   jetstream.JetStream
 	srv  embeddedServer // non-nil only for Embedded
 	opts Options
+	// watch tracks the connection lifecycle (conn.go). It is set once by newLog.
+	watch *connWatch
+	// stopCh is closed by Close; it ends a running rebuild loop.
+	stopCh chan struct{}
+	// rebuildWG tracks the rebuild loop so Close can wait for it.
+	rebuildWG sync.WaitGroup
 
-	// mu guards the closed flag AND the stream identity below, which Reconnect
-	// replaces in place. Read the identity through identity(), never directly,
-	// so a concurrent Reconnect cannot be observed half-applied.
+	// mu guards the closed flag, the connection (nc / js / stream handle, which
+	// a rebuild replaces) AND the stream identity below, which Reconnect
+	// replaces in place. Read the connection through client() and the identity
+	// through identity(), never directly, so a concurrent rebuild or Reconnect
+	// cannot be observed half-applied.
 	mu     sync.Mutex
 	closed bool
+	nc     *nats.Conn
+	js     jetstream.JetStream
+	// rebuilding is true while a rebuild loop runs (at most one at a time).
+	rebuilding bool
 	// stream / streamCreated / orderGeneration are the provisioned stream and
 	// the immutable identity Subscribe fences every handle against.
 	stream          jetstream.Stream
@@ -88,11 +98,12 @@ type embeddedServer interface {
 // reported as ErrUnavailable within opts.ConnectTimeout.
 func Connect(ctx context.Context, opts Options) (*Log, error) {
 	o := opts.withDefaults()
-	nc, err := connectNATS(o)
+	w := newConnWatch(o.Logger)
+	nc, err := connectNATS(o, w)
 	if err != nil {
 		return nil, fmt.Errorf("natslog.Connect: %w: %w", err, telemetrylog.ErrUnavailable)
 	}
-	l, err := newLog(ctx, nc, o, nil)
+	l, err := newLog(ctx, nc, o, nil, w)
 	if err != nil {
 		nc.Close()
 		return nil, err
@@ -100,8 +111,11 @@ func Connect(ctx context.Context, opts Options) (*Log, error) {
 	return l, nil
 }
 
-// connectNATS dials the server with the credential and TLS options set on o.
-func connectNATS(o Options) (*nats.Conn, error) {
+// connectNATS dials the server with the credential and TLS options set on o,
+// plus the recovery options and lifecycle callbacks of w (conn.go): the
+// connection reconnects indefinitely instead of closing for good after the
+// library's default 60 attempts (T-883).
+func connectNATS(o Options, w *connWatch) (*nats.Conn, error) {
 	natsOpts := []nats.Option{
 		nats.Timeout(o.ConnectTimeout),
 		// The default async error handler prints "connection reset by peer"
@@ -110,6 +124,7 @@ func connectNATS(o Options) (*nats.Conn, error) {
 		// handler is silenced (a nil handler restores the noisy default).
 		nats.ErrorHandler(func(*nats.Conn, *nats.Subscription, error) {}),
 	}
+	natsOpts = append(natsOpts, w.options(o)...)
 	if o.Name != "" {
 		natsOpts = append(natsOpts, nats.Name(o.Name))
 	}
@@ -141,8 +156,9 @@ func connectNATS(o Options) (*nats.Conn, error) {
 }
 
 // newLog builds the JetStream context, provisions the stream, and returns the
-// Log. srv is non-nil only for the embedded engine.
-func newLog(ctx context.Context, nc *nats.Conn, o Options, srv embeddedServer) (*Log, error) {
+// Log. srv is non-nil only for the embedded engine; w is the watch nc was
+// dialled with.
+func newLog(ctx context.Context, nc *nats.Conn, o Options, srv embeddedServer, w *connWatch) (*Log, error) {
 	js, err := jetstream.New(nc)
 	if err != nil {
 		return nil, fmt.Errorf("natslog: jetstream context: %w", err)
@@ -160,10 +176,12 @@ func newLog(ctx context.Context, nc *nats.Conn, o Options, srv embeddedServer) (
 	if info == nil || info.Config.Name != o.Stream || info.Created.IsZero() {
 		return nil, fmt.Errorf("natslog: provisioned stream has no immutable identity")
 	}
-	return &Log{
-		nc: nc, js: js, stream: stream, srv: srv, opts: o, note: note,
+	l := &Log{
+		nc: nc, js: js, stream: stream, srv: srv, opts: o, note: note, watch: w, stopCh: make(chan struct{}),
 		streamCreated: info.Created, orderGeneration: streamOrderGeneration(info),
-	}, nil
+	}
+	w.bind(l.onConnClosed)
+	return l, nil
 }
 
 func streamOrderGeneration(info *jetstream.StreamInfo) string {
@@ -262,10 +280,11 @@ func (l *Log) Reconnect(ctx context.Context) error {
 	}
 	provCtx, cancel := context.WithTimeout(ctx, l.opts.PublishTimeout)
 	defer cancel()
-	if err := preflightCapacityErr(provCtx, l.js, l.opts.MaxBytes); err != nil {
+	_, js := l.client()
+	if err := preflightCapacityErr(provCtx, js, l.opts.MaxBytes); err != nil {
 		return fmt.Errorf("natslog.Reconnect: %w", err)
 	}
-	stream, note, err := ensureStream(provCtx, l.js, l.opts)
+	stream, note, err := ensureStream(provCtx, js, l.opts)
 	if err != nil {
 		return fmt.Errorf("natslog.Reconnect: %w", streamProvisionErr(err, l.opts.MaxBytes))
 	}
@@ -301,7 +320,8 @@ func (l *Log) Publish(ctx context.Context, rec telemetrylog.Record) (telemetrylo
 	}
 	pubCtx, cancel := context.WithTimeout(ctx, l.opts.PublishTimeout)
 	defer cancel()
-	ack, err := l.js.PublishMsg(pubCtx, msg)
+	_, js := l.client()
+	ack, err := js.PublishMsg(pubCtx, msg)
 	if err != nil {
 		return telemetrylog.PubResult{}, fmt.Errorf("natslog.Publish: %w", classifyPublishErr(err))
 	}
@@ -345,6 +365,9 @@ func (l *Log) Subscribe(ctx context.Context, spec telemetrylog.ConsumerSpec) (te
 	}
 	subCtx, cancel := context.WithTimeout(ctx, l.opts.PublishTimeout)
 	defer cancel()
+	// One snapshot of the connection for the whole Subscribe: the handle is
+	// bound to it, and Fetch reports ErrReattachRequired once it is closed.
+	nc, js := l.client()
 	stream, streamCreated, generation := l.identity()
 	current, err := stream.Info(subCtx)
 	if err != nil {
@@ -370,7 +393,7 @@ func (l *Log) Subscribe(ctx context.Context, spec telemetrylog.ConsumerSpec) (te
 		return nil, fmt.Errorf("natslog.Subscribe: stream generation changed; reconnect before subscribing: %w",
 			telemetrylog.ErrReconnectRequired)
 	}
-	cons, err := l.attachOrCreateConsumer(subCtx, cfg)
+	cons, err := l.attachOrCreateConsumer(subCtx, js, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("natslog.Subscribe: %w", err)
 	}
@@ -381,6 +404,7 @@ func (l *Log) Subscribe(ctx context.Context, spec telemetrylog.ConsumerSpec) (te
 	return &natsConsumer{
 		cons: cons, name: spec.Name, streamName: l.opts.Stream, streamCreated: streamCreated,
 		consumerCreated: ci.Created, orderGeneration: generation, maxAckPending: spec.MaxAckPending,
+		conn: nc, logClosed: l.isClosed,
 	}, nil
 }
 
@@ -397,8 +421,8 @@ func (l *Log) Subscribe(ctx context.Context, spec telemetrylog.ConsumerSpec) (te
 // handle must match); create ONLY when the probe says absent; and, because
 // probe-then-create is not atomic, attach to the WINNER when the create loses
 // the race rather than overwriting it.
-func (l *Log) attachOrCreateConsumer(ctx context.Context, cfg jetstream.ConsumerConfig) (jetstream.Consumer, error) {
-	existing, err := l.js.Consumer(ctx, l.opts.Stream, cfg.Durable)
+func (l *Log) attachOrCreateConsumer(ctx context.Context, js jetstream.JetStream, cfg jetstream.ConsumerConfig) (jetstream.Consumer, error) {
+	existing, err := js.Consumer(ctx, l.opts.Stream, cfg.Durable)
 	switch {
 	case err == nil:
 		// A field an UpdateConsumer cannot repair is checked FIRST, because the
@@ -417,7 +441,7 @@ func (l *Log) attachOrCreateConsumer(ctx context.Context, cfg jetstream.Consumer
 		// promises (an operator edit, or an older release's defaults). Reconcile
 		// it with an UPDATE, which keeps the durable AND its cursor, so the
 		// handle still pins the same consumer identity.
-		updated, uerr := l.js.UpdateConsumer(ctx, l.opts.Stream, cfg)
+		updated, uerr := js.UpdateConsumer(ctx, l.opts.Stream, cfg)
 		if uerr != nil {
 			return nil, fmt.Errorf("reconcile durable %q (%s): %w", cfg.Durable, drift, mapTransportErr(uerr))
 		}
@@ -425,14 +449,14 @@ func (l *Log) attachOrCreateConsumer(ctx context.Context, cfg jetstream.Consumer
 	case !isConsumerGone(err):
 		return nil, fmt.Errorf("probe durable %q: %w", cfg.Durable, mapTransportErr(err))
 	}
-	created, cerr := l.js.CreateConsumer(ctx, l.opts.Stream, cfg)
+	created, cerr := js.CreateConsumer(ctx, l.opts.Stream, cfg)
 	if cerr == nil {
 		return created, nil
 	}
 	if !isConsumerExists(cerr) {
 		return nil, fmt.Errorf("create durable %q: %w", cfg.Durable, mapTransportErr(cerr))
 	}
-	winner, werr := l.js.Consumer(ctx, l.opts.Stream, cfg.Durable)
+	winner, werr := js.Consumer(ctx, l.opts.Stream, cfg.Durable)
 	if werr != nil {
 		return nil, fmt.Errorf("attach durable %q after create race: %w", cfg.Durable, mapTransportErr(werr))
 	}
@@ -544,29 +568,51 @@ func (l *Log) Stats(ctx context.Context) (telemetrylog.StreamStats, error) {
 // returns the stats and the stream config's Replicas count (for Probe).
 func (l *Log) loadStats(ctx context.Context) (telemetrylog.StreamStats, int, error) {
 	stream, _, _ := l.identity()
-	info, err := stream.Info(ctx)
+	return readStreamStats(ctx, stream)
+}
+
+// TrimApplied implements telemetrylog.Trimmer: it purges every record below
+// the floor all durable consumers have acked (telemetrylog.AckedFloor), and
+// nothing when a required durable is missing. Purging never resets stream
+// sequences, the creation stamp or the ordering metadata, so the stream's
+// ordering generation and every OrderPosition already handed out stay valid.
+//
+// A purge below the floor is safe against every concurrent change: acks only
+// move a floor up; a durable created after the read starts at the stream's
+// first retained record (it is owed no history the others already applied);
+// a durable deleted and re-created by an operator re-reads what is still
+// retained, which the apply side absorbs by natural key.
+func (l *Log) TrimApplied(ctx context.Context, required []string) (telemetrylog.TrimResult, error) {
+	if l.isClosed() {
+		return telemetrylog.TrimResult{}, telemetrylog.ErrClosed
+	}
+	trimCtx, cancel := context.WithTimeout(ctx, l.opts.PublishTimeout)
+	defer cancel()
+	stream, _, _ := l.identity()
+	before, _, err := readStreamStats(trimCtx, stream)
 	if err != nil {
-		return telemetrylog.StreamStats{}, 0, err
+		return telemetrylog.TrimResult{}, fmt.Errorf("natslog.TrimApplied: %w", mapTransportErr(err))
 	}
-	stats := telemetrylog.StreamStats{
-		Messages:      info.State.Msgs,
-		Bytes:         info.State.Bytes,
-		FirstSequence: info.State.FirstSeq,
-		LastSequence:  info.State.LastSeq,
+	floor, limiting, held := telemetrylog.AckedFloor(before.LastSequence, telemetrylog.FloorsOf(before), required)
+	res := telemetrylog.TrimResult{Floor: floor, HeldBy: held, LimitingConsumer: limiting}
+	if len(held) > 0 || floor == 0 || floor < before.FirstSequence || before.Messages == 0 {
+		return res, nil
 	}
-	lister := stream.ListConsumers(ctx)
-	for ci := range lister.Info() {
-		stats.Consumers = append(stats.Consumers, telemetrylog.ConsumerStats{
-			Name:        ci.Name,
-			Pending:     ci.NumPending,
-			AckPending:  uint64(ci.NumAckPending),
-			Redelivered: uint64(ci.NumRedelivered),
-		})
+	if err := stream.Purge(trimCtx, jetstream.WithPurgeSequence(floor+1)); err != nil {
+		return res, fmt.Errorf("natslog.TrimApplied: purge below %d: %w", floor+1, mapTransportErr(err))
 	}
-	if err := lister.Err(); err != nil {
-		return stats, info.Config.Replicas, err
+	after, err := stream.Info(trimCtx)
+	if err != nil {
+		// The purge happened; only the count is unknown.
+		return res, nil
 	}
-	return stats, info.Config.Replicas, nil
+	// Records published during the pass raise the after-count; subtract them
+	// so Removed never overstates what the purge removed.
+	added := after.State.LastSeq - before.LastSequence
+	if kept := after.State.Msgs - min(added, after.State.Msgs); before.Messages > kept {
+		res.Removed = before.Messages - kept
+	}
+	return res, nil
 }
 
 // Probe is the doctor / health round trip; it never returns an error, it
@@ -582,6 +628,12 @@ func (l *Log) Probe(ctx context.Context) telemetrylog.Report {
 	stats, replicas, err := l.loadStats(probeCtx)
 	if err != nil {
 		rep.Detail = err.Error()
+		if st := l.ConnectionState(); !st.Connected && !st.DownSince.IsZero() {
+			// Say that recovery is automatic, so an operator does not restart a
+			// process that heals by itself once the broker answers (T-883).
+			rep.Detail = fmt.Sprintf("%s (broker connection down since %s, %d reconnect attempts; reconnecting automatically)",
+				rep.Detail, st.DownSince.UTC().Format(time.RFC3339), st.FailedReconnects)
+		}
 		return rep
 	}
 	rep.Healthy = true
@@ -593,18 +645,27 @@ func (l *Log) Probe(ctx context.Context) telemetrylog.Report {
 	return rep
 }
 
-// Close drains the connection once and, for the embedded engine, stops the
-// in-process server after the drain. It is idempotent.
+// Close drains the connection once (bounded, then closes it outright so no
+// reconnect loop outlives the Log), stops a running rebuild loop and, for the
+// embedded engine, stops the in-process server after the drain. It is
+// idempotent.
 func (l *Log) Close() error {
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	if l.closed {
+		l.mu.Unlock()
 		return nil
 	}
 	l.closed = true
-	if l.nc != nil {
-		_ = l.nc.Drain()
+	nc := l.nc
+	if l.stopCh != nil {
+		close(l.stopCh)
 	}
+	l.mu.Unlock()
+	if l.watch != nil {
+		l.watch.stop()
+	}
+	closeConn(nc, l.opts.ConnectTimeout)
+	l.rebuildWG.Wait()
 	if l.srv != nil {
 		l.srv.Shutdown()
 		l.srv.WaitForShutdown()

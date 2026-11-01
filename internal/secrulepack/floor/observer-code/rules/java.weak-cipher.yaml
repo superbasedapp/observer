@@ -1,0 +1,15 @@
+rules:
+  - id: java.weak-cipher
+    languages: [java]
+    severity: WARNING
+    message: A broken or weak cipher (DES, 3DES, RC2, RC4, Blowfish) or ECB mode is used (a bare "AES" means AES/ECB); use AES/GCM/NoPadding.
+    metadata:
+      category: code_vuln
+      cwe: CWE-327
+    patterns:
+      - pattern-either:
+          - pattern: Cipher.getInstance("$ALG", ...)
+          - pattern: javax.crypto.Cipher.getInstance("$ALG", ...)
+      - metavariable-regex:
+          metavariable: $ALG
+          regex: (?i)^((des|desede|tripledes|rc2|rc4|arcfour|blowfish)(/.*)?|aes|.*/ecb/.*)$

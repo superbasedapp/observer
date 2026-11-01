@@ -264,6 +264,7 @@ cross-OS shell).
   daemon started from a git worktree hands every rootless launch that
   worktree as its project (observed in the 2026-09-02 first-launch probe:
   `pi` picked up the worktree's own `AGENTS.md`).
+- **Inline launch-policy steps (Windows 11 Pro rerun 2026-10-25, R3 and R4).** In the New Terminal dialog a typed absolute folder that `[terminal.launch].allowed_project_roots` does not cover shows an "Allow this folder" step, and a launch refused because `allow_fresh_agent` is off shows a "Turn on fresh-agent launch" step instead of the bare 403. Each asks for a confirm, then writes through the same route Terminals > Settings uses (`GET` then `PUT /api/terminal/policy` with its confirm token, through the config preview dialog that shows the exact change), always as the full policy with one field changed (`web/src/components/LaunchPolicyInline.tsx`).
 
 **GUI launches (IDE / desktop apps) are a different shape — none of this
 section applies to them.** The New Terminal picker's "IDE / desktop app"

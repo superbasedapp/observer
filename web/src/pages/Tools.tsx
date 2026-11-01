@@ -11,11 +11,17 @@ import {
   Pill,
   SegmentedControl,
   StatCard,
+  TabPanel,
+  TabStrip,
   ToolBadge,
   ToolDot,
   Tooltip,
   Stagger,
 } from "@/components/primitives";
+import { useUrlTab } from "@/lib/useUrlTab";
+import { usePageTabs } from "@/lib/governance";
+import { TOOLS_TABS, defaultTab } from "@/lib/nodePageTabs";
+import { ToolCoverageSection } from "@/components/ToolCoverage";
 import { HelpInd, TitleWithHelp } from "@/components/HelpInd";
 import { ChartState } from "@/components/ChartState";
 import { useFilters, useGranularity, windowParams } from "@/lib/filters";
@@ -38,7 +44,40 @@ import type {
 import { navIcon } from "@/lib/nav";
 import { MetricIcon } from "@/components/MetricIcon";
 
+// ToolsPage: two page tabs (T-935). Activity is the per-tool analytics over
+// the window, as before; Coverage is the always-available list of every
+// supported AI tool with whether it was found here and how it is captured
+// (components/ToolCoverage.tsx). Each panel mounts on its first visit, so
+// opening Coverage directly never runs the window queries.
 export function ToolsPage() {
+  const pageTabs = usePageTabs("tools", TOOLS_TABS);
+  const [tab, setTab] = useUrlTab(pageTabs.ids, defaultTab(pageTabs));
+  return (
+    <div className="space-y-6 p-4 sm:p-6">
+      <PageHeader
+        icon={navIcon("tools")}
+        title="Tools"
+        sub="Per-tool activity over the selected window, and the coverage list: every supported AI tool, whether it was found on this machine and how it is captured."
+        helpId="tab.tools"
+      />
+      <TabStrip
+        tabs={pageTabs.ids.map((id) => ({ id, label: TOOLS_TABS.labels[id] }))}
+        value={tab}
+        onChange={setTab}
+        idPrefix="tools"
+        ariaLabel="Tools sections"
+      />
+      <TabPanel id="activity" active={tab} idPrefix="tools" className="space-y-6">
+        <ToolsActivity />
+      </TabPanel>
+      <TabPanel id="coverage" active={tab} idPrefix="tools" className="space-y-6">
+        <ToolCoverageSection />
+      </TabPanel>
+    </div>
+  );
+}
+
+function ToolsActivity() {
   const { win, customRange, tool, model, project } = useFilters();
   const winParams = windowParams(win, customRange);
   // Chart bucket: the shared granularity rule + the viewer's `gran=`.
@@ -115,13 +154,7 @@ export function ToolsPage() {
   }, [ts.data]);
 
   return (
-    <div className="space-y-6 p-4 sm:p-6">
-      <PageHeader
-        icon={navIcon("tools")}
-        title="Tools"
-        sub="Per-tool aggregates with charts showing when each AI client was active and what kind of work it did - four KPIs, activity-over-time stack, action-type mix per tool, and the per-tool aggregates table."
-        helpId="tab.tools"
-      />
+    <>
       {/* 4-KPI header.
 
           Every tile below reads `summary`, which is null until the CURRENT
@@ -253,7 +286,7 @@ export function ToolsPage() {
           for these rows are ALWAYS estimates (§9), so the section carries a
           mandatory "est." banner + per-row badge. */}
       <BrowserChatbotsCard rows={tools.data?.tools ?? []} loading={tools.loading} />
-    </div>
+    </>
   );
 }
 

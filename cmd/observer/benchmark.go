@@ -87,7 +87,9 @@ func newBenchmarkRunCmd() *cobra.Command {
 			// benchmark daemon replaces configPath with its isolated config.
 			budgetConfigPath := configPath
 			if confirmSpend {
-				if err := enforceBenchmarkBudget(ctx, budgetConfigPath); err != nil {
+				// No attempt workspace exists yet: the trust row runs at
+				// each attempt, in its workspace.
+				if _, err := enforceBenchmarkBudget(ctx, budgetConfigPath, daemonLaunch{}); err != nil {
 					return err
 				}
 			}

@@ -534,7 +534,7 @@ func oneShotDirLive(path string, modTime, hardCutoff time.Time) bool {
 // failure just means the sweep falls back to the liveness-unknown
 // hard-cap path for this dir — never fatal to the run itself.
 func writeOneShotPIDFile(tmp string) {
-	_ = os.WriteFile(filepath.Join(tmp, oneShotPIDFileName), []byte(strconv.Itoa(os.Getpid())), 0o600)
+	_ = os.WriteFile(filepath.Join(tmp, oneShotPIDFileName), []byte(strconv.Itoa(os.Getpid())), 0o600) //nolint:gosec // G703: the one-shot run's own temp dir
 }
 
 // oneShotProcessAlive reports whether pid names a live process on this
@@ -680,7 +680,7 @@ func oneShotHomeLabel(deps usageDeps) string {
 // oneShotFileExists reports whether path exists as something other than a
 // directory. Read-only, one Stat, never an error to the caller.
 func oneShotFileExists(path string) bool {
-	fi, err := os.Stat(path)
+	fi, err := os.Stat(path) //nolint:gosec // G703: a metadata read of the one-shot run's own temp files
 	return err == nil && !fi.IsDir()
 }
 

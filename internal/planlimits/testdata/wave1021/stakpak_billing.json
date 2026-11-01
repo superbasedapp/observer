@@ -1,0 +1,27 @@
+{
+  "created_at": 1759000000000,
+  "env": "live",
+  "id": "cus_fixture",
+  "name": "fixture",
+  "stripe_id": null,
+  "features": {
+    "credits": {
+      "id": "credits",
+      "name": "Credits",
+      "type": "credit_system",
+      "balance": 7.25,
+      "included_usage": 20,
+      "usage": 12.75,
+      "interval": "month",
+      "interval_count": 1,
+      "next_reset_at": 1761955200000,
+      "overage_allowed": false,
+      "unlimited": false,
+      "credit_schema": [{"credit_amount": 1, "credit_cost": 1, "feature_id": "credits", "metered_feature_id": "llm_usage"}]
+    }
+  },
+  "products": [
+    {"id": "topup", "is_add_on": true, "is_default": false, "items": [], "name": "Top up", "quantity": 1, "started_at": 1759000000000, "status": "active", "version": 1},
+    {"id": "pro", "is_add_on": false, "is_default": false, "items": [], "name": "Pro", "quantity": 1, "started_at": 1759000000000, "status": "active", "version": 2}
+  ]
+}

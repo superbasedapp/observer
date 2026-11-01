@@ -410,11 +410,14 @@ func TestRegisterCodexUsesCmdSafeQuotingForWindowsBinaryPath(t *testing.T) {
 	}
 }
 
-// TestRegisterCodexWrapsWindowsPathWithSpacesInDoubleQuotes pins the
-// other half of the cmd.exe-safe quoter — paths with spaces (like
-// `C:\Program Files\observer\observer.exe`) DO need quoting, but in
-// cmd.exe-style double quotes rather than POSIX single quotes.
-func TestRegisterCodexWrapsWindowsPathWithSpacesInDoubleQuotes(t *testing.T) {
+// TestRegisterCodexQuotesWindowsPathWithSpacesForPowerShell pins the other
+// half of the Windows quoter: a path with spaces (like
+// `C:\Program Files\observer\observer.exe`) needs quoting, and Codex on
+// Windows runs the hook command through `powershell.exe -NoProfile -Command`
+// (FU-162), so it is a PowerShell single-quoted literal behind the call
+// operator. The cmd.exe double quotes written before made the command a
+// PowerShell string expression ("Unexpected token 'hook'", live 2026-10-29).
+func TestRegisterCodexQuotesWindowsPathWithSpacesForPowerShell(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o755); err != nil {
@@ -436,7 +439,7 @@ func TestRegisterCodexWrapsWindowsPathWithSpacesInDoubleQuotes(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := extractCodexCommand(t, body, "PreToolUse")
-	wantPrefix := `"C:\Program Files\observer\observer.exe" hook codex `
+	wantPrefix := `& 'C:\Program Files\observer\observer.exe' hook codex `
 	if !strings.HasPrefix(got, wantPrefix) {
 		t.Errorf("PreToolUse command = %q, want prefix %q", got, wantPrefix)
 	}
@@ -2203,12 +2206,12 @@ func TestRegisterClaudeCodeWindowsFreshInstall(t *testing.T) {
 		}
 		hook0, _ := hooks[0].(map[string]any)
 		cmd, _ := hook0["command"].(string)
-		wantPrefix := "MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu-20.04 -- /home/marmutapp/superbased-observer/bin/observer hook claude-code " + hookEventArg(event)
-		if !strings.HasPrefix(cmd, wantPrefix) {
-			t.Errorf("event %s cmd = %q want prefix %q", event, cmd, wantPrefix)
-		}
-		if !strings.Contains(cmd, "--config '/home/marmutapp/.observer/config.toml'") {
-			t.Errorf("event %s cmd missing --config: %q", event, cmd)
+		// AP-119: the portable bridge form, runnable by Git Bash and
+		// PowerShell alike (no MSYS_NO_PATHCONV=1 prefix).
+		want := "wsl.exe -d Ubuntu-20.04 -- //home/marmutapp/superbased-observer/bin/observer hook claude-code " +
+			hookEventArg(event) + " --config '//home/marmutapp/.observer/config.toml'; exit $LASTEXITCODE"
+		if cmd != want {
+			t.Errorf("event %s cmd = %q want %q", event, cmd, want)
 		}
 	}
 }
@@ -2456,10 +2459,11 @@ func TestRegisterClaudeCodeStatuslineFreshInstall(t *testing.T) {
 		t.Error("statusline registration wrote a \"hooks\" key — it must never touch hooks")
 	}
 
-	// Checksum file should be written (recordChecksum is reused unchanged).
-	csPath := filepath.Join(r.opts.HomeDir, ".observer", "hook_checksums.json")
-	if _, err := os.Stat(csPath); err != nil {
-		t.Errorf("checksum file not created: %v", err)
+	// No checksum entry: settings.json's hook_checksums.json entry is the
+	// hook writer's (AP-133 follow-up), so a status-line-only install
+	// leaves the registry absent.
+	if cs := slChecksums(t, r); cs != "" {
+		t.Errorf("status line register wrote hook_checksums.json: %s", cs)
 	}
 }
 
@@ -2576,8 +2580,9 @@ func TestRegisterClaudeCodeStatuslineRefreshesStaleBinaryPath(t *testing.T) {
 
 // TestRegisterClaudeCodeStatuslineIdempotent pins BOTH the AlreadySet
 // signal AND the "no needless rewrite" contract: a second identical
-// run must not touch the file on disk (mtime unchanged) and must not
-// re-record the checksum.
+// run must not touch the file on disk (mtime unchanged). The status
+// line never writes hook_checksums.json at all (that file's entry for
+// settings.json is the hook writer's), so the registry stays absent.
 func TestRegisterClaudeCodeStatuslineIdempotent(t *testing.T) {
 	t.Parallel()
 	r := setupRegistry(t)
@@ -2590,10 +2595,9 @@ func TestRegisterClaudeCodeStatuslineIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	csPath := filepath.Join(r.opts.HomeDir, ".observer", "hook_checksums.json")
-	csBefore, err := os.ReadFile(csPath)
-	if err != nil {
-		t.Fatal(err)
+	csBefore := slChecksums(t, r)
+	if csBefore != "" {
+		t.Errorf("status line register wrote hook_checksums.json: %s", csBefore)
 	}
 
 	// Sleep isn't reliable in CI; instead assert via content-equality AND
@@ -2617,11 +2621,7 @@ func TestRegisterClaudeCodeStatuslineIdempotent(t *testing.T) {
 	if !fi1.ModTime().Equal(fi2.ModTime()) {
 		t.Errorf("settings.json mtime changed on idempotent re-run: %v -> %v", fi1.ModTime(), fi2.ModTime())
 	}
-	csAfter, err := os.ReadFile(csPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(csBefore) != string(csAfter) {
+	if csAfter := slChecksums(t, r); csBefore != csAfter {
 		t.Error("checksum file rewritten on idempotent re-run")
 	}
 }
@@ -2804,11 +2804,16 @@ func TestUnregisterClaudeCodeStatuslineNoopWhenAbsent(t *testing.T) {
 	}
 }
 
-// TestUnregisterClaudeCodeStatuslineChecksumDriftGuard pins the
-// checksum-mismatch guard: once the file has been hand-edited since
-// install (checksum mismatch), unregister refuses without --force and
-// succeeds with it — mirroring unregisterClaudeCode's own guard.
-func TestUnregisterClaudeCodeStatuslineChecksumDriftGuard(t *testing.T) {
+// TestUnregisterClaudeCodeStatuslineIgnoresHookDrift pins the ownership
+// split (AP-133 follow-up): the file's checksum entry covers the
+// "hooks" subtree only (D-268) and belongs to the hook writer, so a
+// hand edit of the hooks is not the status line's drift. The status
+// line uninstall removes its own observer-owned "statusLine" without
+// --force, keeps the user's hooks byte for byte, and leaves
+// hook_checksums.json alone. (Before the fix this test was a drift
+// guard over the hooks subtree, the coupling that stranded the hook
+// uninstall.)
+func TestUnregisterClaudeCodeStatuslineIgnoresHookDrift(t *testing.T) {
 	t.Parallel()
 	r := setupRegistry(t)
 	regRes := r.RegisterClaudeCodeStatusline()
@@ -2816,33 +2821,37 @@ func TestUnregisterClaudeCodeStatuslineChecksumDriftGuard(t *testing.T) {
 		t.Fatalf("register: %v", regRes.Error)
 	}
 
-	// Hand-edit the hooks subtree, the span the checksum covers in a
-	// credential-bearing settings.json (D-268), without touching
-	// "statusLine" itself.
+	userHooks := `{"Stop":[{"matcher":"*","hooks":[{"type":"command","command":"/usr/local/bin/mine"}]}]}`
 	body, _ := os.ReadFile(regRes.ConfigPath)
 	var settings map[string]json.RawMessage
 	_ = json.Unmarshal(body, &settings)
-	settings["hooks"] = json.RawMessage(`{"Stop":[{"matcher":"*","hooks":[{"type":"command","command":"/usr/local/bin/mine"}]}]}`)
+	settings["hooks"] = json.RawMessage(userHooks)
 	patched, _ := json.Marshal(settings)
 	if err := os.WriteFile(regRes.ConfigPath, patched, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	csBefore := slChecksums(t, r)
 
 	res := r.UnregisterClaudeCodeStatusline()
-	if res.Error == nil {
-		t.Fatal("expected checksum-mismatch error without --force")
-	}
-	if res.ChecksumMatch {
-		t.Error("ChecksumMatch=true but the file was hand-edited")
-	}
-
-	r.opts.Force = true
-	res = r.UnregisterClaudeCodeStatusline()
 	if res.Error != nil {
-		t.Fatalf("force unregister: %v", res.Error)
+		t.Fatalf("unregister refused over a hooks edit it does not own: %v", res.Error)
 	}
-	if len(res.HooksRemoved) != 1 {
+	if len(res.HooksRemoved) != 1 || res.HooksRemoved[0] != "statusLine" {
 		t.Errorf("HooksRemoved=%v want [statusLine]", res.HooksRemoved)
+	}
+	after, _ := os.ReadFile(regRes.ConfigPath)
+	var afterSettings map[string]json.RawMessage
+	if err := json.Unmarshal(after, &afterSettings); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := afterSettings["statusLine"]; ok {
+		t.Error("statusLine still present")
+	}
+	if string(afterSettings["hooks"]) != userHooks {
+		t.Errorf("user hooks changed: %s", afterSettings["hooks"])
+	}
+	if got := slChecksums(t, r); got != csBefore {
+		t.Errorf("status line unregister touched hook_checksums.json: %q -> %q", csBefore, got)
 	}
 }
 

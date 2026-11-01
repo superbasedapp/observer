@@ -11,3 +11,9 @@ package invariant
 var componentsAbsenceRed = []string{
 	"capture.browser",
 }
+
+// The sandbox module (terminals.sandbox and its drivers) claims L1 and is
+// not in componentsAbsenceRed: its packages leave the binary with its omit
+// tag. The rows for its SURFACE while it is installed but off (routes, CLI
+// verbs, the Settings Card and its rows, the Isolation picker) are in
+// sandbox_absence_test.go (security ledger SBX-MOD-1, lane LEFT-SBX).

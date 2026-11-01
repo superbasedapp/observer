@@ -56,6 +56,28 @@ export interface EntityMultiPickerOption {
   disabledReason?: string;
 }
 
+/**
+ * enterRow is the row Enter commits (-1: none). Without explicitPick it is
+ * the highlighted row, the first candidate until the person moves. With
+ * explicitPick (a list of SUGGESTIONS beside a free value, such as the
+ * Folder Selection allow-list: RERUN2 D5) Enter commits a suggestion only
+ * after the person moved the highlight onto it with the arrow keys;
+ * otherwise it commits the typed free value, or nothing, so an untouched
+ * Enter can never add a suggestion the person did not choose.
+ */
+export function enterRow(s: {
+  activeIdx: number;
+  moved: boolean;
+  pickableLen: number;
+  hasFree: boolean;
+  explicitPick: boolean;
+}): number {
+  const rows = s.pickableLen + (s.hasFree ? 1 : 0);
+  if (rows === 0) return -1;
+  if (!s.explicitPick || s.moved) return Math.min(Math.max(s.activeIdx, 0), rows - 1);
+  return s.hasFree ? s.pickableLen : -1;
+}
+
 export function EntityMultiPicker({
   options,
   value,
@@ -78,6 +100,9 @@ export function EntityMultiPicker({
   onQueryChange,
   freeIdLabel = "Use id",
   ariaLabel,
+  hideIds = false,
+  clearable = true,
+  explicitPick = false,
 }: {
   options: EntityMultiPickerOption[];
   value: string[];
@@ -101,10 +126,25 @@ export function EntityMultiPicker({
   freeIdLabel?: string;
   /** Accessible name for the search input. */
   ariaLabel?: string;
+  /** hideIds keeps option ids out of sight (chips and the list): for a
+   * closed vocabulary whose ids are internal names, not something a person
+   * recognises. The id is still what onChange reports. */
+  hideIds?: boolean;
+  /** clearable (default true) lets a person remove a pick (the chip's x and
+   * Backspace). False is for a value that must always be set: no x, no
+   * Backspace removal, and in `single` mode the search input stays so the
+   * pick can still be replaced by mouse or keyboard. */
+  clearable?: boolean;
+  /** explicitPick: Enter commits a suggestion only after the person moved
+   * onto it with the arrow keys (enterRow); a click always picks. */
+  explicitPick?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [activeIdx, setActiveIdx] = useState(0);
+  // moved: the person moved the highlight with the arrow keys since the
+  // list opened or the query last changed (explicitPick's Enter rule).
+  const [moved, setMoved] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -157,6 +197,7 @@ export function EntityMultiPicker({
   useEffect(() => {
     if (open) {
       setActiveIdx(0);
+      setMoved(false);
       requestAnimationFrame(() => inputRef.current?.focus());
     }
   }, [open]);
@@ -209,13 +250,16 @@ export function EntityMultiPicker({
         setOpen(true);
         return;
       }
+      setMoved(true);
       setActiveIdx((i) => Math.min(i + 1, Math.max(rowCount - 1, 0)));
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
+      setMoved(true);
       setActiveIdx((i) => Math.max(i - 1, 0));
     } else if (e.key === "Enter") {
       e.preventDefault();
-      if (rowCount > 0) selectRow(activeIdx);
+      const row = enterRow({ activeIdx, moved, pickableLen: pickable.length, hasFree: freeIDCandidate !== null, explicitPick });
+      if (row >= 0) selectRow(row);
     } else if (e.key === "Escape") {
       // An open list owns Escape: close it and mark the key handled so an
       // enclosing SlideOver / Modal stays open (shared/lib/overlayEscape.ts).
@@ -224,7 +268,7 @@ export function EntityMultiPicker({
       e.preventDefault();
       e.stopPropagation();
       setOpen(false);
-    } else if (e.key === "Backspace" && query === "" && value.length > 0) {
+    } else if (e.key === "Backspace" && clearable && query === "" && value.length > 0) {
       // Backspace on an empty input removes the last chip — the standard
       // tag-input affordance, so a mis-pick is one keystroke to undo.
       e.preventDefault();
@@ -256,11 +300,11 @@ export function EntityMultiPicker({
           const opt = byID.get(id);
           // The id is a muted hint: hidden when it equals the label,
           // shortened when long; the full id is in the chip's tooltip.
-          const idHint = chipIdHint(id, opt?.label);
+          const idHint = hideIds ? null : chipIdHint(id, opt?.label);
           return (
             <span
               key={id}
-              title={opt?.label && opt.label !== id ? `${opt.label} (${id})` : id}
+              title={hideIds ? (opt?.label ?? id) : opt?.label && opt.label !== id ? `${opt.label} (${id})` : id}
               className="inline-flex max-w-full items-center gap-1 rounded-2 border border-line-2 bg-bg-1 px-1.5 py-0.5"
             >
               {opt?.icon && <Icon icon={opt.icon} size={11} className="shrink-0 text-fg-3" />}
@@ -268,7 +312,7 @@ export function EntityMultiPicker({
               {idHint ? (
                 <span className="shrink-0 font-mono text-[10px] text-fg-4">{idHint}</span>
               ) : null}
-              {!disabled && (
+              {!disabled && clearable && (
                 <button
                   type="button"
                   aria-label={`Remove ${opt?.label ?? id}`}
@@ -289,7 +333,7 @@ export function EntityMultiPicker({
             +{overflow} more
           </span>
         )}
-        {(!single || value.length === 0) && (
+        {(!single || value.length === 0 || !clearable) && (
           <input
             ref={inputRef}
             type="text"
@@ -302,8 +346,10 @@ export function EntityMultiPicker({
               onQueryChange?.(e.target.value);
               setOpen(true);
               setActiveIdx(0);
+              setMoved(false);
             }}
             onKeyDown={onKey}
+            data-explicit-pick={explicitPick ? "true" : undefined}
             placeholder={value.length === 0 ? placeholder : ""}
             className="min-w-[80px] flex-1 border-none bg-transparent text-fg-1 outline-none placeholder:text-fg-4"
           />
@@ -381,7 +427,7 @@ export function EntityMultiPicker({
                         <span className="flex min-w-0 flex-1 flex-col">
                           <span className="w-full truncate text-fg-1">{o.label}</span>
                           <span className="w-full truncate font-mono text-[10px] text-fg-3">
-                            {o.sublabel ? `${o.sublabel} · ${o.id}` : o.id}
+                            {hideIds ? (o.sublabel ?? "") : o.sublabel ? `${o.sublabel} · ${o.id}` : o.id}
                           </span>
                         </span>
                       </button>

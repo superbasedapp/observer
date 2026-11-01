@@ -18,6 +18,16 @@
 /** The drawer's own param. */
 export const DRAWER_TAB_PARAM = "dtab";
 
+/**
+ * The message the drawer scrolls to and highlights on its Messages tab
+ * (`/sessions?session=<id>&dtab=messages&msg=<key>`): the Messages tab's row
+ * key (sessionmsg's message id, the same key a turn reference
+ * `session_id#message_key` carries). An admin message's turn attachment links
+ * here (T-854). Read once per session and key; the URL keeps it so the link
+ * stays copyable.
+ */
+export const DRAWER_MESSAGE_PARAM = "msg";
+
 /** The param the drawer used before 2026-10-02 (read for old links only). */
 export const LEGACY_DRAWER_TAB_PARAM = "tab";
 
@@ -68,11 +78,39 @@ export function writeDrawerTab<T extends string>(params: URLSearchParams, id: T,
   return next;
 }
 
-/** clearDrawerTab: the params without `dtab` when the drawer closes, or null
- *  when there is none (no navigation needed). The page's `tab` stays. */
+/** The picked process in the drawer's System tab (shared by its Tree, Table
+ *  and Call stack views), so a link can point at one process. */
+export const DRAWER_PROC_PARAM = "proc";
+
+/** drawerProcFromParams: the picked process key, or null. */
+export function drawerProcFromParams(params: URLSearchParams): string | null {
+  const v = params.get(DRAWER_PROC_PARAM);
+  return v ? v : null;
+}
+
+/** writeDrawerProc: the params with the picked process set, or removed for null. */
+export function writeDrawerProc(params: URLSearchParams, key: string | null): URLSearchParams {
+  const next = new URLSearchParams(params);
+  if (key) next.set(DRAWER_PROC_PARAM, key);
+  else next.delete(DRAWER_PROC_PARAM);
+  return next;
+}
+
+/** hasDrawerState: the URL carries drawer-owned state (a tab, a picked
+ *  process, or a deep-linked message key). */
+export function hasDrawerState(params: URLSearchParams): boolean {
+  return params.has(DRAWER_TAB_PARAM) || params.has(DRAWER_PROC_PARAM) || params.has(DRAWER_MESSAGE_PARAM);
+}
+
+/** clearDrawerTab: the params without the drawer's own state (`dtab`,
+ *  `proc` and `msg`) when the drawer closes, or null when there is none (no
+ *  navigation needed). The page's `tab` stays. Dropping `msg` keeps the next
+ *  session opened from jumping to a key that belonged to another session. */
 export function clearDrawerTab(params: URLSearchParams): URLSearchParams | null {
-  if (!params.has(DRAWER_TAB_PARAM)) return null;
+  if (!hasDrawerState(params)) return null;
   const next = new URLSearchParams(params);
   next.delete(DRAWER_TAB_PARAM);
+  next.delete(DRAWER_PROC_PARAM);
+  next.delete(DRAWER_MESSAGE_PARAM);
   return next;
 }

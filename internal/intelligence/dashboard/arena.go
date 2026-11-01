@@ -87,10 +87,23 @@ func (s *Server) newArenaRunner() (*arena.Runner, error) {
 		ProxyURL:     s.arenaProxyURL(),
 		MaxParallel:  3,
 		Admission:    s.opts.ArenaAdmission,
+		// OSH-R-005: nil leaves PermissionBypass nil, which never skips.
+		PermissionBypass: arenaBypassPolicy(s.opts.ArenaPermissionBypass),
 		// The kept commit's provenance footer follows the developer cost
 		// display (T-204), resolved per keep like the statusline tile.
 		CostDisplay: func() string { return s.statuslineCostDisplay(context.Background()) },
 	})
+}
+
+// arenaBypassPolicy adapts the plain dashboard seam to the engine's type.
+func arenaBypassPolicy(fn func(context.Context, string) (bool, string)) func(context.Context, string) arena.BypassDecision {
+	if fn == nil {
+		return nil
+	}
+	return func(ctx context.Context, tool string) arena.BypassDecision {
+		ok, why := fn(ctx, tool)
+		return arena.BypassDecision{Allowed: ok, Why: why}
+	}
 }
 
 func writeArenaErr(w http.ResponseWriter, err error) {
@@ -126,6 +139,11 @@ func candidateJSON(c models.ArenaCandidate) map[string]any {
 	}
 	if c.FinalAnswerExcerpt != "" {
 		out["final_answer"] = c.FinalAnswerExcerpt
+	}
+	// The permission lane the drive ran in (OSH-R-005, audit F4): empty on a
+	// row written before migration 210 or a drive refused before it started.
+	if c.PermissionLane != "" {
+		out["permission_lane"] = c.PermissionLane
 	}
 	if c.PatchPath != "" {
 		out["has_patch"] = true
@@ -194,6 +212,28 @@ func (s *Server) handleArenaRunsList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"runs": out})
 }
 
+// arenaRunTools is each distinct tool an Arena run starts (its candidates,
+// then the judge), in first-seen order.
+func arenaRunTools(candidates []struct {
+	Tool  string `json:"tool"`
+	Model string `json:"model"`
+}, judge string,
+) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(tool string) {
+		if tool != "" && !seen[tool] {
+			seen[tool] = true
+			out = append(out, tool)
+		}
+	}
+	for _, c := range candidates {
+		add(c.Tool)
+	}
+	add(judge)
+	return out
+}
+
 func (s *Server) handleArenaRunsCreate(w http.ResponseWriter, r *http.Request) {
 	if !requireConfirmToken(w, r) {
 		return
@@ -215,6 +255,18 @@ func (s *Server) handleArenaRunsCreate(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad request body: "+err.Error(), http.StatusBadRequest)
 		return
+	}
+	// Every launch gate an Arena process meets, asked for each tool BEFORE
+	// StartRun makes worktrees (ruling P-203): a refusal names its setting
+	// and leaves nothing behind. Each process is still checked again when it
+	// starts (ArenaAdmission).
+	if s.opts.ArenaPreflight != nil {
+		for _, tool := range arenaRunTools(req.Candidates, req.JudgeTool) {
+			if err := s.opts.ArenaPreflight(r.Context(), tool, req.ProjectRoot); err != nil {
+				http.Error(w, err.Error(), http.StatusForbidden)
+				return
+			}
+		}
 	}
 	runner, err := s.newArenaRunner()
 	if err != nil {

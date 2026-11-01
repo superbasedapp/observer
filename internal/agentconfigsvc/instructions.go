@@ -33,6 +33,12 @@ type InstructionFile struct {
 	NewName  bool   `json:"new_name,omitempty"`
 	ParseErr string `json:"parse_error,omitempty"`
 	Tracked  bool   `json:"tracked,omitempty"`
+	// relocatedID is the catalogue's home-relative spelling of a user file
+	// a relocation variable moved ("~/.claude/skills/x/SKILL.md" for
+	// $CLAUDE_CONFIG_DIR/skills/x/SKILL.md, FU-142): the managed
+	// inventory's file id, which names no local path. "" for every other
+	// file.
+	relocatedID string
 }
 
 func instructionRows(tool string) []agentconfig.FileRow {
@@ -58,14 +64,26 @@ func (s *Service) Instructions(ctx context.Context, tool, project string) ([]Ins
 		return nil, ErrUnknownTool
 	}
 	rows := instructionRows(tool)
+	env := s.env(project)
 	var found []guidance.File
 	opts := guidance.DefaultOptions()
 	opts.Tools = []string{tool}
 	opts.UserHome = s.o.Home
+	// The user-scope rows a relocation variable moves are scanned where the
+	// tool reads them (FU-142); the scan keeps the home layout, so each
+	// file keeps its "~/" identity, and a variable holding a relative value
+	// leaves those rows with no file at all (never the home default).
+	moves := s.userAnchorMoves(rows, env)
+	var userFS relocatedFS
 	if s.o.Home != "" {
 		o := opts
 		o.UserScopeOnly, o.IncludeUserScope = true, true
-		if res, err := guidance.Scan(ctx, s.o.Home, guidance.OSFS(s.o.Home), o); err == nil {
+		userFS = newRelocatedFS(s.o.Home, moves)
+		var fsys guidance.FS = userFS
+		if len(moves) == 0 {
+			fsys = guidance.OSFS(s.o.Home)
+		}
+		if res, err := guidance.Scan(ctx, s.o.Home, fsys, o); err == nil {
 			found = append(found, res.Files...)
 		}
 	}
@@ -83,7 +101,18 @@ func (s *Service) Instructions(ctx context.Context, tool, project string) ([]Ins
 		if !ok {
 			continue
 		}
-		p := gf.AbsPath
+		p, relocatedID := gf.AbsPath, ""
+		if gf.Scope == guidance.ScopeUser && len(moves) > 0 {
+			_, moved, mi := userFS.route(gf.AbsPath)
+			if mi >= 0 {
+				if !moves[mi].rows[row.ID] {
+					// Under a moved anchor, but this row does not follow
+					// the variable: not a file the tool reads there.
+					continue
+				}
+				p, relocatedID = moved, gf.RelPath
+			}
+		}
 		if seen[p] {
 			continue
 		}
@@ -91,10 +120,9 @@ func (s *Service) Instructions(ctx context.Context, tool, project string) ([]Ins
 		out = append(out, InstructionFile{
 			FileID: row.ID, Tool: tool, Kind: row.Kind, Scope: row.Scope, Glob: row.Paths.Linux, Path: p, Exists: true,
 			Name: gf.Name, Desc: gf.Description, Size: gf.SizeBytes, ParseErr: gf.ParseErr,
-			Tracked: agentconfig.IsTracked(row),
+			Tracked: agentconfig.IsTracked(row), relocatedID: relocatedID,
 		})
 	}
-	env := s.env(project)
 	for _, row := range rows {
 		rp := agentconfig.ResolvePath(row, env)
 		switch rp.Status {
@@ -104,9 +132,13 @@ func (s *Service) Instructions(ctx context.Context, tool, project string) ([]Ins
 			}
 			seen[rp.Path] = true
 			_, present, _ := s.readFileInfo(rp.Path)
+			relocatedID := ""
+			if rp.RelocatedBy != "" && row.Scope == agentconfig.ScopeUser && strings.HasPrefix(row.Paths.Linux, "~/") {
+				relocatedID = row.Paths.Linux
+			}
 			out = append(out, InstructionFile{
 				FileID: row.ID, Tool: tool, Kind: row.Kind, Scope: row.Scope, Glob: row.Paths.Linux, Path: rp.Path,
-				Exists: present, Tracked: agentconfig.IsTracked(row),
+				Exists: present, Tracked: agentconfig.IsTracked(row), relocatedID: relocatedID,
 			})
 		case agentconfig.PathGlob:
 			if strings.Count(row.Paths.Linux, "*") == 1 && !strings.Contains(row.Paths.Linux, "**") {

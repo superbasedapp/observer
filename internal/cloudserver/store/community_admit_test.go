@@ -215,7 +215,10 @@ func TestAdmitCommunityContributionCrossDeviceHint(t *testing.T) {
 	if res.OwnerDeviceID != admitDeviceA {
 		t.Fatalf("OwnerDeviceID=%q, want %q", res.OwnerDeviceID, admitDeviceA)
 	}
-	wantNext := time.Now().UTC().AddDate(0, 1, 0).Format("2006-01")
+	// From the first of the month: AddDate on the 31st skips a month
+	// (October 31 plus one month is December 1).
+	now := time.Now().UTC()
+	wantNext := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, 1, 0).Format("2006-01")
 	if res.NextWindow != wantNext {
 		t.Fatalf("NextWindow=%q, want %q", res.NextWindow, wantNext)
 	}

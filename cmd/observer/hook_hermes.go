@@ -60,6 +60,7 @@ func handleHermesHook(ctx context.Context, event, configPath string) {
 
 	body, _ := io.ReadAll(io.LimitReader(os.Stdin, defaultHookBodyLimit))
 	body = bytes.TrimPrefix(body, []byte{0xEF, 0xBB, 0xBF})
+	noteHookPayload(body)
 	// Reply approve immediately - host must never wait on the DB
 	// path. Bridge accepts "approve" identically to the Claude Code
 	// shape; on parse failure it falls back to no-op.
@@ -82,7 +83,7 @@ func handleHermesHook(ctx context.Context, event, configPath string) {
 	// went out above; do this before the (possibly early-returning)
 	// ingest so a session_start always seeds. Writer reuses this
 	// process's open DB handle.
-	seedHermesSessionPidbridge(ctx, event, body, os.Getppid(), defaultAncestors,
+	seedHermesSessionPidbridge(ctx, event, body, hookContext(ctx).ParentPID(), hookContext(ctx).Ancestors,
 		func(wctx context.Context, e pidbridge.Entry) error { return pidbridge.New(database).Write(wctx, e) },
 		os.Stderr)
 

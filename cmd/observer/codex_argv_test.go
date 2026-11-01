@@ -19,7 +19,7 @@ func codexArgvTempConfig(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.toml")
-	if err := os.WriteFile(cfgPath, []byte("[observer]\ndb_path = \""+filepath.Join(dir, "observer.db")+"\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("[observer]\ndb_path = \""+filepath.ToSlash(filepath.Join(dir, "observer.db"))+"\"\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	return cfgPath
@@ -47,11 +47,8 @@ func writeRecordingCodexBin(t *testing.T) (bin, argsFile string) {
 	dir := t.TempDir()
 	argsFile = filepath.Join(dir, "argv.txt")
 	bin = filepath.Join(dir, "codex")
-	script := "#!/bin/sh\n: > " + argsFile + "\nfor a in \"$@\"; do printf '%s\\n' \"$a\" >> " + argsFile + "\ndone\nexit 0\n"
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake codex bin: %v", err)
-	}
-	return bin, argsFile
+	script := "#!/bin/sh\n: > " + stubShPath(argsFile) + "\nfor a in \"$@\"; do printf '%s\\n' \"$a\" >> " + stubShPath(argsFile) + "\ndone\nexit 0\n"
+	return writeShellStub(t, bin, script), argsFile
 }
 
 // codexRecordedArgv reads back the argv writeRecordingCodexBin captured.

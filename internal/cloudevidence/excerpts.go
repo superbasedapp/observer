@@ -160,35 +160,19 @@ func SelectExcerptsWithSettings(texts SessionTexts, selection ExcerptSelection) 
 	return out[:min(len(out), cloudcontract.MaxContextExcerpts)]
 }
 
-// harnessPromptPrefixes marks a "user prompt" the HARNESS injected rather than
-// one the developer typed: slash-command envelopes, the local-command caveat,
-// and system reminders. They are noise for a title and would waste the bounded
-// excerpt budget, so the first REAL prompt skips past them.
-var harnessPromptPrefixes = []string{
-	"<command-name>",
-	"<command-message>",
-	"<command-args>",
-	"<local-command-caveat>",
-	"<local-command-stdout>",
-	"<local-command-stderr>",
-	"<system-reminder>",
-	"<user-prompt-submit-hook>",
-}
-
 // pasteBarPrefixes are the Claude Code paste-rendering line bars. They are
 // STRIPPED, not skipped: a bar-prefixed prompt is the developer's real text,
 // just rendered with a gutter.
 var pasteBarPrefixes = []string{"▎", "│", "┃"}
 
-// isHarnessPrompt reports whether a prompt text is a harness injection.
+// isHarnessPrompt reports whether a prompt text is a harness injection (a
+// slash-command envelope, a system reminder, a background task notification,
+// another agent's hand-back, ...): the table in harnessprompt.go. Such a text
+// is never the developer's words, so it is never excerpted and the first REAL
+// prompt skips past it.
 func isHarnessPrompt(text string) bool {
-	t := strings.TrimSpace(text)
-	for _, p := range harnessPromptPrefixes {
-		if strings.HasPrefix(t, p) {
-			return true
-		}
-	}
-	return false
+	_, injected := HarnessPromptKind(text)
+	return injected
 }
 
 // stripPasteBars removes a leading paste-gutter bar from every line and trims

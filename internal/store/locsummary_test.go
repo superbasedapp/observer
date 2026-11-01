@@ -145,10 +145,14 @@ func TestSelectSessionLOCSummariesExcludesEditorEcho(t *testing.T) {
 	ctx := context.Background()
 	pid := locSeedSession(ctx, t, s, "/repo", "sess-echo")
 
-	if _, err := s.InsertFileChanges(ctx, []FileChangeRow{
-		locRow("sess-echo", pid, "f1", "d1", LOCActorAI, LOCSourceEdit, false, loc.Stats{AddedCode: 12}),
-		locRow("sess-echo", pid, "f1", "", LOCActorHuman, LOCSourceEditor, false, loc.Stats{AddedCode: 12}),
-	}); err != nil {
+	ai := locRow("sess-echo", pid, "f1", "d1", LOCActorAI, LOCSourceEdit, false, loc.Stats{AddedCode: 12})
+	save := locRow("sess-echo", pid, "f1", "", LOCActorHuman, LOCSourceEditor, false, loc.Stats{AddedCode: 12})
+	// The editor save lands after the AI write. Neither row has an action
+	// id, so both take the editor key (session, file, saved_at); two
+	// time.Now() reads in a row can be equal on Windows, whose wall clock is
+	// coarse, and the save would then overwrite the AI row in place.
+	save.SavedAt = ai.SavedAt.Add(time.Second)
+	if _, err := s.InsertFileChanges(ctx, []FileChangeRow{ai, save}); err != nil {
 		t.Fatalf("InsertFileChanges: %v", err)
 	}
 	pending, err := s.LoadEditorRowsPending(ctx, time.Now().UTC().Add(-2*time.Hour))

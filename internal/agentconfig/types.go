@@ -132,7 +132,9 @@ type Grounding struct {
 
 // OSPaths is a file location per OS. Tokens: "~" (the user's home),
 // "<project>" (the project root), "%APPDATA%", "%LOCALAPPDATA%",
-// "%ProgramData%" and "$XDG_CONFIG_HOME" are expanded by the caller. An
+// "%ProgramData%" and "$XDG_CONFIG_HOME" are expanded by the caller, and a
+// variable-only token such as "$OPENCODE_CONFIG_DIR" names a directory
+// the tool reads only while the variable is set (paths.go pathTokens). An
 // empty entry means the file does not exist on that OS. A trailing "/"
 // names a directory whose file name the vendor does not document.
 type OSPaths struct {
@@ -173,10 +175,19 @@ type FileRow struct {
 	WriteNeeds Privilege
 	// Gitignored marks a project_local file the vendor documents as
 	// personal (never committed).
-	Gitignored          bool
+	Gitignored bool
+	// Borrowed marks an instruction-family file in a directory the tool
+	// reads but does not own (another tool's tree or a tool-agnostic one,
+	// guidance.Rule.Borrowed): it is never evidence the tool is installed.
+	Borrowed            bool
 	InstructionStrategy InstructionStrategy
-	Grounding           Grounding
-	Note                string
+	// DropInDir names a directory beside the file whose *.json drop-ins the
+	// tool merges into it in name order (Claude Code's managed-settings.d);
+	// "" for none. The directory lives next to each OS path, so readers and
+	// the guard's hook-switch rows derive it from Paths (surface-gap FU-35).
+	DropInDir string
+	Grounding Grounding
+	Note      string
 }
 
 // KeyPath is a format-agnostic key path inside a file.

@@ -1,6 +1,6 @@
 {
   "tables_version": 1,
-  "classifier_version": 2,
+  "classifier_version": 3,
   "extensions": {
     "adoc": {
       "lang": "text",

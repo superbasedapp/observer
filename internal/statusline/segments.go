@@ -48,6 +48,18 @@ type DaemonTile struct {
 	// rendered short by the caller (e.g. "1 exception, 3h left"). nil = none,
 	// and the segment is omitted (request-grants design G6).
 	Grants *string
+	// MessagesUnread is how many messages from the org's admins wait unread
+	// on this node (already filtered by the caller for the developer's
+	// [messages] statusline and alerts_only choices). 0 = nothing unread,
+	// and the segment is omitted. Only the count is ever rendered, never
+	// message text (T-854).
+	MessagesUnread int
+	// Security is the current project's code security state, already
+	// rendered short by the caller from the signed posture file (e.g.
+	// "sec 2!" for two blocking findings, "sec *" for unscanned changes;
+	// lane sec-c3). nil = the segment is off, the module is not active or
+	// the project has no posture, and the segment is omitted.
+	Security *string
 }
 
 // CostDisplayTokens is the token-usage developer cost display
@@ -87,6 +99,15 @@ const (
 	// SegmentGrants renders DaemonTile.Grants: the org exceptions in force
 	// on this node and when the nearest one ends (request-grants G6).
 	SegmentGrants = "grants"
+	// SegmentMessages renders DaemonTile.MessagesUnread: how many messages
+	// from the org's admins are unread (admin and developer messaging,
+	// T-854). A count only, never message text.
+	SegmentMessages = "messages"
+	// SegmentSecurity renders DaemonTile.Security: the current project's
+	// commit-gate state (security pillar plan section 6.1, lane sec-c3).
+	// Not in DefaultSegments: the caller adds it when
+	// [security.statusline].segment is on.
+	SegmentSecurity = "security"
 )
 
 // DefaultSegments is the default ordered segment list (plan §1.2 "wordmark,
@@ -102,9 +123,38 @@ const (
 // SegmentGrants joined the default with the request-grants design: it renders
 // only while an org exception is in force, so every other node sees the
 // exact pre-change line.
-var DefaultSegments = []string{SegmentWordmark, SegmentSession, SegmentToday, SegmentModel, SegmentBudget, SegmentGrants}
+//
+// SegmentMessages joined the default with admin and developer messaging
+// (T-854, D-688 ruling 1): it renders only while a message from the org's
+// admins is unread, so every other node sees the exact pre-change line.
+var DefaultSegments = []string{SegmentWordmark, SegmentSession, SegmentToday, SegmentModel, SegmentBudget, SegmentGrants, SegmentMessages}
+
+// renderMessagesSegment renders the "messages" segment kind from the tile:
+// "1 message from your admin" / "3 messages from your admins".
+func renderMessagesSegment(tile DaemonTile) (string, bool) {
+	switch {
+	case tile.MessagesUnread <= 0:
+		return "", false
+	case tile.MessagesUnread == 1:
+		return "1 message from your admin", true
+	default:
+		return strconv.Itoa(tile.MessagesUnread) + " messages from your admins", true
+	}
+}
 
 // renderGrantsSegment renders the "grants" segment kind from the tile.
+// renderSecuritySegment renders the "security" segment kind from the tile.
+func renderSecuritySegment(tile DaemonTile) (string, bool) {
+	if tile.Security == nil {
+		return "", false
+	}
+	text := sanitizeControls(*tile.Security)
+	if text == "" {
+		return "", false
+	}
+	return text, true
+}
+
 func renderGrantsSegment(tile DaemonTile) (string, bool) {
 	if tile.Grants == nil {
 		return "", false

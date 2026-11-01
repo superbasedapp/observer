@@ -56,8 +56,9 @@ func TestAutoRegisterHooks_NeverReachesForeignHome(t *testing.T) {
 		if err := os.WriteFile(foreignSettings, []byte(sentinel), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		t.Setenv("HOME", home)
-		t.Setenv("USERPROFILE", home)
+		// Every profile root and tool home stays in the throwaway home
+		// (surface-gap S-10, FU-4).
+		pinToolHomesAt(t, home)
 		t.Setenv("WSL_DISTRO_NAME", "TestDistro")
 		crossmount.StageForeignLayoutForTest(t, crossmount.ForeignLayoutForTest{
 			Root: usersRoot, WindowsUser: winUser, Discover: discover,

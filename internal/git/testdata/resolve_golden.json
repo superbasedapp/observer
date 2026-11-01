@@ -1,0 +1,146 @@
+[
+  {
+    "name": "repo_root",
+    "resolve": {
+      "root": "$BASE/repo",
+      "is_git": true,
+      "branch": "main",
+      "remote": "git@github.com:Example/Repo.git"
+    },
+    "find_root": "$BASE/repo",
+    "find_ok": true,
+    "identity": {
+      "root": "$BASE/repo",
+      "is_git": true,
+      "branch": "main",
+      "remote": "github.com/Example/Repo",
+      "upstream_remote": "github.com/UpstreamOrg/Repo",
+      "remote_owner": "github.com/Example",
+      "upstream_owner": "github.com/UpstreamOrg",
+      "root_commit_sha": "",
+      "content_fingerprint": "b068f0450260a93c9381d8579bacf52fa0bdb382c2d99d0b4203ad11da610aea",
+      "workspace": "",
+      "is_worktree": false
+    }
+  },
+  {
+    "name": "repo_subdirectory",
+    "resolve": {
+      "root": "$BASE/repo",
+      "is_git": true,
+      "branch": "main",
+      "remote": "git@github.com:Example/Repo.git"
+    },
+    "find_root": "$BASE/repo",
+    "find_ok": true,
+    "identity": {
+      "root": "$BASE/repo",
+      "is_git": true,
+      "branch": "main",
+      "remote": "github.com/Example/Repo",
+      "upstream_remote": "github.com/UpstreamOrg/Repo",
+      "remote_owner": "github.com/Example",
+      "upstream_owner": "github.com/UpstreamOrg",
+      "root_commit_sha": "",
+      "content_fingerprint": "b068f0450260a93c9381d8579bacf52fa0bdb382c2d99d0b4203ad11da610aea",
+      "workspace": "pkg/sub",
+      "is_worktree": false
+    }
+  },
+  {
+    "name": "non_git",
+    "resolve": {
+      "root": "$BASE/plain",
+      "is_git": false,
+      "branch": "",
+      "remote": ""
+    },
+    "find_root": "",
+    "find_ok": false,
+    "identity": {
+      "root": "$BASE/plain",
+      "is_git": false,
+      "branch": "",
+      "remote": "",
+      "upstream_remote": "",
+      "remote_owner": "",
+      "upstream_owner": "",
+      "root_commit_sha": "",
+      "content_fingerprint": "147867fab3df6822fd5e4bfe85cbe3d1249771b70d85d1b3018b3110b614da91",
+      "workspace": "",
+      "is_worktree": false
+    }
+  },
+  {
+    "name": "non_git_subdirectory",
+    "resolve": {
+      "root": "$BASE/plain/notes",
+      "is_git": false,
+      "branch": "",
+      "remote": ""
+    },
+    "find_root": "",
+    "find_ok": false,
+    "identity": {
+      "root": "$BASE/plain/notes",
+      "is_git": false,
+      "branch": "",
+      "remote": "",
+      "upstream_remote": "",
+      "remote_owner": "",
+      "upstream_owner": "",
+      "root_commit_sha": "",
+      "content_fingerprint": "",
+      "workspace": "",
+      "is_worktree": false
+    }
+  },
+  {
+    "name": "detached_head",
+    "resolve": {
+      "root": "$BASE/detached",
+      "is_git": true,
+      "branch": "",
+      "remote": "https://gitlab.example.com/acme/detached.git"
+    },
+    "find_root": "$BASE/detached",
+    "find_ok": true,
+    "identity": {
+      "root": "$BASE/detached",
+      "is_git": true,
+      "branch": "",
+      "remote": "gitlab.example.com/acme/detached",
+      "upstream_remote": "",
+      "remote_owner": "gitlab.example.com/acme",
+      "upstream_owner": "",
+      "root_commit_sha": "",
+      "content_fingerprint": "a96b106bc5eeb2cdc77650bd8fb9d6c2e008c205ba37cc737e008a324f830e92",
+      "workspace": "",
+      "is_worktree": false
+    }
+  },
+  {
+    "name": "symlinked_path",
+    "resolve": {
+      "root": "$BASE/repo",
+      "is_git": true,
+      "branch": "main",
+      "remote": "git@github.com:Example/Repo.git"
+    },
+    "find_root": "$BASE/repo",
+    "find_ok": true,
+    "identity": {
+      "root": "$BASE/repo",
+      "is_git": true,
+      "branch": "main",
+      "remote": "github.com/Example/Repo",
+      "upstream_remote": "github.com/UpstreamOrg/Repo",
+      "remote_owner": "github.com/Example",
+      "upstream_owner": "github.com/UpstreamOrg",
+      "root_commit_sha": "",
+      "content_fingerprint": "b068f0450260a93c9381d8579bacf52fa0bdb382c2d99d0b4203ad11da610aea",
+      "workspace": "pkg/sub",
+      "is_worktree": false
+    }
+  }
+]

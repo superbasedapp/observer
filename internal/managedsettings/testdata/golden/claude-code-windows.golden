@@ -1,0 +1,62 @@
+===== managed-mcp.json =====
+===== managed-settings.json =====
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:8820",
+    "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+    "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:4317",
+    "OTEL_EXPORTER_OTLP_PROTOCOL": "grpc",
+    "OTEL_LOGS_EXPORTER": "otlp",
+    "OTEL_METRICS_EXPORTER": "otlp"
+  }
+}
+===== allowed-mcp-server.json =====
+{
+  "serverCommand": [
+    "observer",
+    "serve"
+  ]
+}
+===== README.md =====
+# Observer managed-settings for Claude Code
+
+Each artifact has a DIFFERENT job:
+
+- **allowed-mcp-server.json** is ONE `allowedMcpServers` entry,
+  `{"serverCommand":["observer","serve"]}`, matching the MCP server `observer init` registers per node in
+  `~/.claude.json` (no managed-mcp.json is generated, so developers keep
+  their own servers). Add it to the `allowedMcpServers` list your
+  managed settings already deploy; if they deploy none, deploy nothing:
+  an `allowedMcpServers` list holding only this entry blocks every
+  other MCP server. Claude Code matches it exactly, every argument in
+  order, so it must equal the command on the nodes (check one with
+  `claude mcp get observer`; regenerate with `--mcp-binary <path>` when
+  init wrote an absolute path, or when it added `--config <file>`, and
+  add that pair to the entry). An org-managed Linux or macOS node that
+  opts in with `[observer.mcp] stable_command = true` (off until its live
+  check passes) registers the bare `observer` whenever PATH runs that same
+  install, so the default entry matches it. `observer doctor` reports a managed
+  allowlist that refuses Observer's server.
+
+- **managed-settings.json** (env block) points Claude Code's native OTel
+  exporter at Observer's OTLP receiver (`http://127.0.0.1:4317`). **THIS** is what delivers
+  telemetry. The receiver must be running (`[ingest.otel].enabled = true`)
+  and reachable from each node.
+
+- **managed-settings.json** (env block) also sets `ANTHROPIC_BASE_URL=http://127.0.0.1:8820`,
+  routing Claude Code's traffic through that endpoint - either a node's
+  Observer proxy (`http://127.0.0.1:8820` by default) or, in Gateway-Mode thin deployments, a
+  direct org AI Gateway URL. Switching between the two is a pure base-URL
+  swap: no other tool/MCP registration changes.
+
+## Deploy
+
+- **File channel (single node, no license):** write to
+  `/etc/claude-code/managed-settings.json` (Linux/WSL). Verify with
+  `/status` → expect `(file)`. On WSL, write inside the distro or set
+  `wslInheritsWindowsSettings: true`.
+- **Native Windows nodes:** write managed-settings.json to
+  `C:\Program Files\ClaudeCode\managed-settings.json` (administrator-writable; the legacy
+  `C:\ProgramData\ClaudeCode` path is not read).
+- **Server channel (fleet):** upload the same payload in your
+  Teams/Enterprise admin console's managed-settings section.

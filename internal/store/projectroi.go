@@ -718,8 +718,11 @@ type ProjectListExtra struct {
 	// this project at all (regardless of the 30-day window) — the gate
 	// for whether CommitCapture/HumanLOC are meaningful.
 	CommitsScanned bool
-	CommitCapture  string // "ok" | "no_git" | "error" (commitCaptureStateFor) — meaningful only when CommitsScanned.
-	HumanLOC       string // "vscode" | "none" — meaningful only when CommitsScanned.
+	CommitCapture  string // commitCaptureStateFor's closed vocabulary, meaningful only when CommitsScanned.
+	// CommitCaptureKind names the failure when CommitCapture is "error"
+	// (timeout, dubious_ownership, ...; internal/commitscan FailureKind).
+	CommitCaptureKind string
+	HumanLOC          string // "vscode" | "none", meaningful only when CommitsScanned.
 }
 
 // LoadProjectListExtras computes the /api/projects additive fields for
@@ -827,21 +830,28 @@ func (s *Store) LoadProjectListExtras(ctx context.Context, since, until time.Tim
 	// touched (a project_commit_scan row exists) — types.ts's
 	// ProjectRow doc comment: "a project the commit scanner has never
 	// touched simply omits" the whole capture struct on the list.
-	scanRows, err := s.db.QueryContext(ctx, `SELECT project_id, last_error, consecutive_failures FROM project_commit_scan`)
+	scanRows, err := s.db.QueryContext(ctx,
+		`SELECT project_id, last_error, consecutive_failures, last_error_kind, history_pending FROM project_commit_scan`)
 	if err != nil {
 		return nil, fmt.Errorf("store.LoadProjectListExtras: scan state: %w", err)
 	}
 	for scanRows.Next() {
 		var pid int64
-		var lastErr string
-		var failures int
-		if err := scanRows.Scan(&pid, &lastErr, &failures); err != nil {
+		var lastErr, kind string
+		var failures, pending int
+		if err := scanRows.Scan(&pid, &lastErr, &failures, &kind, &pending); err != nil {
 			scanRows.Close()
 			return nil, fmt.Errorf("store.LoadProjectListExtras: scan state scan: %w", err)
 		}
 		e := get(pid)
 		e.CommitsScanned = true
-		e.CommitCapture = commitCaptureStateFor(lastErr, failures)
+		e.CommitCapture = commitCaptureStateFor(kind, lastErr, failures, pending != 0)
+		if e.CommitCapture == "error" {
+			e.CommitCaptureKind = kind
+			if e.CommitCaptureKind == "" {
+				e.CommitCaptureKind = "other"
+			}
+		}
 	}
 	if err := scanRows.Err(); err != nil {
 		scanRows.Close()

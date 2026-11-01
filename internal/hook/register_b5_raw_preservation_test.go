@@ -456,7 +456,7 @@ func TestUnregisterClaudeCode_PreservesSiblingEntryTimeoutFieldSameGroup(t *test
 	}
 	// Seed checksum so unregister doesn't trip the drift guard (mirrors
 	// TestUnregisterClaudeCodeMixedGroup's pattern for a hand-crafted file).
-	if err := r.recordChecksum(path); err != nil {
+	if err := r.recordChecksum("", path); err != nil {
 		t.Fatal(err)
 	}
 

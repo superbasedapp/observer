@@ -59,7 +59,14 @@ log="${ORG_PG_SUITE_LOG:-$(mktemp -t org-pg-suite.XXXXXX.log)}"
 # singleton (leader/...), the live control-store dialect suite
 # (controlstore/...), the ingest apply/receipt path (ingest/...) and the
 # org CLI's own live-PG tests (cmd/observer-org: migrate --store, the upgrade
-# preflight extension row, agent-access reapply after a restore).
+# preflight extension row, agent-access reapply after a restore), and three
+# packages whose ForEachEngine "postgres" subtests declare no TwoWriters test
+# and so never match the derived selection (D-712): the access-kind store
+# (accesskindstore/...), the fleet findings store (fleetfindings/...), the
+# SCIM provisioning store (scim/...) and the org dashboard API
+# (dashboard/..., T-861: its budget registry and bulk-audit tests run both
+# engines via ForEachEngine; about two minutes of PostgreSQL time, 23 live-PG
+# subtests at 2026-10-21).
 # --------------------------------------------------------------------------
 mapfile -t two_writer_pkgs < <(
   grep -rl "func Test.*TwoWriters" --include='*_test.go' internal/orgserver internal/aigateway \
@@ -72,6 +79,10 @@ fixed_pkgs=(
   ./internal/orgserver/leader/...
   ./internal/orgserver/controlstore/...
   ./internal/orgserver/ingest/...
+  ./internal/orgserver/accesskindstore/...
+  ./internal/orgserver/fleetfindings/...
+  ./internal/orgserver/scim/...
+  ./internal/orgserver/dashboard/...
   ./cmd/observer-org
 )
 mapfile -t packages < <(printf '%s\n' "${two_writer_pkgs[@]}" "${fixed_pkgs[@]}" | sort -u)

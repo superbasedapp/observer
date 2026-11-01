@@ -112,6 +112,7 @@ func listWorkspaces(cmd *cobra.Command, root string) error {
 	tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 2, 2, ' ', 0)
 	fmt.Fprintln(tw, "ID\tSOURCE\tBRANCH\tCREATED\tORIGIN")
 	shown := 0
+	var kept []string
 	for _, id := range ids {
 		meta, ok := readWorkspaceMeta(filepath.Join(root, id))
 		if !ok {
@@ -124,9 +125,28 @@ func listWorkspaces(cmd *cobra.Command, root string) error {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
 			id, meta.Source, branch, meta.CreatedAt.Format("2006-01-02 15:04"), meta.Origin)
 		shown++
+		if meta.Kept != "" {
+			kept = append(kept, id+" was kept: "+meta.Kept)
+		}
 	}
 	if err := tw.Flush(); err != nil {
 		return err
+	}
+	// Why the end of a worktree run kept a workspace (meta.json's kept).
+	for _, k := range kept {
+		fmt.Fprintln(cmd.OutOrStdout(), k)
+	}
+	// A clone-remote run's returned commits wait in its return repository
+	// until fetched; the daemon removes it once its run ended with nothing
+	// returned, or past the retention bound (lane LEFT-SBX).
+	for _, e := range entries {
+		id, ok := strings.CutSuffix(e.Name(), workspace.ReturnRepoSuffix)
+		if !ok || !e.IsDir() {
+			continue
+		}
+		repo := filepath.Join(root, e.Name())
+		fmt.Fprintf(cmd.OutOrStdout(), "%s returned its commits into %s; bring them into your checkout with: %s\n",
+			id, repo, workspace.ReturnFetchCommand(repo, workspace.ReturnRefPrefix+id))
 	}
 	if shown == 0 {
 		fmt.Fprintln(cmd.OutOrStdout(), "no managed workspaces")

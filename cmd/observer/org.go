@@ -339,6 +339,9 @@ func buildOrgBundleWith(ctx context.Context, configPath string, quietWhenNotEnro
 	// T-656: the machine key that proves this machine on the grant and budget
 	// rails, kept beside the enrolment secret.
 	client.SetMachineKeyStore(orgclient.OpenMachineKeyStore(cfg.OrgClient.KeychainID, filepath.Dir(cfg.Observer.DBPath)))
+	// WINNODE2 (16c): the routine machine-key warning prints once per
+	// install and reason, not on every CLI call.
+	client.SetNoticeDir(filepath.Dir(cfg.Observer.DBPath))
 	// Unenroll's step 2b (mini-spec §4.5) deletes the governance sidecar,
 	// and `observer unenroll` runs through THIS bundle — not the daemon's
 	// start.go wiring, which was the only place the path was set until the
@@ -508,8 +511,9 @@ high-water id).`,
 							fmt.Fprintf(out, "\nWarn: could not write [org_client.policy] block to %s: %v\n", cfgPath, werr)
 						} else if added {
 							fmt.Fprintf(out, "\nWrote [org_client.policy] block to %s for the families this grant governs:\n", cfgPath)
-							fmt.Fprintf(out, "  accept_families = %s\n", quotedTomlStringList(families))
-							fmt.Fprintf(out, "  preauthorize_enforce = %s\n", quotedTomlStringList(families))
+							for _, kl := range managedPolicyKeyLines(families) {
+								fmt.Fprintf(out, "  %s = %s\n", kl.key, kl.list)
+							}
 							fmt.Fprintln(out, "  Edit or remove this block at any time; only a future accepted grant writes it again.")
 						}
 					}
@@ -569,7 +573,7 @@ high-water id).`,
 					}
 					if codexHooksHint {
 						fmt.Fprintln(out)
-						fmt.Fprintln(out, "next: codex requires per-hook trust approval (security feature).")
+						fmt.Fprintln(out, "note: codex runs a hook only once it is trusted (security feature).")
 						fmt.Fprintln(out, codexTrustLine())
 					}
 				}
@@ -895,8 +899,9 @@ func managedPolicyFamiliesToWrite(g grantOutcome) []string {
 	// ManagedGovernedFamilies, not GovernedFamilies: a managed grant that
 	// governs anything also governs node.features (review C156-04), so feature
 	// locks, tools.disallow and the G8 tool and feature grants take effect on
-	// a managed node without a hand edit.
-	return govern.ManagedGovernedFamilies(g.Authority)
+	// a managed node without a hand edit. Only families linked in this build
+	// are written (linkedManagedFamilies, audit SHR-KIT finding 1).
+	return linkedManagedFamilies(govern.ManagedGovernedFamilies(g.Authority))
 }
 
 // ensureManagedPolicyBlock writes accept_families and preauthorize_enforce
@@ -942,28 +947,57 @@ func ensureManagedPolicyBlock(path string, families []string) (bool, error) {
 	if err != nil && !os.IsNotExist(err) {
 		return false, err
 	}
-	list := quotedTomlStringList(families)
 	lines := strings.Split(string(body), "\n")
 	headerIdx := managedPolicyHeaderLineIndex(lines)
-
-	var hasAccept, hasEnforce bool
-	if headerIdx != -1 {
-		section := lines[headerIdx+1 : tableSectionEnd(lines, headerIdx+1)]
-		hasAccept = sectionDeclaresKey(section, "accept_families")
-		hasEnforce = sectionDeclaresKey(section, "preauthorize_enforce")
-	}
-
-	switch {
-	case headerIdx == -1:
+	if headerIdx == -1 {
 		// Row 1.
-		return true, appendManagedPolicyBlock(path, list)
-	case hasAccept && hasEnforce:
+		return true, appendManagedPolicyBlock(path, families)
+	}
+	section := lines[headerIdx+1 : tableSectionEnd(lines, headerIdx+1)]
+	var missing []string
+	for _, kl := range managedPolicyKeyLines(families) {
+		if !sectionDeclaresKey(section, kl.key) {
+			missing = append(missing, kl.key+" = "+kl.list)
+		}
+	}
+	if len(missing) == 0 {
 		// Row 2.
 		return false, nil
-	default:
-		// Row 3.
-		return true, insertManagedPolicyKeys(path, lines, headerIdx, list, hasAccept, hasEnforce)
 	}
+	// Row 3.
+	return true, insertManagedPolicyKeys(path, lines, headerIdx, missing)
+}
+
+// managedPolicyKeyLinesText renders managedPolicyKeyLines on one line.
+func managedPolicyKeyLinesText(families []string) string {
+	var parts []string
+	for _, kl := range managedPolicyKeyLines(families) {
+		parts = append(parts, kl.key+" = "+kl.list)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// managedPolicyKeyLine is one key the managed write sets and its value.
+type managedPolicyKeyLine struct{ key, list string }
+
+// managedPolicyKeyLines splits families over the keys (plans decision
+// P-047, config.SplitPolicyFamilies): a family every released binary knows
+// goes to accept_families / preauthorize_enforce, every other one (a module
+// floor family) to accept_module_families / preauthorize_module_enforce,
+// which an older binary ignores instead of refusing the file. A pair with
+// no family is not written.
+func managedPolicyKeyLines(families []string) []managedPolicyKeyLine {
+	released, module := config.SplitPolicyFamilies(families)
+	var out []managedPolicyKeyLine
+	if len(released) > 0 {
+		l := quotedTomlStringList(released)
+		out = append(out, managedPolicyKeyLine{"accept_families", l}, managedPolicyKeyLine{"preauthorize_enforce", l})
+	}
+	if len(module) > 0 {
+		l := quotedTomlStringList(module)
+		out = append(out, managedPolicyKeyLine{"accept_module_families", l}, managedPolicyKeyLine{"preauthorize_module_enforce", l})
+	}
+	return out
 }
 
 // managedPolicyHeaderLineIndex returns the index into lines of the real
@@ -1020,7 +1054,11 @@ func sectionDeclaresKey(section []string, key string) bool {
 // appendManagedPolicyBlock is decision-table row 1: no [org_client.policy]
 // table exists yet, so the whole default block is appended - append-only,
 // comment-preserving, 0600, the same idiom as ensureOrgClientBlock.
-func appendManagedPolicyBlock(path, list string) error {
+func appendManagedPolicyBlock(path string, families []string) error {
+	var keys strings.Builder
+	for _, kl := range managedPolicyKeyLines(families) {
+		keys.WriteString(kl.key + " = " + kl.list + "\n")
+	}
 	block := "\n[org_client.policy]\n" +
 		"# Written automatically by `observer enroll` when this machine accepted a\n" +
 		"# managed-organization governance grant: managed sign-in is treated as the\n" +
@@ -1034,8 +1072,7 @@ func appendManagedPolicyBlock(path, list string) error {
 		"# but never durably installed\" until you (or a future accepted grant) add\n" +
 		"# them back.\n" +
 		"# See docs/teams-getting-started.md and `observer org grant show`.\n" +
-		"accept_families = " + list + "\n" +
-		"preauthorize_enforce = " + list + "\n"
+		keys.String()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -1048,10 +1085,9 @@ func appendManagedPolicyBlock(path, list string) error {
 	return err
 }
 
-// managedPolicyInsertionLines renders the lines to splice in for whichever
-// of the two keys sectionDeclaresKey found missing - always at least one,
-// since the caller only reaches here when hasAccept && hasEnforce is false.
-func managedPolicyInsertionLines(list string, hasAccept, hasEnforce bool) []string {
+// managedPolicyInsertionLines renders the lines to splice in for the keys
+// sectionDeclaresKey found missing - always at least one.
+func managedPolicyInsertionLines(missing []string) []string {
 	lines := []string{
 		"# Added automatically by `observer enroll`: this machine accepted a",
 		"# managed governance grant, and this table already existed for an",
@@ -1059,13 +1095,7 @@ func managedPolicyInsertionLines(list string, hasAccept, hasEnforce bool) []stri
 		"# the whole block being appended again. Edit or remove either key at",
 		"# any time. See docs/teams-getting-started.md and `observer org grant show`.",
 	}
-	if !hasAccept {
-		lines = append(lines, "accept_families = "+list)
-	}
-	if !hasEnforce {
-		lines = append(lines, "preauthorize_enforce = "+list)
-	}
-	return lines
+	return append(lines, missing...)
 }
 
 // insertManagedPolicyKeys is decision-table row 3: [org_client.policy]
@@ -1075,8 +1105,8 @@ func managedPolicyInsertionLines(list string, hasAccept, hasEnforce bool) []stri
 // regardless of what follows in the file - and it writes atomically
 // (temp file + rename in the same directory, 0600) rather than appending,
 // since the new text lands in the middle of the file, not at the end.
-func insertManagedPolicyKeys(path string, lines []string, headerIdx int, list string, hasAccept, hasEnforce bool) error {
-	insertion := managedPolicyInsertionLines(list, hasAccept, hasEnforce)
+func insertManagedPolicyKeys(path string, lines []string, headerIdx int, missing []string) error {
+	insertion := managedPolicyInsertionLines(missing)
 	newLines := make([]string, 0, len(lines)+len(insertion))
 	newLines = append(newLines, lines[:headerIdx+1]...)
 	newLines = append(newLines, insertion...)
@@ -1193,6 +1223,22 @@ func newOrgStatusCmd() *cobra.Command {
 				return err
 			}
 			printOrgStatus(cmd.OutOrStdout(), rep)
+			// WINNODE2 item 1b: what each running daemon itself saw of its
+			// credential, not this command's own view.
+			if rep.State.Enrolled {
+				for _, l := range daemonCredentialLines(loadLiveDaemonCredentials(cmd.Context(), filepath.Dir(b.cfg.Observer.DBPath), b.store)) {
+					fmt.Fprintln(cmd.OutOrStdout(), l)
+				}
+			}
+			// WINNODE item 4: a managed node names its machine proof, a node
+			// its org switched to enterprise included (P-205).
+			if managed, merr := orgclient.NodeManaged(cmd.Context(), b.store); merr == nil && managed {
+				printMachineProof(cmd.Context(), cmd.OutOrStdout(), b.client, b.store)
+			}
+			// Lane SEC-E: the security floors and managed pull on this node.
+			for _, l := range securityOrgStatusLines(cmd.Context(), configPath, b.cfg, b.store) {
+				fmt.Fprintln(cmd.OutOrStdout(), l)
+			}
 			return nil
 		},
 	}

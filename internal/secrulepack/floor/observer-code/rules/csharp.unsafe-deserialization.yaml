@@ -1,0 +1,22 @@
+rules:
+  - id: csharp.unsafe-deserialization
+    languages: [csharp]
+    severity: ERROR
+    message: Data is deserialized with a formatter that can build arbitrary types (BinaryFormatter, SoapFormatter, NetDataContractSerializer, LosFormatter, ObjectStateFormatter, or Json.NET type name handling), so crafted input can run code; use System.Text.Json or a known-types contract.
+    metadata:
+      category: code_vuln
+      cwe: CWE-502
+    pattern-either:
+      - pattern: new BinaryFormatter()
+      - pattern: new SoapFormatter()
+      - pattern: new NetDataContractSerializer(...)
+      - pattern: new LosFormatter(...)
+      - pattern: new ObjectStateFormatter()
+      - patterns:
+          - pattern-either:
+              - pattern: 'new JsonSerializerSettings { ..., TypeNameHandling = TypeNameHandling.$H, ... }'
+              - pattern: $S.TypeNameHandling = TypeNameHandling.$H
+          - metavariable-regex:
+              metavariable: $H
+              regex: ^(All|Auto|Objects|Arrays)$
+      - pattern: new JavaScriptSerializer(new SimpleTypeResolver())

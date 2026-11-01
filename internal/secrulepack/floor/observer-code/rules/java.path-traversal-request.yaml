@@ -1,0 +1,44 @@
+rules:
+  - id: java.path-traversal-request
+    languages: [java]
+    severity: WARNING
+    message: A file path built from web request input is opened, so a caller can reach files outside the intended directory with ../; normalize the path and check it stays under the base directory.
+    metadata:
+      category: code_vuln
+      cwe: CWE-22
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern: $REQ.$GET(...)
+          - metavariable-regex:
+              metavariable: $GET
+              regex: ^(getParameter|getParameterValues|getParameterMap|getHeader|getHeaders|getQueryString|getCookies|getInputStream|getReader|getPathInfo|getRequestURI)$
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: (?i)^(req|request|httpRequest|servletRequest|httpServletRequest)$
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $RT $M(..., @$ANN $T $X, ...) { ... }
+              - pattern-inside: |
+                  $RT $M(..., @$ANN(...) $T $X, ...) { ... }
+          - metavariable-regex:
+              metavariable: $ANN
+              regex: ^(RequestParam|PathVariable|RequestHeader|RequestBody|QueryParam|PathParam|FormParam|HeaderParam|CookieValue)$
+          - pattern: $X
+    pattern-sanitizers:
+      - pattern: FilenameUtils.getName(...)
+      - pattern: $P.getFileName()
+      - pattern: Integer.parseInt(...)
+      - pattern: Long.parseLong(...)
+    pattern-sinks:
+      - pattern-either:
+          - pattern: new File(...)
+          - pattern: new FileInputStream(...)
+          - pattern: new FileOutputStream(...)
+          - pattern: new FileReader(...)
+          - pattern: new FileWriter(...)
+          - pattern: new RandomAccessFile(...)
+          - pattern: Paths.get(...)
+          - pattern: Path.of(...)
+          - pattern: $BASE.resolve(...)

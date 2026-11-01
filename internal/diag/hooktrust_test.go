@@ -3,6 +3,7 @@ package diag
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/integration"
@@ -25,7 +26,9 @@ func TestHookTrustFor(t *testing.T) {
 	if err := os.WriteFile(hooksPath, []byte(hooks), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := "[hooks.state.\"" + hooksPath + ":pre_tool_use:0:0\"]\ntrusted_hash = \"h\"\n"
+	// strconv.Quote keeps a Windows temp path (backslashes) a valid TOML
+	// quoted key; a POSIX path quotes to the same bytes as before.
+	cfg := "[hooks.state." + strconv.Quote(hooksPath+":pre_tool_use:0:0") + "]\ntrusted_hash = \"h\"\n"
 	if err := os.WriteFile(filepath.Join(home, ".codex", "config.toml"), []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}

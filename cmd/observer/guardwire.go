@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/gitalias"
 	"github.com/marmutapp/superbased-observer/internal/govern"
 	"github.com/marmutapp/superbased-observer/internal/guard"
 	"github.com/marmutapp/superbased-observer/internal/guard/notify"
@@ -88,20 +89,37 @@ func lookupProcessGuard(dbPath string) *guard.Guard {
 // it, so the bundle is verified identically in both and their gate
 // postures cannot drift. A nil store gives no pin (self-contained
 // signature check only) and no tenancy (unresolved, read as managed).
-func nodeGuardPolicyInputs(ctx context.Context, st *store.Store, logger *slog.Logger) (pin string, managed func() bool) {
+//
+// bundleExpected (T-864 gap 1) reports that the store recorded an accepted
+// org bundle (the fetched-bundle row orgclient.FetchPolicyBundle writes), so
+// a missing bundle file is a deletion, not "nothing published".
+func nodeGuardPolicyInputs(ctx context.Context, st *store.Store, logger *slog.Logger) (pin string, managed func() bool, bundleExpected bool) {
 	if st == nil {
-		return "", nil
+		return "", nil, false
 	}
 	if states, serr := st.LatestGuardPolicyStates(ctx); serr == nil {
+		pinOrg := ""
+		accepted := map[string]bool{}
 		for _, ps := range states {
-			if ps.Layer == "org" && strings.HasSuffix(ps.Path, orgclient.PolicyKeyPinSuffix) {
+			if ps.Layer != "org" {
+				continue
+			}
+			switch {
+			case strings.HasSuffix(ps.Path, orgclient.PolicyKeyPinSuffix):
 				pin = ps.ContentHash
+				pinOrg = strings.TrimSuffix(ps.Path, orgclient.PolicyKeyPinSuffix)
+			case orgclient.IsPolicyBundleStatePath(ps.Path) && ps.Version != "":
+				accepted[orgclient.PolicyBundleStateOrg(ps.Path)] = true
 			}
 		}
+		// Only a bundle accepted from the org this node's pin belongs to:
+		// a node re-enrolled with an org that has not published yet must
+		// not read the old org's acceptance as "a bundle was deleted".
+		bundleExpected = pinOrg != "" && accepted[pinOrg]
 	} else if logger != nil {
 		logger.Warn("guard: org policy key pin unavailable; bundle loads with self-contained verification only", "err", serr)
 	}
-	return pin, managedTenancyLookup(st)
+	return pin, managedTenancyLookup(st), bundleExpected
 }
 
 // buildGuardForStore constructs the guard composition layer wired to
@@ -124,13 +142,17 @@ func buildGuardForStore(ctx context.Context, cfg config.Config, st *store.Store,
 	// they still verify the envelope's own signature). One indexed
 	// read at construction; a read failure degrades to the
 	// self-contained check, never blocks the daemon.
-	orgKeyPin, managedTenancy := nodeGuardPolicyInputs(ctx, st, logger)
+	orgKeyPin, managedTenancy, bundleExpected := nodeGuardPolicyInputs(ctx, st, logger)
 	g, err := guard.New(guard.Options{
 		Config:            cfg.Guard,
 		Home:              home,
 		KnownProjectRoots: roots,
+		// The security pillar's rule pack (security pillar plan section
+		// 4.7 item 1), composed for the children active in this daemon.
+		PackRules:         securityRulesWithSwitches(cfg.Security, securityPackRules(componentSnapshotForConfig(cfg).ModuleActive, logger)),
 		Notifier:          notify.NewDesktop(),
 		OrgKeyPinHash:     orgKeyPin,
+		OrgBundleExpected: bundleExpected,
 		// Tenancy half of the org lock (adversarial review P2-8):
 		// org-authoritative over the whole catalog on a MANAGED node,
 		// a floor over the rules the bundle names on an individual
@@ -159,6 +181,9 @@ func buildGuardForStore(ctx context.Context, cfg config.Config, st *store.Store,
 	for _, issue := range g.LoadIssues() {
 		logger.Warn("guard: policy load issue", "issue", issue)
 	}
+	// R-112 to R-114 (D-761): the per-project git alias table this
+	// daemon's gitAliasLoop publishes beside the database.
+	g.SetGitAliasLookup(fileGitAliasLookup(gitalias.Path(cfg.Observer.DBPath), logger))
 	// §6.3 approvals: blocking verdicts consult the grant register.
 	// The daemon's store handle is long-lived, so the lookup is one
 	// indexed read; errors report false (fail-safe to enforcement).

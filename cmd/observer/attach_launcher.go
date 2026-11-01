@@ -97,7 +97,7 @@ func launcherAttach(ctx context.Context, spec launcherAttachSpec) (launcherAttac
 
 	proxyURL := resolveProxyURL(cfg.Proxy.Port, spec.proxyOverride)
 
-	decision := decideAttach(attachDecisionInputs{
+	in := attachDecisionInputs{
 		enabled:       cfg.Terminal.Attach.Enabled,
 		defaultOn:     cfg.Terminal.Attach.DefaultOn,
 		grounded:      grounded,
@@ -107,9 +107,21 @@ func launcherAttach(ctx context.Context, spec launcherAttachSpec) (launcherAttac
 		stdoutTTY:     term.IsTerminal(int(os.Stdout.Fd())),
 		incompatible:  spec.incompatible,
 		daemonChild:   runningAsDaemonChild(),
-		daemonSpawned: oobChannelActive(),
+		daemonSpawned: oobChannelSpawnedByDaemon(),
 		reachable:     func() bool { return attachSocketReachable(cfg.Observer.DBPath) },
-	})
+		inSandbox:     os.Getenv(sandboxEnvMarker) == "1",
+	}
+	decision := decideAttach(in)
+	if in.inSandbox {
+		// Inside a box the decision goes to the run's inner log with the
+		// facts it read, so a run whose attach notice did not print says
+		// which row it took (Windows 11 Pro run 3: a non-terminal stdin or
+		// stdout is the scripted row, silent by design). Outside a box this
+		// writes nothing.
+		appendBoxInnerLog(attachDecisionNote(in, decision) + boxConsoleNote(os.Getenv, boxConsoleWindow()))
+		// The box's environment in the run's posture (WINFIX2 R-167).
+		sandboxEnvPosture(spec.stderr)
+	}
 
 	var outcome launcherAttachOutcome
 	if decision.notice != "" {

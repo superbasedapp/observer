@@ -30,7 +30,12 @@ type driveRequest struct {
 	Tool         string
 	Model        string
 	WorktreePath string
-	Prompt       string
+	// SourceRoot is the project repository the worktree was made from; the
+	// admission callback reads it (LaunchTarget).
+	SourceRoot string
+	// ProjectRoot is the run's project root (LaunchTarget.ProjectRoot).
+	ProjectRoot string
+	Prompt      string
 	// ContextFiles are validated project-relative paths selected for this run.
 	// The registry HeadlessSpec decides whether/how they land on argv.
 	ContextFiles []string
@@ -52,6 +57,12 @@ type driveRequest struct {
 	// Admission runs immediately before the harness process starts. Nil keeps
 	// the standalone Arena engine behavior unchanged.
 	Admission func(context.Context, string, string) error
+	// Role says why the harness is driven; it picks the permission lane
+	// together with Bypass (permlane.go). The zero value is a candidate.
+	Role driveRole
+	// Bypass is the policy's answer for this drive: whether the harness's
+	// own permission checks may be skipped. The zero value is no.
+	Bypass BypassDecision
 }
 
 // driveResult is one candidate drive's outcome.
@@ -64,6 +75,8 @@ type driveResult struct {
 	// PID of the spawned root process (>0 after a real drive) so the
 	// runner can record a launch seed for daemon-side attribution.
 	PID int
+	// Lane is the permission lane the drive ran in (permlane.go).
+	Lane integration.HeadlessPermLane
 }
 
 var (
@@ -112,12 +125,17 @@ func executeDrive(ctx context.Context, bin string, spec *integration.HeadlessSpe
 	if err != nil {
 		return driveResult{}, fmt.Errorf("arena.executeDrive: %w", err)
 	}
-	args, sessionID, outPath := buildDriveArgv(spec, req, modelArgs)
+	lane, permArgs, err := permissionArgs(spec, req.Tool, req.Role, req.Bypass)
+	if err != nil {
+		return driveResult{}, fmt.Errorf("arena.executeDrive: %w", err)
+	}
+	args, sessionID, outPath := buildDriveArgv(spec, req, modelArgs, permArgs)
 
 	stdout, captured, res, err := spawnDrive(ctx, bin, args, modelEnv, spec, req)
 	if err != nil {
 		return driveResult{}, err
 	}
+	res.Lane = lane
 	if captured {
 		if extract, ok := driveResultExtractors[spec.Result]; ok {
 			res.FinalAnswer, res.SessionIDs = extract(stdout, outPath, sessionID)
@@ -128,16 +146,18 @@ func executeDrive(ctx context.Context, bin string, spec *integration.HeadlessSpe
 
 // buildDriveArgv composes the harness argv from the HeadlessSpec plus this
 // request's prompt/model/context files — one branch per capability the spec
-// declares (session-id minting + skip-permissions for the stdout-JSON lane,
-// workspace-write flags for the file-output lane, positional context files,
-// the output-file flag). modelArgs are the argv tokens modelDelivery composed
-// for the selected model (nil for the harness default or an env-delivered
-// model). Returns the argv, the session id minted for a stdout-JSON lane
-// (empty otherwise), and the output-file path for a lane that extracts its
-// answer from a file (empty otherwise).
-func buildDriveArgv(spec *integration.HeadlessSpec, req driveRequest, modelArgs []string) (args []string, sessionID string, outPath string) {
-	args = make([]string, 0, len(spec.Lead)+len(spec.OutputArgs)+8)
+// declares (session-id minting for the stdout-JSON lane, the working
+// directory flag for the file-output lane, positional context files, the
+// output-file flag). permArgs are the permission lane's tokens
+// (permissionArgs, OSH-R-005), placed right after Lead. modelArgs are the
+// argv tokens modelDelivery composed for the selected model (nil for the
+// harness default or an env-delivered model). Returns the argv, the session
+// id minted for a stdout-JSON lane (empty otherwise), and the output-file
+// path for a lane that extracts its answer from a file (empty otherwise).
+func buildDriveArgv(spec *integration.HeadlessSpec, req driveRequest, modelArgs, permArgs []string) (args []string, sessionID string, outPath string) {
+	args = make([]string, 0, len(spec.Lead)+len(permArgs)+len(spec.OutputArgs)+8)
 	args = append(args, spec.Lead...)
+	args = append(args, permArgs...)
 
 	switch spec.Result {
 	case integration.HeadlessResultStdoutJSON:
@@ -146,9 +166,7 @@ func buildDriveArgv(spec *integration.HeadlessSpec, req driveRequest, modelArgs 
 		// proxy api_turns to this candidate.
 		sessionID = mintSessionID()
 		args = append(args, "--session-id", sessionID)
-		args = append(args, "--dangerously-skip-permissions")
 	case integration.HeadlessResultOutputFile:
-		args = append(args, "--skip-git-repo-check", "-s", "workspace-write")
 		if req.WorktreePath != "" {
 			args = append(args, "-C", req.WorktreePath)
 		}
@@ -228,9 +246,11 @@ func spawnDrive(ctx context.Context, bin string, args, modelEnv []string, spec *
 	cmd.Stderr = tmpOut
 
 	if req.Admission != nil {
-		if admissionErr := req.Admission(dctx, req.Tool, req.ProxyURL); admissionErr != nil {
+		target := &LaunchTarget{Dir: req.WorktreePath, SourceRoot: req.SourceRoot, ProjectRoot: req.ProjectRoot}
+		if admissionErr := req.Admission(ContextWithLaunchTarget(dctx, target), req.Tool, req.ProxyURL); admissionErr != nil {
 			return nil, false, driveResult{}, fmt.Errorf("arena.executeDrive: admission: %w", admissionErr)
 		}
+		cmd.Env = append(cmd.Env, target.ChildEnv...)
 	}
 	start := time.Now()
 	runErr := cmd.Start()

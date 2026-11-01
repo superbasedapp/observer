@@ -13,6 +13,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/marmutapp/superbased-observer/internal/testwriteguard"
 )
 
 // observerProviderAPIKeyEnv is the env var NAME written as the provider's
@@ -239,6 +241,9 @@ func restoreObserverModelsProvider(path, name string, wrote map[string]any, exis
 	}
 	delete(providers, name)
 	if !existed && len(providers) == 0 && len(root) == 1 {
+		if err := testwriteguard.Check("remove", path); err != nil {
+			return err
+		}
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("remove %s: %w", path, err)
 		}
@@ -257,6 +262,9 @@ func sameJSON(a, b any) bool {
 // writeJSONFileAtomic writes v to path as indented JSON (0600, parent 0700)
 // through a temp file and rename, so a crash cannot truncate the file.
 func writeJSONFileAtomic(path string, v any) error {
+	if err := testwriteguard.Check("write", path); err != nil {
+		return err
+	}
 	out, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal %s: %w", path, err)

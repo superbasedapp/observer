@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/marmutapp/superbased-observer/internal/cfgfmt"
+	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
+	"github.com/marmutapp/superbased-observer/internal/proxyauth"
 	"github.com/marmutapp/superbased-observer/internal/routeprov"
 )
 
@@ -45,6 +47,12 @@ type RegisterOptions struct {
 	// WindowsCursorHome.
 	WindowsClaudeHome string
 	WindowsCodexHome  string
+	// WSLUserHome overrides the auto-detected WSL Linux home the Windows to
+	// WSL route twins (RegisterClaudeCodeWSL / RegisterCodexWSL in
+	// windows.go) write under, as this Windows host reaches it
+	// (\\wsl.localhost\<distro>\home\<user>); the writer appends .claude or
+	// .codex. Mirrors hook.Options.WSLUserHome.
+	WSLUserHome string
 	// Writer says who is writing routes through this registrar (enrolment,
 	// `observer init`, Settings > Setup, a launcher). Every write or
 	// confirmation is recorded with it in the route-provenance file
@@ -56,14 +64,33 @@ type RegisterOptions struct {
 	// injected by the caller). nil locks nothing. Used by RegisterCodex and
 	// UnregisterCodex.
 	Lock func(path string) (func(), error)
+	// Getenv reads the environment variables that relocate a route file
+	// (today Cline's CLINE_DATA_DIR / CLINE_DIR for globalState.json). Nil
+	// is the one pinned-home rule (crossmount.HomeEnv, R-188 F1): os.Getenv
+	// only when the caller did not pin HomeDir and the process home is not
+	// isolated from the account's real home (crossmount.IsolationReason,
+	// the LEFT2 rule), and NO variables otherwise, so a pinned or isolated
+	// home resolves every file under itself (surface-gap Waves 1-3 audit
+	// finding 2).
+	Getenv func(string) string
+	// ClientToken is the proxy client token (OSH-R-009,
+	// docs/plans/proxy-client-auth-2026-10-30.md). When set, the writers
+	// whose inspection row declares clientAuth (claude-code, codex) write
+	// the token form http://127.0.0.1:<port>/t/<token>..., and rewrite a
+	// route of theirs that differs from it only in the token prefix. ""
+	// writes the plain form, and rewrites a token form back to it.
+	ClientToken string
 }
 
 // RegistrationResult summarizes one routing registration.
 type RegistrationResult struct {
 	Tool       string // "codex"
 	ConfigPath string // ~/.codex/config.toml
-	BaseURL    string // value written or already set
+	BaseURL    string // value written or already set; a client token in it is redacted
 	Added      bool
+	// ClientAuth reports that the route written or found carries the proxy
+	// client token (BaseURL shows it redacted).
+	ClientAuth bool
 	AlreadySet bool
 	DryRun     bool
 	Error      error
@@ -102,6 +129,15 @@ type RegistrationResult struct {
 	// wrote it failed. The route stands; Leave then treats it as not written
 	// by enrolment and keeps it.
 	ProvenanceError error
+	// RouteKey / LaneID / LaneRoot are set by the third-party-provider lane
+	// writers (lane.go): the config path the route was written at (when it
+	// is not the tool's fixed key), the proxy lane it addresses and the
+	// upstream host root that lane forwards to. Recorded in provenance so the
+	// lane is re-installed at start and the original host restored on
+	// removal.
+	RouteKey []string
+	LaneID   string
+	LaneRoot string
 }
 
 // Registrar dispatches proxy-routing config writes per tool.
@@ -128,6 +164,7 @@ func NewRegistrar(opts RegisterOptions) (*Registrar, error) {
 		}
 		opts.HomeDir = home
 	}
+	opts.Getenv = crossmount.HomeEnv(homeOverride, opts.Getenv)
 	return &Registrar{opts: opts, homeOverride: homeOverride}, nil
 }
 
@@ -168,8 +205,11 @@ func IsObserverBaseURL(raw string) bool {
 // are treated as AlreadySet — we don't clobber another local observer
 // install by default.
 func (r *Registrar) RegisterCodex() RegistrationResult {
-	dir := filepath.Join(r.opts.HomeDir, ".codex")
-	return r.registerCodexAt(dir, codexBaseURL(r.opts.ProxyPort), "codex")
+	path, err := r.codexConfigPath()
+	if err != nil {
+		return RegistrationResult{Tool: "codex", BaseURL: codexBaseURL(r.opts.ProxyPort), DryRun: r.opts.DryRun, Error: err}
+	}
+	return redactResult(r.registerCodexAt(filepath.Dir(path), r.clientAuthURL(codexBaseURL(r.opts.ProxyPort)), "codex"))
 }
 
 // registerCodexAt is the parameterized core of RegisterCodex: it writes
@@ -257,6 +297,9 @@ func (r *Registrar) writeCodexAt(dir, want, toolLabel string) RegistrationResult
 				return res
 			}
 			// Else fall through and set the top-level switch.
+		case proxyauth.SameRoute(existing, want):
+			// This route in the other form (plain vs client token):
+			// rewrite it to the form this registrar writes.
 		case IsObserverBaseURL(existing) && !r.opts.Force:
 			res.AlreadySet = true
 			res.BaseURL = existing
@@ -308,6 +351,10 @@ func (r *Registrar) writeCodexAt(dir, want, toolLabel string) RegistrationResult
 	}
 	if r.opts.DryRun {
 		res.Added = true
+		return res
+	}
+	if err := guardWrite(dir, path); err != nil {
+		res.Error = fmt.Errorf("proxyroute.codex: %w", err)
 		return res
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {

@@ -17,7 +17,19 @@ func doc(url string) Grounding { return Grounding{Kind: GroundDoc, Source: url, 
 func live(what string) Grounding {
 	return Grounding{Kind: GroundLive, Source: "node 1: " + what, Date: auditDate}
 }
+
 func source(url string) Grounding { return Grounding{Kind: GroundSource, Source: url, Date: auditDate} }
+
+// xcodeMAC1Live grounds an Xcode agent home on the 2026-10-28 MAC-1 read.
+func xcodeMAC1Live(what string) Grounding {
+	return Grounding{Kind: GroundLive, Source: "MAC-1 read (macOS 26.2, Xcode 26.6 17F113 beside 26.4.1 17E202): " + what, Date: "2026-10-28"}
+}
+
+// xcodeRound5bLive grounds an Xcode agent home on Mac round 5b (2026-10-28,
+// the operator's Xcode 26.6 run; docs/handovers/surface-gap-mac-ide-round-2026-10-27.md).
+func xcodeRound5bLive(what string) Grounding {
+	return Grounding{Kind: GroundLive, Source: "Mac round 5b (macOS 26.2, Xcode 26.6): " + what, Date: "2026-10-28"}
+}
 
 // settingsFiles is the settings-kind part of the Files table: the tools
 // with a schema-generated catalogue (phase P1). The doc-authored tools of
@@ -50,14 +62,39 @@ var settingsFiles = []FileRow{
 			Windows: `C:\Program Files\ClaudeCode\managed-settings.json`,
 		},
 		Format: FormatJSON, SchemaURL: "https://json.schemastore.org/claude-code-settings.json",
-		Precedence: 100, WriteNeeds: PrivAdminRoot, Grounding: doc("https://code.claude.com/docs/en/managed-settings"),
+		Precedence: 100, WriteNeeds: PrivAdminRoot, DropInDir: "managed-settings.d", Grounding: doc("https://code.claude.com/docs/en/managed-settings"),
 		Note: "Plus managed-settings.d/*.json (merged) and the MDM / registry sources; /etc/claude-code is reported user-writable on WSL, so it is not a lock there.",
 	},
 	{
 		ID: "claude-code/global-config", Tool: "claude-code", Shape: "claude-code/global-config", Kind: KindToolState, Scope: ScopeUser,
 		Paths: samePath("~/.claude.json"), Format: FormatJSON, Precedence: 20, WriteNeeds: PrivNever,
 		Grounding: live("~/.claude.json carries autoUpdates beside large server caches"),
-		Note:      "Mostly server caches (cachedGrowthBookFeatures, cachedExperimentData) plus user / local MCP servers: shown, never form-edited.",
+		Note:      "Mostly server caches (cachedGrowthBookFeatures, cachedExperimentData) plus user / local MCP servers: shown, never form-edited. CLAUDE_CONFIG_DIR moves it to $CLAUDE_CONFIG_DIR/.claude.json.",
+	},
+	{
+		// Lane BOXSIGNIN: the sign-in file sign-in seeding copies (with
+		// consent) into a projected sandbox; Observer never reads it
+		// otherwise and never edits it.
+		ID: "claude-code/credentials", Tool: "claude-code", Shape: "claude-code/credentials", Kind: KindToolState, Scope: ScopeUser,
+		Paths: samePath("~/.claude/.credentials.json"), Format: FormatJSON, Precedence: 0, WriteNeeds: PrivNever,
+		Grounding: doc("https://code.claude.com/docs/en/authentication"),
+		Note:      "Credential store (Linux and Windows; the macOS Keychain on a Mac): never edited; copied only by consented sign-in seeding. CLAUDE_CONFIG_DIR moves it.",
+	},
+	{
+		// Surface-gap S-2 (lane w8-registry, 2026-10-28): the CLAUDE_CONFIG_DIR
+		// of the Claude Code Xcode 26.3+ bundles (Agents/claude/<version>).
+		// A tool-state DIRECTORY row of its own shape, so no effective-layer
+		// evaluator reads it as a layer of the CLI's settings: Xcode's Claude
+		// never reads ~/.claude, and the CLI never reads this. PrivNever: no
+		// catalogue writer (the settings editor, a fan-out) touches it; the one
+		// writer is the hook target claude-code-xcode (internal/hook
+		// register_xcode.go; LCR-89 passed 2026-10-28), which adds
+		// settings.json inside it.
+		ID: "claude-code/xcode-agent-home", Tool: "claude-code", Shape: "claude-code/xcode-agent-home", Kind: KindToolState, Scope: ScopeUser,
+		Paths: OSPaths{Darwin: "~/Library/Developer/Xcode/CodingAssistant/ClaudeAgentConfig/"}, Format: FormatJSON, Precedence: 0, WriteNeeds: PrivNever,
+		Grounding: xcodeMAC1Live("ClaudeAgentConfig/ holds .claude.json, policy-limits.json, remote-settings.json, projects/, sessions/, session-env/, shell-snapshots/, backups/, debug/ and no settings.json"),
+		Note: "Xcode's own Claude config home (macOS): its .claude.json (rewritten atomically by Xcode's Claude) and transcripts under projects/. " +
+			"Xcode ships no settings.json here, so no ~/.claude hook or route reaches Xcode's Claude. Observer's hook writer for this home (target claude-code-xcode) adds its hooks in settings.json here, only when this folder exists; live check LCR-89 passed on 2026-10-28 (Xcode 26.6 ran the hooks and kept the file byte for byte). The claude-code adapter reads the transcripts under projects/ (FU-150).",
 	},
 	{
 		ID: "claude-code/project-mcp", Tool: "claude-code", Shape: "claude-code/mcp", Kind: KindMCP, Scope: ScopeProjectShared,
@@ -70,9 +107,13 @@ var settingsFiles = []FileRow{
 	// managed defaults file overrides user config at startup.
 	{
 		ID: "codex/system-config", Tool: "codex", Shape: "codex/config", Kind: KindSettings, Scope: ScopeSystem,
-		Paths: OSPaths{Linux: "/etc/codex/config.toml", Darwin: "/etc/codex/config.toml"}, Format: FormatTOML,
+		Paths:      OSPaths{Linux: "/etc/codex/config.toml", Darwin: "/etc/codex/config.toml", Windows: `%ProgramData%\OpenAI\Codex\config.toml`},
+		Format:     FormatTOML,
 		SchemaURL:  "https://raw.githubusercontent.com/openai/codex/main/codex-rs/core/config.schema.json",
 		Precedence: 10, WriteNeeds: PrivAdminRoot, Grounding: doc("https://learn.chatgpt.com/docs/config-file/config-reference"),
+		// The Windows path is from vendor source (codex-rs/config/src/loader/mod.rs,
+		// system_config_toml_file: %ProgramData%\OpenAI\Codex\config.toml, C:\ProgramData
+		// when unset), surface-gap review S-7.
 	},
 	{
 		ID: "codex/user-config", Tool: "codex", Shape: "codex/config", Kind: KindSettings, Scope: ScopeUser,
@@ -80,6 +121,13 @@ var settingsFiles = []FileRow{
 		SchemaURL:  "https://raw.githubusercontent.com/openai/codex/main/codex-rs/core/config.schema.json",
 		Precedence: 20, WriteNeeds: PrivUser, Grounding: live("~/.codex/config.toml carries model, model_reasoning_effort, projects, tui"),
 		Note: "CODEX_HOME relocates ~/.codex.",
+	},
+	{
+		// Lane BOXSIGNIN: Codex's file sign-in store.
+		ID: "codex/auth", Tool: "codex", Shape: "codex/auth", Kind: KindToolState, Scope: ScopeUser,
+		Paths: samePath("~/.codex/auth.json"), Format: FormatJSON, Precedence: 0, WriteNeeds: PrivNever,
+		Grounding: doc("https://developers.openai.com/codex/auth"),
+		Note:      "Credential store (cli_auth_credentials_store file; keyring and auto use the OS store): never edited; copied only by consented sign-in seeding. CODEX_HOME moves it.",
 	},
 	{
 		ID: "codex/project-config", Tool: "codex", Shape: "codex/config", Kind: KindSettings, Scope: ScopeProjectShared,
@@ -102,6 +150,18 @@ var settingsFiles = []FileRow{
 		Format: FormatTOML, Precedence: 100, WriteNeeds: PrivAdminRoot,
 		Grounding: doc("https://learn.chatgpt.com/docs/enterprise/managed-configuration"),
 		Note:      "Enforced constraints (allowed_approval_policies, allowed_sandbox_modes, ...); its rows land with the lever A phase (P8).",
+	},
+	{
+		// Surface-gap S-2: the CODEX_HOME of the Codex Xcode bundles
+		// (Agents/XcodeVersions/<build>/codex). Not ~/.codex. PrivNever:
+		// no catalogue writer touches it; the one writer is the hook target
+		// codex-xcode (internal/hook register_xcode.go; LCR-90 passed
+		// 2026-10-28), which adds hooks.json and config.toml inside it.
+		ID: "codex/xcode-agent-home", Tool: "codex", Shape: "codex/xcode-agent-home", Kind: KindToolState, Scope: ScopeUser,
+		Paths: OSPaths{Darwin: "~/Library/Developer/Xcode/CodingAssistant/codex/"}, Format: FormatTOML, Precedence: 0, WriteNeeds: PrivNever,
+		Grounding: xcodeMAC1Live("codex/ holds installation_id, cache/, logs_2.sqlite, memories_1.sqlite, plugins/, rules/xcode.rules, sessions/YYYY/MM/rollout-*.jsonl, shell_snapshots/, models_cache.json and no config.toml or hooks.json"),
+		Note: "Xcode's own Codex home (macOS): rollouts under sessions/. Xcode ships no hooks.json and writes its own config.toml, so no ~/.codex hook or route reaches Xcode's Codex; " +
+			"Observer's hook writer for this home (target codex-xcode) adds hooks.json, the config.toml [features] hooks switch and the trust records here, only when this folder exists; live check LCR-90 passed on 2026-10-28 (Xcode 26.6 ran the hooks with no trust prompt, rewrites config.toml at every session start and keeps those lines). The codex adapter reads the rollouts under sessions/ (FU-150).",
 	},
 	{
 		ID: "codex/user-hooks", Tool: "codex", Shape: "codex/hooks", Kind: KindHooks, Scope: ScopeUser,
@@ -154,6 +214,24 @@ var settingsFiles = []FileRow{
 		Note: "GEMINI_CLI_HOME relocates ~/.gemini.",
 	},
 	{
+		// Surface-gap S-2 and FU-160: the Gemini CLI home of the Gemini agent
+		// Xcode 26.6 bundles (CodingAssistant/Agents/gemini). Apple's page
+		// (https://developer.apple.com/documentation/xcode/extending-and-customizing-agents)
+		// names CodingAssistant/gemini; Mac round 5b found the home in its
+		// .gemini folder. Not ~/.gemini, and not moved by GEMINI_CLI_HOME
+		// (that is the CLI's own home). A tool-state DIRECTORY row of its own
+		// shape, so no effective-layer evaluator reads it as a layer of the
+		// CLI's settings. PrivNever: no catalogue writer touches it; the one
+		// writer is the hook target gemini-cli-xcode (internal/hook
+		// register_xcode.go), switched off on LCR-91's finding (FU-195).
+		ID: "gemini-cli/xcode-agent-home", Tool: "gemini-cli", Shape: "gemini-cli/xcode-agent-home", Kind: KindToolState, Scope: ScopeUser,
+		Paths: OSPaths{Darwin: "~/Library/Developer/Xcode/CodingAssistant/gemini/.gemini/"}, Format: FormatJSONC, Precedence: 0, WriteNeeds: PrivNever,
+		Grounding: xcodeRound5bLive("CodingAssistant/gemini/.gemini holds settings.json, GEMINI.md, projects.json, history/ and tmp/; Xcode's Gemini ran a shell call with Observer's ~/.gemini registration in place and no hook reached it"),
+		Note: "Xcode's own Gemini CLI home (macOS, Xcode 26.6+), written by Xcode's bundled Gemini CLI: settings.json, GEMINI.md, projects.json, history/, tmp/. " +
+			"No ~/.gemini hook or route reaches Xcode's Gemini. The gemini-cli adapter reads the chats under tmp/<project>/chats/ and the project records beside them (FU-160). " +
+			"Observer's hook writer for this home (target gemini-cli-xcode) would add its hooks to settings.json here, only when this folder exists; it is built and switched off: live check LCR-91 (MAC-6) found Xcode's Gemini runs BeforeAgent but not BeforeTool, so a tool gate there cannot block a shell call.",
+	},
+	{
 		ID: "gemini-cli/project-settings", Tool: "gemini-cli", Shape: "gemini-cli/settings", Kind: KindSettings, Scope: ScopeProjectShared,
 		Paths: samePath("<project>/.gemini/settings.json"), Format: FormatJSONC,
 		SchemaURL:  "https://raw.githubusercontent.com/google-gemini/gemini-cli/main/schemas/settings.schema.json",
@@ -178,6 +256,18 @@ var settingsFiles = []FileRow{
 		Paths: samePath("~/.config/opencode/opencode.json"), Format: FormatJSONC, SchemaURL: "https://opencode.ai/config.json",
 		Precedence: 20, WriteNeeds: PrivUser, Grounding: live("~/.config/opencode/opencode.json carries $schema, mcp, provider, small_model"),
 		Note: "opencode.jsonc is also read; the Windows path is the same XDG layout (inferred, not live-checked).",
+	},
+	{
+		// FU-103 (MAC-4): OPENCODE_CONFIG_DIR adds this file to the chain
+		// rather than moving the global one; the docs load it after the
+		// global file and the .opencode directories, so it ranks above the
+		// project file and below OPENCODE_CONFIG_CONTENT and managed.
+		ID: "opencode/config-dir-config", Tool: "opencode", Shape: "opencode/config", Kind: KindSettings, Scope: ScopeUser,
+		Paths: samePath("$OPENCODE_CONFIG_DIR/opencode.json"), Format: FormatJSONC, SchemaURL: "https://opencode.ai/config.json",
+		Precedence: 35, WriteNeeds: PrivUser,
+		Grounding: mac4Live("opencode 1.19.4 loaded $OPENCODE_CONFIG_DIR/opencode.json beside ~/.config/opencode/opencode.json (both MCP servers listed)"),
+		Note: "Read only while OPENCODE_CONFIG_DIR names an absolute directory (the row resolves to env_unset otherwise). That it is loaded is live-grounded; " +
+			"its rank (after global and .opencode, before OPENCODE_CONFIG_CONTENT) is from https://opencode.ai/docs/config. The directory may also hold agents, commands and plugins, which have no row.",
 	},
 	{
 		ID: "opencode/project-config", Tool: "opencode", Shape: "opencode/config", Kind: KindSettings, Scope: ScopeProjectShared,
@@ -207,12 +297,25 @@ var settingsFiles = []FileRow{
 		ID: "kilo-code-cli/user-config", Tool: "kilo-code-cli", Shape: "kilo-code-cli/config", Kind: KindSettings, Scope: ScopeUser,
 		Paths: samePath("~/.config/kilo/kilo.jsonc"), Format: FormatJSONC, SchemaURL: "https://app.kilo.ai/config.json",
 		Precedence: 20, WriteNeeds: PrivUser, Grounding: live("~/.config/kilo/kilo.jsonc holds only $schema"),
-		Note: "config.json, kilo.json, opencode.json(c) in the same dir are also read; the XDG path is used on Windows too.",
+		Note: "config.json, kilo.json, opencode.json(c) in the same dir are also read; the XDG path is used on Windows too " +
+			"(C:\\Users\\<username>\\.config\\kilo\\kilo.jsonc). Read by every Kilo client: the CLI, Kilo Code 7.x for VS Code and " +
+			"Kilo Code for JetBrains v7 (gap review IDE-9). A custom provider's provider.<id>.options.baseURL is the route lever (CLI-9, LC24).",
 	},
 	{
 		ID: "kilo-code-cli/project-config", Tool: "kilo-code-cli", Shape: "kilo-code-cli/config", Kind: KindSettings, Scope: ScopeProjectShared,
 		Paths: samePath("<project>/kilo.jsonc"), Format: FormatJSONC, SchemaURL: "https://app.kilo.ai/config.json",
 		Precedence: 30, WriteNeeds: PrivUser, Grounding: doc("https://kilo.ai/docs/contributing/architecture/config-schema"),
+	},
+	{
+		// Gap review IDE-9 (lane w8-registry, 2026-10-28): Kilo's settings
+		// page names <project>/.kilo/kilo.jsonc beside <project>/kilo.jsonc
+		// and says the .kilo dir wins; Kilo no longer falls back to
+		// .opencode config dirs.
+		ID: "kilo-code-cli/project-dir-config", Tool: "kilo-code-cli", Shape: "kilo-code-cli/config", Kind: KindSettings, Scope: ScopeProjectShared,
+		Paths: samePath("<project>/.kilo/kilo.jsonc"), Format: FormatJSONC, SchemaURL: "https://app.kilo.ai/config.json",
+		Precedence: 35, WriteNeeds: PrivUser,
+		Grounding: Grounding{Kind: GroundDoc, Source: "https://raw.githubusercontent.com/Kilo-Org/kilocode/main/packages/kilo-docs/pages/getting-started/settings/index.md", Date: "2026-10-25"},
+		Note:      "Wins over <project>/kilo.jsonc. Shared by the CLI and the 7.x VS Code and JetBrains clients.",
 	},
 	{
 		ID: "kilo-code-cli/managed-dir", Tool: "kilo-code-cli", Shape: "kilo-code-cli/config", Kind: KindSettings, Scope: ScopeManaged,
@@ -297,6 +400,7 @@ func filesTable() []FileRow {
 // compileFiles assembles and sorts the Files table.
 func compileFiles() []FileRow {
 	out := append([]FileRow(nil), settingsFiles...)
+	out = append(out, projectRunFiles...)
 	for _, tc := range toolCatalogs {
 		out = append(out, tc.Files...)
 	}
@@ -349,10 +453,15 @@ func guidanceFiles() []FileRow {
 		if format == "" {
 			format = FormatMarkdown
 		}
+		if strings.HasSuffix(r.Glob, ".toml") {
+			// A TOML command file (Gemini CLI) carries no front matter.
+			format = FormatTOML
+		}
 		out = append(out, FileRow{
 			ID: id, Tool: r.Tool, Shape: id, Kind: kind, Scope: scope,
 			Paths: samePath(path), Format: format, Precedence: prec, WriteNeeds: PrivUser,
 			Gitignored: r.Personal,
+			Borrowed:   r.Borrowed,
 			Grounding:  Grounding{Kind: GroundAdapterDoc, Source: "internal/guidance/rules.go"},
 			Note:       strings.TrimSpace(r.Note),
 		})

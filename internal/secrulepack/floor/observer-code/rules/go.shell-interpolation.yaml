@@ -1,0 +1,49 @@
+rules:
+  - id: go.shell-interpolation
+    languages: [go]
+    severity: ERROR
+    message: Web request input reaches a shell command line; run the program directly with an argument list instead.
+    metadata:
+      category: code_vuln
+      cwe: CWE-78
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: $R.URL.Query()
+              - pattern: $R.FormValue(...)
+              - pattern: $R.PostFormValue(...)
+              - pattern: $R.PathValue(...)
+              - pattern: $R.Form
+              - pattern: $R.PostForm
+          - metavariable-regex:
+              metavariable: $R
+              regex: ^(r|req|request|httpReq)$
+      - pattern: mux.Vars(...)
+      - patterns:
+          - pattern-either:
+              - pattern: $C.Query(...)
+              - pattern: $C.Param(...)
+              - pattern: $C.PostForm(...)
+              - pattern: $C.DefaultQuery(...)
+              - pattern: $C.QueryParam(...)
+              - pattern: $C.FormValue(...)
+          - metavariable-regex:
+              metavariable: $C
+              regex: ^(c|ctx|gc|ec)$
+    pattern-sanitizers:
+      - pattern: strconv.Atoi(...)
+      - pattern: strconv.ParseInt(...)
+      - pattern: strconv.ParseUint(...)
+      - pattern: strconv.ParseFloat(...)
+      - pattern: strconv.ParseBool(...)
+      - pattern: shellescape.Quote(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: exec.Command("$SH", "-c", $CMD, ...)
+              - pattern: exec.CommandContext($CTX, "$SH", "-c", $CMD, ...)
+          - metavariable-regex:
+              metavariable: $SH
+              regex: ^(sh|bash|zsh|/bin/sh|/bin/bash|/usr/bin/env)$
+          - focus-metavariable: $CMD

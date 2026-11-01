@@ -144,6 +144,12 @@ func Inventory(locations []locate.Location, readFile func(string) ([]byte, error
 	var servers []Server
 	var issues []string
 	for _, loc := range locations {
+		// A relocation variable with a relative value hides the client's
+		// file: report it rather than skip the client silently (FU-130).
+		if reason := loc.Reason(); reason != "" {
+			issues = append(issues, reason)
+			continue
+		}
 		raw, err := readFile(loc.Path)
 		switch {
 		case errors.Is(err, os.ErrNotExist):

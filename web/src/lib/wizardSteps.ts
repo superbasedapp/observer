@@ -18,6 +18,8 @@ export type WizardStepPlan = {
   remove: boolean;
   /** Why the write is not offered, when the server knows. */
   note?: string;
+  /** What the write switches off in the tool, shown before the consent (FU-24). */
+  tradeoff?: string;
 };
 
 const ENDPOINTS: Record<Exclude<WizardStepKey, "route">, string> = {
@@ -37,7 +39,13 @@ export function wizardStepsFor(w: ToolWiring | undefined): WizardStepPlan[] {
     }
   }
   if (w.route_endpoint && (w.route.register || w.route.remove)) {
-    out.push({ id: "route", endpoint: w.route_endpoint, register: w.route.register, remove: w.route.remove });
+    out.push({
+      id: "route",
+      endpoint: w.route_endpoint,
+      register: w.route.register,
+      remove: w.route.remove,
+      tradeoff: w.route.tradeoff,
+    });
   }
   const t = w.telemetry;
   if (t && (t.register || t.remove)) {

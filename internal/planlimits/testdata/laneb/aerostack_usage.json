@@ -1,0 +1,1 @@
+{"tier":"starter","period":"2025-10","usage":{"ai_tokens":{"used":150000,"limit":1000000},"api_requests":{"used":42000,"limit":500000},"gateway_requests":{"used":3000,"limit":50000},"mcp_proxy_calls":{"used":1200,"limit":null}},"wallet":{"balance_cents":500},"current_period_end":"2025-11-01T00:00:00Z"}

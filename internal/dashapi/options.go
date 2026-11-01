@@ -6,7 +6,10 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/marmutapp/superbased-observer/internal/agentconfig"
 	"github.com/marmutapp/superbased-observer/internal/artifactstate"
+	"github.com/marmutapp/superbased-observer/internal/captureprogress"
+	"github.com/marmutapp/superbased-observer/internal/componentstate"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/diag"
 	"github.com/marmutapp/superbased-observer/internal/handoffsvc"
@@ -195,14 +198,43 @@ type Options struct {
 	// Code proxy-route setup status (T-585). False is the honest zero
 	// value for an embedder that does not say.
 	WatcherRunning bool
+	// CaptureProgress, when non-nil, reads the watcher's history-capture
+	// progress model (internal/captureprogress, T-922): what the initial
+	// scan and every hot-added root walk found and read. The first-run view
+	// (/api/firstrun) reports it; the dashboard never re-scans to answer.
+	// Nil (a standalone `observer dashboard`) reports the watcher as not
+	// running in this process.
+	CaptureProgress func() captureprogress.Snapshot
+	// InstallSignalTools, when non-nil, lists the registry tools whose
+	// install signals hold on this machine (a VS Code-family editor
+	// extension, a resolved binary; cmd/observer installsignal.go). The
+	// Claude Code setup snapshot reads it so a VS Code-extension-only
+	// Claude Code is not reported as absent (WINNODE2 16b). Nil reports
+	// none.
+	InstallSignalTools func() []string
 	// ProxyPort is the resolved observer-proxy port (cfg.Proxy.Port).
 	// Used by /api/setup/codex to compute the desired
 	// ~/.codex/config.toml base_url. Zero falls back to 8820.
 	ProxyPort int
+	// ProxyClientToken is the proxy client token the Setup route writers
+	// write the token form with (OSH-R-009; RegisterOptions.ClientToken).
+	// "" writes the plain form. Never returned by an API.
+	ProxyClientToken string
 	// ArenaAdmission runs immediately before each Agent Arena candidate or
 	// judge process starts. Nil preserves the standalone Arena engine's
 	// unconfigured behavior. cmd owns the concrete budget-policy check.
 	ArenaAdmission func(context.Context, string, string) error
+	// ArenaPermissionBypass answers, per Agent Arena drive, whether the
+	// harness may run with its own permission checks skipped and, when not,
+	// why (OSH-R-005). Nil answers no: the runner then drives every harness
+	// in a mode that keeps its checks on, or refuses it. cmd composes the
+	// operator's config with a managed node's org policy.
+	ArenaPermissionBypass func(ctx context.Context, tool string) (allowed bool, why string)
+	// ArenaPreflight checks one Agent Arena tool (a candidate's or the
+	// judge's) against every launch gate in the run's project root BEFORE
+	// the run makes its worktrees (ruling P-203): (ctx, tool, projectRoot).
+	// A refusal names the setting. Nil skips the check.
+	ArenaPreflight func(ctx context.Context, tool, projectRoot string) error
 	// StashDir is the proxy-side SROD (Stash & Retrieve on Demand) stash
 	// directory (cfg.Compression.Conversation.Stash.Dir). When set, the
 	// /api/compression/retrieval surface reads short content snippets of
@@ -261,6 +293,11 @@ type Options struct {
 	// a tool, a model or a feature, and following the answer. Nil on a solo
 	// node; the page then says requests go to an organization.
 	Requests RequestService
+	// Messages backs the Messages page's acts that reach the org
+	// (/api/messages*, admin and developer messaging, T-854): reply, ask
+	// my admin, read and acknowledge receipts. Nil on a solo node; the page
+	// then reports not_enrolled.
+	Messages MessageService
 	// Version is the running binary's version string (e.g. "1.8.2").
 	// Stamped at build time via -ldflags="-X main.version=…" and
 	// surfaced on /api/status so the dashboard can compare it against
@@ -436,6 +473,17 @@ type Options struct {
 	// (e.g. config wouldn't come back) - the daemon keeps running. Nil means
 	// this process mode can't self-restart (the handler reports 501).
 	RestartFunc func() error
+	// RestartPreflight, when non-nil, runs the refusal checks RestartFunc
+	// runs (re-exec support, the config preflight) and schedules nothing.
+	// The restart route runs it before it ends live sandboxed runs for an
+	// "end and restart" answer, so a restart that would refuse never ends a
+	// run first; an error wrapping ErrRestartUnsupported is answered 501
+	// (SBX-UPD audit finding 1).
+	RestartPreflight func() error
+	// LiveSandboxRuns, when non-nil, makes the restart route ask before it
+	// ends a live sandboxed run (livesandbox.go, SBX-UPD-1). Nil keeps the
+	// route exactly as it was.
+	LiveSandboxRuns LiveSandboxRuns
 	// UpdateApplyFunc, when non-nil, runs an in-place binary update in the
 	// DAEMON process (POST /api/update/apply) - the enterprise-update
 	// management plan's §3.7 sequence.
@@ -499,6 +547,26 @@ type Options struct {
 	// probe; nil (the default) is the honest disabled state, matching the
 	// LaunchManager/BuildHandoff seam pattern (CLAUDE.md #2).
 	SandboxProber SandboxProber
+	// SandboxInstallVersions, when non-nil, backs GET
+	// /api/terminal/sandbox/install-versions (lane LEFT-SBX): the published
+	// versions of one install-source tool for the Container sandboxes card's
+	// version picker, read from that source's own registry hosts only when
+	// the user asks. nil (the default, and every build without the
+	// container driver) answers 501.
+	SandboxInstallVersions func(ctx context.Context, tool string) ([]string, error)
+	// SandboxSignInForbidden, when non-nil, reports whether the
+	// organization's sandbox managed policy, composed onto the local
+	// config as the next launch composes it, forbids sign-in seeding (lane
+	// BOXSIGNIN, audit finding 3): GET /api/terminal/sandbox/config shows it
+	// on the Settings card. nil (the default, and every build without the
+	// sandbox) reads as not forbidden.
+	SandboxSignInForbidden func() bool
+	// ProjectPolicy, when non-nil, backs GET /api/terminal/project-policy
+	// (lane sec-p2b): the New Terminal dialog's "project policy" line for a
+	// chosen directory, read from the daemon's project match record and the
+	// org-signed mapping with file reads only. nil (the default) answers
+	// shown=false, the honest state of a node with no project delivery.
+	ProjectPolicy func(dir string) ProjectPolicyLine
 	// RefreshWatchRoots, when non-nil, is invoked fail-open after a guided
 	// tool install (POST /api/terminal/install) and after a successful New
 	// Terminal launch (POST /api/terminal/launch). It asks the daemon's
@@ -520,6 +588,12 @@ type Options struct {
 	// the cmd-side status / accept / withdraw functions `observer intel`
 	// also runs. Nil makes /api/intel/* answer 501.
 	OrgIntel OrgIntelManager
+	// CustomScanners is the custom scanner service of component
+	// security.scan.custom (a *seccustomsvc.Service), nil when the component
+	// is inactive or compiled out. Typed as any so this package never links
+	// the custom scanner packages; the dashboard's build-tagged route file
+	// asserts its own interface.
+	CustomScanners any
 	// Plans is the Plans & limits service (internal/planlimitssvc): the
 	// page model, account lifecycle, refresh and the status line feed. Nil
 	// makes every /api/plans route answer 503.
@@ -551,6 +625,88 @@ type Options struct {
 	// unavailable. Nil is treated as "never available" (a standalone
 	// `observer dashboard` process or a test).
 	CloudGradeAvailability func() (bool, string)
+	// CommitRescan scans one project's git history now (the Projects
+	// page's "Rescan now", POST /api/project/{id}/commit-scan), through the
+	// daemon's own commit scanner so it never overlaps a tick. Wired from
+	// cmd/observer/commitscan_wire.go's commitRescanFunc, the same
+	// exec/parse/store pipeline as the daemon loop and `observer backfill
+	// --commits`. Nil (a test, or commit scanning off) hides the action.
+	CommitRescan func(ctx context.Context, projectID int64) error
+	// PackageChecks is the install gate's seam for the Code security
+	// page's Package checks card (component security.deps): its status and
+	// the dashboard accept of the online checks' disclosure. Nil answers
+	// 404 on /api/security/deps.
+	PackageChecks *PackageChecks
+	// ScannerDB is the dependency scanners' OSV database download seam
+	// (operator ruling PT-19 (2)): its state for the Scanners card and the
+	// dashboard's one-time accept. Nil answers 404 on
+	// /api/security/scanners/db.
+	ScannerDB *ScannerDB
+	// SARIFImport is the SARIF upload's seam (component
+	// security.scan.sarif-import, lane SEC-P4): the producer picker, the
+	// file cap and the import. Nil answers 404 on
+	// /api/security/import-sarif.
+	SARIFImport *SARIFImport
+	// Opengrep is the code rules' seam (component security.scan.opengrep,
+	// lane SEC-G2): the Code rules card's state and the guided install.
+	// Nil answers 404 on /api/security/code/install.
+	Opengrep *Opengrep
+	// IaC is the IaC engines' seam (security.scan.trivy, security.scan.kics,
+	// lane GATES-SEC): their Scanners card rows and the guided install. Nil
+	// answers 404 on /api/security/iac/install.
+	IaC *IaC
+	// Provenance is the AI change records card's seam (component
+	// security.provenance, lane sec-f2a); nil when the security module is
+	// compiled out.
+	Provenance *Provenance
+	// SecuritySelected is the daemon's one opt-in rule for a security
+	// child (cmd/observer/security_optin.go securitySelected): the module
+	// active, and for an opt-in child also named by a [components] block.
+	// Nil reads every opt-in child as not selected (fail closed).
+	SecuritySelected func(snap componentstate.Snapshot, id string) bool
+	// ComponentStateView is the daemon's component view with the optional
+	// modules' own rules applied (cmd/observer/components_gate.go
+	// componentStateView: a module root its own rule switched off, such as
+	// `remove = ["terminals.sandbox"]` (plans decision log P-057), and the
+	// opt-in drivers read as not active), the same view `observer
+	// components status` prints. Nil serves core's snap.View(), which
+	// knows no module rule.
+	ComponentStateView func(snap componentstate.Snapshot) componentstate.View
+	// RepoTrustOwn is the launch row's Observer-entry test for a trust
+	// check root (cmd/observer/launch_trust_own.go repoTrustDashboardOwn):
+	// nil for a root that is not the developer's home directory, else a
+	// test over a reason's code, file, key and content that reports
+	// Observer's own registered entries, which the New Terminal chip then
+	// leaves out exactly as the launch does. A nil RepoTrustOwn marks
+	// nothing.
+	RepoTrustOwn func(root string) func(code, file, key, content string) bool
+	// RepoTrustPaths is the launch row's trust path table and devcontainer
+	// parser (cmd/observer/trust_conditions.go repoTrustDashboardPaths, the
+	// one seam every trust surface reads): the conditional rows that hold on
+	// this node, N2's initializeCommand row included, so the trust review
+	// lists, and accepts, exactly what a launch decides on. Nil, or a nil
+	// table, reads the default table.
+	RepoTrustPaths func() ([]agentconfig.TrustPath, func(data []byte) ([]string, map[string]string, error))
+
+	// SecurityExplain is the Code security Findings tab's Explain action
+	// (component security.feedback, lane sec-h): the configured judge's
+	// advisory explanation of one finding. Nil answers 404.
+	SecurityExplain SecurityExplain
+	// SecurityOrgShare feeds the affected-worker notice (security plan
+	// 7.12, lane SEC-E3): what this node shares with its organization about
+	// code security. Nil hides the notice.
+	SecurityOrgShare SecurityOrgShareFunc
+	// Delivery carries the [delivery] tunables (commit to PR to merge,
+	// D-689): whether local landing detection runs, the provider cadence
+	// the Code hosts card states, the mirror disk cap and whether "likely
+	// landed" counts. The zero value reads as "local detection off".
+	Delivery config.DeliveryConfig
+	// DeliveryService is the delivery service seam (connect, test and
+	// disconnect a code host, delete a mirror, check a project now),
+	// wired from cmd/observer/delivery_wire.go over internal/deliverysvc.
+	// Nil makes those write routes answer 503; every delivery read still
+	// works from the local database.
+	DeliveryService DeliveryService
 }
 
 // TerminalSessionLink is the resolved identity of a live terminal launch token

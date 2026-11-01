@@ -1,6 +1,10 @@
 package nodegov
 
-import "sort"
+import (
+	"sort"
+
+	"github.com/marmutapp/superbased-observer/internal/postureop"
+)
 
 // Admin-controlled Plane B, Phase 1b: the CLOSED vocabularies for the
 // schema-2 directive classes (`pinned`, `share`, `features`).
@@ -11,15 +15,19 @@ import "sort"
 // lint and the agent accept path, because an admin must never believe a key
 // is pinned when the node silently skipped it.
 
-// Direction bounds WHICH values the organization may force for a key.
-type Direction string
+// Direction bounds WHICH values the organization may force for a key. It is
+// an alias of postureop.Direction (roadmap F0-8): the direction table and its
+// merge operators live in the pure leaf internal/postureop so
+// internal/config's overlay applies the same operator for a direction as this
+// package's compilePinned checks at publish and accept.
+type Direction = postureop.Direction
 
 const (
 	// DirFree — the org may set either value.
-	DirFree Direction = "free"
+	DirFree = postureop.DirFree
 	// DirRestrictiveOnly — the org may only force the SAFER value, which is
 	// the key's Safe field and the only value a body may carry for it.
-	DirRestrictiveOnly Direction = "restrictive_only"
+	DirRestrictiveOnly = postureop.DirRestrictiveOnly
 	// DirLoweringOnly is the share block's algebra (§2.1): the effective
 	// value is always at or below the node's own local value, so an org
 	// directive can pin or reduce, never raise.
@@ -31,7 +39,21 @@ const (
 	// value is lower keeps it; a node whose own value is higher (or unset,
 	// i.e. the default) takes the org's. The org can therefore make a node
 	// report faster, never slower. Pinned by TestLoweringOnlyPinRowsAreInts.
-	DirLoweringOnly Direction = "lowering_only"
+	DirLoweringOnly = postureop.DirLoweringOnly
+	// DirRaisingOnly: the org value is a numeric floor (first row: the
+	// Landlock-only sandbox's min_abi, lane SBX-P3B).
+	DirRaisingOnly = postureop.DirRaisingOnly
+	// DirOrderedFilter: the org list removes entries from the node's
+	// preference order, never adds or reorders.
+	DirOrderedFilter = postureop.DirOrderedFilter
+	// DirSetIntersection: local AND org; an empty intersection allows
+	// nothing (never any).
+	DirSetIntersection = postureop.DirSetIntersection
+	// DirAdditiveMask: the org entries are added to the node's own.
+	DirAdditiveMask = postureop.DirAdditiveMask
+	// DirRetention: a day count, 0 forever; the org may lengthen, never
+	// shorten.
+	DirRetention = postureop.DirRetention
 )
 
 // PinnableKey is one row of the settings.pin vocabulary: a dotted config
@@ -59,6 +81,11 @@ type PinnableKey struct {
 	Direction Direction
 	// Safe is the ONLY value a DirRestrictiveOnly key may carry.
 	Safe any
+	// Format, when non-empty, is a closed value shape a "string" row must
+	// have (postureop.CheckFormat, e.g. an image pinned by digest), checked
+	// at publish and accept like Enum, so a value the node's own config
+	// validation would reject never reaches a node.
+	Format string
 	// Min / Max bound an "int" row's value, inclusive. Both zero means
 	// unbounded (no int row is unbounded today). They are checked by the
 	// publish lint and the agent accept path (compilePinned) and again by
@@ -73,6 +100,9 @@ type PinnableKey struct {
 	Hot bool
 	// Label is the admin-console display label.
 	Label string
+	// Help is an optional plain-language note the admin console shows under
+	// the row (what a value costs). "" = no note.
+	Help string
 }
 
 // PinnableKeys is the v1b settings.pin allow-list.
@@ -95,7 +125,8 @@ type PinnableKey struct {
 // sandbox is Linux + WSL2 only and a sandbox that cannot be built FAILS the
 // launch, so pinning it on across a mixed fleet would kill dashboard
 // terminals for every macOS and native-Windows developer with a failure
-// that looks like a product bug.
+// that looks like a product bug. The pin panel lists it as "not pinnable
+// yet" with that reason (NotPinnableYet, G48).
 var PinnableKeys = []PinnableKey{
 	{Key: "guard.enabled", Kind: "bool", Direction: DirFree, Label: "Command guard"},
 	{
@@ -203,6 +234,297 @@ var PinnableKeys = []PinnableKey{
 		Direction: DirLoweringOnly, Min: 30, Max: 3600, Hot: true,
 		Label: "Org push interval ceiling (seconds)",
 	},
+	// proxy.maintain_routes is the admin's managed route-maintenance switch
+	// (lane P1, operator ruling 2026-10-18: "proxy routing at managed node is
+	// a fully configurable setting by admin in their org observer admin
+	// dashboard UI. They can set it or remove it at their discretion."). ON:
+	// the managed daemon keeps every routable AI tool routed through the
+	// Observer proxy and puts a removed route back. OFF: it stops and removes
+	// exactly the routes the organization wrote, putting back what each one
+	// replaced (the same as leaving the organization); routes the developer
+	// set are never touched. Unset: the enforce authorities decide (an org
+	// governing routing, admission, egress or budget gets ON). DirFree: both
+	// values are legitimate admin choices. Hot: the daemon reads the resolved
+	// posture live on its maintenance heartbeat (govern.Effective.RoutePosture),
+	// so a change converges without a restart. Only meaningful on a managed
+	// node (an individual node has no governance to pin it).
+	{
+		Key: "proxy.maintain_routes", Kind: "bool", Direction: DirFree, Hot: true,
+		Label: "Keep AI tools routed through the Observer proxy",
+		Help:  MaintainRoutesOffHelp,
+	},
+	// Surface-gap CLI-1b (operator decision D6, 2026-10-25): command
+	// wrapping (shell-wrap, so typing `claude` runs `observer claude`) is
+	// org-governable on a managed node. ON: the managed daemon applies the
+	// wrap for every wrappable tool when it is not applied and the developer
+	// cannot turn it off. OFF: the daemon removes a wrap the organization
+	// applied, never one the developer applied. Unset: the developer's own
+	// opt-in, as on an individual node, where the key is inert
+	// (govern.Effective.ShellWrapPosture). DirFree, Hot.
+	{
+		Key: "shell_wrap.org_maintain", Kind: "bool", Direction: DirFree, Hot: true,
+		Label: "Keep AI tool commands wrapped through Observer (managed nodes only)",
+		Help:  ShellWrapMaintainHelp,
+	},
+	// The sandboxed-terminal settings ([terminal.sandbox], sandbox plan v2
+	// sections 8.2, 8.5 and 10.1, lane SBX-P1B). settings.pin reaches
+	// individual nodes too, so every row's direction is safe on any plane:
+	// an expanding key (the EXPANDS keys of docs/sandboxed-terminals.md) is
+	// restrictive-only with its safe value, a list key uses one of the three
+	// list operators, and retention may only be lengthened. Each pin set that
+	// names one of these keys is also checked on the RESULT at accept by the
+	// sandbox module's posture evaluator (pinposture.go, registered from
+	// cmd/observer), so pins that are each safe but together make the node's
+	// first automatic backend weaker are refused with posture_loosened.
+	// Machine paths (workspaces_dir) have no row: a path is per node, never
+	// fleet-wide. `enabled` stays out (NotPinnableYet, G48).
+	{
+		Key: "terminal.sandbox.backends", Kind: "string_list", Direction: DirOrderedFilter,
+		Label: "Sandbox backends (the organization list removes entries from the node's preference order)",
+		Help:  "Removes backends from each node's own order; it never adds or reorders one. A node refuses a list that would leave its first choice weaker.",
+	},
+	{
+		Key: "terminal.sandbox.remote_allowed_hosts", Kind: "string_list", Direction: DirSetIntersection,
+		Label: "Sandbox remote clone hosts (only hosts both allow)",
+		Help:  "A node keeps only the hosts both lists allow. A list that shares no host with a node's own allows no host there, and that node refuses it.",
+	},
+	{
+		Key: "terminal.sandbox.mask_paths", Kind: "string_list", Direction: DirAdditiveMask,
+		Label: "Sandbox masked paths (added to the node's own)",
+	},
+	{
+		Key: "terminal.sandbox.workspace_retention_days", Kind: "int", Direction: DirRetention, Max: 3650,
+		Label: "Sandbox workspace retention (days, 0 keeps forever; may only be lengthened)",
+	},
+	{
+		Key: "terminal.sandbox.home_mode", Kind: "string", Enum: []any{"tmpfs", "readonly"},
+		Direction: DirRestrictiveOnly, Safe: "tmpfs", Label: "Sandbox home directory (tmpfs hides the real home)",
+	},
+	{
+		Key: "terminal.sandbox.default_on", Kind: "bool", Direction: DirRestrictiveOnly, Safe: true,
+		Label: "Pre-check \"Run in sandbox\" for new terminals",
+	},
+	{
+		Key: "terminal.sandbox.allow_remote_clone", Kind: "bool", Direction: DirRestrictiveOnly, Safe: false,
+		Label: "Sandbox remote clone workspaces",
+	},
+	{
+		Key: "terminal.sandbox.allow_worktree_source", Kind: "bool", Direction: DirRestrictiveOnly, Safe: false,
+		Label: "Sandbox git worktree workspaces",
+	},
+	{
+		Key: "terminal.sandbox.allow_tool_config_writes", Kind: "bool", Direction: DirRestrictiveOnly, Safe: false,
+		Label: "Sandboxed tools may change their own settings",
+	},
+	{
+		Key: "terminal.sandbox.egress_allow_cidrs", Kind: "string_list", Direction: DirRestrictiveOnly, Safe: []string{},
+		Label: "Sandbox private network allow-list (may only be emptied)",
+	},
+	// Lane LEFT-SBX: the agent-run host allow-list; an org list only narrows.
+	{
+		Key: "terminal.sandbox.egress_allow_hosts", Kind: "string_list", Direction: DirSetIntersection,
+		Label: "Hosts a sandboxed agent may reach through the egress gateway (the organization's list narrows the developer's)",
+	},
+	{
+		Key: "terminal.sandbox.extra_ro_binds", Kind: "string_list", Direction: DirRestrictiveOnly, Safe: []string{},
+		Label: "Sandbox extra read-only binds (may only be emptied)",
+	},
+	{
+		Key: "terminal.sandbox.extra_rw_binds", Kind: "string_list", Direction: DirRestrictiveOnly, Safe: []string{},
+		Label: "Sandbox extra read-write binds (may only be emptied)",
+	},
+	{
+		Key: "terminal.sandbox.prep_timeout_seconds", Kind: "int", Direction: DirFree, Min: 30, Max: 3600,
+		Label: "Sandbox workspace preparation timeout (seconds)",
+	},
+	// lane SBX-P3D (sandbox plan 4.4, D-746 Q17): a vendor policy that forces
+	// an agent's own sandbox on; both values keep isolation (DirFree).
+	{
+		Key: "terminal.sandbox.vendor_forced_native", Kind: "string", Enum: []any{"nest_or_refuse", "refuse"}, Direction: DirFree,
+		Label: "When a vendor policy forces an agent's own sandbox on (nest or refuse, or refuse)",
+	},
+	// Lane SBX-UPD (sandbox plan v2 sections 5.5 and 10.1): how soon an
+	// update apply waiting for live sandboxed runs asks; neither value ends
+	// a run, so either direction is free.
+	{
+		Key: "terminal.sandbox.live_run_update_policy", Kind: "string", Enum: []any{"defer", "ask_immediately"}, Direction: DirFree,
+		Label: "Sandbox: when a deferred update asks about live sandboxed runs",
+	},
+	// Operator ruling DEC-9 (2026-10-27, gap review OBS-8a): the
+	// organization's posture on direct model-provider egress from sandboxed
+	// internet runs. refuse_all turns the egress gateway's provider-host
+	// block (SBX-CAP-1) on in every run it enforces, beyond capture rule C6;
+	// capture_rule is today's C6 behaviour; allow turns the block off and the
+	// run's capture honestly reads proxy_and_transcripts. DirFree: each value
+	// is a legitimate admin choice (an org whose developers need direct
+	// provider egress, such as a Cursor enterprise seat, picks allow), and
+	// the key is inert on an individual node, which always keeps
+	// capture_rule (config.sandboxProviderDirectInForce). Never forced on: an
+	// unset key is capture_rule.
+	{
+		Key: "terminal.sandbox.provider_direct", Kind: "string", Enum: []any{"refuse_all", "capture_rule", "allow"}, Direction: DirFree,
+		Label: "Sandboxed internet runs: direct model-provider hosts (managed nodes only)",
+		Help:  ProviderDirectHelp,
+	},
+	// The container driver's settings ([terminal.sandbox.oci], lane
+	// SBX-P3A). The engine socket is a machine path, so it has no row. The
+	// image is pinnable since the signed image trust root (lane SBX-P3B):
+	// only an image pinned by digest, which the org then vouches for; an
+	// empty value is not pinnable (Observer's default image is chosen by the
+	// signed sandbox.image manifest, not by a pin).
+	{
+		Key: "terminal.sandbox.oci.image", Kind: "string", Direction: DirFree, Format: postureop.FormatImageDigestRef,
+		Label: "Container sandbox image (pinned by digest: name@sha256:...)",
+	},
+	{
+		Key: "terminal.sandbox.oci.allow_rootful", Kind: "bool", Direction: DirRestrictiveOnly, Safe: false,
+		Label: "Container sandboxes may use a rootful engine (root-equivalent socket)",
+	},
+	{
+		Key: "terminal.sandbox.oci.allow_devcontainer_image", Kind: "bool", Direction: DirRestrictiveOnly, Safe: false,
+		Label: "Container sandboxes may use a repository's .devcontainer image (after per-repository consent)",
+	},
+	{
+		Key: "terminal.sandbox.oci.install_cache", Kind: "bool", Direction: DirRestrictiveOnly, Safe: false,
+		Label: "Container sandboxes may install the agent's CLI into a per-image cache on first start (after the launch asks)",
+	},
+	// Lane LEFT-SBX (ruling P-136): an org may hold the first-start install
+	// to never running a package's own install script.
+	{
+		Key: "terminal.sandbox.oci.install_scripts", Kind: "string", Enum: []any{"none", "pinned"}, Direction: DirRestrictiveOnly, Safe: "none",
+		Label: "Container sandboxes' first-start install may run a tool package's own install script only when it matches a reviewed pin",
+	},
+	{
+		Key: "terminal.sandbox.oci.podman_userns", Kind: "string", Enum: []any{"keep-id", "default"}, Direction: DirFree,
+		Label: "Rootless Podman user namespace (both leave files you own)",
+	},
+	{
+		Key: "terminal.sandbox.oci.stop_grace_seconds", Kind: "int", Direction: DirFree, Min: 0, Max: 600,
+		Label: "Container sandbox stop grace (seconds)",
+	},
+	// The Windows driver's settings ([terminal.sandbox.mxc], lane SBX-P6);
+	// neither widens what a box may reach.
+	{
+		Key: "terminal.sandbox.mxc.stop_grace_seconds", Kind: "int", Direction: DirFree, Min: 0, Max: 600,
+		Label: "Windows sandbox stop grace (seconds)",
+	},
+	{
+		Key: "terminal.sandbox.mxc.probe_timeout_seconds", Kind: "int", Direction: DirFree, Min: 5, Max: 300,
+		Label: "Windows sandbox probe timeout (seconds)",
+	},
+	// The macOS drivers' settings ([terminal.sandbox.seatbelt] and
+	// [terminal.sandbox.apple_container], lane SBX-P5, beta). The Apple
+	// container image is pinnable by digest since lane SBX-P3B, as the OCI
+	// image is.
+	{
+		Key: "terminal.sandbox.apple_container.image", Kind: "string", Direction: DirFree, Format: postureop.FormatImageDigestRef,
+		Label: "Apple container sandbox image (pinned by digest: name@sha256:...)",
+	},
+	{
+		Key: "terminal.sandbox.seatbelt.allow_keychain", Kind: "bool", Direction: DirRestrictiveOnly, Safe: false,
+		Label: "macOS Seatbelt sandboxes may reach the Keychain (for a Keychain-backed login)",
+	},
+	// Lane SBX-UPD (plan section 10.1, seatbelt_driver): while one driver is
+	// built, the plan's set intersection over allowed drivers is an org
+	// holding the node on sandbox-exec; it can never force the fallback.
+	{
+		Key: "terminal.sandbox.seatbelt.driver", Kind: "string", Enum: []any{"sandbox-exec", "mxc-exec-mac"}, Direction: DirRestrictiveOnly, Safe: "sandbox-exec",
+		Label: "macOS Seatbelt driver (sandbox-exec only)",
+	},
+	{
+		Key: "terminal.sandbox.apple_container.memory_mib", Kind: "int", Direction: DirFree, Min: 512, Max: 262144,
+		Label: "Apple container sandbox memory (MiB)",
+	},
+	{
+		Key: "terminal.sandbox.apple_container.cpus", Kind: "int", Direction: DirFree, Min: 1, Max: 64,
+		Label: "Apple container sandbox CPUs",
+	}, // The hosted sandbox rows' shared settings ([terminal.sandbox.hosted],
+	// lane SBX-P7, beta). The time and spend caps are ceilings an org can
+	// only lower (a pin can never force longer, costlier boxes); a memory
+	// image policy can only move to refuse. The per-provider region is
+	// governed by the allowed_regions floor, the template is data, and
+	// box_binary is a machine path, so none of them is pinnable.
+	{
+		Key: "terminal.sandbox.hosted.min_session_minutes", Kind: "int", Direction: DirLoweringOnly, Min: 5, Max: 1440,
+		Label: "Hosted sandbox minimum session (minutes, ceiling)",
+	},
+	{
+		Key: "terminal.sandbox.hosted.max_run_minutes", Kind: "int", Direction: DirLoweringOnly, Min: 5, Max: 1440,
+		Label: "Hosted sandbox box timeout (minutes, ceiling)",
+	},
+	{
+		Key: "terminal.sandbox.hosted.daily_box_minutes", Kind: "int", Direction: DirLoweringOnly, Min: 5, Max: 10080,
+		Label: "Hosted sandbox box-minutes per provider per day (ceiling)",
+	},
+	{
+		Key: "terminal.sandbox.hosted.checkpoint_minutes", Kind: "int", Direction: DirLoweringOnly, Min: 1, Max: 60,
+		Label: "Hosted sandbox transcript checkpoint interval (minutes, ceiling)",
+	},
+	{
+		Key: "terminal.sandbox.hosted.memory_images", Kind: "string", Enum: []any{"avoid", "refuse"}, Direction: DirRestrictiveOnly, Safe: "refuse",
+		Label: "Hosted sandbox provider memory images (may only move to refuse)",
+	},
+	{
+		Key: "terminal.sandbox.hosted.db_export", Kind: "bool", Direction: DirRestrictiveOnly, Safe: false,
+		Label: "Hosted sandbox database export at teardown (may only be kept off)",
+	},
+	// Local re-adoption ([terminal.sandbox.readopt], lane GATES-SBX, R-034):
+	// an org may only shorten the bound and shrink the checkpoint cap.
+	{
+		Key: "terminal.sandbox.readopt.bound_minutes", Kind: "int", Direction: DirLoweringOnly, Min: 1, Max: 1440,
+		Label: "Container run re-adoption: minutes a run waits to be re-adopted (ceiling)",
+	},
+	{
+		Key: "terminal.sandbox.readopt.checkpoint_cap_mib", Kind: "int", Direction: DirLoweringOnly, Min: 1, Max: 1 << 20,
+		Label: "Container run checkpoint export cap in MiB (ceiling)",
+	},
+	// The MXC tier floor ([terminal.sandbox.windows], R-034): restrictive
+	// only, so an org can keep a node off the weaker AppContainer tier and
+	// never move one onto it.
+	{
+		Key: "terminal.sandbox.windows.mxc_tier", Kind: "string", Enum: []any{"process_container", "appcontainer"}, Direction: DirRestrictiveOnly, Safe: "process_container",
+		Label: "Windows MXC tier (may only be held on ProcessContainer)",
+	},
+	// The Landlock-only row's ABI floor ([terminal.sandbox.landlock], lane
+	// SBX-P3B, beta): a numeric floor, so an org can only raise it.
+	{
+		Key: "terminal.sandbox.landlock.min_abi", Kind: "int", Direction: DirRaisingOnly, Min: 9, Max: 64,
+		Label: "Landlock-only sandboxes: lowest Landlock ABI accepted (9 or more)",
+	},
+}
+
+// ShellWrapMaintainHelp is the admin console note under the
+// shell_wrap.org_maintain row (CLI-1b).
+const ShellWrapMaintainHelp = "ON: each managed machine's daemon puts shims first on PATH so typing a tool's command (claude, codex) runs it through Observer, and the developer cannot turn that off. " +
+	"OFF: the daemon removes the shims it put there; shims a developer added themselves stay. Unset: each developer decides. Applies on managed nodes only."
+
+// ProviderDirectHelp is the admin console note under the
+// terminal.sandbox.provider_direct row (DEC-9).
+const ProviderDirectHelp = "refuse_all: the sandbox egress gateway refuses model-provider hosts in every sandboxed internet run it enforces, so a tool not routed through the Observer proxy cannot reach its provider from the box; hosted sandboxes, whose network the provider runs, cannot refuse them and are unaffected. " +
+	"capture_rule (the default): the gateway refuses them only when a run's full capture depends on it. " +
+	"allow: no refusal, and those runs report proxy_and_transcripts capture instead of full. Applies on managed nodes only."
+
+// NotPinnable is a setting the admin pin panel lists as "not pinnable yet",
+// with the reason, so an admin sees why the key is missing rather than
+// assuming it was forgotten.
+type NotPinnable struct {
+	// Key is the dotted config path.
+	Key string
+	// Label is the admin-console display label.
+	Label string
+	// Reason says why the key is not on the pin rail and what to use instead.
+	Reason string
+}
+
+// NotPinnableYet lists the keys the pin panel shows as "not pinnable yet".
+// A key here is never a PinnableKeys row (TestNotPinnableYetIsNotPinnable).
+var NotPinnableYet = []NotPinnable{
+	{
+		Key:   "terminal.sandbox.enabled",
+		Label: "Sandboxed terminals",
+		Reason: "Not pinnable yet (G48): the sandbox runs on Linux and WSL2 only, so a fleet pin would stop every terminal on macOS and Windows. " +
+			"Use Node features > Require a sandboxed terminal instead.",
+	},
 }
 
 // ShareKey is one row of the capture.pin vocabulary: an [org_client.share]
@@ -260,6 +582,7 @@ var ShareKeys = []ShareKey{
 	{Key: "terminal_detail", Kind: "bool", Label: "Terminal-run + remote-audit event counts"},
 	{Key: "task_detail", Kind: "bool", Label: "Session task/todo checklist"},
 	{Key: "tool_account_detail", Kind: "bool", Label: "Vendor login / account observations"},
+	{Key: "hook_activity", Kind: "bool", Label: "Hook activity per session (which hooks fired)"},
 	// The org-served Cloud Intelligence result-rail gate (org-served-cloud-
 	// intelligence plan §2.1/W5). Unlike every other row its config field is
 	// NOT under [org_client.share] — it is [intelligence].org_enrichment — so
@@ -534,3 +857,17 @@ func ReportedValueAllowed(key, value string) bool {
 	}
 	return false
 }
+
+// MaintainRoutesOffHelp is the admin-console note under the
+// proxy.maintain_routes row: what turning it OFF costs. Each sentence is
+// grounded in this tree (operator ruling D-738): the hook-path budget stop
+// (docs/budgets.md "The hook-path budget stop (T-519)") and the hook guard
+// keep working without the proxy; a tool with no pre-send seam is only
+// flagged after send (D-031); routing, admission and egress are the
+// proxy-resident enforcement points (govern proxyResidentEnforcement); exact
+// usage (api_turns) and the limit gauge (internal/proxy/limit.go) come only
+// from proxied requests.
+const MaintainRoutesOffHelp = "If you turn this off: Budgets and guard rules still apply through each tool's hooks. " +
+	"A tool with no pre-send hook cannot be blocked before it sends. " +
+	"Routing rules, input checks and the outbound guardrail stop applying to tools the developer starts directly. " +
+	"Exact token counts and the usage limit gauges stop for those tools."

@@ -45,6 +45,17 @@ const (
 	toolZcode           = "zcode"
 	toolZed             = "zed"
 	toolZooCode         = "zoo-code"
+	// 2026-10-21 capture-only wave.
+	toolAutohand       = "autohand"
+	toolIBMBob         = "ibm-bob"
+	toolCortexCode     = "cortex-code"
+	toolCodeBuddy      = "codebuddy"
+	toolDeepAgentsCode = "deepagents-code"
+	toolDimCode        = "dimcode"
+	toolDirac          = "dirac"
+	toolKimchi         = "kimchi"
+	toolStakpak        = "stakpak"
+	toolVTCode         = "vtcode"
 )
 
 // table is THE canonical taxonomy table: ordered, walked top-down by
@@ -186,6 +197,16 @@ var specificRows = concat(
 	freebuffRows,
 	junieRows,
 	zedRows,
+	autohandRows,
+	ibmBobRows,
+	cortexCodeRows,
+	codeBuddyRows,
+	deepAgentsCodeRows,
+	dimcodeRows,
+	diracRows,
+	kimchiRows,
+	stakpakRows,
+	vtCodeRows,
 )
 
 // --- claude-code -----------------------------------------------------
@@ -531,6 +552,13 @@ var antigravityRows = concat(
 	rows(toolAntigravity, SurfaceBuiltin, ActionSearchFiles,
 		"glob", "findfiles", "filesearch", "ls", "listfiles", "listdir", "findbyname",
 		"transcript.list_directory"),
+	// managetask: the agent's own task bookkeeping, seen live on the
+	// 2026-10-28 Windows demo node (Antigravity IDE 2.6.0 with agy 1.4.9:
+	// the agy PreToolUse gate logged "could not classify the call ... tool
+	// manage_task"). Only the name is grounded, not its arguments, so it is
+	// the honest harness bucket rather than a todo list; the guard has
+	// nothing to judge in it.
+	rows(toolAntigravity, SurfaceMeta, ActionHarnessCall, "managetask"),
 )
 
 // --- gemini-cli ------------------------------------------------------
@@ -625,6 +653,18 @@ var gooseRows = concat(
 	rows(toolGoose, SurfaceBuiltin, ActionSearchText, "grep", "search", "rg", "ripgrep"),
 	rows(toolGoose, SurfaceBuiltin, ActionWebFetch, "fetch", "web_fetch", "read_url", "download"),
 	rows(toolGoose, SurfaceBuiltin, ActionWebSearch, "web_search", "websearch", "search_web"),
+	// Guard-enforcement fix (gfiD, 2026-10-15), read from goose 1.53.0
+	// source: the developer extension's tree listing and image read, Code
+	// Mode's execute_bash / execute_typescript (Code Mode's inner tool
+	// calls never reach a hook, so the whole script is judged as one
+	// command), and the computer-controller extension's script runner.
+	// A model-mangled `developer__X` / `developer.X` / `functions.X` name
+	// is reduced to X by the PreToolUse gate (internal/hook toolgate.go,
+	// the goose payload shape's nameStrip), so no prefixed row is listed.
+	rows(toolGoose, SurfaceBuiltin, ActionSearchFiles, "tree"),
+	rows(toolGoose, SurfaceBuiltin, ActionReadFile, "read_image"),
+	rows(toolGoose, SurfaceBuiltin, ActionRunCommand,
+		"execute_bash", "execute_typescript", "computercontroller__computer_control"),
 )
 
 // --- deepseek ----------------------------------------------------------
@@ -697,6 +737,12 @@ var crushRows = concat(
 	rows(toolCrush, SurfaceBuiltin, ActionWebFetch, "fetch", "download", "http"),
 	rows(toolCrush, SurfaceBuiltin, ActionWebSearch, "sourcegraph", "websearch"),
 	rows(toolCrush, SurfaceOrchestration, ActionSpawnSubagent, "agent", "task", "subagent"),
+	// Guard-enforcement fix (gfiD, 2026-10-15), read from crush 0.97.1
+	// source (internal/agent/tools): the web pair, the sub-agent fetch and
+	// the background-job controls (the deepseek job_* precedent).
+	rows(toolCrush, SurfaceBuiltin, ActionWebFetch, "web_fetch", "agentic_fetch"),
+	rows(toolCrush, SurfaceBuiltin, ActionWebSearch, "web_search"),
+	rows(toolCrush, SurfaceOrchestration, ActionAgentControl, "job_output", "job_kill"),
 )
 
 // --- droid -----------------------------------------------------------
@@ -851,6 +897,17 @@ var kiroCLIRows = concat(
 	rows(toolKiroCLI, SurfaceBuiltin, ActionSearchFiles, "list_directory"), // Kiro IDE.
 	rows(toolKiroCLI, SurfaceBuiltin, ActionTodoUpdate, "todo_list"),       // Kiro IDE.
 	rows(toolKiroCLI, SurfaceBuiltin, ActionUnknown, "introspect"),
+	// Guard-enforcement fix (gfiD, 2026-10-15): the tool names kiro-cli
+	// 2.28.0's preToolUse hook saw live on demo node 1 that the rows
+	// above lacked. `code` is the code-intelligence tool (symbol search),
+	// `use_aws` calls an AWS API (judged as a command; it carries no
+	// command text, so the gate records it as unclassified rather than
+	// passing it silently), `knowledge` and `goal` write harness state.
+	rows(toolKiroCLI, SurfaceBuiltin, ActionSearchFiles, "glob"),
+	rows(toolKiroCLI, SurfaceBuiltin, ActionSearchText, "grep", "code"),
+	rows(toolKiroCLI, SurfaceOrchestration, ActionSpawnSubagent, "subagent"),
+	rows(toolKiroCLI, SurfaceBuiltin, ActionRunCommand, "use_aws"),
+	rows(toolKiroCLI, SurfaceBuiltin, ActionHarnessCall, "knowledge", "goal"),
 )
 
 // --- kiro-crew -------------------------------------------------------
@@ -1233,6 +1290,292 @@ var zedRows = concat(
 	rows(toolZed, SurfaceOrchestration, ActionSpawnSubagent, "spawn_agent"),
 )
 
+// --- 2026-10-21 capture-only wave ------------------------------------
+// Ten adapters wired together; each group mirrors the adapter's own
+// private classifier (code wins on any disagreement).
+
+// --- autohand ---------------------------------------------------------
+// code: internal/adapter/autohand/records.go (actionMap, classifyTool).
+// Live-grounded 2026-10-21 (both OSes): read_file, list_tree, fff_find,
+// git_status, run_command, shell, todo_write, write_file, search_replace,
+// delete_path. The rest is the shipped autohand-cli 0.9.8 built-in
+// registry. browser_* is a prefix glob (toolGlobRows); mcp__* rides the
+// global glob.
+var autohandRows = concat(
+	rows(toolAutohand, SurfaceBuiltin, ActionReadFile, "read_file", "file_stats", "checksum"),
+	rows(toolAutohand, SurfaceBuiltin, ActionSearchText, "find_grep"),
+	rows(toolAutohand, SurfaceBuiltin, ActionSearchFiles, "fff_find", "list_tree"),
+	rows(toolAutohand, SurfaceBuiltin, ActionWriteFile, "write_file", "append_file", "create_directory", "copy_path"),
+	// no canonical delete/rename type (zed precedent)
+	rows(toolAutohand, SurfaceBuiltin, ActionEditFile, "search_replace", "apply_patch", "git_apply_patch",
+		"notebook_edit", "format_file", "delete_path", "rename_path", "remove_dependency"),
+	rows(toolAutohand, SurfaceBuiltin, ActionRunCommand, "run_command", "shell", "custom_command",
+		"add_dependency", "auto_commit"),
+	// every git_* tool is a harness-run git command
+	rows(toolAutohand, SurfaceBuiltin, ActionRunCommand, "git_status", "git_diff", "git_diff_range", "git_log",
+		"git_branch", "git_checkout", "git_switch", "git_add", "git_commit", "git_reset", "git_fetch", "git_pull",
+		"git_push", "git_merge", "git_merge_abort", "git_rebase", "git_rebase_abort", "git_rebase_continue",
+		"git_rebase_skip", "git_cherry_pick", "git_cherry_pick_abort", "git_cherry_pick_continue", "git_stash",
+		"git_stash_list", "git_stash_pop", "git_stash_apply", "git_stash_drop", "git_list_untracked",
+		"git_worktree_list", "git_worktree_add", "git_worktree_remove", "git_worktree_status_all",
+		"git_worktree_cleanup", "git_worktree_run_parallel", "git_worktree_sync", "git_worktree_create_for_pr",
+		"git_worktree_create_from_template"),
+	rows(toolAutohand, SurfaceBuiltin, ActionWebSearch, "web_search"),
+	rows(toolAutohand, SurfaceBuiltin, ActionWebFetch, "fetch_url", "web_repo", "package_info"),
+	rows(toolAutohand, SurfaceBuiltin, ActionTodoUpdate, "todo_write", "create_task", "task_get", "task_list",
+		"task_update", "task_stop", "task_output"),
+	rows(toolAutohand, SurfaceBuiltin, ActionSpawnSubagent, "delegate_task", "delegate_parallel", "add_teammate"),
+	rows(toolAutohand, SurfaceBuiltin, ActionAskUser, "ask_followup_question"),
+	rows(toolAutohand, SurfaceBuiltin, ActionSkillInvoke, "skill"),
+	rows(toolAutohand, SurfaceMeta, ActionToolSearch, "tool_search", "tools_registry"),
+	rows(toolAutohand, SurfaceBuiltin, ActionSchedule, "cron_create", "cron_delete", "list_schedules", "cancel_schedule"),
+)
+
+// --- ibm-bob ---------------------------------------------------------
+// code: internal/adapter/ibmbob/parse.go (mapTool). Built-in tool ids
+// grounded from bobshell 2.0.6's tool classes + availableTools;
+// update_todo_list / write_file / execute_command / search_and_replace
+// observed live 2026-10-21. MCP tools ride the global mcp__* glob.
+var ibmBobRows = concat(
+	rows(toolIBMBob, SurfaceBuiltin, ActionRunCommand, "execute_command"),
+	rows(toolIBMBob, SurfaceBuiltin, ActionReadFile, "read_file", "office_read"),
+	rows(toolIBMBob, SurfaceBuiltin, ActionWriteFile, "write_file"),
+	rows(toolIBMBob, SurfaceBuiltin, ActionEditFile, "apply_diff", "insert_content", "search_and_replace", "office_edit"),
+	rows(toolIBMBob, SurfaceBuiltin, ActionSearchFiles, "list_files", "glob"),
+	rows(toolIBMBob, SurfaceBuiltin, ActionSearchText, "grep"),
+	rows(toolIBMBob, SurfaceBuiltin, ActionWebFetch, "web_fetch"),
+	rows(toolIBMBob, SurfaceBuiltin, ActionWebSearch, "web_search", "search_ibm_docs"),
+	rows(toolIBMBob, SurfaceBuiltin, ActionTodoUpdate, "update_todo_list"),
+	rows(toolIBMBob, SurfaceOrchestration, ActionSpawnSubagent, "spawn_subagent"),
+	rows(toolIBMBob, SurfaceBuiltin, ActionSkillInvoke, "use_skill"),
+	rows(toolIBMBob, SurfaceMeta, ActionHarnessCall, "switch_mode", "list_ibm_doc_libraries"),
+)
+
+// --- cortex-code -------------------------------------------------------
+// code: internal/adapter/cortexcode/tools.go (actionMap, keys lower-cased
+// by normalizeToolKey). bash/write/edit live 2026-10-21; the rest off the
+// v1.2.18 bundle's native->Claude hook-name table, its permission-label
+// table (notebook_execute) and the live cron system reminder.
+var cortexCodeRows = concat(
+	rows(toolCortexCode, SurfaceBuiltin, ActionRunCommand, "bash", "bash_output", "kill_shell", "notebook_execute"),
+	rows(toolCortexCode, SurfaceBuiltin, ActionReadFile, "read"),
+	rows(toolCortexCode, SurfaceBuiltin, ActionWriteFile, "write"),
+	rows(toolCortexCode, SurfaceBuiltin, ActionEditFile, "edit", "notebook_edit"),
+	rows(toolCortexCode, SurfaceBuiltin, ActionSearchFiles, "glob"),
+	rows(toolCortexCode, SurfaceBuiltin, ActionSearchText, "grep"),
+	rows(toolCortexCode, SurfaceBuiltin, ActionWebSearch, "web_search"),
+	rows(toolCortexCode, SurfaceBuiltin, ActionWebFetch, "web_fetch"),
+	rows(toolCortexCode, SurfaceOrchestration, ActionSpawnSubagent, "task"),
+	rows(toolCortexCode, SurfaceBuiltin, ActionAskUser, "ask_user_question"),
+	rows(toolCortexCode, SurfaceMeta, ActionPermissionMode, "enter_plan_mode", "exit_plan_mode"),
+	rows(toolCortexCode, SurfaceMeta, ActionSchedule, "cron_create", "cron_delete", "cron_list"),
+	// 2026-10-21 second pass: the rest of the cortex.exe 1.2.18 bundle's
+	// tool definitions (only bash/read/write/edit are live-seen). Snowflake
+	// execution tools (sql_execute, data_diff, fdbt, the REPL/notebook
+	// family) run work against the account with side effects, so they are
+	// commands, not reads; the Snowflake catalog / docs lookups are search.
+	rows(toolCortexCode, SurfaceBuiltin, ActionRunCommand,
+		"notebook_actions", "python_repl", "programmatic_tool_calling",
+		"repl_program_run", "sql_execute", "data_diff", "fdbt"),
+	rows(toolCortexCode, SurfaceBuiltin, ActionEditFile, "apply_patch"),
+	rows(toolCortexCode, SurfaceBuiltin, ActionSearchText,
+		"tgrep", "snowflake_object_search", "snowflake_table_lookup",
+		"semantic_view_search", "cortex_agent_search", "snowscope_search"),
+	rows(toolCortexCode, SurfaceBuiltin, ActionWebSearch, "snowflake_product_docs"),
+	rows(toolCortexCode, SurfaceOrchestration, ActionSpawnSubagent, "spawn_teammate"),
+	rows(toolCortexCode, SurfaceOrchestration, ActionAgentMessage, "send_message"),
+	rows(toolCortexCode, SurfaceOrchestration, ActionSubagentWait, "agent_output"),
+	rows(toolCortexCode, SurfaceOrchestration, ActionAgentControl,
+		"kill_agent", "team_create", "team_delete", "list_teammates", "monitor"),
+	rows(toolCortexCode, SurfaceBuiltin, ActionTodoUpdate,
+		"system_todo_write", "task_create", "task_update", "task_list", "task_get",
+		"task_stats", "task_claim", "task_next", "task_complete", "task_fail", "task_heartbeat"),
+	rows(toolCortexCode, SurfaceBuiltin, ActionSkillInvoke, "skill"),
+	rows(toolCortexCode, SurfaceMeta, ActionHarnessCall,
+		"skill_view", "skills_list", "skill_manage", "curator",
+		"repl_program_manage", "repl_program_list", "repl_program_view",
+		"snowflake_connections_list", "snowflake_connections_set_active"),
+	rows(toolCortexCode, SurfaceMeta, ActionToolSearch, "tool_search"),
+)
+
+// --- codebuddy -------------------------------------------------------
+// code: internal/adapter/codebuddy/records.go (actionMap, exact names).
+// GROUNDED from the 2.171.0 bundle's built-in tool enum; none observed
+// in a real transcript yet (no logged-in capture). mcp__* rides the
+// global glob.
+var codeBuddyRows = concat(
+	rows(toolCodeBuddy, SurfaceBuiltin, ActionReadFile, "Read", "NotebookRead"),
+	rows(toolCodeBuddy, SurfaceBuiltin, ActionWriteFile, "Write"),
+	rows(toolCodeBuddy, SurfaceBuiltin, ActionEditFile, "Edit", "MultiEdit", "NotebookEdit"),
+	rows(toolCodeBuddy, SurfaceBuiltin, ActionRunCommand, "Bash", "PowerShell", "REPL"),
+	rows(toolCodeBuddy, SurfaceBuiltin, ActionSearchText, "Grep"),
+	rows(toolCodeBuddy, SurfaceBuiltin, ActionSearchFiles, "Glob", "LS"),
+	rows(toolCodeBuddy, SurfaceBuiltin, ActionWebSearch, "WebSearch"),
+	rows(toolCodeBuddy, SurfaceBuiltin, ActionWebFetch, "WebFetch"),
+	rows(toolCodeBuddy, SurfaceOrchestration, ActionSpawnSubagent, "Agent"),
+	rows(toolCodeBuddy, SurfaceBuiltin, ActionTodoUpdate,
+		"TodoWrite", "TaskCreate", "TaskGet", "TaskUpdate", "TaskList", "TaskOutput", "TaskStop"),
+	rows(toolCodeBuddy, SurfaceBuiltin, ActionAskUser, "AskUserQuestion", "AskUserForStructuredInput"),
+	rows(toolCodeBuddy, SurfaceMeta, ActionPermissionMode, "EnterPlanMode", "ExitPlanMode"),
+	rows(toolCodeBuddy, SurfaceOrchestration, ActionAgentMessage, "SendMessage"),
+	rows(toolCodeBuddy, SurfaceOrchestration, ActionAgentControl, "Monitor"),
+	rows(toolCodeBuddy, SurfaceBuiltin, ActionSkillInvoke, "Skill"),
+	rows(toolCodeBuddy, SurfaceMeta, ActionToolSearch, "ToolSearch"),
+	rows(toolCodeBuddy, SurfaceMeta, ActionSchedule, "CronCreate", "CronDelete", "CronList"),
+	rows(toolCodeBuddy, SurfaceMeta, ActionNotification, "PushNotification"),
+	rows(toolCodeBuddy, SurfaceMeta, ActionWorktreeCreate, "EnterWorktree"),
+	rows(toolCodeBuddy, SurfaceMeta, ActionWorktreeRemove, "LeaveWorktree"),
+	rows(toolCodeBuddy, SurfaceMeta, ActionHarnessCall, "StructuredOutput", "Artifact", "Workflow"),
+	rows(toolCodeBuddy, SurfaceMCP, ActionMCPCall, "ListMcpResources", "ReadMcpResource"),
+)
+
+// --- deepagents-code ---------------------------------------------------
+// code: internal/adapter/deepagents/parse.go (mapTool).
+//
+// GROUNDED: ls / write_file / execute / edit_file / delete seen in a live
+// session; the rest of the SDK FsToolName set (read_file glob grep) and the
+// harness tools (task write_todos ask_user web_search fetch_url js_eval
+// compact_conversation) are read from the shipped source. Literal names,
+// no synonyms. delete -> edit_file follows the copilot/grok deletefile
+// precedent (no canonical delete type).
+var deepAgentsCodeRows = concat(
+	rows(toolDeepAgentsCode, SurfaceBuiltin, ActionRunCommand, "execute", "js_eval"),
+	rows(toolDeepAgentsCode, SurfaceBuiltin, ActionReadFile, "read_file"),
+	rows(toolDeepAgentsCode, SurfaceBuiltin, ActionWriteFile, "write_file"),
+	rows(toolDeepAgentsCode, SurfaceBuiltin, ActionEditFile, "edit_file", "delete"),
+	rows(toolDeepAgentsCode, SurfaceBuiltin, ActionSearchFiles, "ls", "glob"),
+	rows(toolDeepAgentsCode, SurfaceBuiltin, ActionSearchText, "grep"),
+	rows(toolDeepAgentsCode, SurfaceBuiltin, ActionWebSearch, "web_search"),
+	rows(toolDeepAgentsCode, SurfaceBuiltin, ActionWebFetch, "fetch_url"),
+	rows(toolDeepAgentsCode, SurfaceBuiltin, ActionSpawnSubagent, "task"),
+	rows(toolDeepAgentsCode, SurfaceBuiltin, ActionTodoUpdate, "write_todos"),
+	rows(toolDeepAgentsCode, SurfaceBuiltin, ActionAskUser, "ask_user"),
+	rows(toolDeepAgentsCode, SurfaceBuiltin, ActionContextCompacted, "compact_conversation"),
+)
+
+// --- dimcode -------------------------------------------------------
+// code: internal/adapter/dimcode/parse.go mapTool. DimCode's builtin tool
+// registry read out of the vendor binary, plus find/rg/search from its
+// default permission table. Live: todowrite, write, edit, exec. `agent` is
+// a multiplexed tool (create / create_external / list / cancel); the
+// adapter downgrades list/cancel to agent_control from the input, the
+// table row is the launch case.
+var dimcodeRows = concat(
+	rows(toolDimCode, SurfaceBuiltin, ActionRunCommand, "exec"),
+	rows(toolDimCode, SurfaceBuiltin, ActionReadFile, "read"),
+	rows(toolDimCode, SurfaceBuiltin, ActionWriteFile, "write"),
+	rows(toolDimCode, SurfaceBuiltin, ActionEditFile, "edit"),
+	rows(toolDimCode, SurfaceBuiltin, ActionSearchFiles, "glob", "find"),
+	rows(toolDimCode, SurfaceBuiltin, ActionSearchText, "grep", "rg", "search"),
+	rows(toolDimCode, SurfaceBuiltin, ActionWebFetch, "webfetch"),
+	rows(toolDimCode, SurfaceBuiltin, ActionWebSearch, "websearch"),
+	rows(toolDimCode, SurfaceBuiltin, ActionTodoUpdate, "todowrite"),
+	rows(toolDimCode, SurfaceBuiltin, ActionAskUser, "askuserquestion"),
+	rows(toolDimCode, SurfaceBuiltin, ActionBrowserAction, "chrome"),
+	rows(toolDimCode, SurfaceOrchestration, ActionSpawnSubagent, "agent"),
+	rows(toolDimCode, SurfaceOrchestration, ActionSubagentWait, "wait"),
+	rows(toolDimCode, SurfaceOrchestration, ActionSkillInvoke, "skill"),
+	rows(toolDimCode, SurfaceMeta, ActionHarnessCall, "goal", "workflow", "workflow_result"),
+)
+
+// --- dirac -----------------------------------------------------------
+// code: internal/adapter/dirac/records.go (actionMap + respondActions).
+// respond is resolved per operation into synthesized raw names
+// respond.<operation> (aider precedent).
+var diracRows = concat(
+	rows(toolDirac, SurfaceBuiltin, ActionRunCommand, "execute_command"),
+	rows(toolDirac, SurfaceBuiltin, ActionReadFile, "read_file", "diagnostics_scan"),
+	rows(toolDirac, SurfaceBuiltin, ActionWriteFile, "write_to_file"),
+	rows(toolDirac, SurfaceBuiltin, ActionEditFile, "edit_file", "edit_ast"),
+	rows(toolDirac, SurfaceBuiltin, ActionSearchText, "search_files", "inspect_ast"),
+	rows(toolDirac, SurfaceBuiltin, ActionSearchFiles, "list_files"),
+	rows(toolDirac, SurfaceBuiltin, ActionBrowserAction, "browser_action"),
+	rows(toolDirac, SurfaceBuiltin, ActionSkillInvoke, "use_skill"),
+	rows(toolDirac, SurfaceBuiltin, ActionToolSearch, "list_skills"),
+	rows(toolDirac, SurfaceMeta, ActionContextCompacted, "condense"),
+	rows(toolDirac, SurfaceBuiltin, ActionHarnessCall, "new_task", "upsert_tool", "update_goal", "block_goal"),
+	rows(toolDirac, SurfaceOrchestration, ActionSpawnSubagent, "use_subagents", "start_task", "verify_goal"),
+	rows(toolDirac, SurfaceOrchestration, ActionAgentMessage, "send_task_message", "resolve_task_interaction"),
+	rows(toolDirac, SurfaceOrchestration, ActionAgentControl, "cancel_task", "list_tasks", "read_task_transcript"),
+	rows(toolDirac, SurfaceOrchestration, ActionSubagentWait, "wait_for_goal_events"),
+	rows(toolDirac, SurfaceMeta, ActionTaskComplete, "respond.complete"),
+	rows(toolDirac, SurfaceBuiltin, ActionAskUser, "respond.question"),
+	rows(toolDirac, SurfaceMeta, ActionAssistantMessage, "respond.progress", "respond.plan"),
+)
+
+// --- kimchi ----------------------------------------------------------
+// code: internal/adapter/kimchi/adapter.go (mapToolName).
+// Grounded: the 25 names kimchi 1.17.0 registered in two live sessions
+// (custom:context_assembly) plus mcp / skill / ask_user from the bundle's
+// SHARED_CORE_TOOLS / FERMENT_MODE_TOOLS tables. Not a toolAliases entry
+// off pi: the surface diverged (todo / ferment / plan / remote-agent tools).
+var kimchiRows = concat(
+	rows(toolKimchi, SurfaceBuiltin, ActionReadFile, "read"),
+	rows(toolKimchi, SurfaceBuiltin, ActionWriteFile, "write"),
+	rows(toolKimchi, SurfaceBuiltin, ActionEditFile, "edit"),
+	rows(toolKimchi, SurfaceBuiltin, ActionRunCommand, "bash", "powershell"),
+	// inspects / waits on / stops background processes a bash call started.
+	rows(toolKimchi, SurfaceOrchestration, ActionAgentControl, "bash_control"),
+	rows(toolKimchi, SurfaceBuiltin, ActionSearchText, "grep"),
+	rows(toolKimchi, SurfaceBuiltin, ActionSearchFiles, "find", "ls"),
+	rows(toolKimchi, SurfaceBuiltin, ActionWebSearch, "web_search"),
+	rows(toolKimchi, SurfaceBuiltin, ActionWebFetch, "web_fetch"),
+	rows(toolKimchi, SurfaceOrchestration, ActionSpawnSubagent, "Agent", "dispatch_to_cloud_agent"),
+	// resume_subagent live (testdata/kimchi/session-agent-parent-wsl.jsonl);
+	// steer_subagent / get_subagent_result from the same Agent result's
+	// addedToolNames.
+	rows(toolKimchi, SurfaceOrchestration, ActionAgentMessage, "resume_subagent", "steer_subagent"),
+	rows(toolKimchi, SurfaceOrchestration, ActionSubagentWait, "get_subagent_result"),
+	rows(toolKimchi, SurfaceBuiltin, ActionTodoUpdate,
+		"create_todos", "update_todos", "add_todo", "mark_todo", "clear_todos"),
+	rows(toolKimchi, SurfaceBuiltin, ActionAskUser, "questionnaire", "ask_user"),
+	rows(toolKimchi, SurfaceBuiltin, ActionSkillInvoke, "skill", "skill_view"),
+	rows(toolKimchi, SurfaceMeta, ActionPermissionMode, "submit_plan"),
+	rows(toolKimchi, SurfaceMeta, ActionHarnessCall, "set_model", "list_models", "set_phase", "list_ferments"),
+	rows(toolKimchi, SurfaceBuiltin, ActionMCPCall, "mcp"),
+)
+
+// --- stakpak ---------------------------------------------------------
+// code: internal/adapter/stakpak/parse.go (mapTool). Live-seen: run_command,
+// view, create, str_replace, remove, dynamic_subagent_task, wait_for_tasks,
+// get_task_details. Binary-string-grounded (not exercised): run_remote_command,
+// local_code_search, search_docs, load_skill, get_all_tasks. `remove` has no
+// canonical delete type, so it lands on edit_file (kiro-cli delete_file
+// precedent). The adapter records the BARE name (the `stakpak__`
+// tool-server namespace is stripped).
+var stakpakRows = concat(
+	rows(toolStakpak, SurfaceBuiltin, ActionRunCommand, "run_command", "run_remote_command"),
+	rows(toolStakpak, SurfaceBuiltin, ActionReadFile, "view"),
+	rows(toolStakpak, SurfaceBuiltin, ActionWriteFile, "create"),
+	rows(toolStakpak, SurfaceBuiltin, ActionEditFile, "str_replace", "remove"),
+	rows(toolStakpak, SurfaceBuiltin, ActionSearchText, "local_code_search"),
+	rows(toolStakpak, SurfaceBuiltin, ActionWebSearch, "search_docs"),
+	rows(toolStakpak, SurfaceBuiltin, ActionSkillInvoke, "load_skill"),
+	rows(toolStakpak, SurfaceOrchestration, ActionSpawnSubagent, "dynamic_subagent_task"),
+	rows(toolStakpak, SurfaceOrchestration, ActionSubagentWait, "wait_for_tasks"),
+	rows(toolStakpak, SurfaceOrchestration, ActionAgentControl, "get_task_details", "get_all_tasks"),
+)
+
+// --- vtcode ----------------------------------------------------------
+// code: internal/adapter/vtcode (mapTool). Live-grounded: exec_command,
+// code_search; the rest from the vendor's own .vtcode/tool-policy.json +
+// trajectory ordered_wire_tool_names + docs/tools/TOOL_SPECS.md.
+var vtCodeRows = concat(
+	rows(toolVTCode, SurfaceBuiltin, ActionRunCommand, "exec_command"),
+	rows(toolVTCode, SurfaceOrchestration, ActionStdinWrite, "write_stdin"),
+	rows(toolVTCode, SurfaceBuiltin, ActionEditFile, "apply_patch"),
+	rows(toolVTCode, SurfaceBuiltin, ActionSearchText, "code_search"),
+	rows(toolVTCode, SurfaceMeta, ActionToolSearch, "search_tools"),
+	rows(toolVTCode, SurfaceBuiltin, ActionWebFetch, "web_fetch"),
+	rows(toolVTCode, SurfaceBuiltin, ActionWebSearch, "web_search"),
+	rows(toolVTCode, SurfaceBuiltin, ActionAskUser, "request_user_input"),
+	rows(toolVTCode, SurfaceBuiltin, ActionTodoUpdate, "task_tracker"),
+	rows(toolVTCode, SurfaceMeta, ActionPermissionMode, "start_planning"),
+	rows(toolVTCode, SurfaceBuiltin, ActionSkillInvoke, "load_skill", "load_skill_resource"),
+	rows(toolVTCode, SurfaceMeta, ActionHarnessCall, "list_skills", "record_decision", "memory"),
+	rows(toolVTCode, SurfaceMCP, ActionMCPCall, "mcp"),
+)
+
 // toolGlobRows are the tool-specific PREFIX globs. They sort after every
 // literal row so a literal always wins, and before the tool-less rows.
 //
@@ -1246,7 +1589,15 @@ var toolGlobRows = concat(
 	rows(toolClineCLI, SurfaceMCP, ActionMCPCall, "mcp_*"),
 	// hermes prefix rules (normalize.go:40-45).
 	rows(toolHermes, SurfaceMCP, ActionMCPCall, "mcp_*"),
+	// crush and kiro-cli (CLI V3) name an MCP tool `mcp_<server>_<tool>`
+	// with ONE underscore (crush docs/hooks/README.md, kiro.dev hook
+	// types); MCPNameFromSingleUnderscore canonicalizes it for the guard.
+	rows(toolCrush, SurfaceMCP, ActionMCPCall, "mcp_*"),
+	rows(toolKiroCLI, SurfaceMCP, ActionMCPCall, "mcp_*"),
 	rows(toolHermes, SurfaceBuiltin, ActionBrowserAction, "browser_*"),
+	// autohand classifies every browser_* tool by prefix
+	// (internal/adapter/autohand/records.go classifyTool).
+	rows(toolAutohand, SurfaceBuiltin, ActionBrowserAction, "browser_*"),
 	// copilot-cli's GitHub MCP server naming (events.go:1202).
 	rows(toolCopilotCLI, SurfaceMCP, ActionMCPCall, "github-mcp-server-*"),
 	// opencode writes todo rows as "todo.<status>" (adapter.go:1024).

@@ -96,6 +96,27 @@ type CursorEvaluator interface {
 // passes false and relies entirely on this function's own detection
 // below; the two signals are OR'd together either way.
 func HandleCursorEventGuarded(eventName string, gd CursorEvaluator, persist func(guard.ActionVerdict), sink CursorSink, sc *scrub.Scrubber, stdin io.Reader, callerBodyTruncated bool, stdout, stderr io.Writer, deadline time.Duration) {
+	HandleCursorEventEnriched(eventName, gd, persist, nil, sink, sc, stdin, callerBodyTruncated, stdout, stderr, deadline)
+}
+
+// HandleCursorEventEnriched is HandleCursorEventGuarded with an enrich step
+// (ToolGateRequest.Enrich's contract): before a pre-execution event is
+// evaluated, the cmd layer fills the security pillar's facts on it, so the
+// commit gate reads the project's posture on beforeShellExecution and
+// beforeMCPExecution as it does on every other tool gate (lane sec-gate2).
+// A nil enrich is HandleCursorEventGuarded.
+func HandleCursorEventEnriched(eventName string, gd CursorEvaluator, persist func(guard.ActionVerdict), enrich func(*policy.Event), sink CursorSink, sc *scrub.Scrubber, stdin io.Reader, callerBodyTruncated bool, stdout, stderr io.Writer, deadline time.Duration) {
+	HandleCursorEventGated(eventName, gd, persist, enrich, nil, sink, sc, stdin, callerBodyTruncated, stdout, stderr, deadline)
+}
+
+// HandleCursorEventGated is HandleCursorEventEnriched with an allow seam
+// (lane SEC-F2B, decision log P-078 ruling 3): onAllow runs once guard
+// allowed a gated event (a before* permission event or preToolUse), after
+// the decision and BEFORE the reply that lets the call run is written, so
+// whatever it records exists when the host reads the reply. It never runs
+// for an ask or a deny, for beforeSubmitPrompt, or with no evaluator. A nil
+// onAllow is HandleCursorEventEnriched.
+func HandleCursorEventGated(eventName string, gd CursorEvaluator, persist func(guard.ActionVerdict), enrich func(*policy.Event), onAllow func(), sink CursorSink, sc *scrub.Scrubber, stdin io.Reader, callerBodyTruncated bool, stdout, stderr io.Writer, deadline time.Duration) {
 	buf, _ := io.ReadAll(io.LimitReader(stdin, cursorHookBodyLimit+1))
 	truncated := callerBodyTruncated
 	if int64(len(buf)) > cursorHookBodyLimit {
@@ -109,15 +130,26 @@ func HandleCursorEventGuarded(eventName string, gd CursorEvaluator, persist func
 		return
 	}
 	if dialect, ok := cursorToolGateEvents[eventName]; ok {
-		handleCursorToolGate(eventName, dialect, body, truncated, gd, persist, sink, sc, stdout, stderr, deadline)
+		handleCursorToolGate(eventName, dialect, body, truncated, gd, persist, enrich, onAllow, sink, sc, stdout, stderr, deadline)
 		return
 	}
 
 	permission := "allow"
 	var verdict guard.ActionVerdict
 	recordWorthy := false
+	evaluated := false
 	if gd != nil {
 		if pe, ok := BuildCursorEvent(eventName, body, sc); ok {
+			evaluated = true
+			if enrich != nil {
+				if pe.Kind == policy.KindMCPCall && len(pe.Raw) == 0 {
+					// beforeMCPExecution's arguments for the commit gate's
+					// MCP placement column (audit SEC-P4 F5), as the tool
+					// gate reads them; in memory only, never persisted.
+					pe.Raw = mcpToolInputRaw(body, nil)
+				}
+				enrich(&pe)
+			}
 			verdict, recordWorthy = gd.EvaluateHook(pe)
 			em := guard.ResolveEmission(verdict.Verdict, pe.Caps)
 			verdict.Enforced = em.Enforced
@@ -150,6 +182,9 @@ func HandleCursorEventGuarded(eventName string, gd CursorEvaluator, persist func
 		}
 	}
 
+	if evaluated && permission == "allow" && onAllow != nil {
+		onAllow()
+	}
 	// Reply first — Cursor tolerates extra fields, so a single response
 	// shape covers all event types.
 	_ = json.NewEncoder(stdout).Encode(cursorReply{
@@ -177,16 +212,19 @@ var cursorToolGateEvents = map[string]string{
 // then runs the SAME post-reply capture every other cursor channel gets (a
 // denied attempt is still an attempt worth recording). gd nil (guard off)
 // is the dialect's allow, byte-identical to the unguarded reply.
-func handleCursorToolGate(eventName, dialect string, body []byte, truncated bool, gd CursorEvaluator, persist func(guard.ActionVerdict), sink CursorSink, sc *scrub.Scrubber, stdout, stderr io.Writer, deadline time.Duration) {
+func handleCursorToolGate(eventName, dialect string, body []byte, truncated bool, gd CursorEvaluator, persist func(guard.ActionVerdict), enrich func(*policy.Event), onAllow func(), sink CursorSink, sc *scrub.Scrubber, stdout, stderr io.Writer, deadline time.Duration) {
 	var ev guard.Evaluator
 	if gd != nil {
 		ev = gd
 	}
 	res := HandleToolGate(ToolGateRequest{
 		Tool: models.ToolCursor, Dialect: dialect, NativeEvent: eventName,
-		Label: "cursor:" + eventName, Body: body, Truncated: truncated,
+		Label: "cursor:" + eventName, Body: body, Truncated: truncated, Enrich: enrich,
 	}, ev, persist, stdout, stderr)
 	if !res.Replied {
+		if ev != nil && onAllow != nil {
+			onAllow()
+		}
 		WriteToolGateAllow(dialect, stdout)
 	}
 	processCursorEvent(eventName, body, sink, sc, stderr, deadline)
@@ -567,4 +605,25 @@ func recordCursorAccounts(eventName string, body []byte, sink CursorSink, stderr
 	if _, err := sink.Ingest(ctx, nil, nil, store.IngestOptions{ToolAccounts: observations, SessionToolVersions: versions}); err != nil {
 		fmt.Fprintf(stderr, "observer-hook: cursor account capture: %v\n", err)
 	}
+}
+
+// CursorPayloadUndecodable reports whether Cursor's own guarded receiver
+// cannot decode body for eventName where its gate reads it: a pre-execution
+// before* event whose payload does not decode as Cursor's hook shape, a
+// beforeSubmitPrompt that does not decode as the Cursor prompt, or a
+// preToolUse its tool-gate dialect cannot decode. False for an event no
+// gate judges.
+func CursorPayloadUndecodable(eventName string, body []byte) bool {
+	body = bytes.TrimPrefix(body, utf8BOM)
+	if eventName == cursor.EventBeforeSubmitPrompt {
+		return PromptPayloadUndecodable(PromptDialectCursor, body)
+	}
+	if dialect, ok := cursorToolGateEvents[eventName]; ok {
+		return ToolGatePayloadUndecodable(models.ToolCursor, dialect, eventName, body)
+	}
+	caps, known := guard.CapabilitiesFor(models.ToolCursor, "hook:"+eventName)
+	if !known || !caps.PreExecution {
+		return false
+	}
+	return cursor.DecodeHookPayload(body) != nil
 }

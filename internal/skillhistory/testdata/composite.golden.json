@@ -10,7 +10,11 @@
       ],
       "Present": true,
       "Tools": [
-        "claude-code"
+        "claude-code",
+        "dimcode",
+        "dirac",
+        "ibm-bob",
+        "kimchi"
       ],
       "Ambiguous": false,
       "Current": {
@@ -111,7 +115,8 @@
       ],
       "Present": true,
       "Tools": [
-        "claude-code"
+        "claude-code",
+        "ibm-bob"
       ],
       "Ambiguous": false,
       "Current": {

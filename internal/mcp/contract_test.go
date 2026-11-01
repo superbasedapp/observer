@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/marmutapp/superbased-observer/internal/secmcp"
 )
 
 // contractDocPointer is appended to every failure below so a developer who
@@ -69,8 +71,8 @@ func TestContractTableWellFormed(t *testing.T) {
 			if !tiers[row.Tier] {
 				t.Errorf("tier %q is not one of stable/conditional/experimental — %s", row.Tier, contractDocPointer)
 			}
-			if wantGated := row.Tier == TierConditional; row.ConfigGated != wantGated {
-				t.Errorf("ConfigGated = %v, want %v for tier %q — the conditional tier IS the config-gated tier (%s)",
+			if wantGated := row.Tier == TierConditional || row.Module != ""; row.ConfigGated != wantGated {
+				t.Errorf("ConfigGated = %v, want %v for tier %q: the conditional tier and the module rows are the config-gated ones (%s)",
 					row.ConfigGated, wantGated, row.Tier, contractDocPointer)
 			}
 			if seen[row.Name] {
@@ -103,7 +105,7 @@ func TestContractToolsSorted(t *testing.T) {
 // 25-tool surface is present in one tools/list.
 func TestContractCoversEveryRegisteredTool(t *testing.T) {
 	_, database, _ := testServer(t)
-	s, err := New(v7_12FixtureOpts(t, database, nil))
+	s, err := New(withModuleTools(v7_12FixtureOpts(t, database, nil)))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -124,6 +126,39 @@ func TestContractCoversEveryRegisteredTool(t *testing.T) {
 			t.Errorf("contract table lists %q but the server does not register it (with all conditional "+
 				"tools enabled) — %s", name, contractDocPointer)
 		}
+	}
+}
+
+// withModuleTools adds the module tools a host passes as ExtraTools (the
+// contract rows with Module set), as `observer serve` does while each
+// module is active: the security module's two tools (lane sec-gate2).
+func withModuleTools(o Options) Options {
+	for _, tl := range secmcp.Tools(secmcp.Deps{}) {
+		o.ExtraTools = append(o.ExtraTools, tl)
+	}
+	return o
+}
+
+// TestContractModuleRowsNameTheirModule: every module row is one the
+// module's own tool list carries, so a renamed module tool fails here.
+func TestContractModuleRowsNameTheirModule(t *testing.T) {
+	t.Parallel()
+	have := map[string]bool{}
+	for _, tl := range secmcp.Tools(secmcp.Deps{}) {
+		have[tl.Name()] = true
+	}
+	n := 0
+	for _, row := range ContractTools() {
+		if row.Module == "" {
+			continue
+		}
+		n++
+		if row.Module != "security" || !have[row.Name] {
+			t.Errorf("module row %+v is not a tool of the security module: %s", row, contractDocPointer)
+		}
+	}
+	if n != len(have) {
+		t.Errorf("module rows = %d, security module tools = %d: %s", n, len(have), contractDocPointer)
 	}
 }
 
@@ -221,9 +256,11 @@ var contractRequiredParams = map[string][]string{
 	"get_relations":    {"project_root", "file", "name", "kind"},
 	"get_symbols":      {"project_root", "requests"},
 	"retrieve_stashed": {"sha"},
-	// experimental (3) — no cross-release promise, pinned so a change is
+	// experimental (7, two of them the security module's): no cross-release promise, pinned so a change is
 	// at least a deliberate edit rather than an accident.
 	"continue_session":       {},
+	"check_change":           {"path", "content"},
+	"get_security_findings":  {},
 	"get_project_guidance":   {},
 	"get_output_composition": {"session_id"},
 	"get_session_message":    {"session_id"},
@@ -269,7 +306,7 @@ func requiredFromSchema(schema map[string]any) []string {
 // a MAJOR-only break; this test is where that break becomes visible.
 func TestContractRequiredParamsPinned(t *testing.T) {
 	_, database, _ := testServer(t)
-	s, err := New(v7_12FixtureOpts(t, database, nil))
+	s, err := New(withModuleTools(v7_12FixtureOpts(t, database, nil)))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -598,7 +635,8 @@ func TestContractDocTablesMatchGoTable(t *testing.T) {
 					"drift gate went blind; fix the parser in internal/mcp/contract_test.go", rel)
 			}
 
-			for _, row := range ContractTools() {
+			builtin := builtinContractTools()
+			for _, row := range builtin {
 				got, ok := doc[row.Name]
 				if !ok {
 					t.Errorf("%s: tier table is missing %q (tier %s) — the prose table is "+
@@ -625,10 +663,62 @@ func TestContractDocTablesMatchGoTable(t *testing.T) {
 				t.Errorf("%s: tier-table rows are not alphabetical (%v) — the doc publishes the "+
 					"same order tools/list emits; %s", rel, order, contractDocPointer)
 			}
-			if len(order) != len(ContractTools()) {
-				t.Errorf("%s: tier table has %d rows, the Go table has %d — %s",
-					rel, len(order), len(ContractTools()), contractDocPointer)
+			if len(order) != len(builtin) {
+				t.Errorf("%s: tier table has %d rows, the Go table has %d built-in rows: %s",
+					rel, len(order), len(builtin), contractDocPointer)
 			}
 		})
+	}
+}
+
+// builtinContractTools are the contract rows of the server's own tools
+// (Module ""): the tier table of every doc mirror. The module rows have
+// their own table in docs/mcp-contract.md (TestContractModuleDocTable).
+func builtinContractTools() []ContractTool {
+	var out []ContractTool
+	for _, row := range ContractTools() {
+		if row.Module == "" {
+			out = append(out, row)
+		}
+	}
+	return out
+}
+
+// contractModuleRowRe matches one row of docs/mcp-contract.md's module
+// tools table: | module | `tool` | tier | presence |.
+var contractModuleRowRe = regexp.MustCompile(
+	"^\\|\\s*([a-z][a-z0-9_.]*)\\s*\\|\\s*`([a-z0-9_]+)`\\s*\\|\\s*(stable|conditional|experimental)\\s*\\|",
+)
+
+// TestContractModuleDocTable pins docs/mcp-contract.md's module tools table
+// against the module rows of contractTools (lane sec-gate2): the same
+// tools, modules and tiers.
+func TestContractModuleDocTable(t *testing.T) {
+	t.Parallel()
+	body, err := os.ReadFile(filepath.Join("..", "..", "docs", "mcp-contract.md"))
+	if os.IsNotExist(err) {
+		t.Skip("docs/mcp-contract.md absent (private-repo-only doc)")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := map[string][2]string{}
+	for _, line := range strings.Split(string(body), "\n") {
+		if m := contractModuleRowRe.FindStringSubmatch(strings.TrimRight(line, "\r")); m != nil {
+			doc[m[2]] = [2]string{m[1], m[3]}
+		}
+	}
+	n := 0
+	for _, row := range ContractTools() {
+		if row.Module == "" {
+			continue
+		}
+		n++
+		if got := doc[row.Name]; got != [2]string{row.Module, string(row.Tier)} {
+			t.Errorf("module table row for %q = %v, want module %q tier %q: %s", row.Name, got, row.Module, row.Tier, contractDocPointer)
+		}
+	}
+	if len(doc) != n {
+		t.Errorf("module table has %d rows, the Go table has %d module rows: %s", len(doc), n, contractDocPointer)
 	}
 }

@@ -67,11 +67,11 @@ func TestInspectOneRouteKind(t *testing.T) {
 				want RouteState
 			}{
 				{"http://127.0.0.1:8820/v1", RouteOurs},
-				{"https://api.openai.com/v1", RouteDrifted},
+				{"https://llm.example.com/v1", RouteDrifted},
 			} {
 				home := t.TempDir()
 				t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-				t.Setenv("CRUSH_CONFIG", "")
+				t.Setenv("CRUSH_GLOBAL_CONFIG", "")
 				t.Setenv("KIMI_CODE_HOME", "")
 				t.Setenv("QWEN_HOME", "")
 				tc.write(t, home, sub.base)
@@ -102,9 +102,10 @@ func statusFor(statuses []RouteStatus, tool string) RouteStatus {
 	return RouteStatus{}
 }
 
-// TestDriftedToolsPerTenancy is the tenancy half of item 2: an ABSENT route
-// is drift only when the organization is authoritative over some enforcement
-// point on this node; an individual node is byte-for-byte unchanged.
+// TestDriftedToolsPerTenancy is the posture half of item 2: an ABSENT route
+// is drift only where the organization requires routes (maintained); with
+// maintenance off nothing is drift, and with no posture only a route the
+// organization wrote can drift (none here does).
 func TestDriftedToolsPerTenancy(t *testing.T) {
 	statuses := []RouteStatus{
 		{Tool: "claude-code", State: RouteOurs, ArtifactPresent: true},
@@ -118,16 +119,17 @@ func TestDriftedToolsPerTenancy(t *testing.T) {
 		{Tool: "qwen-code", State: RouteOrgGateway, ArtifactPresent: true},
 	}
 	cases := []struct {
-		name          string
-		absentIsDrift bool
-		want          []string
+		name string
+		mode DriftMode
+		want []string
 	}{
-		{"individual node: absent is not drift", false, []string{"crush"}},
-		{"managed + enforce: absent with the config present IS drift", true, []string{"codex", "crush"}},
+		{"maintenance off: nothing is drift", DriftModeOff, nil},
+		{"no posture and no organization route: nothing is drift", DriftModeOrgRoutes, nil},
+		{"maintained: absent with the config present IS drift", DriftModeMaintained, []string{"codex", "crush"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := DriftedTools(statuses, tc.absentIsDrift)
+			got := DriftedTools(statuses, DriftPolicy{Mode: tc.mode})
 			if len(got) != len(tc.want) {
 				t.Fatalf("DriftedTools = %v, want %v", got, tc.want)
 			}

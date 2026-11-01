@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { resolveBinary } from './binary';
+import { warmUpOnAdoption } from './warmup';
 import { registerCommands } from './commands';
 import { registerViewCommands } from './commands/views';
 import { DaemonManager } from './daemon';
@@ -10,8 +11,10 @@ import { registerInstructionCommands } from './commands/instructions';
 import { registerFileFreshness } from './decorations/fileFreshness';
 import { BudgetNotifier } from './notifications/budget';
 import { WatcherLagNotifier } from './notifications/watcherLag';
+import { AdminMessagesNotifier } from './notifications/messages';
 import { createCostStatusBar, StatusBarController } from './status/costBar';
 import { createCacheStatusBar } from './status/cacheBar';
+import { registerSecurityDiagnostics } from './security';
 import { createComponentGate } from './components';
 import { createAgentAccessStatusBar } from './agentAccessStatus';
 import { registerLocTracker } from './loc/tracker';
@@ -60,6 +63,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
       `Resolved binary: ${bin.path} (version ${bin.version}, source ${bin.source})`,
     );
     await ctx.globalState.update('observer.binaryPath', bin.path);
+    void warmUpOnAdoption(ctx, bin, (line) => output.appendLine(line)); // Windows first-run scan off the hook path (warmup.ts)
 
     const cfg = vscode.workspace.getConfiguration('observer');
     const mode = (cfg.get<string>('daemon.mode') ?? 'detect') as DaemonMode;
@@ -101,6 +105,10 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     const gate = createComponentGate(manager);
     ctx.subscriptions.push(gate);
 
+    // Code security diagnostics (lane sec-c3): hidden while the security
+    // component is not active.
+    registerSecurityDiagnostics(ctx, manager, gate);
+
     cacheStatusBar = createCacheStatusBar(ctx, manager, gate);
     if (cacheStatusBar) {
       ctx.subscriptions.push(cacheStatusBar);
@@ -139,6 +147,10 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     const watcherLag = new WatcherLagNotifier(manager);
     watcherLag.start();
     ctx.subscriptions.push(watcherLag);
+
+    const adminMessages = new AdminMessagesNotifier(ctx, manager);
+    adminMessages.start();
+    ctx.subscriptions.push(adminMessages);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     output.appendLine(`Activation failed: ${message}`);

@@ -60,6 +60,41 @@ func TestRegistryHasNoOrphanRows(t *testing.T) {
 	}
 }
 
+// TestNewToolIDsAreNotRegistered (FU-147): every id a coding-surface row
+// proposes as its own registry id (CodingSurface.NewTool) carries a reason
+// it is not a row yet, has no registry row, and has no registered adapter.
+// The day one of them is registered, this fails: make its registry row
+// (TestRegistryCoversEveryRegisteredAdapter asks for it too), move the
+// surface rows from NewTool to Tool and drop the reason.
+func TestNewToolIDsAreNotRegistered(t *testing.T) {
+	registered := map[string]bool{}
+	for _, a := range adapterdefaults.Adapters() {
+		registered[a.Name()] = true
+	}
+	reasons := integration.NewToolReasons()
+	named := map[string]bool{}
+	for _, s := range integration.CodingSurfaces() {
+		if s.NewTool == "" {
+			continue
+		}
+		named[s.NewTool] = true
+		if reasons[s.NewTool] == "" {
+			t.Errorf("surface %s: NewTool %q has no reason in newToolReasons", s.ID, s.NewTool)
+		}
+	}
+	for id := range reasons {
+		if !named[id] {
+			t.Errorf("newToolReasons[%q]: no surface row names it; drop the stale reason", id)
+		}
+		if _, ok := integration.For(id); ok {
+			t.Errorf("%q now has a registry row: move its surface rows from NewTool to Tool and drop the reason", id)
+		}
+		if registered[id] {
+			t.Errorf("%q is now a registered adapter: give it a registry row and move its surface rows to Tool", id)
+		}
+	}
+}
+
 // registryRowlessTaxonomyTools is the FROZEN, acknowledged set of tool ids
 // that internal/tooltax carries tool-specific vocabulary rows for while
 // internal/integration deliberately carries NO capability row. The value is
@@ -424,6 +459,58 @@ func TestHandoffClassifiedForEveryAdapter(t *testing.T) {
 		}
 		if _, ok := a.(transcriptReader); ok && cap.Handoff.Transcript != integration.TranscriptFull {
 			t.Errorf("adapter %q implements ReadTranscript but its Handoff row is %q, not full", a.Name(), cap.Handoff.Transcript)
+		}
+	}
+}
+
+// fullTranscriptWithoutReader is the CLOSED allow-list of adapters whose
+// Handoff row is TranscriptFull although the adapter ships no
+// ReadTranscript (the converse of TestHandoffClassifiedForEveryAdapter).
+// A row leaves the list when its reader ships; a new Full row without a
+// reader is a classification bug.
+var fullTranscriptWithoutReader = map[string]string{
+	"aider":         fullWithoutReaderPreWave,
+	"command-code":  fullWithoutReaderPreWave,
+	"copilot-cli":   fullWithoutReaderPreWave,
+	"cowork":        fullWithoutReaderPreWave,
+	"crush":         fullWithoutReaderPreWave,
+	"deepseek":      fullWithoutReaderPreWave,
+	"droid":         fullWithoutReaderPreWave,
+	"freebuff":      fullWithoutReaderPreWave,
+	"gemini-cli":    fullWithoutReaderPreWave,
+	"goose":         fullWithoutReaderPreWave,
+	"grokbot":       fullWithoutReaderPreWave,
+	"junie":         fullWithoutReaderPreWave,
+	"kilo-code-cli": fullWithoutReaderPreWave,
+	"kiro-crew":     fullWithoutReaderPreWave,
+	"mistral-code":  fullWithoutReaderPreWave,
+	"muse":          fullWithoutReaderPreWave,
+	"openclaw":      fullWithoutReaderPreWave,
+	"pi":            fullWithoutReaderPreWave,
+	"poolside":      fullWithoutReaderPreWave,
+	"prime-agent":   fullWithoutReaderPreWave,
+	"qoder":         fullWithoutReaderPreWave,
+	"qwen-code":     fullWithoutReaderPreWave,
+	"zed":           fullWithoutReaderPreWave,
+}
+
+// fullWithoutReaderPreWave is the reason of every row that was Full before
+// the converse pin (2026-10-21): the P2 tranche ships readers row by row.
+const fullWithoutReaderPreWave = "Full before the converse pin (2026-10-21); reader not shipped yet (handoff P2 tranche)"
+
+// TestFullTranscriptImpliesReader is the converse pin: every adapter whose
+// Handoff row claims TranscriptFull implements ReadTranscript, unless it is
+// on the allow-list with a reason.
+func TestFullTranscriptImpliesReader(t *testing.T) {
+	for _, a := range adapterdefaults.Adapters() {
+		cap, _ := integration.For(a.Name())
+		_, reader := a.(transcriptReader)
+		_, allowed := fullTranscriptWithoutReader[a.Name()]
+		switch {
+		case cap.Handoff.Transcript == integration.TranscriptFull && !reader && !allowed:
+			t.Errorf("adapter %q: Handoff row is full but it implements no ReadTranscript (downgrade the row or ship the reader)", a.Name())
+		case allowed && (reader || cap.Handoff.Transcript != integration.TranscriptFull):
+			t.Errorf("adapter %q: on fullTranscriptWithoutReader but no longer a Full row without a reader; remove the entry", a.Name())
 		}
 	}
 }
@@ -1166,6 +1253,11 @@ func TestSandboxPathsWellFormed(t *testing.T) {
 		for i, p := range c.Sandbox.ProtectRODirs {
 			check(t, c.Tool, "ProtectRODirs", i, p)
 		}
+		for goos, paths := range c.Sandbox.StateRWByOS {
+			for i, p := range paths {
+				check(t, c.Tool, "StateRWByOS["+goos+"]", i, p)
+			}
+		}
 	}
 }
 
@@ -1516,6 +1608,8 @@ func TestTranscriptTimedTools(t *testing.T) {
 // HookSpec.Note instead of bindings.
 var hookBindingHonestZeroRows = map[string]bool{
 	"grokbot": true, "zed": true, "aider": true, "cowork": true, "freebuff": true,
+	// 2026-10-21 wave: no hook surface of their own.
+	"stakpak": true,
 }
 
 // TestEveryRowDeclaresBindingsOrHonestZero: every registry row either lists
@@ -1550,13 +1644,24 @@ var hookParityRegisterTargets = map[string]string{
 	"command-code": "command-code", "command-code-windows": "command-code",
 	"antigravity-cli": "antigravity-cli",
 	// Hook-parity Lane A6 tool-gate targets.
-	"grok": "grok", "copilot-cli": "copilot-cli", "goose": "goose", "junie": "junie",
+	"grok": "grok", "copilot-cli": "copilot-cli", "copilot-cli-windows": "copilot-cli", "goose": "goose", "junie": "junie",
 	"crush": "crush", "open-interpreter": "open-interpreter", "zcode": "zcode",
 	"mistral-code": "mistral-code", "cline-cli": "cline-cli",
 	// Live-ground lane 2 (T-479).
 	"muse": "muse",
 	// Live-ground lane 3 (T-378).
 	"kimi-code": "kimi-code",
+	// gfiD (2026-10-15): the Kiro CLI agent JSON writer.
+	"kiro-cli": "kiro-cli",
+	// The 2026-10-21 wave.
+	"ibm-bob": "ibm-bob", "ibm-bob-windows": "ibm-bob",
+	"codebuddy": "codebuddy", "codebuddy-windows": "codebuddy",
+	"deepagents-code": "deepagents-code", "deepagents-code-windows": "deepagents-code",
+	"dimcode": "dimcode", "dimcode-windows": "dimcode",
+	"dirac": "dirac", "dirac-windows": "dirac",
+	"autohand": "autohand",
+	"vtcode":   "vtcode", "vtcode-windows": "vtcode",
+	"kimchi": "kimchi",
 }
 
 // TestRegisteredBindingsMatchRegisteredEvents: the Registered bindings of
@@ -1683,5 +1788,49 @@ func TestBindingCountsGolden(t *testing.T) {
 	}
 	if string(got) != string(want) {
 		t.Errorf("binding counts changed:\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+}
+
+// TestForeignLaneOnlyOnUnattendedPersistedRoutes: the third-party-provider
+// lane capability is declared only on a verified, persisted, unconditional
+// route (the only shape the managed daemon writes), and is marked live-verified
+// only with the api_turns evidence that proves it.
+func TestForeignLaneOnlyOnUnattendedPersistedRoutes(t *testing.T) {
+	for _, name := range integration.Tools() {
+		c, _ := integration.For(name)
+		if c.Proxy == nil || c.Proxy.ForeignLane == nil {
+			continue
+		}
+		if c.Routability != integration.RouteStatusRoutableNow || c.Proxy.Gate != nil || c.Proxy.Lane != nil || c.Proxy.Kind != integration.RouteConfigFile {
+			t.Errorf("%s declares ForeignLane on a route the daemon does not write unattended", name)
+		}
+		if c.Proxy.ForeignLane.Note == "" {
+			t.Errorf("%s ForeignLane has no grounding note", name)
+		}
+		if c.Proxy.ForeignLane.LiveVerified && !strings.Contains(c.Proxy.ForeignLane.Note, "api_turns") {
+			t.Errorf("%s ForeignLane is marked live-verified without the api_turns evidence in its Note", name)
+		}
+	}
+}
+
+// TestForeignLanesLiveVerified pins the 2026-10-18 live verification
+// (RETEST5 F3, demo node 1): the qwen-code and kimi-code provider lanes each
+// landed api_turns rows through the proxy, and the Note cites that evidence
+// and its date.
+func TestForeignLanesLiveVerified(t *testing.T) {
+	for _, name := range []string{"qwen-code", "kimi-code"} {
+		c, ok := integration.For(name)
+		if !ok || c.Proxy == nil || c.Proxy.ForeignLane == nil {
+			t.Fatalf("%s has no ForeignLane", name)
+		}
+		lane := c.Proxy.ForeignLane
+		if !lane.LiveVerified {
+			t.Errorf("%s ForeignLane.LiveVerified = false, want true (RETEST5 F3)", name)
+		}
+		for _, want := range []string{"api_turns", "2026-10-18"} {
+			if !strings.Contains(lane.Note, want) {
+				t.Errorf("%s ForeignLane note lacks %q: %s", name, want, lane.Note)
+			}
+		}
 	}
 }

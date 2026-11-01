@@ -419,6 +419,9 @@ type SandboxAvailability = dashapi.SandboxAvailability
 // SandboxProber re-exports dashapi.SandboxProber.
 type SandboxProber = dashapi.SandboxProber
 
+// SandboxBackendAvail re-exports dashapi.SandboxBackendAvail.
+type SandboxBackendAvail = dashapi.SandboxBackendAvail
+
 // SandboxSourceAvail re-exports dashapi.SandboxSourceAvail.
 type SandboxSourceAvail = dashapi.SandboxSourceAvail
 

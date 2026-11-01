@@ -291,6 +291,39 @@ func TestBuildPlanOrdering(t *testing.T) {
 	}
 }
 
+// TestBuildPlanPins (SBX-WORKTREE-SOURCE audit finding 4): a pin is a
+// bind-try of a path onto itself, rendered after the extra rw binds and
+// before the protective overlays (so an overlay inside it still applies),
+// and a pin outside every read-write bind is refused.
+func TestBuildPlanPins(t *testing.T) {
+	t.Parallel()
+	req := canonicalReq()
+	req.ExtraRW = []string{"/srv/org"}
+	req.Pins = []string{"/srv/org/a/repo", "/srv/org/a/repo/.git", req.WorkspaceRoot + "/.git"}
+	req.Overlays = []Overlay{{Path: "/srv/org/a/repo/.git/config", Kind: OverlayReadOnly}}
+	plan, err := BuildPlan(req)
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	argv := plan.Argv([]string{"true"})
+	extra := findFlagOperand(argv, flagBind, "/srv/org")
+	overlay := findFlagOperand(argv, flagROBindTry, "/srv/org/a/repo/.git/config")
+	for _, p := range req.Pins {
+		i := findFlagOperand(argv, flagBindTry, p)
+		if i < 0 || argv[i+2] != p {
+			t.Fatalf("pin %s not rendered as --bind-try onto itself: %v", p, argv)
+		}
+		if i < extra || i > overlay {
+			t.Errorf("pin %s at %d, want after the extra rw bind (%d) and before the overlay (%d)", p, i, extra, overlay)
+		}
+	}
+	bad := canonicalReq()
+	bad.Pins = []string{"/etc/passwd"}
+	if _, err := BuildPlan(bad); err == nil || !strings.Contains(err.Error(), "outside every read-write bind") {
+		t.Fatalf("a pin outside every rw bind: %v", err)
+	}
+}
+
 func TestBuildPlanInjectionGuards(t *testing.T) {
 	t.Parallel()
 

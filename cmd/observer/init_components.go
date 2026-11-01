@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/marmutapp/superbased-observer/internal/clientwire"
 	"github.com/marmutapp/superbased-observer/internal/components"
 	"github.com/marmutapp/superbased-observer/internal/componentstate"
 	"github.com/marmutapp/superbased-observer/internal/componentsvc"
@@ -86,7 +87,7 @@ func (g initComponentGate) tools(in []string, w io.Writer) []string {
 	for _, t := range in {
 		if !g.snap.AdapterActive(t) {
 			if w != nil {
-				fmt.Fprintf(w, "%-12s skipped: %s\n", t, g.why(components.AdapterID(strings.TrimSuffix(t, "-windows"))))
+				fmt.Fprintf(w, "%-12s skipped: %s\n", t, g.why(components.AdapterID(clientwire.HookTargetBase(t))))
 			}
 			continue
 		}

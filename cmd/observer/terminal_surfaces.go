@@ -60,3 +60,20 @@ type terminalSurfaces struct {
 	mgr   terminalManager
 	close func()
 }
+
+// sandboxCountingManager is the terminal manager the surfaces hand out, with
+// the terminal service's count of live sandboxed runs beside it (sandbox
+// plan v2 section 5.5): the update drain asks for it through an optional
+// interface, so a manager without the service answers nothing.
+type sandboxCountingManager struct {
+	terminalManager
+	svc interface{ LiveSandboxedCount() int }
+}
+
+// LiveSandboxedCount reports the live sandboxed runs (zero with no service).
+func (m sandboxCountingManager) LiveSandboxedCount() int {
+	if m.svc == nil {
+		return 0
+	}
+	return m.svc.LiveSandboxedCount()
+}

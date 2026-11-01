@@ -1,0 +1,44 @@
+rules:
+  - id: python.ssrf-request-url
+    languages: [python]
+    severity: ERROR
+    message: A URL taken from a web request is fetched by the server, so a caller can make it reach internal hosts; check the host against an allow-list first.
+    metadata:
+      category: code_vuln
+      cwe: CWE-918
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: flask.request.$ATTR
+              - pattern: request.$ATTR
+              - pattern: self.request.$ATTR
+          - metavariable-regex:
+              metavariable: $ATTR
+              regex: ^(args|form|values|json|data|files|cookies|get_json|get_data|GET|POST|body|COOKIES|FILES|query_params)$
+    pattern-sanitizers:
+      - pattern: urllib.parse.quote(...)
+      - pattern: quote(...)
+      - patterns:
+          - pattern-either:
+              - pattern: '"$LIT" + $X'
+              - pattern: '"$LIT" + $X + $Y'
+          - metavariable-regex:
+              metavariable: $LIT
+              regex: ^https?://[^/?#]+[/?#]
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: requests.$M($U, ...)
+              - pattern: httpx.$M($U, ...)
+              - pattern: urllib.request.urlopen($U, ...)
+              - pattern: urlopen($U, ...)
+          - metavariable-regex:
+              metavariable: $M
+              regex: ^(get|post|put|patch|delete|head|options)$
+          - focus-metavariable: $U
+      - patterns:
+          - pattern-either:
+              - pattern: urllib.request.urlopen($U, ...)
+              - pattern: urlopen($U, ...)
+          - focus-metavariable: $U

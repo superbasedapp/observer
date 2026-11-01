@@ -65,6 +65,9 @@ func newShellWrapService(configPath string, env func() toolresolve.Env) *shellwr
 		ConfigPath:       configPath,
 		Installed:        shellWrapInstalledSeam(configPath, env),
 		WindowsInstalled: shellWrapWindowsInstalledSeam(env),
+		// CLI-1b (D6): a managed node's organization may keep the native
+		// wrap on; the developer's disable is then refused.
+		OrgMaintained: shellWrapOrgMaintained(configPath),
 	}
 }
 

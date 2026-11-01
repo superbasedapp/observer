@@ -196,6 +196,7 @@ func runSeedOnlyLaunchSeededWithEvidence(configPath, dbPath, tool, label, bin st
 	child.Stderr = os.Stderr
 	discovery := prepareGenericDiscovery(context.Background(), tool, dir)
 	if err := child.Start(); err != nil {
+		noteBoxToolLaunch(os.Stderr, label, bin, args, err)
 		return fmt.Errorf("exec %s: %w", label, err)
 	}
 	recordLaunchSeed(dbPath, tool, dir, child.Process.Pid, os.Stderr)
@@ -209,6 +210,7 @@ func runSeedOnlyLaunchSeededWithEvidence(configPath, dbPath, tool, label, bin st
 		defer discoverCancel()
 	}
 	if err := child.Wait(); err != nil {
+		noteBoxToolLaunch(os.Stderr, label, bin, args, err)
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
 			return exitErr(ee.ExitCode())

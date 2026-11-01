@@ -124,12 +124,14 @@ var shapeFixturePathByAdapter = map[string]string{
 	// `/.junie/sessions/` segment plus the exact basename, which is what
 	// rejects the sibling index.jsonl / state.json / transcript.md entries.
 	"junie": "/tmp/foreign/.junie/sessions/session-260816-220304-lrfz/events.jsonl",
-	// deepseek (DeepSeek Harness) — session.jsonl.zstd under
-	// .dsh/sessions/<cwd-slug>/session-<uuid>/. The shape predicate binds
-	// the `/.dsh/sessions/` segment plus the exact basename (whole-file
-	// zstd, rewritten on every flush — never a bare .jsonl), which is what
-	// rejects the off-limits .credentials.yaml / settings.yaml siblings.
-	"deepseek": "/tmp/foreign/.dsh/sessions/--tmp-foreign--/session-019f0000-1111-7222-8333-444444444444/session.jsonl.zstd",
+	// deepseek (DeepSeek Harness): session[.v<N>].jsonl.zstd under
+	// .dsh/sessions/<cwd-slug>/session-<uuid>/ (current builds write the
+	// versioned session.v4.jsonl.zstd, FU-93). The shape predicate binds
+	// the `/.dsh/sessions/` segment plus the closed basename table
+	// (whole-file zstd, rewritten on every flush, never a bare .jsonl),
+	// which is what rejects the off-limits .credentials.yaml /
+	// settings.yaml siblings.
+	"deepseek": "/tmp/foreign/.dsh/sessions/--tmp-foreign--/session-019f0000-1111-7222-8333-444444444444/session.v4.jsonl.zstd",
 	// poolside — trajectory-<agentId>_<sessionId>.ndjson under
 	// <data-home>/poolside/trajectories/. The shape predicate binds the
 	// exact `trajectory-` prefix / `.ndjson` suffix basename shape (no
@@ -180,6 +182,34 @@ var shapeFixturePathByAdapter = map[string]string{
 	// beyond the parent dir being scanned by the watcher itself), so the
 	// under-WatchPaths gate is the sole install-root authority.
 	"zed": "/tmp/foreign/Zed/threads/threads.db",
+	// autohand — one dir per session (<uuid>-<epoch-ms>) holding
+	// conversation.jsonl; the shape predicate alone would accept it, only
+	// the root gate rejects a foreign sessions tree.
+	"autohand": "/tmp/foreign/sessions/aaaaaaaa-1111-4222-8333-444444444444-1792553743146/conversation.jsonl",
+	// ibm-bob — WAL SQLite bob.db whose immediate parent dir must be `db`
+	// (~/.bob/db/ on every OS). Root-gating rejects the same shape under
+	// /tmp/foreign.
+	"ibm-bob": "/tmp/foreign/.bob/db/bob.db",
+	// cortex-code — <uuid>.history.jsonl directly inside a
+	// `conversations` dir (the cortex store); root-gated.
+	"cortex-code": "/tmp/foreign/.snowflake/cortex/conversations/934f8123-cbb6-4ff3-9cbc-e0c9d9321f4f.history.jsonl",
+	// codebuddy — Claude-Code-like projects/<slug>/<id>.jsonl under
+	// ~/.codebuddy; root-gated.
+	"codebuddy": "/tmp/foreign/.codebuddy/projects/home-u-proj/01a15cae-7d33-7739-8d55-8b6a3940d798.jsonl",
+	// deepagents-code — the LangGraph checkpointer sessions.db under
+	// .deepagents/.state; root-gating must reject a foreign copy.
+	"deepagents-code": "/tmp/foreign/.deepagents/.state/sessions.db",
+	// dimcode — the fixed basename dimcode.sqlite (+ -wal/-shm); the
+	// root gate is the sole install-root authority.
+	"dimcode": "/tmp/foreign/.dimcode/v2/dimcode.sqlite",
+	// dirac — op-log api_conversation_history.jsonl in a task dir.
+	"dirac": "/tmp/foreign/.dirac/data/tasks/1792563515376/api_conversation_history.jsonl",
+	// kimchi — pi-mono v3 JSONL under harness/sessions/--<slug>--/.
+	"kimchi": "/tmp/foreign/.config/kimchi/harness/sessions/--home-u-p--/2026-10-21T06-40-31-166Z_01a15d30-a3bd-7702-b5d5-f25eb07c1348.jsonl",
+	// stakpak — local.db whose parent is `data` under `.stakpak`.
+	"stakpak": "/tmp/foreign/.stakpak/data/local.db",
+	// vtcode — the per-workspace .vtcode/sessions/session-*/events.jsonl.
+	"vtcode": "/tmp/foreign/proj/.vtcode/sessions/session-abc/events.jsonl",
 }
 
 // TestAllAdapters_IsSessionFile_RequiresUnderWatchRoots is the

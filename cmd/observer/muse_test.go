@@ -166,7 +166,7 @@ func TestMuseAttachPassthrough(t *testing.T) {
 func TestMuseSubcommandForwardedToSeedIsRejected(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.toml")
-	if err := os.WriteFile(cfgPath, []byte("[observer]\ndb_path = \""+filepath.Join(dir, "observer.db")+"\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("[observer]\ndb_path = \""+filepath.ToSlash(filepath.Join(dir, "observer.db"))+"\"\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	for _, sub := range []string{"exec", "resume", "export", "sandbox"} {
@@ -200,7 +200,7 @@ func TestMuseSubcommandForwardedToSeedIsRejected(t *testing.T) {
 func TestMuseSeededInteractiveLaunchIsNotRejected(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.toml")
-	if err := os.WriteFile(cfgPath, []byte("[observer]\ndb_path = \""+filepath.Join(dir, "observer.db")+"\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("[observer]\ndb_path = \""+filepath.ToSlash(filepath.Join(dir, "observer.db"))+"\"\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	cmd := newMuseCmd()

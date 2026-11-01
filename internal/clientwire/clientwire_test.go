@@ -188,3 +188,88 @@ func TestOfferedToolsHaveARegistryWriter(t *testing.T) {
 		}
 	}
 }
+
+// TestXcodeTargetsAreHookTargetsOfTheirBase pins FU-145: an Xcode
+// agent-home target answers for its base tool's hook capability (and only
+// while it is switched on), resolves to its base for component gates, and
+// is never an MCP, route or telemetry target.
+func TestXcodeTargetsAreHookTargetsOfTheirBase(t *testing.T) {
+	n := 0
+	for _, base := range integration.Tools() {
+		for _, target := range hook.XcodeTargetsFor(base) {
+			n++
+			_, gated := hook.LiveCheckGate(target)
+			if HookSupported(target) == gated {
+				t.Errorf("%s: HookSupported = %v with gated = %v", target, HookSupported(target), gated)
+			}
+			if HookSupported(target) && !HookSupported(base) {
+				t.Errorf("%s: supported while its base %s is not", target, base)
+			}
+			if !HookRemovable(target) {
+				t.Errorf("%s: not removable", target)
+			}
+			if MCPSupported(target) || RouteSupported(target) || TelemetrySupported(target) {
+				t.Errorf("%s: an Xcode target is a hook target only", target)
+			}
+			if HookTargetBase(target) != base {
+				t.Errorf("HookTargetBase(%s) = %q, want %q", target, HookTargetBase(target), base)
+			}
+			if c, ok := HookTargetCapability(target); !ok || c.Tool != base {
+				t.Errorf("HookTargetCapability(%s) = %q, %v", target, c.Tool, ok)
+			}
+			if _, _, ok := AdvertisedCapability(target); ok {
+				t.Errorf("AdvertisedCapability resolves %s; it must stay hook-only", target)
+			}
+		}
+	}
+	if n == 0 {
+		t.Fatal("no Xcode agent-home target")
+	}
+	if HookTargetBase("codex-windows") != "codex" || HookTargetBase("cursor") != "cursor" {
+		t.Error("HookTargetBase changed the -windows or the plain answer")
+	}
+}
+
+// TestWSLTwinsAreHookTargetsOfTheirBase (FU-197): a "-wsl" twin is a hook
+// target of its base tool for every caller, only while its live gate is off
+// (today cursor-wsl), never an MCP, route or telemetry target; a gated twin
+// stays refused with its gate reason.
+func TestWSLTwinsAreHookTargetsOfTheirBase(t *testing.T) {
+	n := 0
+	for _, base := range integration.Tools() {
+		for _, target := range hook.WSLTwinsFor(base) {
+			n++
+			gate, gated := hook.LiveCheckGate(target)
+			if HookSupported(target) && (gated || !HookSupported(base)) {
+				t.Errorf("%s: HookSupported with gated = %v, base supported = %v", target, gated, HookSupported(base))
+			}
+			if gated && gate == "" {
+				t.Errorf("%s: gated without a reason", target)
+			}
+			if !gated && HookSupported(base) && !HookSupported(target) {
+				t.Errorf("%s: switched on but not supported", target)
+			}
+			if HookRemovable(base) && !HookRemovable(target) {
+				t.Errorf("%s: not removable while its base %s is", target, base)
+			}
+			if MCPSupported(target) || RouteSupported(target) || TelemetrySupported(target) {
+				t.Errorf("%s: a WSL twin is a hook target only", target)
+			}
+			if HookTargetBase(target) != base {
+				t.Errorf("HookTargetBase(%s) = %q, want %q", target, HookTargetBase(target), base)
+			}
+			if c, ok := HookTargetCapability(target); !ok || c.Tool != base {
+				t.Errorf("HookTargetCapability(%s) = %q, %v", target, c.Tool, ok)
+			}
+		}
+	}
+	if n == 0 {
+		t.Fatal("no WSL twin")
+	}
+	if !HookSupported("cursor-wsl") {
+		t.Error("cursor-wsl (WSL-5 passed) is not a hook target")
+	}
+	if HookSupported("claude-code-wsl") {
+		t.Error("claude-code-wsl waits on WSL-4 and must stay refused")
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -11,6 +12,9 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/govern/sidecar"
+	"github.com/marmutapp/superbased-observer/internal/guardposture"
+	"github.com/marmutapp/superbased-observer/internal/postureop"
+	"github.com/marmutapp/superbased-observer/internal/sandboxvocab"
 )
 
 // Admin-controlled Plane B, Phase 1b: the config half of the governance
@@ -104,6 +108,8 @@ type governancePinnableKey struct {
 	Enum      []any
 	Direction string
 	Safe      any
+	// Format mirrors nodegov.PinnableKey.Format (postureop.CheckFormat).
+	Format string
 	// Min / Max are an int row's inclusive bounds (both zero = unbounded).
 	Min, Max int64
 	// Hot mirrors nodegov.PinnableKey.Hot (the daemon also applies the key
@@ -111,14 +117,17 @@ type governancePinnableKey struct {
 	Hot bool
 }
 
+// The direction names are postureop's (roadmap F0-8): the same table
+// nodegov.compilePinned walks at publish and accept, imported here because
+// internal/postureop is a stdlib-only leaf, which internal/config may import
+// (the policy layer it may not).
 const (
-	governanceDirFree            = "free"
-	governanceDirRestrictiveOnly = "restrictive_only"
+	governanceDirFree            = string(postureop.DirFree)
+	governanceDirRestrictiveOnly = string(postureop.DirRestrictiveOnly)
 	// governanceDirLoweringOnly is the numeric CEILING direction for an int
 	// row: the org value applies unless the node's own value is already
-	// lower (govern.LowerInt's rule, restated here because internal/config
-	// must not import the policy layer).
-	governanceDirLoweringOnly = "lowering_only"
+	// lower (postureop.LowerInt).
+	governanceDirLoweringOnly = string(postureop.DirLoweringOnly)
 )
 
 // GovernanceHotKey reports whether a pinnable key is applied live by the
@@ -135,13 +144,7 @@ func GovernanceHotKey(key string) bool {
 // one definition the config overlay AND the daemon's live re-application use,
 // so the restart-time and the hot value can never disagree.
 func GovernanceLowerInt(local, org int64) int64 {
-	if org <= 0 {
-		return local
-	}
-	if local > 0 && local < org {
-		return local
-	}
-	return org
+	return postureop.LowerInt(local, org)
 }
 
 // GovernancePinnedPushInterval returns the org's push-interval ceiling from a
@@ -209,6 +212,209 @@ var governancePinnableKeys = []governancePinnableKey{
 	// (2026-10-02 budget-latency arc): an int CEILING, lowering-only, bounded
 	// 30..3600, hot.
 	{Key: "org_client.push_interval_seconds", Kind: "int", Direction: governanceDirLoweringOnly, Min: 30, Max: 3600, Hot: true},
+	// proxy.maintain_routes mirrors nodegov.PinnableKeys' row (lane P1): the
+	// admin's managed route-maintenance switch, free, hot.
+	{Key: "proxy.maintain_routes", Kind: "bool", Direction: governanceDirFree, Hot: true},
+	// shell_wrap.org_maintain mirrors nodegov.PinnableKeys' row (CLI-1b,
+	// D6): the admin's managed command-wrapping switch, free, hot.
+	{Key: "shell_wrap.org_maintain", Kind: "bool", Direction: governanceDirFree, Hot: true},
+	// The sandboxed-terminal rows mirror nodegov.PinnableKeys (lane SBX-P1B,
+	// sandbox plan v2 section 10.1).
+	{Key: "terminal.sandbox.backends", Kind: "string_list", Direction: string(postureop.DirOrderedFilter)},
+	{Key: "terminal.sandbox.remote_allowed_hosts", Kind: "string_list", Direction: string(postureop.DirSetIntersection)},
+	{Key: "terminal.sandbox.mask_paths", Kind: "string_list", Direction: string(postureop.DirAdditiveMask)},
+	{Key: "terminal.sandbox.workspace_retention_days", Kind: "int", Direction: string(postureop.DirRetention), Max: 3650},
+	{Key: "terminal.sandbox.home_mode", Kind: "string", Enum: []any{"tmpfs", "readonly"}, Direction: governanceDirRestrictiveOnly, Safe: "tmpfs"},
+	{Key: "terminal.sandbox.default_on", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: true},
+	{Key: "terminal.sandbox.allow_remote_clone", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: false},
+	{Key: "terminal.sandbox.allow_worktree_source", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: false},
+	{Key: "terminal.sandbox.allow_tool_config_writes", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: false},
+	{Key: "terminal.sandbox.egress_allow_cidrs", Kind: "string_list", Direction: governanceDirRestrictiveOnly, Safe: []string{}},
+	// The agent-run host allow-list (lane LEFT-SBX): an org list narrows the
+	// node's (an empty node list takes the org's); nothing in common allows
+	// no host (governanceEmptied).
+	{Key: "terminal.sandbox.egress_allow_hosts", Kind: "string_list", Direction: string(postureop.DirSetIntersection)},
+	{Key: "terminal.sandbox.extra_ro_binds", Kind: "string_list", Direction: governanceDirRestrictiveOnly, Safe: []string{}},
+	{Key: "terminal.sandbox.extra_rw_binds", Kind: "string_list", Direction: governanceDirRestrictiveOnly, Safe: []string{}},
+	{Key: "terminal.sandbox.prep_timeout_seconds", Kind: "int", Direction: governanceDirFree, Min: 30, Max: 3600},
+	// lane SBX-P3D: both values keep isolation, so the org may pin either.
+	{Key: "terminal.sandbox.vendor_forced_native", Kind: "string", Enum: []any{"nest_or_refuse", "refuse"}, Direction: governanceDirFree},
+	// Lane SBX-UPD: how soon a deferred update asks (neither value ends a run).
+	{Key: "terminal.sandbox.live_run_update_policy", Kind: "string", Enum: []any{"defer", "ask_immediately"}, Direction: governanceDirFree},
+	// The container driver's rows (lane SBX-P3A).
+	{Key: "terminal.sandbox.oci.allow_rootful", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: false},
+	{Key: "terminal.sandbox.oci.allow_devcontainer_image", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: false},
+	// The first-start install cache (lane SBX-P3C).
+	{Key: "terminal.sandbox.oci.install_cache", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: false},
+	// The install-script allowance (lane LEFT-SBX, ruling P-136): none is safe.
+	{Key: "terminal.sandbox.oci.install_scripts", Kind: "string", Enum: []any{"none", "pinned"}, Direction: governanceDirRestrictiveOnly, Safe: "none"},
+	{Key: "terminal.sandbox.oci.podman_userns", Kind: "string", Enum: []any{"keep-id", "default"}, Direction: governanceDirFree},
+	{Key: "terminal.sandbox.oci.stop_grace_seconds", Kind: "int", Direction: governanceDirFree, Min: 0, Max: 600},
+	// The org image pins (lane SBX-P3B): only an image pinned by digest.
+	{Key: "terminal.sandbox.oci.image", Kind: "string", Direction: governanceDirFree, Format: postureop.FormatImageDigestRef},
+	{Key: "terminal.sandbox.apple_container.image", Kind: "string", Direction: governanceDirFree, Format: postureop.FormatImageDigestRef},
+	{Key: "terminal.sandbox.mxc.stop_grace_seconds", Kind: "int", Direction: governanceDirFree, Min: 0, Max: 600},
+	{Key: "terminal.sandbox.mxc.probe_timeout_seconds", Kind: "int", Direction: governanceDirFree, Min: 5, Max: 300},
+	// The macOS drivers' rows (lane SBX-P5).
+	{Key: "terminal.sandbox.seatbelt.allow_keychain", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: false},
+	// Lane SBX-UPD: an org may hold the node on the built driver only.
+	{Key: "terminal.sandbox.seatbelt.driver", Kind: "string", Enum: []any{"sandbox-exec", "mxc-exec-mac"}, Direction: governanceDirRestrictiveOnly, Safe: "sandbox-exec"},
+	{Key: "terminal.sandbox.apple_container.memory_mib", Kind: "int", Direction: governanceDirFree, Min: 512, Max: 262144},
+	{Key: "terminal.sandbox.apple_container.cpus", Kind: "int", Direction: governanceDirFree, Min: 1, Max: 64},
+	// The Landlock-only row's floor (lane SBX-P3B): an org may only raise it.
+	{Key: "terminal.sandbox.landlock.min_abi", Kind: "int", Direction: string(postureop.DirRaisingOnly), Min: 9, Max: 64},
+	// The hosted rows' shared settings (lane SBX-P7).
+	{Key: "terminal.sandbox.hosted.min_session_minutes", Kind: "int", Direction: governanceDirLoweringOnly, Min: 5, Max: 1440},
+	{Key: "terminal.sandbox.hosted.max_run_minutes", Kind: "int", Direction: governanceDirLoweringOnly, Min: 5, Max: 1440},
+	{Key: "terminal.sandbox.hosted.daily_box_minutes", Kind: "int", Direction: governanceDirLoweringOnly, Min: 5, Max: 10080},
+	{Key: "terminal.sandbox.hosted.checkpoint_minutes", Kind: "int", Direction: governanceDirLoweringOnly, Min: 1, Max: 60},
+	{Key: "terminal.sandbox.hosted.memory_images", Kind: "string", Enum: []any{"avoid", "refuse"}, Direction: governanceDirRestrictiveOnly, Safe: "refuse"},
+	// The opt-in in-box database export (ruling P-141): an org may only
+	// keep it off.
+	{Key: "terminal.sandbox.hosted.db_export", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: false},
+	// Local re-adoption (lane GATES-SBX, R-034): an org may only shorten
+	// the bound and shrink the checkpoint cap.
+	{Key: "terminal.sandbox.readopt.bound_minutes", Kind: "int", Direction: governanceDirLoweringOnly, Min: 1, Max: 1440},
+	{Key: "terminal.sandbox.readopt.checkpoint_cap_mib", Kind: "int", Direction: governanceDirLoweringOnly, Min: 1, Max: 1 << 20},
+	// The MXC tier floor (R-034): an org may only pin ProcessContainer.
+	{Key: "terminal.sandbox.windows.mxc_tier", Kind: "string", Enum: []any{"process_container", "appcontainer"}, Direction: governanceDirRestrictiveOnly, Safe: "process_container"},
+	// The direct provider egress posture (DEC-9, OBS-8a): free, because it
+	// takes effect only on a managed node (sandboxProviderDirectInForce).
+	{Key: SandboxProviderDirectKey, Kind: "string", Enum: []any{"refuse_all", "capture_rule", "allow"}, Direction: governanceDirFree},
+}
+
+// SandboxProviderDirectKey is the node.governance pinnable key for the
+// organization's direct provider egress posture (DEC-9; nodegov PinnableKeys
+// row of the same name).
+const SandboxProviderDirectKey = "terminal.sandbox.provider_direct"
+
+// sandboxProviderDirectInForce resolves what a sandboxed launch applies for
+// SandboxProviderDirectKey (DEC-9): the organization's pin, only when the
+// overlay applied it AND this node's verified org lock records managed
+// tenancy; capture_rule otherwise. An individual node (or a node whose lock
+// does not verify) keeps today's behaviour whatever its own file or a pin
+// says, and a managed node's own file value is never read: on a managed node
+// the organization decides, and only through its signed pin.
+func sandboxProviderDirectInForce(cfg Config, out GovernanceOutcome) string {
+	managed := cfg.Guard.Lock.TenancyKnown && cfg.Guard.Lock.Managed
+	if !managed || out.Discarded {
+		return string(sandboxvocab.ProviderDirectCaptureRule)
+	}
+	for _, k := range out.Applied {
+		if k == SandboxProviderDirectKey {
+			return string(sandboxvocab.ProviderDirect(cfg.Terminal.Sandbox.ProviderDirect).Normalize())
+		}
+	}
+	return string(sandboxvocab.ProviderDirectCaptureRule)
+}
+
+// EffectiveProviderDirect is the direct provider egress posture a launch
+// applies (ProviderDirectInForce, normalized: "" reads capture_rule).
+func (c TerminalSandboxConfig) EffectiveProviderDirect() sandboxvocab.ProviderDirect {
+	return sandboxvocab.ProviderDirect(c.ProviderDirectInForce).Normalize()
+}
+
+// governanceListLocal resolves the node's own list for a list row whose
+// config field alone does not say it. terminal.sandbox.backends is the one
+// case: an empty list means the legacy one-element `backend` key (bwrap when
+// that is empty too), and an org ordered filter applies to that effective
+// order, so a pin can never be side-stepped by leaving `backends` empty.
+var governanceListLocal = map[string]func(cfg *Config) []string{
+	"terminal.sandbox.backends": SandboxEffectiveBackends,
+}
+
+// governanceIntLocal resolves the node's own value for an int row whose
+// zero is a default, not "unset" (LEFT2 audit S1). postureop.LowerInt reads
+// a local 0 as "no value" and takes the org's ceiling, which for these rows
+// would RAISE a node that kept the default (an org pin of 1440 minutes over
+// the 10-minute default). Resolving 0 to the default first keeps the row
+// truly lowering-only: the merge keeps the lower of the default and the pin.
+var governanceIntLocal = map[string]func(cfg *Config) int64{
+	"terminal.sandbox.readopt.bound_minutes": func(cfg *Config) int64 {
+		return intOrDefault(cfg.Terminal.Sandbox.Readopt.BoundMinutes, SandboxReadoptDefaultBoundMinutes)
+	},
+	"terminal.sandbox.readopt.checkpoint_cap_mib": func(cfg *Config) int64 {
+		return intOrDefault(cfg.Terminal.Sandbox.Readopt.CheckpointCapMiB, SandboxReadoptDefaultCheckpointCapMiB)
+	},
+}
+
+// intOrDefault is v, or def when v is 0 (the config's "default").
+func intOrDefault(v, def int) int64 {
+	if v == 0 {
+		return int64(def)
+	}
+	return int64(v)
+}
+
+// governanceEmptied is the table of list pins whose merge may leave nothing
+// (SBX-P1B merge audit finding 2): the result is what plan 10.1 says, never a
+// skip that would keep the node's own list. Each row applies the empty
+// result to cfg. The overlay runs on every config load, so a developer who
+// edits the list after the pin was accepted gets the same answer then.
+var governanceEmptied = map[string]func(cfg *Config){
+	// An ordered filter that removes every backend enables none: a sandboxed
+	// launch is refused, naming the pin (PinnedNoBackend).
+	"terminal.sandbox.backends": func(cfg *Config) {
+		cfg.Terminal.Sandbox.Backends = nil
+		cfg.Terminal.Sandbox.PinnedNoBackend = "terminal.sandbox.backends"
+	},
+	// An empty host intersection allows no host: remote clones are off. The
+	// node's own host list stays as it was (it is never widened to the org's).
+	"terminal.sandbox.remote_allowed_hosts": func(cfg *Config) {
+		cfg.Terminal.Sandbox.AllowRemoteClone = false
+	},
+	// An empty agent-run host intersection allows no host at all (an empty
+	// list would read as the tier's own, unrestricted behaviour).
+	"terminal.sandbox.egress_allow_hosts": func(cfg *Config) {
+		cfg.Terminal.Sandbox.EgressAllowHosts = nil
+		cfg.Terminal.Sandbox.PinnedNoEgressHost = "terminal.sandbox.egress_allow_hosts"
+	},
+}
+
+// governanceEmptiedForces lists, per emptied key, the further keys its row
+// sets, so they report as applied (set by the organization) too.
+var governanceEmptiedForces = map[string][]string{
+	"terminal.sandbox.remote_allowed_hosts": {"terminal.sandbox.allow_remote_clone"},
+}
+
+// errGovernanceEmptied is governanceMerge's signal that the merge left
+// nothing for a key governanceEmptied handles.
+const errGovernanceEmptied = "governance: the merge left nothing (governanceEmptied)"
+
+// SandboxEffectiveBackends is the node's own sandbox backend preference
+// order: [terminal.sandbox].backends when set, else the legacy one-element
+// `backend` (bwrap when that is empty). It ignores `enabled`. An
+// organization pin that left no backend (PinnedNoBackend) gives none.
+func SandboxEffectiveBackends(cfg *Config) []string {
+	ts := cfg.Terminal.Sandbox
+	if ts.PinnedNoBackend != "" {
+		return nil
+	}
+	var out []string
+	for _, b := range ts.Backends {
+		if b = strings.TrimSpace(b); b != "" {
+			out = append(out, b)
+		}
+	}
+	if len(out) > 0 {
+		return out
+	}
+	if b := strings.TrimSpace(ts.Backend); b != "" {
+		return []string{b}
+	}
+	return []string{"bwrap"}
+}
+
+// ApplyGovernancePinsTo returns cfg with the pinned map applied exactly as
+// the governance overlay applies it (applyGovernancePins), and what that
+// did. cfg is copied, never changed. The sandbox module's posture check
+// (lane SBX-P1B) uses it to compute a node's settings AFTER a pin set from
+// the node's own settings, through the one overlay, so the check and the
+// overlay can never disagree about what a pin does.
+func ApplyGovernancePinsTo(cfg Config, pinned map[string]any) (Config, GovernanceOutcome) {
+	var out GovernanceOutcome
+	applyGovernancePins(&cfg, pinned, &out)
+	return cfg, out
 }
 
 var governancePinnableByKey = func() map[string]governancePinnableKey {
@@ -274,6 +480,19 @@ type GovernanceOutcome struct {
 	// Load onto the grant id (request-grants G8). The key kept the node's
 	// own value.
 	Excepted map[string]int64
+	// PinsInForce is the pinned map this Load applied: the sidecar's pins
+	// minus every key a feature-access exception lifts
+	// (governancePinsInForce). nil when no sidecar applied or the overlay was
+	// discarded. A consumer that composes onto the loaded config and must
+	// leave the pinned keys alone (the sandbox managed pull on the CLI path,
+	// SBX-P1C merge finding 2) reads it instead of resolving an empty grant.
+	PinsInForce map[string]any
+	// Verified reports that the posture came from the daemon's MAC'd org
+	// lock (its own last write) rather than from the file on disk (T-845).
+	Verified bool
+	// Tampered names a governance file that does not match the daemon's
+	// verified copy, or an unverifiable org lock ("" when neither).
+	Tampered string
 }
 
 // HotLocalInt returns the node's own pre-governance value of a hot int key,
@@ -297,16 +516,44 @@ func (o GovernanceOutcome) Governed() bool { return len(o.Applied) > 0 && !o.Dis
 
 // readGovernanceSidecar resolves the path and reads it, returning nil when
 // nothing applies. It never errors.
-func readGovernanceSidecar(cfg Config, override string, now time.Time) (*sidecar.File, GovernanceOutcome) {
+//
+// T-845: when the daemon's MAC'd org lock is valid and records the
+// governance bytes it last wrote (GovernanceKnown), THAT copy is the posture,
+// not the on-disk file: a sidecar edited or stripped on disk is ignored
+// (Tampered names it for the disclosure surfaces, and the daemon repairs the
+// file and reports the tamper). With no valid lock the on-disk file applies
+// exactly as before. The returned exceptions source is the lock's copy in the
+// first case and nil (read the file beside the sidecar) in the second.
+func readGovernanceSidecar(cfg Config, override string, now time.Time, lock guardposture.OrgLockLoaded) (*sidecar.File, GovernanceOutcome, *string) {
 	out := GovernanceOutcome{Path: ResolveGovernanceSidecarPath(cfg, override)}
 	if out.Path == "" {
 		out.Reason = sidecar.ReasonAbsent
-		return nil, out
+		return nil, out, nil
 	}
-	f, reason := sidecar.Read(out.Path, now)
+	var f *sidecar.File
+	var reason string
+	var exceptions *string
+	if lock.State == guardposture.OrgLockValid && lock.Lock.GovernanceKnown {
+		out.Verified = true
+		f, reason = sidecar.ReadBytes([]byte(lock.Lock.Governance), now)
+		ex := lock.Lock.GovernanceExceptions
+		exceptions = &ex
+		disk, derr := os.ReadFile(out.Path) //nolint:gosec // the node's own resolved sidecar path
+		switch {
+		case derr != nil && lock.Lock.Governance != "":
+			out.Tampered = "the governance file is missing or unreadable; the daemon's last verified copy applies"
+		case derr == nil && string(disk) != lock.Lock.Governance:
+			out.Tampered = "the governance file on disk does not match the daemon's last verified copy, which applies instead"
+		}
+	} else {
+		if lock.State == guardposture.OrgLockTampered {
+			out.Tampered = "the org lock does not verify (" + lock.Detail + "); the governance file on disk applies until the daemon repairs it"
+		}
+		f, reason = sidecar.Read(out.Path, now)
+	}
 	out.Reason = reason
 	if f == nil {
-		return nil, out
+		return nil, out, exceptions
 	}
 	out.Version = f.FamilyVersion
 	out.Hash = f.EffectiveHash
@@ -318,7 +565,7 @@ func readGovernanceSidecar(cfg Config, override string, now time.Time) (*sidecar
 	if t, ok := sidecar.ParseTime(f.GrantExpiresAt); ok {
 		out.GrantExpiresAt = t
 	}
-	return f, out
+	return f, out, exceptions
 }
 
 // governancePinsInForce returns the sidecar's pins minus every key a
@@ -326,9 +573,15 @@ func readGovernanceSidecar(cfg Config, override string, now time.Time) (*sidecar
 // keys' grant ids. The exceptions come from their OWN file beside the
 // sidecar (sidecar.ExceptionsPath), honoured only while it is bound to this
 // sidecar's effective hash; any failure reading it leaves every pin in
-// force.
-func governancePinsInForce(f *sidecar.File, sidecarPath string, now time.Time) (map[string]any, map[string]int64) {
-	exceptions, _ := sidecar.ReadExceptions(sidecar.ExceptionsPath(sidecarPath), f.EffectiveHash)
+// force. exceptionsRaw, when non-nil, is the daemon's last verified copy of
+// that file (T-845), used instead of the file on disk.
+func governancePinsInForce(f *sidecar.File, sidecarPath string, now time.Time, exceptionsRaw *string) (map[string]any, map[string]int64) {
+	var exceptions map[string]sidecar.Exception
+	if exceptionsRaw != nil {
+		exceptions, _ = sidecar.ReadExceptionsBytes([]byte(*exceptionsRaw), f.EffectiveHash)
+	} else {
+		exceptions, _ = sidecar.ReadExceptions(sidecar.ExceptionsPath(sidecarPath), f.EffectiveHash)
+	}
 	return sidecar.PinsInForce(f.Pinned, exceptions, now)
 }
 
@@ -357,8 +610,16 @@ func applyGovernancePins(cfg *Config, pinned map[string]any, out *GovernanceOutc
 			out.skip(key, "value outside the key's permitted set")
 			continue
 		}
+		if err := postureop.CheckFormat(row.Format, norm); err != nil {
+			out.skip(key, err.Error())
+			continue
+		}
 		if row.Direction == governanceDirRestrictiveOnly && !governanceValuesEqual(norm, row.Safe) {
 			out.skip(key, "this key is restrictive-only and may only be set to its safe value")
+			continue
+		}
+		if err := postureop.CheckPin(postureop.Direction(row.Direction), row.Kind, norm, row.Safe); err != nil {
+			out.skip(key, err.Error())
 			continue
 		}
 		if n, isInt := norm.(int64); isInt && (row.Min != 0 || row.Max != 0) && (n < row.Min || n > row.Max) {
@@ -380,22 +641,18 @@ func applyGovernancePins(cfg *Config, pinned map[string]any, out *GovernanceOutc
 			}
 			out.HotLocal[key] = fv.Interface()
 		}
-		if row.Direction == governanceDirLoweringOnly {
-			// A CEILING, never a raise: keep the node's own value when it is
-			// already lower (the org value is still "in force" as the bound,
-			// so the key is reported Applied either way).
-			n, isInt := norm.(int64)
-			switch fv.Kind() {
-			case reflect.Int, reflect.Int32, reflect.Int64:
-			default:
-				isInt = false
-			}
-			if !isInt {
-				out.skip(key, "lowering-only applies to whole numbers only")
-				continue
-			}
-			norm = GovernanceLowerInt(fv.Int(), n)
+		merged, why := governanceMerge(row, fv, norm, cfg)
+		if why == errGovernanceEmptied {
+			governanceEmptied[key](cfg)
+			out.Applied = append(out.Applied, key)
+			out.Applied = append(out.Applied, governanceEmptiedForces[key]...)
+			continue
 		}
+		if why != "" {
+			out.skip(key, why)
+			continue
+		}
+		norm = merged
 		if !setGovernanceField(fv, norm) {
 			out.skip(key, "the config field has an unexpected type")
 			continue
@@ -403,6 +660,59 @@ func applyGovernancePins(cfg *Config, pinned map[string]any, out *GovernanceOutc
 		out.Applied = append(out.Applied, key)
 	}
 	sort.Strings(out.Applied)
+}
+
+// governanceMerge composes the node's own value (fv, before the overlay) with
+// the org's normalized value under the row's direction, through the one
+// postureop operator for that direction. It returns the value to set, or a
+// skip reason. DirFree and DirRestrictiveOnly replace; DirLoweringOnly keeps
+// its shipped ceiling rule (postureop.LowerInt); DirRetention is raise-only,
+// so a local 0 (forever) survives any finite org value; the list directions
+// filter, intersect (an empty result is skipped, never read as "any") or add.
+func governanceMerge(row governancePinnableKey, fv reflect.Value, org any, cfg *Config) (any, string) {
+	dir := postureop.Direction(row.Direction)
+	if dir == postureop.DirFree || dir == postureop.DirRestrictiveOnly {
+		return org, ""
+	}
+	var local any
+	switch fv.Kind() {
+	case reflect.Int, reflect.Int32, reflect.Int64:
+		local = fv.Int()
+	case reflect.Slice:
+		if fv.Type().Elem().Kind() == reflect.String {
+			local = append([]string{}, fv.Interface().([]string)...) //nolint:forcetypeassert // the Kind check above
+		}
+	}
+	if f, ok := governanceListLocal[row.Key]; ok {
+		local = f(cfg)
+	}
+	if f, ok := governanceIntLocal[row.Key]; ok {
+		local = f(cfg)
+	}
+	if _, isInt := org.(int64); isInt {
+		if _, localInt := local.(int64); !localInt {
+			return nil, string(dir) + " applies to whole numbers only"
+		}
+	}
+	_, emptiedRow := governanceEmptied[row.Key]
+	merged, err := postureop.Merge(dir, local, org)
+	if errors.Is(err, postureop.ErrEmptyIntersection) && emptiedRow {
+		return nil, errGovernanceEmptied
+	}
+	if err != nil {
+		return nil, err.Error()
+	}
+	if l, isList := merged.([]string); isList && len(l) == 0 && dir == postureop.DirOrderedFilter {
+		// An ordered filter that removes every entry would leave an empty
+		// list, which this config reads as "the default". A row in
+		// governanceEmptied says what the empty result means instead; any
+		// other row is skipped, never read as the default.
+		if emptiedRow {
+			return nil, errGovernanceEmptied
+		}
+		return nil, "the organization list removes every entry of the node's own list"
+	}
+	return merged, ""
 }
 
 func (o *GovernanceOutcome) skip(key, why string) {

@@ -13,8 +13,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/marmutapp/superbased-observer/internal/cloudcred"
 )
 
 // mintFakeAccessToken builds an UNSIGNED-shape JWT (header.payload.sig) with an
@@ -122,7 +120,7 @@ func TestWorkOSAuthorizeURLCarriesPKCEParams(t *testing.T) {
 
 func TestWorkOSExchangeCodePersistsRefresh(t *testing.T) {
 	m := newWorkOSMock(t)
-	cred := cloudcred.Open(t.TempDir(), nil)
+	cred := testCred(t)
 	access, err := WorkOSExchangeCode(context.Background(), m.srv.Client(), m.endpoints(), cred, "client_x", "the-code", "the-verifier")
 	if err != nil {
 		t.Fatalf("WorkOSExchangeCode: %v", err)
@@ -141,7 +139,7 @@ func TestWorkOSExchangeCodePersistsRefresh(t *testing.T) {
 
 func TestWorkOSBrokerRefreshesAndCaches(t *testing.T) {
 	m := newWorkOSMock(t)
-	cred := cloudcred.Open(t.TempDir(), nil)
+	cred := testCred(t)
 	if err := cred.SaveWorkOSRefresh("refresh-0"); err != nil {
 		t.Fatalf("seed refresh: %v", err)
 	}
@@ -183,7 +181,7 @@ func TestWorkOSBrokerRefreshesAndCaches(t *testing.T) {
 
 func TestWorkOSBrokerNoIdentityWhenNotLoggedIn(t *testing.T) {
 	m := newWorkOSMock(t)
-	cred := cloudcred.Open(t.TempDir(), nil) // no refresh stored
+	cred := testCred(t) // no refresh stored
 	b, err := NewWorkOSBroker("client_x", cred,
 		WithWorkOSEndpoints(m.endpoints()), WithWorkOSHTTPClient(m.srv.Client()))
 	if err != nil {
@@ -211,7 +209,7 @@ func TestAccessTokenExpiryParsesJWT(t *testing.T) {
 // one appears); this test documents that expectation explicitly.
 func TestWorkOSNeverSendsClientSecret(t *testing.T) {
 	m := newWorkOSMock(t)
-	cred := cloudcred.Open(t.TempDir(), nil)
+	cred := testCred(t)
 	if _, err := WorkOSExchangeCode(context.Background(), m.srv.Client(), m.endpoints(), cred, "client_x", "c", "v"); err != nil {
 		t.Fatalf("exchange should succeed without a client secret: %v", err)
 	}

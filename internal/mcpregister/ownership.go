@@ -2,7 +2,9 @@ package mcpregister
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // ownership.go decides what a registration does with an EXISTING "observer"
@@ -117,6 +119,11 @@ func observerServeShape(args []string) bool {
 	return false
 }
 
+// IsObserverServeArgs reports whether args are an Observer MCP entry's
+// arguments (observerServeShape): the shape the ownership rules read as
+// Observer's own.
+func IsObserverServeArgs(args []string) bool { return observerServeShape(args) }
+
 // ownershipEnv is the registrar's mcpOwnershipEnv.
 func (r *Registrar) ownershipEnv() mcpOwnershipEnv {
 	exists := r.opts.commandExists
@@ -131,7 +138,11 @@ func (r *Registrar) ownershipEnv() mcpOwnershipEnv {
 			if self == "" || cmd == "" {
 				return false
 			}
-			resolved, err := filepath.EvalSymlinks(cmd)
+			path, ok := resolveCommandPath(cmd)
+			if !ok {
+				return false
+			}
+			resolved, err := filepath.EvalSymlinks(path)
 			if err != nil {
 				return false
 			}
@@ -144,18 +155,48 @@ func (r *Registrar) ownershipEnv() mcpOwnershipEnv {
 	}
 }
 
-// commandFileExists reports whether an absolute command path names an
-// existing file. A bare program name (resolved through PATH by the client)
-// counts as existing: only an absolute path can be proven gone.
+// commandFileExists reports whether a command names an existing file: an
+// absolute path is checked as it is, and a bare program name (no path
+// separator, the stable form a managed node registers, FU-24) is resolved
+// through PATH, the way the client resolves it. A relative path with a
+// separator depends on the client's working directory, which is unknown
+// here, so it counts as existing (never proven gone).
 func commandFileExists(cmd string) bool {
 	if cmd == "" {
 		return false
 	}
-	if !filepath.IsAbs(cmd) {
+	path, ok := resolveCommandPath(cmd)
+	if !ok {
+		return false
+	}
+	if !filepath.IsAbs(path) {
 		return true
 	}
-	_, err := os.Stat(cmd)
+	_, err := os.Stat(path)
 	return err == nil
+}
+
+// lookPath is exec.LookPath; a package variable so a test can stand in for
+// the PATH search.
+var lookPath = exec.LookPath
+
+// resolveCommandPath returns the file a command names: an absolute path as
+// it is, a bare name through PATH (ok=false when PATH has none), and a
+// relative path with a separator unchanged. A bare name is never resolved
+// against the working directory: filepath.EvalSymlinks("observer") would
+// read a file named observer in the cwd, not the program the client runs.
+func resolveCommandPath(cmd string) (string, bool) {
+	if filepath.IsAbs(cmd) || strings.ContainsAny(cmd, `/\`) {
+		return cmd, true
+	}
+	p, err := lookPath(cmd)
+	if err != nil {
+		return "", false
+	}
+	if abs, err := filepath.Abs(p); err == nil {
+		p = abs
+	}
+	return p, true
 }
 
 // gateWrite applies RepairOnly: a repair run writes only for the
@@ -202,6 +243,14 @@ func InitRefreshes(haveCommand string, haveArgs []string, wantCommand, selfBinar
 		mcpEntryFacts{command: wantCommand, args: haveArgs},
 		r.ownershipEnv())
 	return action != mcpActionConflict
+}
+
+// SameInstallCommand reports whether cmd (an absolute path or a bare name
+// resolved through PATH) runs the install at selfBinary, the same-install
+// rule a registration applies.
+func SameInstallCommand(cmd, selfBinary string) bool {
+	r := &Registrar{opts: RegisterOptions{SelfBinary: selfBinary}}
+	return r.ownershipEnv().sameInstall(cmd)
 }
 
 // TOMLStringArgs is tomlStringArgs for callers outside the package that

@@ -3,6 +3,7 @@ package commandcodemod
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -36,7 +37,9 @@ func TestWritePlugin(t *testing.T) {
 		`"shape":"commandcode"`, `"tool":"command-code"`,
 		`"beforeToolCall":"tool_gate"`, `"transformInput":"prompt_gate"`,
 		`"bin":"C:\\obs \"x\"\\observer.exe"`, `"config":"/home/u/.observer/custom.toml"`,
-		`"posture":"/home/u/.observer/guard-posture.json"`, `"spool":"/home/u/.observer/guard-hookfail.jsonl"`,
+		// The posture and spool paths are joined in the host separator.
+		`"posture":` + strconv.Quote(filepath.Join("/home/u/.observer", "guard-posture.json")),
+		`"spool":` + strconv.Quote(filepath.Join("/home/u/.observer", "guard-hookfail.jsonl")),
 		`"wsl_bin":""`,
 	} {
 		if !strings.Contains(string(ts), want) {

@@ -1,0 +1,17 @@
+rules:
+  - id: csharp.tls-verify-off
+    languages: [csharp]
+    severity: ERROR
+    message: TLS certificate validation is turned off (a callback that always returns true), so anyone on the network path can read or change the traffic; keep validation on and trust a specific certificate if needed.
+    metadata:
+      category: code_vuln
+      cwe: CWE-295
+    pattern-either:
+      - pattern: $X.ServerCertificateCustomValidationCallback = ($A, $B, $C, $D) => true
+      - pattern: '$X.ServerCertificateCustomValidationCallback = (...) => { return true; }'
+      - pattern: $X.ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
+      - pattern: 'new HttpClientHandler { ..., ServerCertificateCustomValidationCallback = ($A, $B, $C, $D) => true, ... }'
+      - pattern: 'new HttpClientHandler { ..., ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator, ... }'
+      - pattern: ServicePointManager.ServerCertificateValidationCallback = ($A, $B, $C, $D) => true
+      - pattern: ServicePointManager.ServerCertificateValidationCallback += ($A, $B, $C, $D) => true
+      - pattern: '$X.RemoteCertificateValidationCallback = ($A, $B, $C, $D) => true'

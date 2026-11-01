@@ -39,7 +39,7 @@ func TestAggregateEnableSubmitDisableFlow(t *testing.T) {
 	cfgPath := filepath.Join(dir, "config.toml")
 
 	// A minimal config: db_path + the default (approved-host) endpoint, rail off.
-	body := "[observer]\ndb_path = \"" + dbPath + "\"\n\n[aggregate_share]\nenabled = false\nendpoint = \"" + config.DefaultAggregateEndpoint + "\"\n"
+	body := "[observer]\ndb_path = \"" + filepath.ToSlash(dbPath) + "\"\n\n[aggregate_share]\nenabled = false\nendpoint = \"" + config.DefaultAggregateEndpoint + "\"\n"
 	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestAggregatePreviewNoNetwork(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "observer.db")
 	cfgPath := filepath.Join(dir, "config.toml")
-	if err := os.WriteFile(cfgPath, []byte("[observer]\ndb_path = \""+dbPath+"\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("[observer]\ndb_path = \""+filepath.ToSlash(dbPath)+"\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	database, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})

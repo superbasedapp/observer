@@ -423,7 +423,7 @@ func dashInstallArgv0(name string) (string, bool) {
 	dirs, _ := toolresolve.MergedPathDirs(dashResolveEnv())
 	for _, dir := range dirs {
 		cand := filepath.Join(dir, name)
-		fi, err := os.Stat(cand)
+		fi, err := os.Stat(cand) //nolint:gosec // G703: a metadata read of a PATH entry joined with a catalog tool name
 		if err != nil || !fi.Mode().IsRegular() {
 			continue
 		}

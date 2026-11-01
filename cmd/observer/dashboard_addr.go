@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/marmutapp/superbased-observer/internal/components"
 	"github.com/marmutapp/superbased-observer/internal/config"
@@ -56,4 +57,28 @@ func dashboardNotInBuildNote() string {
 		return ""
 	}
 	return "the local dashboard (ui.dashboard) is not in this build; " + components.DistrosHaving("ui.dashboard")
+}
+
+// processDashboardListen is the address this process's dashboard listens on,
+// once `observer start` or `observer dashboard` resolved it (a
+// --dashboard-addr or --addr override included). One owner:
+// noteDashboardListen writes it, resolvedDashboardListen reads it.
+var processDashboardListen struct {
+	mu   sync.Mutex
+	addr string
+}
+
+// noteDashboardListen records the address this process's dashboard listens on.
+func noteDashboardListen(addr string) {
+	processDashboardListen.mu.Lock()
+	defer processDashboardListen.mu.Unlock()
+	processDashboardListen.addr = addr
+}
+
+// resolvedDashboardListen is the address noteDashboardListen recorded, ""
+// before the dashboard's address was resolved in this process.
+func resolvedDashboardListen() string {
+	processDashboardListen.mu.Lock()
+	defer processDashboardListen.mu.Unlock()
+	return processDashboardListen.addr
 }

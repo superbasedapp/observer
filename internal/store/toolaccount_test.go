@@ -82,3 +82,60 @@ func TestToolAccountsSwitchReplayAndLateJoin(t *testing.T) {
 		t.Fatalf("delete retained identities: %d %v", count, err)
 	}
 }
+
+// TestAccountLevelObservationsStayASeparateDimension pins the node load rule
+// (a device account beside a person is not a conflict, and is never the person
+// label) and the org-wire half: Scope ships in BOTH postures, and an
+// account-level row's opaque key (it always has an account_id) rides the
+// metadata tier while the id itself waits for the raw-content posture.
+func TestAccountLevelObservationsStayASeparateDimension(t *testing.T) {
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+	at := time.Now().UTC()
+	person := models.ToolAccountObservation{SessionID: "acct", Tool: models.ToolCursor, BindingKind: "message", BindingID: "m1", Role: "assistant", Email: "p@example.invalid", Source: "cursor_hook_user_email", Scope: "native_hook", Stage: "activity", ObservedAt: at}
+	device := models.ToolAccountObservation{SessionID: "acct", Tool: models.ToolCursor, BindingKind: "message", BindingID: "m1", Role: "assistant", AccountID: "dev-1", Source: "device_snapshot", Scope: "account:device", Stage: "activity", ObservedAt: at}
+	deviceOnly := device
+	deviceOnly.BindingID = "m2"
+	// A malformed account-level row (names a person) is refused, not stored.
+	bad := device
+	bad.BindingID = "m3"
+	bad.Email = "p@example.invalid"
+	if _, err := s.Ingest(ctx, nil, nil, IngestOptions{ToolAccounts: []models.ToolAccountObservation{person, device, deviceOnly, bad}}); err != nil {
+		t.Fatal(err)
+	}
+	a, err := s.LoadMessageAccounts(ctx, "acct", models.ToolCursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m1 := a["assistant:m1"]; m1.Status != "observed" || m1.Label != person.Email || m1.AccountLabel != "device account dev-1" || len(m1.Evidence) != 2 {
+		t.Fatalf("person + device: %+v", m1)
+	}
+	if m2 := a["assistant:m2"]; m2.Status != "observed" || m2.Label != "device account dev-1" {
+		t.Fatalf("device only: %+v", m2)
+	}
+	if _, ok := a["assistant:m3"]; ok {
+		t.Fatalf("a person-naming account-level row was stored: %+v", a["assistant:m3"])
+	}
+	for _, shipsContent := range []bool{false, true} {
+		rows, err := s.SelectSessionToolAccounts(ctx, shipsContent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var sawDevice bool
+		for _, r := range rows {
+			if r.Scope != "account:device" {
+				continue
+			}
+			sawDevice = true
+			if r.AccountKey == "" {
+				t.Fatalf("shipsContent=%v: account-level key must ride the metadata tier: %+v", shipsContent, r)
+			}
+			if (r.AccountID != "") != shipsContent {
+				t.Fatalf("shipsContent=%v: account id gate wrong: %+v", shipsContent, r)
+			}
+		}
+		if !sawDevice {
+			t.Fatalf("shipsContent=%v: account-level scope missing on the wire: %+v", shipsContent, rows)
+		}
+	}
+}

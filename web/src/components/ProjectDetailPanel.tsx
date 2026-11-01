@@ -6,6 +6,7 @@ import {
   BookOpen,
   DollarSign,
   GitCommitHorizontal,
+  GitPullRequest,
   LayoutDashboard,
   ListTodo,
   MessageSquareText,
@@ -26,6 +27,7 @@ import { projectDrawerFilterNote, windowKey, type WindowParams } from "@/lib/pro
 import { OverviewTab } from "@/components/projectdetail/OverviewTab";
 import { SpendTab } from "@/components/projectdetail/SpendTab";
 import { CommitsTab } from "@/components/projectdetail/CommitsTab";
+import { DeliveryTab } from "@/components/projectdetail/DeliveryTab";
 import { PromptsTab } from "@/components/projectdetail/PromptsTab";
 import { TasksTab } from "@/components/projectdetail/TasksTab";
 import { GuidanceTab } from "@/components/projectdetail/GuidanceTab";
@@ -48,9 +50,12 @@ import { SkillsTab } from "@/components/projectdetail/SkillsTab";
 // drawer tab to the URL"), beside the page's `?project=`: a REPLACE write
 // (a drawer tab is an in-place view, not navigation), the default is the
 // param's absence, and an unknown value falls back to Overview.
-const TAB_IDS = ["overview", "spend", "commits", "prompts", "tasks", "guidance", "skills"] as const;
+const TAB_IDS = ["overview", "spend", "commits", "delivery", "prompts", "tasks", "guidance", "skills"] as const;
 type TabId = (typeof TAB_IDS)[number];
 const TAB_PARAM = "dtab";
+// COMMIT_PARAM names the commit the Commits tab opens expanded (a deep link
+// from the Delivery tab, `?dtab=commits&sha=<sha>`).
+const COMMIT_PARAM = "sha";
 
 // One glyph per project-detail tab. Tasks shares ListTodo with the session
 // drawer's Tasks tab on purpose: the same concept keeps the same icon.
@@ -58,6 +63,7 @@ const TAB_ICONS: Record<TabId, LucideIcon> = {
   overview: LayoutDashboard,
   spend: DollarSign,
   commits: GitCommitHorizontal,
+  delivery: GitPullRequest,
   prompts: MessageSquareText,
   tasks: ListTodo,
   guidance: BookOpen,
@@ -69,6 +75,7 @@ const TABS: TabDef<TabId>[] = (
     { id: "overview", label: "Overview" },
     { id: "spend", label: "Spend" },
     { id: "commits", label: "Commits" },
+    { id: "delivery", label: "Delivery" },
     { id: "prompts", label: "Prompts" },
     { id: "tasks", label: "Tasks" },
     { id: "guidance", label: "Guidance" },
@@ -115,6 +122,7 @@ export function ProjectDetailPanel({
       (prev) => {
         const next = new URLSearchParams(prev);
         next.delete(TAB_PARAM);
+        next.delete(COMMIT_PARAM);
         return next;
       },
       { replace: true },
@@ -189,9 +197,27 @@ export function ProjectDetailPanel({
             />
 
             <div className="mt-5">
-              {tab === "overview" && <OverviewTab d={d} />}
+              {tab === "overview" && <OverviewTab d={d} onReload={detail.reload} />}
               {tab === "spend" && <SpendTab projectId={d.project.id} win={win} />}
               {tab === "commits" && <CommitsTab projectId={d.project.id} win={win} />}
+              {tab === "delivery" && (
+                <DeliveryTab
+                  projectId={d.project.id}
+                  win={win}
+                  onOpenTab={setTab}
+                  onOpenCommit={(sha) =>
+                    setSearchParams(
+                      (prev) => {
+                        const next = new URLSearchParams(prev);
+                        next.set(TAB_PARAM, "commits");
+                        next.set(COMMIT_PARAM, sha);
+                        return next;
+                      },
+                      { replace: true },
+                    )
+                  }
+                />
+              )}
               {tab === "prompts" && <PromptsTab projectId={d.project.id} win={win} />}
               {tab === "tasks" && <TasksTab projectId={d.project.id} win={win} />}
               {tab === "guidance" && <GuidanceTab root={d.project.root_path} />}

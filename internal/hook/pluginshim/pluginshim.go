@@ -18,6 +18,34 @@ var shimTemplate []byte
 // profilePlaceholder is the one substitution point in the template.
 const profilePlaceholder = "{{OBSERVER_SHIM_PROFILE}}"
 
+// The post-tool feedback block (lane sec-h): the template lines between
+// these two markers are kept (without the marker lines) only when the
+// rendered events subscribe PostToolEvent, and dropped otherwise, so a shim
+// rendered without it is byte-identical to one rendered before the block
+// existed.
+const (
+	postToolBegin = "// @@OBSERVER_SHIM_POSTTOOL_BEGIN\n"
+	postToolEnd   = "// @@OBSERVER_SHIM_POSTTOOL_END\n"
+	// PostToolEvent is the OpenCode / Kilo post-tool event the block
+	// subscribes.
+	PostToolEvent = "tool.execute.after"
+)
+
+// withPostToolBlock returns tmpl with the post-tool block kept (markers
+// removed) or dropped whole.
+func withPostToolBlock(tmpl []byte, keep bool) ([]byte, error) {
+	i := bytes.Index(tmpl, []byte(postToolBegin))
+	j := bytes.Index(tmpl, []byte(postToolEnd))
+	if i < 0 || j < i {
+		return nil, errors.New("pluginshim.Render: template has no post-tool block")
+	}
+	out := append([]byte(nil), tmpl[:i]...)
+	if keep {
+		out = append(out, tmpl[i+len(postToolBegin):j]...)
+	}
+	return append(out, tmpl[j+len(postToolEnd):]...), nil
+}
+
 // Marker is a string unique to the shim template (its header line, never
 // substituted). LooksLikeObserverShim uses it to tell an observer-written
 // shim from an unrelated file at the same path.
@@ -26,8 +54,10 @@ const Marker = "SuperBased Observer plugin shim"
 // Plugin contracts the shim implements (the PROFILE "shape"). One adapter
 // function per contract inside the shim; a host names the one it speaks.
 const (
-	// ShapeOpenCode: a module whose default export is {id, server}, server
-	// returning a hooks object (OpenCode, Kilo CLI).
+	// ShapeOpenCode: a module whose default export is {id, server, setup}:
+	// server returning a hooks object for the v1 contract (OpenCode 1.x,
+	// Kilo CLI), setup(context) registering the same hooks for the v2
+	// contract (OpenCode 2.x, FU-121).
 	ShapeOpenCode = "opencode"
 	// ShapePi: a default-exported extension factory (pi).
 	ShapePi = "pi"
@@ -38,6 +68,9 @@ const (
 	// ShapeCommandCode: a Mods SDK default-exported factory calling
 	// cmd.hooks({...}) (commandcode).
 	ShapeCommandCode = "commandcode"
+	// ShapeCline: a Cline Plugin API module {name, manifest, setup, hooks}
+	// (Cline CLI: beforeModel, beforeTool).
+	ShapeCline = "cline"
 )
 
 // Default deadlines. The gate deadline is the shim's own wall clock for a
@@ -57,7 +90,9 @@ type Host struct {
 	// Shape is the plugin contract (Shape* constants).
 	Shape string
 	// Ask is true when the shim maps an ask decision onto the host's own
-	// approval prompt; otherwise ask is answered as a deny with a reason.
+	// approval prompt (where the host has one at run time; the shim falls
+	// back to a block with the reason otherwise); without it an ask is
+	// answered as a deny with a reason.
 	Ask bool
 	// GateMS / ObserveMS / MarginMS override the defaults (0 = default).
 	GateMS, ObserveMS, MarginMS int
@@ -86,8 +121,10 @@ var hosts = map[string]Host{
 	// Kilo CLI (the OpenCode fork) loads ~/.config/kilo/plugin/*.ts
 	// (kilo.ai/docs/automate/extending/plugins, fetched 2026-10-03).
 	"kilo-code-cli": {Tool: "kilo-code-cli", Shape: ShapeOpenCode, XDGRel: "kilo/plugin"},
+	// pi's tool_call ask opens ctx.ui.confirm when the session has a UI and
+	// blocks otherwise (the shim falls back).
 	"pi": {
-		Tool: "pi", Shape: ShapePi,
+		Tool: "pi", Shape: ShapePi, Ask: true,
 		EnvDir: "PI_CODING_AGENT_DIR", EnvSub: "extensions", HomeRel: ".pi/agent/extensions",
 	},
 	// OpenClaw fails a before_tool_call handler CLOSED at its own 15 s
@@ -105,6 +142,16 @@ var hosts = map[string]Host{
 	"command-code": {
 		Tool: "command-code", Shape: ShapeCommandCode, GateMS: 5000, MarginMS: 1000,
 		FileName: "observer-guard.ts", HomeRel: ".commandcode/mods",
+	},
+	// Cline CLI loads every $CLINE_DIR/plugins/*.js (default ~/.cline/plugins)
+	// as an ESM plugin in a sandbox subprocess (cline 3.0.68, live on demo
+	// node 1, 2026-10-15). An ask raises Cline's own y/N approval
+	// (policy.autoApprove false). No timeout wraps a plugin hook, so the
+	// shim's own deadline is the only one.
+	"cline-cli": {
+		Tool: "cline-cli", Shape: ShapeCline, Ask: true,
+		FileName: "superbased-observer-guard.js",
+		EnvDir:   "CLINE_DIR", EnvSub: "plugins", HomeRel: ".cline/plugins",
 	},
 }
 
@@ -178,10 +225,16 @@ type RenderOptions struct {
 	// are hooked; an empty map renders an inert shim.
 	Events map[string]string
 	// Bin is the observer binary (default "observer", PATH lookup; the
-	// OBSERVER_BIN environment variable still wins at run time).
+	// OBSERVER_BIN environment variable still wins at run time unless
+	// PinPaths is set).
 	Bin string
 	// Config is the observer --config path ("" = default discovery).
 	Config string
+	// PinPaths makes the shim ignore OBSERVER_BIN and OBSERVER_CONFIG from
+	// the host's environment and run Bin with Config as baked in: set on a
+	// managed node, where an inherited variable must not point the host at
+	// another binary or config (security pillar plan section 5.1 item 6).
+	PinPaths bool
 	// WSLBin / WSLDistro select the cross-OS bridge: on win32 the shim runs
 	// `wsl.exe -d <distro> -- <WSLBin> hook ...`.
 	WSLBin, WSLDistro string
@@ -220,6 +273,7 @@ type profile struct {
 	MarginMS      int               `json:"margin_ms"`
 	Bin           string            `json:"bin"`
 	Config        string            `json:"config"`
+	PinPaths      bool              `json:"pin_paths"`
 	WSLBin        string            `json:"wsl_bin"`
 	WSLDistro     string            `json:"wsl_distro"`
 	Posture       string            `json:"posture"`
@@ -254,7 +308,7 @@ func Render(h Host, o RenderOptions) ([]byte, error) {
 		Host: h.Tool, Tool: h.Tool, Shape: h.Shape, Events: ev, Ask: h.Ask,
 		GateMS: orDefault(h.GateMS, defaultGateMS), ObserveMS: orDefault(h.ObserveMS, defaultObserveMS),
 		MarginMS: orDefault(h.MarginMS, defaultMarginMS),
-		Bin:      bin, Config: o.Config, WSLBin: o.WSLBin, WSLDistro: o.WSLDistro,
+		Bin:      bin, Config: o.Config, PinPaths: o.PinPaths, WSLBin: o.WSLBin, WSLDistro: o.WSLDistro,
 		Posture: o.PosturePath, PostureSchema: o.PostureSchema, Spool: o.SpoolPath,
 		ConfigFile:    o.ConfigFile,
 		PostureMaxAge: orDefault(o.PostureMaxAgeMS, defaultPostureMaxAgeMS),
@@ -267,7 +321,12 @@ func Render(h Host, o RenderOptions) ([]byte, error) {
 	if !bytes.Contains(shimTemplate, []byte(profilePlaceholder)) {
 		return nil, errors.New("pluginshim.Render: template has no profile placeholder")
 	}
-	return bytes.Replace(shimTemplate, []byte(profilePlaceholder), js, 1), nil
+	_, post := ev[PostToolEvent]
+	tmpl, err := withPostToolBlock(shimTemplate, post && h.Shape == ShapeOpenCode)
+	if err != nil {
+		return nil, err
+	}
+	return bytes.Replace(tmpl, []byte(profilePlaceholder), js, 1), nil
 }
 
 // Write renders the shim and writes it into dir (created 0755, file 0600),
@@ -287,9 +346,27 @@ func Write(dir string, h Host, o RenderOptions) (string, error) {
 	return path, nil
 }
 
-// Remove deletes the shim from dir; an absent file is not an error.
+// ErrNotObserverShim is Remove's refusal of a file at the shim's path that
+// is not an observer-written shim (LooksLikeObserverShim): it is kept.
+var ErrNotObserverShim = errors.New("not an observer-managed file; kept")
+
+// Remove deletes the shim from dir; an absent file is not an error. A file
+// at the path that is not an observer-written shim is never deleted
+// (ErrNotObserverShim, FU-212). The hook registry's unregister makes the
+// same test itself and compares the bytes again before its delete.
 func Remove(dir string, h Host) error {
-	if err := os.Remove(filepath.Join(dir, h.File())); err != nil && !os.IsNotExist(err) {
+	path := filepath.Join(dir, h.File())
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("pluginshim.Remove: %w", err)
+	}
+	if !LooksLikeObserverShim(data) {
+		return fmt.Errorf("pluginshim.Remove: %s: %w", path, ErrNotObserverShim)
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("pluginshim.Remove: %w", err)
 	}
 	return nil

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -135,7 +136,7 @@ func probeEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("KIMI_CODE_HOME", "")
 	t.Setenv("QWEN_HOME", "")
-	t.Setenv("CRUSH_CONFIG", "")
+	t.Setenv("CRUSH_GLOBAL_CONFIG", "")
 	t.Setenv("XDG_CONFIG_HOME", "")
 }
 
@@ -184,7 +185,8 @@ func TestLeaveRemovesProbeRoutes(t *testing.T) {
 					t.Fatalf("Leave lost %q:\n%s", k, after)
 				}
 			}
-			if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o640 {
+			// POSIX-only: Windows has no mode bits (Perm reports 0666 or 0444).
+			if fi, _ := os.Stat(path); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o640 {
 				t.Fatalf("mode = %v, want 0640 kept", fi.Mode().Perm())
 			}
 			if f, _ := loadProvenance(provReg(t, home, "").ProvenancePath()); f.Find(c.tool, path) != nil {

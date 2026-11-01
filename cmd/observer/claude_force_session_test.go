@@ -25,7 +25,7 @@ func TestRunClaudeEmptyUnset_PinProxyForcesSessionID(t *testing.T) {
 	bin, argsFile := writeRecordingClaudeBin(t)
 	proxyURL := reachableProxyURL(t) // proxy UP → pin-proxy action
 	cfgPath, _ := writeGuardTestConfig(t)
-	t.Setenv("TMPDIR", t.TempDir())
+	setTestTempDir(t, t.TempDir())
 	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
 	t.Setenv("ANTHROPIC_CONFIG_DIR", "")
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import clsx from "clsx";
 import {
@@ -33,6 +33,8 @@ import { BUILTIN_PROFILE_NAMES, COMPRESS_TYPES, SECTION_SPECS, type SectionSpec 
 import { joinList, keepSelected, splitList } from "@/lib/pickerOptions";
 import { usePricedModels } from "@/lib/usePickerSources";
 import { StructuredConfigSection } from "./settings/StructuredConfigSection";
+import { MessageSurfacesCard } from "./settings/MessageSurfacesCard";
+import { SURFACE_SETTINGS } from "@/lib/adminMessages";
 import { SchemaSection } from "./settings/SchemaSection";
 import { AntigravityHelperCard } from "./settings/AntigravityHelperCard";
 import { ETWCapturerCard } from "./settings/ETWCapturerCard";
@@ -52,6 +54,7 @@ import { ChartState } from "@/components/ChartState";
 import { CommunityLinksMini } from "@/components/CommunityCard";
 import { useComponentState } from "@/lib/useComponents";
 import { absentSettingsSections } from "@/lib/componentState";
+import { codeSecurityCardVisible, codeSecurityFieldPaths } from "@/lib/codeSecuritySettings";
 import {
   ArrowRightLeft,
   Boxes,
@@ -251,7 +254,7 @@ const SECTIONS: SectionDef[] = [
     icon: Stethoscope,
     about: {
       summary:
-        "The `observer doctor` checks in the dashboard - database integrity, hook checksums and binary paths, MCP registrations, pidbridge, concurrent daemons, codex hook trust, proxy routing gap, org enrolment - plus the recent-failures card (failed commands grouped, recovered vs not, session deep-links).",
+        "The `observer doctor` checks in the dashboard - database integrity, hook checksums and binary paths, MCP registrations, pidbridge, concurrent daemons, codex hook trust, observed proxy traffic per surface, org enrolment - plus the recent-failures card (failed commands grouped, recovered vs not, session deep-links).",
       whenModified:
         "Something looks off - missing capture, a tool that stopped reporting, a command that keeps failing, after an upgrade or a machine migration.",
       behavior:
@@ -2286,6 +2289,13 @@ function Field({
 // except what the schema says is: secrets, owner-elsewhere keys and
 // deprecated aliases.
 
+// CodeSecurityCardLazy is the Code security card (security pillar plan
+// section 6.5) as its own chunk: it loads only on a node where the
+// `security` component is active.
+const CodeSecurityCardLazy = lazy(() =>
+  import("./settings/CodeSecurityCard").then((m) => ({ default: m.CodeSecurityCard })),
+);
+
 function SectionView({
   section,
   config,
@@ -2300,6 +2310,9 @@ function SectionView({
   readOnly?: boolean;
 }) {
   const spec = SECTION_SPECS[section];
+  const componentState = useComponentState().data;
+  const componentView = componentState?.view;
+  const showCodeSecurity = section === "guard" && codeSecurityCardVisible(componentView);
   if (spec) {
     return (
       <StructuredConfigSection
@@ -2328,6 +2341,16 @@ function SectionView({
               <RoutingRulesEditorCard readOnly={readOnly} />
             ) : section === "terminal" ? (
               <ShellWrapCard readOnly={readOnly} />
+            ) : section === "org" ? (
+              <MessageSurfacesCard config={config} readOnly={readOnly} onSaved={onReload} />
+            ) : showCodeSecurity ? (
+              <Suspense fallback={null}>
+                <CodeSecurityCardLazy
+                  config={config}
+                  components={componentView}
+                  securitySelected={componentState?.security_selected}
+                  readOnly={readOnly} onSaved={onReload} />
+              </Suspense>
             ) : null}
             <div className="mt-4">
               <SchemaSection
@@ -2335,7 +2358,13 @@ function SectionView({
                 config={config}
                 schema={schema}
                 readOnly={readOnly}
-                excludeFieldPaths={specFieldPaths(spec)}
+                excludeFieldPaths={
+                  section === "org"
+                    ? withMessageSurfaces(specFieldPaths(spec))
+                    : showCodeSecurity
+                      ? withFields(specFieldPaths(spec), codeSecurityFieldPaths())
+                      : specFieldPaths(spec)
+                }
                 onSaved={onReload}
                 compact
               />
@@ -2360,6 +2389,21 @@ function SectionView({
 
 // specFieldPaths lists the JSON field paths a hand-written spec already
 // edits, so the schema card below it never renders the same key twice.
+// withMessageSurfaces adds the [messages] keys to an exclusion set: the
+// Organization section renders them on MessageSurfacesCard (T-854), so the
+// schema-driven "More settings" card must not offer them a second time.
+// withFields adds a card's own field paths to an exclusion set (the Code
+// security card renders the [security.*] keys it offers).
+function withFields(paths: Set<string>, fields: readonly string[]): Set<string> {
+  for (const f of fields) paths.add(f);
+  return paths;
+}
+
+function withMessageSurfaces(paths: Set<string>): Set<string> {
+  for (const s of SURFACE_SETTINGS) paths.add(`Messages.${s.key}`);
+  return paths;
+}
+
 function specFieldPaths(spec: SectionSpec): Set<string> {
   const out = new Set<string>();
   for (const f of spec.fields ?? []) out.add([...spec.path, f.id].join("."));

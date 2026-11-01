@@ -61,6 +61,12 @@ export type ComponentsStateResponse = {
    * additive: a daemon that does not send it falls back to stateCopy.
    */
   feasibility?: ComponentVerdict[];
+  /**
+   * The security components the daemon's opt-in rule selects
+   * (cmd/observer securitySelected): an opt-in child is listed only when a
+   * [components] block names it. Absent from an older daemon.
+   */
+  security_selected?: string[];
 };
 
 /** One feasibility.Verdict for a component option. */

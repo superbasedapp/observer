@@ -139,6 +139,30 @@ type Run struct {
 	// WrapNote is the grounded reason a wrap did not apply, or the caveat that
 	// qualifies one that did (a cold-start-only app). KindGUI only.
 	WrapNote string
+	// Isolation is the run's G19 isolation evidence (sandbox plan v2 section
+	// 8.4, migration 179): what the launch actually built and the capture
+	// level computed for it. The zero value is "not recorded".
+	Isolation Isolation
+}
+
+// Isolation is the per-run isolation evidence, as closed-vocabulary strings
+// (internal/sandboxvocab owns the spellings; this package stays a leaf).
+// Every empty field means "not recorded".
+type Isolation struct {
+	// Class is the effective isolation class built ("none" for a launch
+	// that was not sandboxed).
+	Class string
+	// Stack is the backend ids of the layers, outermost first.
+	Stack        []string
+	EgressTier   string
+	CaptureLevel string
+	// CaptureRule is the capture table row that decided CaptureLevel.
+	CaptureRule        string
+	CaptureOrigin      string
+	CaptureDegraded    bool
+	NativeSandboxState string
+	Verification       string
+	KeyCustody         string
 }
 
 // Correlation is one scored link from a run to an observed agent session.

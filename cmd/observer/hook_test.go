@@ -134,16 +134,16 @@ func TestDecidePreToolRewrite(t *testing.T) {
 			wantReason: "cross-os-shell",
 		},
 		{
-			// Native Windows hook + Windows cwd: same OS-context, the
-			// rewrite's binary path is valid for the shell → proceed.
-			name:       "native windows shell rewrites",
+			// FU-163: a native Windows hook no longer rewrites. The shell
+			// is Git Bash, which cannot run the backslash binary path, and
+			// observer.exe does not keep an MSYS command's argv.
+			name:       "native windows shell skips",
 			body:       `{"tool_name":"Bash","tool_input":{"command":"git status"},"cwd":"D:\\programsx\\superbased-observer"}`,
 			cfg:        shellOn,
 			binary:     bin,
 			hostOS:     "windows",
-			wantRW:     true,
-			wantCmd:    bin + " run -- git status",
-			wantReason: "ok",
+			wantRW:     false,
+			wantReason: "windows-shell",
 		},
 		{
 			// WSL Claude Code working under /mnt/c: cwd is a POSIX path, so
@@ -155,6 +155,74 @@ func TestDecidePreToolRewrite(t *testing.T) {
 			hostOS:     "linux",
 			wantRW:     true,
 			wantCmd:    bin + " run -- git status",
+			wantReason: "ok",
+		},
+		{
+			// FU-163: the managed Windows node. The hook binary is a native
+			// backslash path, which Git Bash read as escapes (exit 127 on
+			// every rewritten call); the rewrite is skipped with its tag.
+			name:       "native windows backslash binary skips",
+			body:       `{"tool_name":"Bash","tool_input":{"command":"echo lc-plain"},"cwd":"C:\\Users\\developer\\proj"}`,
+			cfg:        shellOn,
+			binary:     `C:\Users\developer\AppData\Local\SuperBased\Observer\bin\observer.exe`,
+			hostOS:     "windows",
+			wantRW:     false,
+			wantReason: "windows-shell",
+		},
+		{
+			// FU-186: a claude-code-wsl twin runs the Windows observer.exe
+			// from WSL bash through interop; the shell is Linux bash, so the
+			// skip names that case, not Git Bash.
+			name:       "windows binary from a wsl shell skips as interop",
+			body:       `{"tool_name":"Bash","tool_input":{"command":"git status"},"cwd":"/home/me/proj"}`,
+			cfg:        shellOn,
+			binary:     `C:\Users\me\AppData\Local\SuperBased\Observer\bin\observer.exe`,
+			hostOS:     "windows",
+			wantRW:     false,
+			wantReason: "wsl-interop",
+		},
+		{
+			// No cwd: nothing says the shell is WSL's, so the native reason.
+			name:       "windows binary with no cwd keeps windows-shell",
+			body:       `{"tool_name":"Bash","tool_input":{"command":"git status"}}`,
+			cfg:        shellOn,
+			binary:     `C:\obs\observer.exe`,
+			hostOS:     "windows",
+			wantRW:     false,
+			wantReason: "windows-shell",
+		},
+		{
+			// A Windows hook skips whatever the binary path looks like.
+			name:       "native windows binary under Program Files skips",
+			body:       `{"tool_name":"Bash","tool_input":{"command":"git status"},"cwd":"C:\\proj"}`,
+			cfg:        shellOn,
+			binary:     `C:\Program Files\SuperBased\observer.exe`,
+			hostOS:     "windows",
+			wantRW:     false,
+			wantReason: "windows-shell",
+		},
+		{
+			// A non-Windows hook binary under a directory with a space is
+			// one single-quoted shell word.
+			name:       "linux binary with a space is single-quoted",
+			body:       `{"tool_name":"Bash","tool_input":{"command":"git status"},"cwd":"/home/u/proj"}`,
+			cfg:        shellOn,
+			binary:     "/home/a b/.local/bin/observer",
+			hostOS:     "linux",
+			wantRW:     true,
+			wantCmd:    "'/home/a b/.local/bin/observer' run -- git status",
+			wantReason: "ok",
+		},
+		{
+			// A non-Windows hook keeps backslashes as they are (they are
+			// legal in a POSIX file name) and quotes them.
+			name:       "linux binary with a backslash is quoted, not converted",
+			body:       `{"tool_name":"Bash","tool_input":{"command":"git status"},"cwd":"/home/u/proj"}`,
+			cfg:        shellOn,
+			binary:     `/opt/odd\dir/observer`,
+			hostOS:     "linux",
+			wantRW:     true,
+			wantCmd:    `'/opt/odd\dir/observer' run -- git status`,
 			wantReason: "ok",
 		},
 	}

@@ -39,7 +39,7 @@ type Error struct {
 	Message *string `json:"message,omitempty"`
 }
 
-// PolicyBundle orgcontract.PolicyBundle. `binding` ({org_id, subject}) is present only on a v2 (bound) delivery, which a node asks for with `policy_caps=binding-v2`; it is absent from every v1 bundle.
+// PolicyBundle orgcontract.PolicyBundle. `binding` ({org_id, subject}) is present only on a v2 (bound) delivery, which a node asks for with `policy_caps=binding-v2`; it is absent from every v1 bundle. `project_binding` and `projects` are present only on a v3 (project audience) delivery (`policy_caps=binding-v3`, an org with a project-scoped bundle); a v3 bundle carries no `binding`. A per-project v3 envelope served to a node advertising `project-families-v1` may carry `families` (the project's policy-family sections) with `project_binding.families_digest` binding them into the signature (lane sec-p3).
 type PolicyBundle = orgcontract.PolicyBundle
 
 // PushEnvelope defines model for PushEnvelope.
@@ -91,6 +91,29 @@ type GetPolicyBundleParams struct {
 	// `sig_invalid` until it rolls forward. The token authenticates and
 	// widens nothing: the binding names only the caller's own org and
 	// subject.
+	//
+	// A second token, `binding-v3` (orgcontract.PolicyBindingV3Capability,
+	// the project audience, security plan section 7.11), is read only
+	// once the org has published a project-scoped bundle. The composed
+	// bundle is then signed over the `sbo-policy-bundle-v3` domain
+	// (`project_binding`: org, subject, assignment epoch and the digest
+	// of the signed project mapping), and `projects` carries the signed
+	// mapping plus one v3-signed envelope per project whose sections
+	// reach the caller. With no project-scoped bundle a request with
+	// the token gets the v2 bytes and ETag unchanged.
+	//
+	// A third token, `project-families-v1`
+	// (orgcontract.ProjectFamiliesCapability, lane sec-p3), asks for
+	// the project FAMILY sections too: each project envelope then
+	// carries `families`, the policy-family bodies an admin published
+	// for that project (today `security.scanning` only; each
+	// `{family, version, projects, body, body_hash}`), and its
+	// `project_binding` carries `families_digest`, the digest of that
+	// list, inside the v3 signature under its own domain (so stripping
+	// or adding a member never verifies). A request without the token
+	// is served no member, so an older node never holds a section it
+	// cannot apply; with no section published the token changes
+	// nothing.
 	PolicyCaps *[]string `form:"policy_caps,omitempty" json:"policy_caps,omitempty"`
 
 	// IfNoneMatch The ETag of the agent's cached bundle version.

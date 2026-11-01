@@ -47,6 +47,18 @@ export type SecurityTab = (typeof SECURITY_TABS.ids)[number];
 /** How many verdicts the Overview tab previews before "See all in Verdicts". */
 export const SECURITY_RECENT_VERDICTS = 5;
 
+// ---------- Code security (security pillar plan sections 4.10 and 6.3) ----------
+
+// Findings is the Phase A shell; Exceptions and Baselines arrive with lane
+// sec-c3 (local exceptions and the baseline commit). The Trust, Scanners and
+// Evidence tabs join with the phases that build them.
+export const CODE_SECURITY_TABS = pageTabs(["findings", "exceptions", "baselines"] as const, {
+  findings: "Findings",
+  exceptions: "Exceptions",
+  baselines: "Baselines",
+});
+export type CodeSecurityTab = (typeof CODE_SECURITY_TABS.ids)[number];
+
 // ---------- Cost (plan P2; absorbs /report as Statement, §3 row 9) ----------
 
 export const COST_TABS = pageTabs(
@@ -60,6 +72,17 @@ export const COST_TABS = pageTabs(
   },
 );
 export type CostTab = (typeof COST_TABS.ids)[number];
+
+// ---------- Tools (T-935: the always-available capture coverage list) ----------
+// Activity is the page as it was (per-tool aggregates over the window);
+// Coverage lists every supported AI tool with whether it was found here and
+// how it is captured. Not windowed, so it does not follow the filter bar.
+
+export const TOOLS_TABS = pageTabs(["activity", "coverage"] as const, {
+  activity: "Activity",
+  coverage: "Coverage",
+});
+export type ToolsTab = (typeof TOOLS_TABS.ids)[number];
 
 // ---------- Compression (plan P2) ----------
 

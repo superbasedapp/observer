@@ -437,3 +437,19 @@ func TestFormatUSDBoundaries(t *testing.T) {
 		}
 	}
 }
+
+// TestRenderSecuritySegment (lane sec-c3): the security segment renders
+// the caller's text, sanitized, only when listed and set.
+func TestRenderSecuritySegment(t *testing.T) {
+	label := "sec 2!\x1b[31m"
+	got := Render(Input{}, DaemonTile{Security: &label}, RenderOptions{Segments: []string{SegmentSecurity}})
+	if !strings.Contains(got, "sec 2!") || strings.ContainsRune(got, 0x1b) {
+		t.Fatalf("listed: %q", got)
+	}
+	if got := Render(Input{}, DaemonTile{Security: &label}, RenderOptions{}); strings.Contains(got, "sec") {
+		t.Fatalf("not in the defaults: %q", got)
+	}
+	if got := Render(Input{}, DaemonTile{}, RenderOptions{Segments: []string{SegmentSecurity}}); strings.Contains(got, "sec") {
+		t.Fatalf("nil text: %q", got)
+	}
+}

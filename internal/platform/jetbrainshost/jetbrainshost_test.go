@@ -216,8 +216,55 @@ func TestToolForACPAgentAndTable(t *testing.T) {
 		}
 	}
 	tbl := ACPAgents()
-	if len(tbl) != 11 {
-		t.Errorf("ACPAgents() has %d rows, want 11 grounded agents", len(tbl))
+	// Structural, not a count (FU-180): the table is exactly the grounded
+	// agents (each mapping to its owner) plus the declared aliases (each
+	// resolving to its source agent's owner), no agent is both, and no
+	// owner tool is mapped twice except through an alias.
+	grounded := map[string]string{
+		"junie":           models.ToolJunie,
+		"claude-acp":      models.ToolClaudeCode,
+		"codex-acp":       models.ToolCodex,
+		"github-copilot":  models.ToolCopilotCLI,
+		"cline":           models.ToolClineCLI,
+		"kilo":            models.ToolKiloCodeCLI,
+		"devin":           models.ToolDevin,
+		"opencode":        models.ToolOpenCode,
+		"poolside":        models.ToolPoolside,
+		"mistral-vibe":    models.ToolMistralCode,
+		"antigravity-acp": models.ToolAntigravityCLI,
+	}
+	// github-copilot-cli runs the package the github-copilot run proved
+	// (S-1, 2026-10-28).
+	aliases := map[string]string{"github-copilot-cli": "github-copilot"}
+	owner := map[string]string{}
+	for agent, want := range grounded {
+		if got, ok := tbl[agent]; !ok || got != want {
+			t.Errorf("grounded agent %s maps to %q (present %v), want %q", agent, got, ok, want)
+		}
+		if prev, dup := owner[want]; dup {
+			t.Errorf("%s and %s both own %s; the second must be a declared alias", prev, agent, want)
+		}
+		owner[want] = agent
+	}
+	for alias, source := range aliases {
+		if _, both := grounded[alias]; both {
+			t.Errorf("%s is listed as grounded and as an alias", alias)
+		}
+		src, ok := grounded[source]
+		if !ok {
+			t.Errorf("alias %s names %s, which is not a grounded agent", alias, source)
+			continue
+		}
+		if got, ok := ToolForACPAgent(alias); !ok || got != src {
+			t.Errorf("alias %s resolves to %q,%v, want its source's %q", alias, got, ok, src)
+		}
+	}
+	for agent := range tbl {
+		_, g := grounded[agent]
+		_, a := aliases[agent]
+		if !g && !a {
+			t.Errorf("ACPAgents() maps %s, which is neither a grounded agent nor a declared alias here", agent)
+		}
 	}
 	tbl["x"] = "y"
 	if _, ok := ToolForACPAgent("x"); ok {

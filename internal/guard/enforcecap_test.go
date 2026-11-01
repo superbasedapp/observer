@@ -145,7 +145,7 @@ func TestEnforceFalseBelowOrgCannotCapProtectedRules(t *testing.T) {
 		if !anyContains(g.LoadIssues(), "integrity rule and cannot be capped") {
 			t.Errorf("no load issue for the dropped integrity cap: %v", g.LoadIssues())
 		}
-		if g.set.Load().base.RuleEnforceCapped("R-160") {
+		if g.set.Load().base().RuleEnforceCapped("R-160") {
 			t.Error("R-160 capped by a user layer")
 		}
 	})

@@ -3,6 +3,7 @@ package guard
 import (
 	"errors"
 	"io/fs"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -55,7 +56,9 @@ func TestCheckUserPolicy(t *testing.T) {
 				cfg.Rules.UserPolicy = "~/.observer/guard-policy.toml"
 			}
 			read := func(p string) ([]byte, error) {
-				if p != path {
+				// The product joins the path natively (backslashes on
+				// Windows); compare it in slash form.
+				if filepath.ToSlash(p) != path {
 					t.Errorf("read %q, want %q", p, path)
 				}
 				if tc.readErr != nil {

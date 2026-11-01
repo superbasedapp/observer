@@ -1,0 +1,7 @@
+{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"Bandit","rules":[{"id":"B105","name":"hardcoded_password_string"}]}},
+ "results":[{"ruleId":"B105","level":"warning","message":{"text":"Possible hardcoded password: 'hunter2'"},
+  "locations":[{"physicalLocation":{"artifactLocation":{"uri":"file:///work/project/src/settings.py"},"region":{"startLine":4,"snippet":{"text":"PASSWORD = 'hunter2'"}}}}]},
+  {"ruleId":"B105","level":"warning","message":{"text":"remote"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"https://evil.example/x.py"}}}]},
+  {"ruleId":"B105","level":"warning","message":{"text":"outside"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"file:///etc/passwd"}}}]},
+  {"ruleId":"B105","level":"warning","message":{"text":"traversal"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"../../etc/shadow"}}}]},
+  {"ruleId":"rm -rf /","level":"error","message":{"text":"bad id"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"a.py"}}}]}]}]}

@@ -28,7 +28,7 @@ type leftoverProbe func(ctx context.Context, ids []string) ([]componentsvc.StepO
 // componentsDoctorChecks builds the section from a resolved snapshot. probe
 // may be nil (no leftover check).
 func componentsDoctorChecks(ctx context.Context, snap componentstate.Snapshot, probe leftoverProbe) []diag.Check {
-	v := snap.View()
+	v := componentStateView(snap)
 	sel := fmt.Sprintf("%d of %d compiled components active", v.ActiveCount, v.CompiledCount)
 	var out []diag.Check
 	if !v.Configured {

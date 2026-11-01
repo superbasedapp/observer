@@ -3,8 +3,12 @@ import test from "node:test";
 
 import {
   clearDrawerTab,
+  drawerProcFromParams,
+  DRAWER_MESSAGE_PARAM,
   drawerTabFromParams,
+  hasDrawerState,
   migrateLegacyDrawerTab,
+  writeDrawerProc,
   writeDrawerTab,
 } from "./drawerTab.ts";
 
@@ -53,4 +57,32 @@ test("a page with page tabs and an open drawer keeps both", () => {
   // Closing the drawer drops dtab, never the page's tab.
   assert.equal(clearDrawerTab(opened)?.toString(), "tab=events");
   assert.equal(clearDrawerTab(P("tab=events")), null);
+});
+
+test("proc: the picked process rides in the URL and goes with the drawer", () => {
+  const cases: Array<[string, string | null, string]> = [
+    ["session=s1&dtab=system", "abc", "session=s1&dtab=system&proc=abc"],
+    ["session=s1&dtab=system&proc=abc", "def", "session=s1&dtab=system&proc=def"],
+    ["session=s1&dtab=system&proc=abc", null, "session=s1&dtab=system"],
+    ["tab=events", null, "tab=events"],
+  ];
+  for (const [from, key, want] of cases) {
+    const next = writeDrawerProc(P(from), key);
+    assert.equal(next.toString(), want);
+    assert.equal(drawerProcFromParams(next), key);
+  }
+  assert.equal(drawerProcFromParams(P("proc=")), null);
+  // Closing the drawer drops dtab and proc, never the page's tab.
+  assert.equal(clearDrawerTab(P("tab=events&dtab=system&proc=abc"))?.toString(), "tab=events");
+  assert.equal(clearDrawerTab(P("tab=events&proc=abc"))?.toString(), "tab=events");
+  assert.equal(hasDrawerState(P("tab=events")), false);
+  assert.equal(hasDrawerState(P("proc=x")), true);
+});
+
+test("closing the drawer also drops a deep-linked message key (msg)", () => {
+  assert.equal(DRAWER_MESSAGE_PARAM, "msg");
+  assert.equal(clearDrawerTab(P("dtab=messages&msg=k1&tab=events"))?.toString(), "tab=events");
+  assert.equal(clearDrawerTab(P("msg=k1"))?.toString(), "");
+  // Switching the drawer's tab keeps the key, so the jump still lands.
+  assert.equal(writeDrawerTab(P("session=s&msg=k1"), "messages", "overview").get("msg"), "k1");
 });

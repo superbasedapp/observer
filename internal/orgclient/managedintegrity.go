@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/machineid"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
@@ -23,6 +24,85 @@ import (
 // re-log it every push cycle until an admin re-binds the machine.
 var ErrManagedIntegrityUnbound = errors.New("managed integrity report refused: machine is not bound to this node")
 
+// ErrManagedIntegrityNotManagedHere: the org server answered 403, it does not
+// serve this node as managed. For a node managed by its org's switch to
+// enterprise that is an older org server (one that keys managed integrity on
+// the enrolment token alone), or the short window before the server recorded
+// the node's adoption of the switch. Expected, logged at debug, retried after
+// managedHereRetry.
+var ErrManagedIntegrityNotManagedHere = errors.New("managed integrity report refused: the org server does not serve this node as managed")
+
+// managedHereRetry is how long a 403 from the managed-bind or
+// managed-integrity route silences both for this process.
+const managedHereRetry = time.Hour
+
+// IsManagedEnrolment reports whether this node is currently managed (false
+// when not enrolled or on a read error): a managed enrolment, or one whose
+// org switched it to enterprise (NodeManagedFor, operator rulings P-204 and
+// P-205).
+func (c *Client) IsManagedEnrolment(ctx context.Context) bool {
+	enr, err := c.store.LoadEnrolment(ctx)
+	if err != nil || enr == nil {
+		return false
+	}
+	managed, err := NodeManagedFor(ctx, c.store, enr)
+	return err == nil && managed
+}
+
+// bindSwitchedMachine binds this machine once per process on a node managed
+// by its org's switch (a managed enrolment bound at enrolment time). The
+// managed-integrity route accepts a report only for a bound machine. Called
+// under integrityMu. It reports whether the integrity report should run.
+func (c *Client) bindSwitchedMachine(ctx context.Context) bool {
+	enr, err := c.store.LoadEnrolment(ctx)
+	if err != nil || enr == nil || enr.IsManaged() || c.switchedBound {
+		return true
+	}
+	_, err = c.BindMachine(ctx)
+	switch {
+	case errors.Is(err, ErrManagedBindNotManagedHere):
+		c.managedHereAfter = time.Now().Add(managedHereRetry)
+		c.logger.Debug("org managed-bind: the org server does not serve this switched node as managed yet")
+		return false
+	case err == nil, errors.Is(err, ErrManagedBindRefused):
+		// Bound, or refused under the enforce posture (already audited
+		// server side; the integrity report then answers unbound).
+		c.switchedBound = true
+	default:
+		c.logger.Debug("org managed-bind for a switched node failed; retried next cycle", "err", err)
+	}
+	return true
+}
+
+// ReportManagedIntegrity runs the installed integrity collector and reports
+// its result, on a MANAGED node only. It is the one owner of "probe and
+// report": the push cycle calls it, and so does the daemon's policy-state
+// heartbeat (T-849, tamper audit fix 7), so the report lands every heartbeat
+// (about 5 minutes) instead of only on the 900 s push. Calls are serialized,
+// so the two cadences never run the probe concurrently. It returns whether a
+// report was attempted. A failure is logged, never returned: integrity
+// reporting never affects push health (P1).
+func (c *Client) ReportManagedIntegrity(ctx context.Context) bool {
+	if c.integrityCollector == nil || !c.IsManagedEnrolment(ctx) {
+		return false
+	}
+	c.integrityMu.Lock()
+	defer c.integrityMu.Unlock()
+	if time.Now().Before(c.managedHereAfter) || !c.bindSwitchedMachine(ctx) {
+		return false
+	}
+	report := c.integrityCollector()
+	_, err := c.ReportIntegrity(ctx, report)
+	switch {
+	case errors.Is(err, ErrManagedIntegrityNotManagedHere):
+		c.managedHereAfter = time.Now().Add(managedHereRetry)
+		c.logger.Debug("org managed-integrity: the org server does not serve this node as managed")
+	case err != nil && !errors.Is(err, ErrNotEnrolled) && !errors.Is(err, ErrManagedIntegrityUnbound):
+		c.logger.Warn("org managed-integrity report failed", "err", err)
+	}
+	return true
+}
+
 // ReportIntegrity performs the Arc 4 P6b managed-integrity probe report (plan
 // §9): it presents this host's org-salted machine fingerprint plus coarse
 // tamper-EVIDENCE labels (sibling-observer origins + drifted AI-tool names) so
@@ -30,7 +110,7 @@ var ErrManagedIntegrityUnbound = errors.New("managed integrity report refused: m
 // counts are len(siblingLabels) / len(driftedTools); only labels cross the wire
 // (no paths/usernames/config values — the §9 content-floor).
 //
-// Called ONLY under managed tenancy (the caller gates on enr.IsManaged()); an
+// Called ONLY on a managed node (the caller gates on IsManagedEnrolment); an
 // individual/BYO node never runs the probe, so the individual plane sends no
 // integrity signal at all — the same by-construction guarantee as BindMachine.
 //
@@ -65,6 +145,18 @@ func (c *Client) ReportIntegrity(ctx context.Context, report orgcontract.Managed
 	if report.RouteDrift < 0 {
 		report.RouteDrift = 0
 	}
+	// T-902: the route fields this node sends, so a gap between what the
+	// node reports and what the admin's node row shows can be told apart
+	// from the node side. Closed labels only (tool ids), never a path.
+	c.logger.Debug("org managed-integrity report",
+		"route_drift", report.RouteDrift, "drifted_tools", report.DriftedTools,
+		"routes_written", report.RoutesWritten, "unroutable_tools", report.UnroutableTools,
+		"unselected_tools", report.UnselectedTools,
+		"routing_off", report.RoutingOff, "routing_off_tools", report.RoutingOffTools,
+		"supervisor_missing", report.SupervisorMissing,
+		"route_observation_version", report.RouteObservationVersion, "unrouted_surfaces", report.UnroutedSurfaces,
+		"config_layer_version", report.ConfigLayerVersion, "hook_disabled_tools", report.HookDisabledTools,
+		"config_layer_risks", report.ConfigLayerRisks, "inactive_provider_tools", report.InactiveProviderTools)
 	body, err := json.Marshal(report)
 	if err != nil {
 		return orgcontract.ManagedIntegrityResponse{}, fmt.Errorf("orgclient.ReportIntegrity: marshal: %w", err)
@@ -103,6 +195,8 @@ func (c *Client) ReportIntegrity(ctx context.Context, report orgcontract.Managed
 		// Not bound — a firm, already-audited notice, not a transient
 		// failure. See ErrManagedIntegrityUnbound.
 		return orgcontract.ManagedIntegrityResponse{}, ErrManagedIntegrityUnbound
+	case http.StatusForbidden:
+		return orgcontract.ManagedIntegrityResponse{}, ErrManagedIntegrityNotManagedHere
 	default:
 		return orgcontract.ManagedIntegrityResponse{}, fmt.Errorf("orgclient.ReportIntegrity: server returned %d", resp.StatusCode)
 	}

@@ -3,18 +3,23 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/marmutapp/superbased-observer/internal/agentconfig"
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/credfile"
+	"github.com/marmutapp/superbased-observer/internal/testwriteguard"
 )
 
 // clineCompatProvider is the cline provider id whose base URL IS configurable
@@ -386,61 +391,136 @@ type clineRoute struct {
 	restore func() error
 }
 
-// prepareClineRoute applies clineRouteRules to
-// ~/.cline/data/settings/providers.json: only an EXISTING openai-compatible
-// entry whose endpoint the proxy can safely reach is touched (its baseUrl
-// pointed at baseURL, and put back after the session); it never creates an
-// entry and NEVER writes an api key. openAIUpstream is the proxy's fixed
-// OpenAI upstream. Every error it returns carries a bounded terminal message
-// (the launcher silences Cobra), so a dashboard launch that cannot start says
-// why instead of exiting 1 with no output.
-func prepareClineRoute(baseURL, openAIUpstream string, now time.Time) (clineRoute, error) {
+// clineProvidersArtifact is the agentconfig FileRow that owns providers.json's
+// path and its relocation rules (CLINE_PROVIDER_SETTINGS_PATH >
+// CLINE_DATA_DIR > CLINE_DIR, S-6): the file cline itself reads, given the
+// environment the launcher passes on to it.
+const clineProvidersArtifact = "cline-cli/providers"
+
+// errClineProvidersRelative marks a relative Cline relocation variable:
+// cline reads it against its own working directory, so the launcher names
+// no file rather than routing the default one (FU-31).
+var errClineProvidersRelative = errors.New("a Cline relocation variable is a relative path")
+
+// clineProvidersPathFor resolves providers.json under home with getenv.
+func clineProvidersPathFor(home string, getenv func(string) string) (string, error) {
+	got, err := agentconfig.ResolveArtifact(clineProvidersArtifact, agentconfig.PathEnv{GOOS: runtime.GOOS, Home: home, Getenv: getenv})
+	if err == nil && got.Status == agentconfig.PathRelocationUnresolved {
+		return "", fmt.Errorf("%w: %s", errClineProvidersRelative, got.RelocatedBy)
+	}
+	if err != nil || got.Path == "" {
+		return filepath.Join(home, ".cline", "data", "settings", "providers.json"), nil
+	}
+	return got.Path, nil
+}
+
+// clineProvidersFile is the providers.json this launch's cline reads.
+func clineProvidersFile() (string, error) {
 	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return clineProvidersPathFor(home, os.Getenv)
+}
+
+// The openai-compatible entry's members the launcher reads or writes. Every
+// other member of providers.json (another provider's key, this one's key, its
+// model) is neither decoded nor rewritten: providers.json is a credential
+// file, so the launcher follows the D9 / HOOKCRED-1 rules (a member-only read
+// and a surgical splice through internal/credfile).
+var (
+	clineCompatEntryPath = []string{"providers", clineCompatProvider}
+	clineCompatBaseURL   = []string{"providers", clineCompatProvider, "settings", "baseUrl"}
+)
+
+// prepareClineRoute applies clineRouteRules to the providers.json cline reads
+// (~/.cline/data/settings/providers.json unless CLINE_* relocates it): only
+// an EXISTING openai-compatible entry whose endpoint the proxy can safely
+// reach is touched (its baseUrl pointed at baseURL, and put back after the
+// session); it never creates an entry and NEVER writes an api key.
+// openAIUpstream is the proxy's fixed OpenAI upstream. Every error it returns
+// carries a bounded terminal message (the launcher silences Cobra), so a
+// dashboard launch that cannot start says why instead of exiting 1 with no
+// output.
+func prepareClineRoute(baseURL, openAIUpstream string, now time.Time) (clineRoute, error) {
+	path, err := clineProvidersFile()
+	if errors.Is(err, errClineProvidersRelative) {
+		return clineRoute{}, newVisibleLauncherError(err,
+			"observer cline-cli: "+err.Error()+"; cline reads it against its own working directory, so Observer cannot tell which providers.json to route (set an absolute path)")
+	}
 	if err != nil {
 		return clineRoute{}, newVisibleLauncherError(err,
 			"observer cline-cli: cannot locate your home directory to configure cline's provider")
 	}
-	return prepareClineRouteAt(filepath.Join(home, ".cline", "data", "settings", "providers.json"), baseURL, openAIUpstream, now)
+	return prepareClineRouteAt(path, baseURL, openAIUpstream, now)
 }
 
 // readClineCompatBaseURL re-reads the openai-compatible provider's persisted
-// settings.baseUrl from ~/.cline/data/settings/providers.json (T-208 launch
-// evidence). Only that one field is read; no credential is.
+// settings.baseUrl from the providers.json cline reads (T-208 launch
+// evidence). Only that one member is read; no credential is.
 func readClineCompatBaseURL() (string, bool) {
-	home, err := os.UserHomeDir()
+	path, err := clineProvidersFile()
 	if err != nil {
 		return "", false
 	}
-	return readClineCompatBaseURLAt(filepath.Join(home, ".cline", "data", "settings", "providers.json"))
+	return readClineCompatBaseURLAt(path)
 }
 
 // readClineCompatBaseURLAt is readClineCompatBaseURL over an explicit path.
 func readClineCompatBaseURLAt(path string) (string, bool) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // G703: reads the user's own local file with the user's own rights
 	if err != nil {
 		return "", false
 	}
-	var root struct {
-		Providers map[string]struct {
-			Settings struct {
-				BaseURL string `json:"baseUrl"`
-			} `json:"settings"`
-		} `json:"providers"`
-	}
-	if json.Unmarshal(data, &root) != nil {
+	raw, ok, err := credfile.ObjectPath(data, clineCompatBaseURL)
+	if err != nil || !ok {
 		return "", false
 	}
-	entry, ok := root.Providers[clineCompatProvider]
-	if !ok || entry.Settings.BaseURL == "" {
+	var v string
+	if json.Unmarshal(raw, &v) != nil || v == "" {
 		return "", false
 	}
-	return entry.Settings.BaseURL, true
+	return v, true
+}
+
+// readClineProvidersState reads only the routing-relevant members of
+// providers.json: the provider ids, whether an openai-compatible entry is an
+// object, and that entry's settings.baseUrl.
+func readClineProvidersState(data []byte, baseURL, openAIUpstream string) (clineProvidersState, error) {
+	state := clineProvidersState{}
+	if !credfile.IsObject(data) {
+		return state, credfile.ErrPatch
+	}
+	providers, ok, err := credfile.ObjectPath(data, []string{"providers"})
+	if err != nil {
+		return state, err
+	}
+	if !ok || !credfile.IsObject(providers) {
+		return state, nil
+	}
+	ids, err := credfile.ObjectKeys(providers)
+	if err != nil {
+		return state, err
+	}
+	state.configured = len(ids)
+	entry, ok, err := credfile.ObjectPath(data, clineCompatEntryPath)
+	if err != nil || !ok || !credfile.IsObject(entry) {
+		return state, err
+	}
+	state.hasCompat = true
+	var target any
+	if settings, ok, _ := credfile.ObjectPath(entry, []string{"settings"}); ok && credfile.IsObject(settings) {
+		if raw, ok, _ := credfile.ObjectPath(settings, []string{"baseUrl"}); ok {
+			_ = json.Unmarshal(raw, &target)
+		}
+	}
+	state.compatTarget = classifyClineCompatTarget(target, baseURL, openAIUpstream)
+	return state, nil
 }
 
 // prepareClineRouteAt is prepareClineRoute over an explicit file path.
 func prepareClineRouteAt(path, baseURL, openAIUpstream string, now time.Time) (clineRoute, error) {
 	authHint := fmt.Sprintf("cline auth %s -k <key> -m <model> -b %s", clineCompatProvider, baseURL)
-	root := map[string]any{}
 	state := clineProvidersState{}
 	data, err := os.ReadFile(path)
 	switch {
@@ -450,21 +530,11 @@ func prepareClineRouteAt(path, baseURL, openAIUpstream string, now time.Time) (c
 		return clineRoute{}, newVisibleLauncherError(fmt.Errorf("read %s: %w", path, err), fmt.Sprintf(
 			"observer cline-cli: cannot read %s; check its permissions, then relaunch", clineProvidersDisplay))
 	default:
-		if uerr := json.Unmarshal(data, &root); uerr != nil || root == nil {
-			if uerr == nil {
-				uerr = errors.New("top level is null")
-			}
-			return clineRoute{}, newVisibleLauncherError(fmt.Errorf("parse %s: %w", path, uerr), fmt.Sprintf(
+		if state, err = readClineProvidersState(data, baseURL, openAIUpstream); err != nil {
+			return clineRoute{}, newVisibleLauncherError(credfile.Withhold("observer cline-cli", path, err), fmt.Sprintf(
 				"observer cline-cli: %s is not valid JSON; fix it or move it aside (cline recreates it), then relaunch",
 				clineProvidersDisplay))
 		}
-	}
-	providers, _ := root["providers"].(map[string]any)
-	state.configured = len(providers)
-	if compat, ok := providers[clineCompatProvider].(map[string]any); ok {
-		state.hasCompat = true
-		compatSettings, _ := compat["settings"].(map[string]any)
-		state.compatTarget = classifyClineCompatTarget(compatSettings["baseUrl"], baseURL, openAIUpstream)
 	}
 
 	route := clineRoute{action: decideClineRoute(state)}
@@ -488,51 +558,74 @@ func prepareClineRouteAt(path, baseURL, openAIUpstream string, now time.Time) (c
 			"To route through Observer, run once: %s", clineCompatProvider, authHint)
 		return route, nil
 	}
-	entry := providers[clineCompatProvider].(map[string]any)
-	settings, _ := entry["settings"].(map[string]any)
-	if settings == nil {
-		settings = map[string]any{}
-		entry["settings"] = settings
+	writeErr := func(err error) error {
+		return newVisibleLauncherError(credfile.Withhold("observer cline-cli", path, err), fmt.Sprintf(
+			"observer cline-cli: cannot write %s; check the directory's permissions, then relaunch",
+			clineProvidersDisplay))
 	}
 	// cline (3.0.68, grounded 2026-10-02) DISCARDS an entry's settings —
 	// baseUrl included — and rewrites the entry from defaults when it lacks
 	// its own updatedAt/tokenSource stamp. Fill only what is absent so the
 	// baseUrl survives cline's first read.
-	stamped := false
-	if _, ok := entry["updatedAt"]; !ok {
-		entry["updatedAt"] = now.UTC().Format("2006-01-02T15:04:05.000Z")
-		stamped = true
+	entry, _, _ := credfile.ObjectPath(data, clineCompatEntryPath)
+	stamps, err := credfile.ObjectMembers(entry, "updatedAt", "tokenSource")
+	if err != nil {
+		return clineRoute{}, writeErr(err)
 	}
-	if _, ok := entry["tokenSource"]; !ok {
-		entry["tokenSource"] = "manual"
-		stamped = true
+	next := data
+	for _, stamp := range []struct {
+		key, value string
+	}{
+		{"updatedAt", now.UTC().Format("2006-01-02T15:04:05.000Z")},
+		{"tokenSource", "manual"},
+	} {
+		if _, ok := stamps[stamp.key]; ok {
+			continue
+		}
+		if next, err = setClineMember(next, append(append([]string{}, clineCompatEntryPath...), stamp.key), stamp.value); err != nil {
+			return clineRoute{}, writeErr(err)
+		}
 	}
-	if settings["baseUrl"] == baseURL && !stamped {
+	original, hadBaseURL, _ := credfile.ObjectPath(data, clineCompatBaseURL)
+	wantRaw, _ := json.Marshal(baseURL)
+	changedBaseURL := !hadBaseURL || !credfile.JSONEqual(original, wantRaw)
+	if changedBaseURL {
+		if next, err = setClineMember(next, clineCompatBaseURL, baseURL); err != nil {
+			return clineRoute{}, writeErr(err)
+		}
+	}
+	if bytes.Equal(next, data) {
 		return route, nil // already pointed at the proxy
 	}
-	original, hadBaseURL := settings["baseUrl"]
-	changedBaseURL := original != baseURL
-	settings["baseUrl"] = baseURL
-	if err := writeClineProviders(path, root); err != nil {
-		return clineRoute{}, newVisibleLauncherError(err, fmt.Sprintf(
-			"observer cline-cli: cannot write %s; check the directory's permissions, then relaunch",
-			clineProvidersDisplay))
+	if err := writeClineProviders(path, next); err != nil {
+		return clineRoute{}, writeErr(err)
 	}
 	if changedBaseURL {
 		// Put the operator's own endpoint back when the session ends, so a
 		// later plain `cline` run is not silently pointed at Observer. The
 		// stamps stay: without them cline discards the entry's settings.
+		original = append(json.RawMessage(nil), original...)
 		route.restore = func() error { return restoreClineBaseURL(path, baseURL, original, hadBaseURL) }
 	}
 	return route, nil
 }
 
+// setClineMember splices one string member at path into a providers.json
+// body, keeping every other byte.
+func setClineMember(body []byte, path []string, value string) ([]byte, error) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	return credfile.SetObjectPath(body, path, raw, true)
+}
+
 // restoreClineBaseURL puts the openai-compatible entry's baseUrl back to what
 // it was before this launch, as a compare-and-swap: only when the entry still
 // carries the proxy URL this launch wrote. If the operator (or cline) changed
-// it during the session, their value wins and nothing is written. Every other
-// field is preserved, and no credential is read or written.
-func restoreClineBaseURL(path, wrote string, original any, hadOriginal bool) error {
+// it during the session, their value wins and nothing is written. Only that
+// one member is read and spliced; no credential is read or written.
+func restoreClineBaseURL(path, wrote string, original json.RawMessage, hadOriginal bool) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -540,39 +633,55 @@ func restoreClineBaseURL(path, wrote string, original any, hadOriginal bool) err
 		}
 		return fmt.Errorf("read %s: %w", path, err)
 	}
-	root := map[string]any{}
-	if err := json.Unmarshal(data, &root); err != nil || root == nil {
-		return fmt.Errorf("parse %s: not valid JSON, left as is", path)
+	cur, ok, err := credfile.ObjectPath(data, clineCompatBaseURL)
+	if err != nil {
+		return credfile.SafeErrorf("parse %s: not valid JSON, left as is", path)
 	}
-	providers, _ := root["providers"].(map[string]any)
-	entry, _ := providers[clineCompatProvider].(map[string]any)
-	settings, _ := entry["settings"].(map[string]any)
-	if settings == nil || settings["baseUrl"] != wrote {
+	wroteRaw, _ := json.Marshal(wrote)
+	if !ok || !credfile.JSONEqual(cur, wroteRaw) {
 		return nil // changed during the session: theirs wins
 	}
-	if hadOriginal {
-		settings["baseUrl"] = original
-	} else {
-		delete(settings, "baseUrl")
+	next, err := credfile.SetObjectPath(data, clineCompatBaseURL, original, hadOriginal)
+	if err != nil {
+		return credfile.Withhold("observer cline-cli", path, err)
 	}
-	return writeClineProviders(path, root)
+	return writeClineProviders(path, next)
 }
 
-// writeClineProviders atomically writes root to path (0600; parent dirs 0700).
-func writeClineProviders(path string, root map[string]any) error {
-	out, err := json.MarshalIndent(root, "", "  ")
+// writeClineProviders atomically replaces path with body, keeping the file's
+// permission bits (0600 for a file it creates; parent dirs 0700). It writes
+// through a unique temp file beside the target and never leaves a copy.
+func writeClineProviders(path string, body []byte) error {
+	if err := testwriteguard.Check("write", path); err != nil {
+		return err
+	}
+	mode := os.FileMode(0o600)
+	if fi, err := os.Stat(path); err == nil {
+		mode = fi.Mode().Perm()
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".observer-*")
 	if err != nil {
-		return fmt.Errorf("marshal %s: %w", path, err)
+		return fmt.Errorf("create temp in %s: %w", dir, err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
+	name := tmp.Name()
+	_, werr := tmp.Write(body)
+	if cerr := tmp.Close(); werr == nil {
+		werr = cerr
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, append(out, '\n'), 0o600); err != nil {
-		return fmt.Errorf("write %s: %w", tmp, err)
+	if werr == nil {
+		werr = os.Chmod(name, mode)
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		return fmt.Errorf("rename %s: %w", tmp, err)
+	if werr != nil {
+		_ = os.Remove(name)
+		return fmt.Errorf("write %s: %w", name, werr)
+	}
+	if err := os.Rename(name, path); err != nil {
+		_ = os.Remove(name)
+		return fmt.Errorf("rename %s: %w", name, err)
 	}
 	return nil
 }

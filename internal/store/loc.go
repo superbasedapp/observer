@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/codexpatch"
 	"github.com/marmutapp/superbased-observer/internal/loc"
 	"github.com/marmutapp/superbased-observer/internal/models"
 )
@@ -70,6 +71,12 @@ type FileChangeRow struct {
 	Stats        loc.Stats
 	Version      int
 	SavedAt      time.Time
+	// legacyHash is the key an earlier build stored this row under when it
+	// differs from FilePathHash: an edit inside a linked worktree, hashed
+	// before the checkout-seam re-key (SHR-8). The insert moves a row still
+	// held under it onto FilePathHash first, so a re-ingest or a rescan
+	// never leaves the same edit counted under both keys.
+	legacyHash string
 }
 
 // insertFileChangeSQL upserts one row.
@@ -234,6 +241,11 @@ func (s *Store) insertFileChanges(ctx context.Context, rows []FileChangeRow, res
 	for _, r := range rows {
 		if r.FilePathHash == "" || r.ProjectID == 0 {
 			continue
+		}
+		if r.ActionID != 0 && r.legacyHash != "" {
+			if _, err := rekeyFileChangeTx(ctx, tx, r.ActionID, r.Source, r.legacyHash, r.FilePathHash); err != nil {
+				return n, fmt.Errorf("store.InsertFileChanges: %w", err)
+			}
 		}
 		var res sql.Result
 		var execErr error
@@ -484,12 +496,15 @@ func (s *Store) buildFileChanges(ctx context.Context, a locActionRow) ([]FileCha
 	saved := parseLOCTime(a.Timestamp)
 
 	out := make([]FileChangeRow, 0, len(stats))
+	base := locHeaderBase(a.Target, stats)
 	for _, fs := range stats {
+		hash, legacy := locPathHashes(a.ProjectRoot, codexpatch.AnchorHeader(base, fs.Path))
 		out = append(out, FileChangeRow{
 			SessionID:    a.SessionID,
 			ProjectID:    a.ProjectID,
 			ActionID:     a.ID,
-			FilePathHash: loc.PathHash(a.ProjectRoot, fs.Path),
+			FilePathHash: hash,
+			legacyHash:   legacy,
 			InputDigest:  fs.InputDigest,
 			Language:     string(fs.Lang),
 			Category:     string(fs.Category),
@@ -901,4 +916,25 @@ func warnLOC(stage string, err error) {
 		return
 	}
 	fmt.Fprintf(os.Stderr, "store: loc %s non-fatal err: %v\n", stage, err)
+}
+
+// moveFileChangesTx moves project fromID's file_changes rows onto project
+// toID inside tx (MoveProjectRows, lane shr-worktree2, PT-39). Both unique
+// keys are session- or action-scoped, never project-scoped, so every row
+// moves. The rows keep the file_path_hash computed under the old root.
+// toID 0 counts what would move, changing nothing.
+func moveFileChangesTx(ctx context.Context, tx *sql.Tx, fromID, toID int64) (int64, error) {
+	if toID == 0 {
+		var n int64
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM file_changes WHERE project_id = ?`, fromID).Scan(&n); err != nil {
+			return 0, fmt.Errorf("store.moveFileChanges: count: %w", err)
+		}
+		return n, nil
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE file_changes SET project_id = ? WHERE project_id = ?`, toID, fromID)
+	if err != nil {
+		return 0, fmt.Errorf("store.moveFileChanges: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }

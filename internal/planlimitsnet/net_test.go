@@ -38,6 +38,100 @@ func TestCheckURLTable(t *testing.T) {
 	}
 }
 
+// TestCheckURLAgainstBaseTable pins the self-hosted gateway policy (ledger
+// SUBS-5): the request must use the base's scheme, host and port exactly,
+// and the base itself must pass planlimits.CheckBaseURL.
+func TestCheckURLAgainstBaseTable(t *testing.T) {
+	gw := planlimits.SourceDef{ID: "test.gateway", UserBaseURL: true}
+	cases := []struct {
+		name, base, raw string
+		ok              bool
+	}{
+		{"https same host", "https://gw.example.com", "https://gw.example.com/key/info", true},
+		{"https same host with base path", "https://gw.example.com/litellm", "https://gw.example.com/litellm/key/info", true},
+		{"https custom port", "https://gw.example.com:8443", "https://gw.example.com:8443/key/info", true},
+		{"https explicit default port equals none", "https://gw.example.com", "https://gw.example.com:443/x", true},
+		{"host case folds", "https://GW.example.com", "https://gw.EXAMPLE.com/x", true},
+		{"http loopback ipv4", "http://127.0.0.1:4000", "http://127.0.0.1:4000/key/info", true},
+		{"http loopback ipv6", "http://[::1]:4000", "http://[::1]:4000/key/info", true},
+		{"http localhost", "http://localhost:4000", "http://localhost:4000/key/info", true},
+		{"request query allowed", "https://gw.example.com", "https://gw.example.com/x?a=1", true},
+		{"other host", "https://gw.example.com", "https://evil.test/key/info", false},
+		{"suffix host", "https://gw.example.com", "https://gw.example.com.evil.test/x", false},
+		{"other port", "https://gw.example.com:8443", "https://gw.example.com:9443/x", false},
+		{"port added", "https://gw.example.com", "https://gw.example.com:8443/x", false},
+		{"scheme downgrade", "https://gw.example.com", "http://gw.example.com/x", false},
+		{"scheme upgrade", "http://localhost:4000", "https://localhost:4000/x", false},
+		{"request user info", "https://gw.example.com", "https://u:p@gw.example.com/x", false},
+		{"request fragment", "https://gw.example.com", "https://gw.example.com/x#f", false},
+		{"encoded at", "https://gw.example.com", "https://gw.example.com%2F@evil.test/x", false},
+		{"http to a remote host", "http://gw.example.com", "http://gw.example.com/x", false},
+		{"http to a lan address", "http://192.168.1.5:4000", "http://192.168.1.5:4000/x", false},
+		{"http to another loopback", "http://127.0.0.2:4000", "http://127.0.0.2:4000/x", false},
+		{"base with user info", "https://u:p@gw.example.com", "https://gw.example.com/x", false},
+		{"base with query", "https://gw.example.com?a=1", "https://gw.example.com/x", false},
+		{"base with fragment", "https://gw.example.com#f", "https://gw.example.com/x", false},
+		{"empty base", "", "https://gw.example.com/x", false},
+		{"base other scheme", "ftp://gw.example.com", "ftp://gw.example.com/x", false},
+	}
+	for _, c := range cases {
+		if err := CheckURLAgainstBase(gw, c.base, c.raw); (err == nil) != c.ok {
+			t.Errorf("%s: base %q url %q: err=%v want ok=%v", c.name, c.base, c.raw, err, c.ok)
+		}
+	}
+	fixed, _ := planlimits.SourceByID(planlimits.SourceOpenRouter)
+	if err := CheckURLAgainstBase(fixed, "https://openrouter.ai", "https://openrouter.ai/api"); err == nil {
+		t.Error("a fixed-host source must never take a base URL")
+	}
+	if err := CheckURL(gw, "https://gw.example.com/x"); err == nil {
+		t.Error("a gateway source must never pass the fixed-host check")
+	}
+}
+
+// TestGatewayAnchorIsCheckedAndNeverSent: the base travels in a reserved
+// header that the egress reads and strips; without it, or on a fixed-host
+// source, nothing is sent.
+func TestGatewayAnchorIsCheckedAndNeverSent(t *testing.T) {
+	var got []*http.Request
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.Clone(r.Context()))
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer srv.Close()
+	base, _ := url.Parse(srv.URL)
+	c := New(Options{HTTP: &http.Client{Transport: &rewrite{base: base}}, Version: "test"})
+	gw := planlimits.SourceDef{ID: "test.gateway", UserBaseURL: true}
+	const anchor = "https://gw.example.com:8443"
+	accept := map[string]string{"Accept": "application/json"}
+	res := c.Do(context.Background(), gw, []planlimits.Request{
+		{Key: "ok", Kind: planlimits.ReqHTTP, URL: "https://gw.example.com:8443/key/info", Header: accept, Base: anchor, SecretHeaders: map[string]string{"Authorization": "Bearer K"}},
+		{Key: "noanchor", Kind: planlimits.ReqHTTP, URL: "https://gw.example.com:8443/key/info", SecretHeaders: map[string]string{"Authorization": "Bearer K"}},
+		{Key: "otherhost", Kind: planlimits.ReqHTTP, URL: "https://evil.test:8443/key/info", Header: accept, Base: anchor, SecretHeaders: map[string]string{"Authorization": "Bearer K"}},
+	})
+	if res["ok"].Err != nil || res["ok"].Status != 200 {
+		t.Errorf("anchored request %+v", res["ok"])
+	}
+	for _, k := range []string{"noanchor", "otherhost"} {
+		if !errors.Is(res[k].Err, ErrHostNotAllowed) {
+			t.Errorf("%s must be refused: %+v", k, res[k])
+		}
+	}
+	fixed, _ := planlimits.SourceByID(planlimits.SourceOpenRouter)
+	res = c.Do(context.Background(), fixed, []planlimits.Request{{
+		Key: "smuggle", Kind: planlimits.ReqHTTP, URL: "https://openrouter.ai/api/v1/key",
+		Base: "https://openrouter.ai",
+	}})
+	if !errors.Is(res["smuggle"].Err, ErrHostNotAllowed) {
+		t.Errorf("a fixed-host source must refuse an anchor: %+v", res["smuggle"])
+	}
+	if len(got) != 1 {
+		t.Fatalf("sent %d requests, want 1", len(got))
+	}
+	if got[0].Header.Get("Accept") != "application/json" {
+		t.Errorf("plain headers must be kept: %v", got[0].Header)
+	}
+}
+
 // rewrite sends every request to the test server, keeping the original host
 // in the URL the client checked.
 type rewrite struct {
@@ -156,5 +250,32 @@ func TestExecSkipsShimDirAndRunsFixedArgv(t *testing.T) {
 	}
 	if !strings.Contains(out, "secret:none") {
 		t.Errorf("only allow-listed variables reach a vendor command: %q", out)
+	}
+}
+
+// TestRedirectIsClassifiedBySourceKind: a redirect is never followed; for a
+// pasted browser session it means the session expired (sign in again), for
+// any other source that the endpoint moved.
+func TestRedirectIsClassifiedBySourceKind(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "https://example.com/login", http.StatusFound)
+	}))
+	defer srv.Close()
+	base, _ := url.Parse(srv.URL)
+	c := New(Options{HTTP: &http.Client{Transport: &rewrite{base: base}}, Version: "test"})
+	cases := []struct {
+		kind planlimits.SourceKind
+		want error
+	}{
+		{planlimits.KindBrowser, planlimits.ErrAuth},
+		{planlimits.KindOfficialAPI, planlimits.ErrShape},
+		{planlimits.KindUndocumented, planlimits.ErrShape},
+	}
+	for _, tc := range cases {
+		src := planlimits.SourceDef{ID: "t", Kind: tc.kind, Hosts: []string{"vendor.example"}}
+		res := c.Do(context.Background(), src, []planlimits.Request{{Key: "k", Kind: planlimits.ReqHTTP, URL: "https://vendor.example/usage"}})
+		if !errors.Is(res["k"].Err, tc.want) {
+			t.Errorf("%s: redirect gave %v, want %v", tc.kind, res["k"].Err, tc.want)
+		}
 	}
 }

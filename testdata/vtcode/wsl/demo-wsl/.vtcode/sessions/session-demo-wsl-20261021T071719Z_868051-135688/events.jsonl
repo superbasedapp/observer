@@ -1,0 +1,14 @@
+{"schema_version":"0.18.0","event":{"type":"thread.started","thread_id":"session-demo-wsl-20261021T071719Z_868051-135688"}}
+{"schema_version":"0.18.0","event":{"type":"interjected","text":"/model","source":"direct","image_count":0,"redirect_kind":"interjection"}}
+{"schema_version":"0.18.0","event":{"type":"interjected","text":"hi","source":"direct","image_count":0,"redirect_kind":"interjection"}}
+{"schema_version":"0.18.0","event":{"type":"item.completed","item":{"context":{"task_id":"task-4cdd055e-62d9-4ee9-9ebb-4604e88ef40e","turn_id":"de12e6bb-00e2-44cd-8b1f-67621b0ec19f","actor_id":"session-demo-wsl-20261021T071719Z_868051-135688","timestamp":"2026-10-21T07:17:35.548112068+00:00"},"id":"harness-1fbdcab4-ab77-4ba0-bce4-23ec80b83649","type":"harness","event":"snapshot_created","message":"Before prompt 1 snapshot saved"}}}
+{"schema_version":"0.18.0","event":{"type":"turn.started","context":{"task_id":"task-4cdd055e-62d9-4ee9-9ebb-4604e88ef40e","turn_id":"de12e6bb-00e2-44cd-8b1f-67621b0ec19f","actor_id":"session-demo-wsl-20261021T071719Z_868051-135688","origin":"user","timestamp":"2026-10-21T07:17:35.532718776+00:00","goal":"hi"}}}
+{"schema_version":"0.18.0","event":{"type":"turn.failed","completed_at":"2026-10-21T07:17:35.932555076+00:00","message":"turn aborted"}}
+{"schema_version":"0.18.0","event":{"type":"interjected","text":"/model","source":"direct","image_count":0,"redirect_kind":"interjection"}}
+{"schema_version":"0.18.0","event":{"type":"interjected","text":"/config","source":"direct","image_count":0,"redirect_kind":"interjection"}}
+{"schema_version":"0.18.0","event":{"type":"interjected","text":"/model","source":"direct","image_count":0,"redirect_kind":"interjection"}}
+{"schema_version":"0.18.0","event":{"type":"interjected","text":"/config","source":"direct","image_count":0,"redirect_kind":"interjection"}}
+{"schema_version":"0.18.0","event":{"type":"interjected","text":"/model","source":"direct","image_count":0,"redirect_kind":"interjection"}}
+{"schema_version":"0.18.0","event":{"type":"interjected","text":"/config","source":"direct","image_count":0,"redirect_kind":"interjection"}}
+{"schema_version":"0.18.0","event":{"type":"interjected","text":"/exit","source":"direct","image_count":0,"redirect_kind":"interjection"}}
+{"schema_version":"0.18.0","event":{"type":"thread.completed","completed_at":"2026-10-21T09:04:35.901399918+00:00","thread_id":"session-demo-wsl-20261021T071719Z_868051-135688","session_id":"session-demo-wsl-20261021T071719Z_868051-135688","subtype":"cancelled","outcome_code":"exit","usage":{"input_tokens":0,"cached_input_tokens":0,"cache_creation_tokens":0,"output_tokens":0},"num_turns":1}}

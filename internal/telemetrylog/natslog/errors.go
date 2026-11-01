@@ -177,9 +177,14 @@ func isConsumerExists(err error) bool {
 }
 
 // isUnavailable reports whether err is a connection-level / timeout failure.
+// The two reconnecting errors are what a call returns while the client is
+// between broker connections (T-883: it now reconnects indefinitely), so they
+// are the same honest "log unavailable" as a closed connection.
 func isUnavailable(err error) bool {
 	return errors.Is(err, nats.ErrNoResponders) ||
 		errors.Is(err, nats.ErrConnectionClosed) ||
+		errors.Is(err, nats.ErrConnectionReconnecting) ||
+		errors.Is(err, nats.ErrReconnectBufExceeded) ||
 		errors.Is(err, nats.ErrTimeout) ||
 		errors.Is(err, nats.ErrNoServers) ||
 		errors.Is(err, jetstream.ErrNoStreamResponse) ||

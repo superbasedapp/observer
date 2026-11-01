@@ -19,13 +19,23 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/agentconfig"
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/hook"
+	"github.com/marmutapp/superbased-observer/internal/integration"
+	"github.com/marmutapp/superbased-observer/internal/models"
+	"github.com/marmutapp/superbased-observer/internal/regularfile"
 )
 
 // bypassFilePrefix is the os.CreateTemp prefix for the one-shot CLI-scope
 // `--settings` bypass file writeClaudeBypassSettings mints. Shared with
 // sweepStaleBypassFiles so the reaper matches exactly what the writer produces.
 const bypassFilePrefix = "observer-claude-bypass-"
+
+// claudeSettingsMaxBytes caps every settings read the launcher makes. The
+// reads go through regularfile.Read, so a FIFO, a device or a directory at a
+// settings path is refused at once instead of hanging the launch.
+const claudeSettingsMaxBytes int64 = 2 << 20
 
 // anthropicDefaultBaseURL is Claude Code's built-in provider endpoint. The
 // neutralize path pins it so claude reaches Anthropic directly on a
@@ -43,19 +53,41 @@ const anthropicDefaultBaseURL = "https://api.anthropic.com"
 // falling back to ~/.claude/. Mirrors claudeCredentialsPath so the launcher
 // inspects the SAME file claude will actually load (and `observer init` /
 // internal/proxyroute.RegisterClaudeCode writes) for the env.ANTHROPIC_BASE_URL
-// route. Returns "" only when the home dir cannot be resolved and no override is
-// set.
+// route. Returns "" when the home dir cannot be resolved and no override is
+// set, and when the override is a relative path (claudeUserSettingsPath).
 func claudeSettingsPath() string {
-	for _, env := range []string{"CLAUDE_CONFIG_DIR", "ANTHROPIC_CONFIG_DIR"} {
-		if dir := os.Getenv(env); dir != "" {
-			return filepath.Join(dir, "settings.json")
-		}
+	p, _ := claudeUserSettingsPath(os.Getenv, os.UserHomeDir)
+	return p
+}
+
+// claudeUserSettingsPath is claudeSettingsPath with its inputs injected. A
+// relocation variable holding a RELATIVE value is refused (FU-131), the way
+// proxyroute.routeArtifactPath refuses it: Claude Code reads it against its
+// own working directory, so Observer cannot tell which file it names, and
+// falling back to ~/.claude would inspect a file the tool does not read.
+// refusedEnv names the variable then, and path is "".
+func claudeUserSettingsPath(getenv func(string) string, home func() (string, error)) (path, refusedEnv string) {
+	dir, refusedEnv := claudeUserConfigDir(getenv, home)
+	if dir == "" {
+		return "", refusedEnv
 	}
-	home, err := os.UserHomeDir()
+	return filepath.Join(dir, "settings.json"), ""
+}
+
+// claudeUserConfigDir is the launcher's view of Claude Code's user config
+// directory, through the one resolver every reader shares
+// (agentconfig.ClaudeConfigDir: CLAUDE_CONFIG_DIR, then ANTHROPIC_CONFIG_DIR,
+// then ~/.claude). A relative relocation value is refused (FU-131): dir is
+// "" and refusedEnv names the variable. dir is "" with no refusal when the
+// home cannot be resolved and no variable is set. The user settings.json
+// (claudeUserSettingsPath) and the sign-in file (claudeCredentialsPath,
+// FU-138) both sit in it.
+func claudeUserConfigDir(getenv func(string) string, home func() (string, error)) (dir, refusedEnv string) {
+	h, err := home()
 	if err != nil {
-		return ""
+		h = ""
 	}
-	return filepath.Join(home, ".claude", "settings.json")
+	return agentconfig.ClaudeConfigDir(agentconfig.PathEnv{GOOS: runtime.GOOS, Home: h, Getenv: getenv})
 }
 
 // readClaudeSettingsBaseURL returns the env.ANTHROPIC_BASE_URL value persisted
@@ -80,7 +112,7 @@ func readClaudeSettingsBaseURLPresent(path string) (value string, present bool) 
 	if path == "" {
 		return "", false
 	}
-	raw, err := os.ReadFile(path)
+	raw, err := regularfile.Read(path, claudeSettingsMaxBytes)
 	if err != nil {
 		return "", false
 	}
@@ -98,11 +130,9 @@ func readClaudeSettingsBaseURLPresent(path string) (value string, present bool) 
 // the first-party Anthropic HTTP API. The observer proxy route is not proof of
 // budget coverage for these native cloud backends, so a managed hard budget
 // must refuse unless every effective setting is known to leave them disabled.
-var claudeBackendEnvKeys = []string{
-	"CLAUDE_CODE_USE_BEDROCK",
-	"CLAUDE_CODE_USE_VERTEX",
-	"CLAUDE_CODE_USE_FOUNDRY",
-}
+// The list is the integration registry's one selector table (CC-10), shared
+// with the hook's account-observation overrides.
+var claudeBackendEnvKeys = integration.ProviderSelectorEnvKeys(models.ToolClaudeCode)
 
 // claudeProxyBackendProven reports whether the final Claude launch can be
 // proven to use the proxy's first-party Anthropic route. It inspects only
@@ -128,11 +158,17 @@ func claudeProxyBackendProven(environ []string, cwd string, args []string) bool 
 	// an enabled selector is treated as unsafe even if another scope currently
 	// appears to override it: this avoids making a positive budget admission
 	// claim from a hand-rolled precedence model when the CLI changes versions.
+	userPath, refused := claudeUserSettingsPath(os.Getenv, os.UserHomeDir)
+	if refused != "" {
+		// The user scope cannot be named (a relative relocation, FU-131), so
+		// a selector there cannot be ruled out: no positive proof.
+		return false
+	}
 	paths := []string{
 		managedClaudeSettingsPath(),
 		projectClaudeSettingsPath(cwd, "settings.local.json"),
 		projectClaudeSettingsPath(cwd, "settings.json"),
-		claudeSettingsPath(),
+		userPath,
 	}
 	for _, path := range paths {
 		if path == "" {
@@ -162,7 +198,7 @@ func claudeProxyBackendProven(environ []string, cwd string, args []string) bool 
 // present distinguishes a missing file from a present but malformed file;
 // malformed settings are unknown and therefore fail closed at admission.
 func readClaudeSettingsEnv(path string) (env map[string]string, present, readable bool) {
-	raw, err := os.ReadFile(path)
+	raw, err := regularfile.Read(path, claudeSettingsMaxBytes)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, false, true
 	}
@@ -195,7 +231,7 @@ func readClaudeCLISettingsEnv(value, cwd string) (map[string]string, bool) {
 			path = filepath.Join(cwd, path)
 		}
 		var err error
-		raw, err = os.ReadFile(path)
+		raw, err = regularfile.Read(path, claudeSettingsMaxBytes)
 		if err != nil {
 			return nil, false
 		}
@@ -309,6 +345,14 @@ type claudeRouteResolution struct {
 	// this flag lets the caller print an honest "couldn't read your --settings"
 	// fail-closed message instead of asserting a proxy route it never proved.
 	cliUnreadable bool
+	// userUnreadable names the relocation variable (CLAUDE_CONFIG_DIR or
+	// ANTHROPIC_CONFIG_DIR) whose RELATIVE value made the user-scope
+	// settings.json unnameable (FU-131): claude reads it against its own
+	// working directory, so observer cannot tell what that file routes to. It
+	// is classified conservatively like cliUnreadable (class observer, scope
+	// user) and the caller refuses with an honest message instead of reading
+	// the scope as "no route". "" otherwise.
+	userUnreadable string
 }
 
 // managedClaudeSettingsPath is the OS-specific enterprise managed-settings file
@@ -316,16 +360,10 @@ type claudeRouteResolution struct {
 // managed scope beats even a CLI-scope --settings, so a managed observer route is
 // genuinely un-overridable by the launcher). Linux/WSL is the daemon's OS;
 // macOS/Windows are covered for a native launcher.
+// The path comes from the one source table (the agentconfig FileRow
+// claude-code/managed-settings, through hook.ClaudeManagedPaths; CC-5).
 func managedClaudeSettingsPath() string {
-	switch runtime.GOOS {
-	case "darwin":
-		return "/Library/Application Support/ClaudeCode/managed-settings.json"
-	case "windows":
-		// v2.1.75+ path; the legacy C:\ProgramData\ClaudeCode is no longer read.
-		return `C:\Program Files\ClaudeCode\managed-settings.json`
-	default: // linux + wsl (the daemon's OS) and other unix
-		return "/etc/claude-code/managed-settings.json"
-	}
+	return hook.ClaudeManagedPaths(runtime.GOOS).Settings
 }
 
 // claudeArgsSettingsFile returns the operator's own `--settings <file>` value
@@ -393,7 +431,7 @@ func readClaudeCLISettingsBaseURL(val, cwd string) (value string, present, unrea
 		if !filepath.IsAbs(p) && cwd != "" {
 			p = filepath.Join(cwd, p)
 		}
-		b, err := os.ReadFile(p)
+		b, err := regularfile.Read(p, claudeSettingsMaxBytes)
 		if err != nil {
 			return "", false, true // path form, unreadable → CLI-scope unknown
 		}
@@ -470,6 +508,7 @@ func resolveClaudeEffectiveRoute(proxyURL, cwd string, args []string) claudeRout
 		{claudeScopeProject, projectClaudeSettingsPath(cwd, "settings.json")},
 		{claudeScopeUser, claudeSettingsPath()},
 	}
+	_, userRefused := claudeUserSettingsPath(os.Getenv, os.UserHomeDir)
 	for _, s := range scopes {
 		var (
 			val, file       string
@@ -490,6 +529,11 @@ func resolveClaudeEffectiveRoute(proxyURL, cwd string, args []string) claudeRout
 			}
 			file = claudeCLISettingsDisplay(cliVal)
 		} else {
+			if s.scope == claudeScopeUser && userRefused != "" {
+				// The user scope cannot be named (FU-131): never read it
+				// as "no route" (a third-party route there would be lost).
+				return claudeRouteResolution{class: claudeRouteObserver, scope: claudeScopeUser, file: userRefused, userUnreadable: userRefused}
+			}
 			if s.path == "" {
 				continue
 			}
@@ -522,6 +566,9 @@ func resolveClaudeEffectiveRoute(proxyURL, cwd string, args []string) claudeRout
 func claudeConfigRoutesToProxy(proxyURL string) (routed bool, settingsPath string) {
 	cwd, _ := os.Getwd()
 	r := resolveClaudeEffectiveRoute(proxyURL, cwd, nil)
+	if r.userUnreadable != "" {
+		return false, ""
+	}
 	if r.file == "" {
 		// No scope set the key at all — report the user-scope path so callers
 		// still have a file to name (mirrors the pre-multiscope behavior).
@@ -714,6 +761,7 @@ func execClaudeChild(bin string, launchArgs, env []string, dir, configPath strin
 	child.Stdout = os.Stdout
 	child.Stderr = os.Stderr
 	if err := child.Start(); err != nil {
+		noteBoxToolLaunch(os.Stderr, "claude", bin, launchArgs, err)
 		return fmt.Errorf("exec claude: %w", err)
 	}
 	// Direct process attribution (migration 086): record the child pid now
@@ -727,6 +775,7 @@ func execClaudeChild(bin string, launchArgs, env []string, dir, configPath strin
 	}
 	recordLaunchSeed(dbPath, "claude-code", dir, child.Process.Pid, os.Stderr)
 	if err := child.Wait(); err != nil {
+		noteBoxToolLaunch(os.Stderr, "claude", bin, launchArgs, err)
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
 			return exitErr(ee.ExitCode())
@@ -892,6 +941,18 @@ func claudeNeutralizeNotice(reason proxyFallbackReason, proxyURL, settingsPath s
 	}
 }
 
+// claudeFallbackNotice is claudeNeutralizeNotice, unless the launch runs
+// inside a sandbox whose tier leaves no direct route to the model: then the
+// tier's own route is said, from the tier table (live run 2, finding N2: on
+// the none tier the in-box launcher said traffic goes straight to
+// Anthropic, though the box has no network).
+func claudeFallbackNotice(reason proxyFallbackReason, proxyURL, settingsPath string, overridingRoute, attachNoticed bool) string {
+	if s := sandboxTierRouteNotice("claude", proxyURL); s != "" {
+		return s
+	}
+	return claudeNeutralizeNotice(reason, proxyURL, settingsPath, overridingRoute, attachNoticed)
+}
+
 // neutralizeBypassEnv builds the child env for a NON-persistent-route bypass
 // launch (finding 2). When the process env carries a THIRD-PARTY
 // ANTHROPIC_BASE_URL (a value that does NOT point at the observer proxy), it is
@@ -957,7 +1018,7 @@ func runClaudeBareDirect(opts claudeLauncherOptions, bin string, reason proxyFal
 		// settings.json, so claude reaches Anthropic directly. The temp file is
 		// created + removed (incl. on SIGINT/SIGTERM, finding N5) by the wrapper.
 		err := withClaudeBypassSettings(anthropicDefaultBaseURL, func(settingsFile string) error {
-			fmt.Fprintln(opts.stderr, claudeNeutralizeNotice(reason, proxyURL, settingsPath, true, attachDownNoticed))
+			fmt.Fprintln(opts.stderr, claudeFallbackNotice(reason, proxyURL, settingsPath, true, attachDownNoticed))
 			// Prepend --settings so it is claude's own global flag, ahead of the tool
 			// remainder / injected continue-from prompt. CLI --settings outranks the
 			// process env too, so inherit the environment unchanged.
@@ -978,7 +1039,7 @@ func runClaudeBareDirect(opts claudeLauncherOptions, bin string, reason proxyFal
 	}
 	// No baked-in route: neutralize ONLY an observer-proxy process-env value; a
 	// third-party gateway is preserved verbatim (finding 2).
-	fmt.Fprintln(opts.stderr, claudeNeutralizeNotice(reason, proxyURL, settingsPath, false, attachDownNoticed))
+	fmt.Fprintln(opts.stderr, claudeFallbackNotice(reason, proxyURL, settingsPath, false, attachDownNoticed))
 	return execClaudeChild(bin, launchArgs, neutralizeBypassEnv(os.Environ(), proxyURL), continueDir, opts.configPath,
 		budgetLaunchEvidence{Route: budgetLaunchRouteDirect})
 }
@@ -1153,7 +1214,7 @@ func runClaudeEmptyUnset(opts claudeLauncherOptions, bin, proxyURL string, route
 	// the attach line carries neither the capture-loss half nor the `observer
 	// start` remedy, so full suppression lost the only actionable hint.
 	if emptyUnsetNoticeRedundant(attachDownNoticed, action, reason) {
-		fmt.Fprintln(opts.stderr, claudeNeutralizeNotice(reasonProxyDownClean, proxyURL, route.file, false, true))
+		fmt.Fprintln(opts.stderr, claudeFallbackNotice(reasonProxyDownClean, proxyURL, route.file, false, true))
 	} else {
 		fmt.Fprintln(opts.stderr, claudeEmptyUnsetNotice(action, reason, proxyURL, route.file))
 	}

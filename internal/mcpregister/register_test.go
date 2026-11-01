@@ -11,8 +11,6 @@ import (
 	"testing"
 
 	"github.com/BurntSushi/toml"
-
-	"github.com/marmutapp/superbased-observer/internal/mcp/locate"
 )
 
 // newRegistrar wires a sandboxed Registrar against tmpHome so tests don't
@@ -673,7 +671,7 @@ func TestRegistrar_CommandCodeJSON(t *testing.T) {
 }
 
 // TestRegistrar_ClineNativeJSON pins the native (same-OS) Cline MCP write:
-// VS Code globalStorage cline_mcp_settings.json in the standard
+// the shared ~/.cline/data/settings/cline_mcp_settings.json in the standard
 // {"mcpServers":{command,args}} shape, created under the daemon's home.
 func TestRegistrar_ClineNativeJSON(t *testing.T) {
 	r, home := newRegistrar(t, false)
@@ -684,7 +682,7 @@ func TestRegistrar_ClineNativeJSON(t *testing.T) {
 	if !res.Added {
 		t.Errorf("expected Added=true: %+v", res)
 	}
-	want := locate.ClineSettingsPath(home, runtime.GOOS)
+	want := testClineMCPPath(home, runtime.GOOS, nil)
 	if res.ConfigPath != want {
 		t.Errorf("ConfigPath: %s want %s", res.ConfigPath, want)
 	}
@@ -727,7 +725,7 @@ func TestRegistrar_ClineWindowsBridge(t *testing.T) {
 	if res.Error != nil {
 		t.Fatalf("Register: %v", res.Error)
 	}
-	want := locate.ClineSettingsPath(winHome, "windows")
+	want := testClineMCPPath(winHome, runtime.GOOS, nil)
 	if res.ConfigPath != want {
 		t.Errorf("ConfigPath: %s want %s", res.ConfigPath, want)
 	}

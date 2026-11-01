@@ -30,6 +30,8 @@ import (
 type Adapter struct {
 	scrubber *scrub.Scrubber
 	roots    []string
+	// xcodeRootFn overrides the Xcode Gemini chats root (tests; xcode.go).
+	xcodeRootFn func() string
 }
 
 // New returns an adapter with platform-default cross-mount roots.
@@ -51,8 +53,14 @@ func NewWithOptions(s *scrub.Scrubber, roots ...string) *Adapter {
 // Name implements adapter.Adapter.
 func (*Adapter) Name() string { return models.ToolGeminiCLI }
 
-// WatchPaths implements adapter.Adapter.
-func (a *Adapter) WatchPaths() []string { return a.roots }
+// WatchPaths implements adapter.Adapter. Xcode's bundled Gemini keeps its
+// own home (FU-160, xcode.go); its chats are watched beside the others.
+func (a *Adapter) WatchPaths() []string {
+	if r := a.xcodeRoot(); r != "" {
+		return adapter.DedupRootsByIdentity(append(append([]string(nil), a.roots...), r))
+	}
+	return a.roots
+}
 
 // IsSessionFile implements adapter.Adapter.
 //
@@ -149,6 +157,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 		return adapter.ParseResult{}, errors.New("gemini.ParseSessionFile: unreachable")
 	}
 	res.TokenEvents = collapseTokenRestatements(res.TokenEvents)
+	a.stampHostedSurface(path, &res)
 	return res, err
 }
 
@@ -389,8 +398,15 @@ func readShadowGitWorktree(sessionPath, hash string) string {
 // defaultRoots returns ~/.gemini/tmp under every cross-mount-resolved
 // $HOME so observer in WSL2 picks up sessions on /mnt/c/Users/<u>/.gemini
 // (and vice versa for native-Windows observer with WSL distros).
+//
+// GEMINI_CLI_HOME (the root that holds .gemini) adds $GEMINI_CLI_HOME/.gemini/tmp
+// on the native side, resolved through the gemini-cli/user-settings
+// artifact the hook writer uses (S-17).
 func defaultRoots() []string {
 	var roots []string
+	if d := adapter.RelocatedToolHome("gemini-cli/user-settings", 0); d != "" {
+		roots = append(roots, filepath.Join(d, "tmp"))
+	}
 	for _, h := range crossmount.AllHomes() {
 		roots = append(roots, filepath.Join(h.Path, ".gemini", "tmp"))
 	}

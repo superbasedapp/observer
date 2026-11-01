@@ -1,0 +1,42 @@
+rules:
+  - id: js.path-traversal-request
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: A file path built from web request input is opened, so a caller can reach files outside the intended directory with ../; resolve the path and check it stays under the base directory.
+    metadata:
+      category: code_vuln
+      cwe: CWE-22
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: $REQ.query
+              - pattern: $REQ.body
+              - pattern: $REQ.params
+              - pattern: $REQ.cookies
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(req|request|ctx\.request)$
+    pattern-sanitizers:
+      - pattern-either:
+          - pattern: path.basename(...)
+          - pattern: sanitize(...)
+          - pattern: sanitizeFilename(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: fs.$F($P, ...)
+              - pattern: fsp.$F($P, ...)
+              - pattern: fs.promises.$F($P, ...)
+          - metavariable-regex:
+              metavariable: $F
+              regex: ^(readFile|readFileSync|createReadStream|writeFile|writeFileSync|createWriteStream|unlink|unlinkSync|rm|rmSync|appendFile|appendFileSync|readdir|readdirSync|open|openSync)$
+          - focus-metavariable: $P
+      - patterns:
+          - pattern-either:
+              - pattern: $RES.sendFile($P, ...)
+              - pattern: $RES.download($P, ...)
+          - pattern-not: '$RES.sendFile($P, {..., root: $ROOT, ...}, ...)'
+          - pattern-not: '$RES.download($P, {..., root: $ROOT, ...}, ...)'
+          - pattern-not: '$RES.download($P, $NAME, {..., root: $ROOT, ...}, ...)'
+          - focus-metavariable: $P

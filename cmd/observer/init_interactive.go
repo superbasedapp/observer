@@ -128,6 +128,16 @@ func (p *initPrompter) askChoice(question string, max int) (int, error) {
 	}
 }
 
+// printRouteTradeoff prints, before a route consent, what the tool switches
+// off by itself while the route is in force (surface-gap CC-11; the
+// registry's RouteTradeoff, "" for a tool with none grounded), so the
+// developer accepts it knowingly instead of stripping the route later.
+func printRouteTradeoff(out io.Writer, tool string) {
+	if tr := integration.RouteTradeoff(tool); tr != "" {
+		fmt.Fprintf(out, "  note: %s\n", tr)
+	}
+}
+
 // runWindowsRouteDisambiguation offers a numbered picker for each cross-OS
 // route tool whose Windows-side home could NOT be auto-resolved (R1 ownership
 // unverifiable / F3 several homes). These tools are excluded from
@@ -152,6 +162,7 @@ func runWindowsRouteDisambiguation(out io.Writer, p *initPrompter, candidates ma
 		for i, h := range homes {
 			fmt.Fprintf(out, "    %d) %s\n", i+1, h)
 		}
+		printRouteTradeoff(out, label)
 		choice, err := p.askChoice(fmt.Sprintf("route %s through the observer proxy? [1-%d, or n to skip]", label, len(homes)), len(homes))
 		if err != nil {
 			return err
@@ -211,8 +222,8 @@ func runWindowsRouteDisambiguation(out io.Writer, p *initPrompter, candidates ma
 			continue
 		}
 		hr, herr := hook.NewRegistry(hook.Options{
-			Getenv:            os.Getenv,
 			BinaryPath:        registrationCommand(opts.BinaryPath),
+			WSLTwinBinaryPath: registrationWSLTwinBinary(opts.BinaryPath),
 			ConfigPath:        registrationConfigArg(opts.ConfigPath, opts.HomeDir),
 			HomeDir:           opts.HomeDir,
 			WSLDistro:         opts.WSLDistro,
@@ -236,22 +247,20 @@ func runInteractiveInit(out io.Writer, in io.Reader, opts interactiveInitOptions
 		port = 8820
 	}
 	newHookReg := func(dryRun bool) (*hook.Registry, error) {
-		return hook.NewRegistry(hook.Options{
-			Getenv:     os.Getenv,
-			BinaryPath: registrationCommand(opts.BinaryPath), DryRun: dryRun,
-			ConfigPath: registrationConfigArg(opts.ConfigPath, opts.HomeDir), HomeDir: opts.HomeDir,
-		})
+		return hook.NewRegistry(interactiveHookOptions(opts, dryRun))
 	}
 	newMCPReg := func(dryRun bool) (*mcpregister.Registrar, error) {
 		return mcpregister.NewRegistrar(mcpregister.RegisterOptions{
-			BinaryPath: registrationCommand(opts.BinaryPath), DryRun: dryRun,
+			BinaryPath: mcpRegistrationCommand(opts.BinaryPath, registrationStableMCPCommand(opts.ConfigPath)), DryRun: dryRun,
 			ConfigPath: registrationConfigArg(opts.ConfigPath, opts.HomeDir), HomeDir: opts.HomeDir,
 			SelfBinary: opts.BinaryPath,
 		})
 	}
+	clientToken := registrationProxyClientToken(opts.ConfigPath)
 	newRouteReg := func(dryRun bool) (*proxyroute.Registrar, error) {
 		return proxyroute.NewRegistrar(proxyroute.RegisterOptions{
 			ProxyPort: port, DryRun: dryRun, HomeDir: opts.HomeDir, Writer: routeprov.WriterInit,
+			ClientToken: clientToken,
 		})
 	}
 
@@ -281,11 +290,15 @@ func runInteractiveInit(out io.Writer, in io.Reader, opts interactiveInitOptions
 	}
 
 	installed := unionStrings(previewHooks.Installed(), previewMCP.Installed())
+	// WINNODE item 5, as in wireAIClients: a registry install signal (a VS
+	// Code extension, a freshly installed binary) counts before the tool's
+	// config home exists. Each write below still asks its own consent.
+	installed = unionStrings(installed, installSignalToolsFor(opts.HomeDir))
 	// Cross-OS "<tool>-windows" route targets (a WSL daemon writing the
 	// route into a Windows-side .claude/.codex) join the checklist the same
 	// way hook.Registry.Installed surfaces claude-code-windows.
 	installed = unionStrings(installed, previewRoute.WindowsRouteTargets())
-	tools := selectToolsForInit(false, false, false, false, false, installed)
+	tools := selectToolsForInit(false, nil, installed)
 	p := &initPrompter{in: bufio.NewReader(in), out: out}
 	// Install-time component chooser (modular packaging 7.1): before the
 	// gate resolves, so the checklist below offers only what was chosen.
@@ -315,7 +328,7 @@ func runInteractiveInit(out io.Writer, in io.Reader, opts interactiveInitOptions
 	}
 	fmt.Fprint(out, gateNotes.String())
 	if len(tools) == 0 && len(routeCandidates) == 0 {
-		fmt.Fprintln(out, "no AI tools detected - install one (or pass --claude-code / --cursor / --codex / --hermes explicitly) and re-run")
+		fmt.Fprintln(out, "no AI tools detected - install one (or pass --claude-code / --cursor / --codex / --antigravity / --hermes explicitly) and re-run")
 		return nil
 	}
 
@@ -436,6 +449,7 @@ func runInteractiveInit(out io.Writer, in io.Reader, opts interactiveInitOptions
 					fmt.Fprintln(out, "  proxy route - exact token accounting + conversation compression via the local proxy.")
 				}
 				fmt.Fprintf(out, "  would write %s → %s\n", pre.ConfigPath, pre.BaseURL)
+				printRouteTradeoff(out, t)
 				yes, err := p.ask(fmt.Sprintf("route %s through the observer proxy?", t), true)
 				if err != nil {
 					return err
@@ -487,6 +501,10 @@ func runInteractiveInit(out io.Writer, in io.Reader, opts interactiveInitOptions
 			fmt.Fprintf(out, "  route: ✗ %v\n", pre.Error)
 		case pre.AlreadySet:
 			fmt.Fprintf(out, "  route: already set in %s → %s\n", pre.ConfigPath, pre.BaseURL)
+		case pre.SkipReason != "":
+			// A deliberate no-write (a live-check gated writer, DEC-12):
+			// nothing to consent to.
+			fmt.Fprintf(out, "  route: skipped - %s\n", pre.SkipReason)
 		default:
 			fmt.Fprintln(out, "  proxy route (probe) - config-lane route through the local proxy; NOT yet")
 			fmt.Fprintln(out, "  live-verified for this tool, so it's opt-in.")
@@ -561,7 +579,7 @@ func runInteractiveInit(out io.Writer, in io.Reader, opts interactiveInitOptions
 	if codexHooksAdded {
 		printCodexTrustHint(out)
 	}
-	if claudeRouteDeclined {
+	if claudeRouteDeclined && !claudeRoutedTo(opts.HomeDir, port) {
 		printProxyRoutingHint(out, port)
 	}
 	home := opts.HomeDir
@@ -581,18 +599,33 @@ func runInteractiveInit(out io.Writer, in io.Reader, opts interactiveInitOptions
 	return nil
 }
 
-// printCodexTrustHint reminds the user that codex hooks need one-time
-// per-hook trust approval inside codex itself (its security boundary
-// — observer can read trust state but never sets it).
+// printCodexTrustHint tells the user how Codex's per-hook trust was
+// handled: since the live check 2026-10-20 the codex hook writer records
+// Codex's trust for Observer's own entries (printHookResult names them, or
+// says which could not be recorded); /hooks remains the place to review or
+// revoke it.
 func printCodexTrustHint(out io.Writer) {
 	fmt.Fprintln(out)
-	fmt.Fprintln(out, "next: codex requires per-hook trust approval (security feature).")
+	fmt.Fprintln(out, "note: codex runs a hook only once it is trusted (security feature).")
 	fmt.Fprintln(out, codexTrustLine())
-	fmt.Fprintln(out, "  one-time setup; trust persists in ~/.codex/config.toml [hooks.state].")
+	fmt.Fprintln(out, "  review or revoke in codex /hooks; `observer doctor` reports any entry codex will not run.")
 }
 
-// codexTrustLine is the /hooks instruction with the number of entries the
-// codex writer registers (U8: it said 6 after the writer grew to 9).
+// codexTrustLine is the trust line with the number of entries the codex
+// writer registers (U8: it said 6 after the writer grew to 9).
 func codexTrustLine() string {
-	return fmt.Sprintf("  open codex once and run /hooks to mark all %d Observer entries trusted.", len(hook.CodexHookEvents()))
+	return fmt.Sprintf("  observer recorded codex's trust for its own %d hook entries in ~/.codex/config.toml [hooks.state].", len(hook.CodexHookEvents()))
+}
+
+// interactiveHookOptions are the hook registration options of the
+// interactive checklist. Selected stays nil: the checklist holds no
+// component state, so its writers leave the opt-in events (the security
+// feedback's) exactly as `observer start` left them (hook.Options.Selected).
+func interactiveHookOptions(opts interactiveInitOptions, dryRun bool) hook.Options {
+	return hook.Options{
+		WindowsPATH: hook.PersistentWindowsPATH,
+		BinaryPath:  registrationCommand(opts.BinaryPath), DryRun: dryRun,
+		WSLTwinBinaryPath: registrationWSLTwinBinary(opts.BinaryPath),
+		ConfigPath:        registrationConfigArg(opts.ConfigPath, opts.HomeDir), HomeDir: opts.HomeDir,
+	}
 }

@@ -3,6 +3,8 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -69,8 +71,15 @@ func TestCreateFreshTranslatesForeignProjectRoot(t *testing.T) {
 
 	// Pin the exact transform CreateFresh applies to a Windows drive root.
 	const winRoot = `C:\Users\u\proj`
-	if got := crossmount.TranslateForeignPath(winRoot); got != "/mnt/c/Users/u/proj" {
-		t.Fatalf("transform pin: TranslateForeignPath(%q) = %q, want /mnt/c/Users/u/proj", winRoot, got)
+	// On a Windows daemon a Windows path is its own and is left alone (B4,
+	// Windows 11 Pro run 2026-10-24; this test updated in the 2026-10-25
+	// rerun, D5 group 9).
+	wantTranslated := "/mnt/c/Users/u/proj"
+	if runtime.GOOS == "windows" {
+		wantTranslated = winRoot
+	}
+	if got := crossmount.TranslateForeignPath(winRoot); got != wantTranslated {
+		t.Fatalf("transform pin: TranslateForeignPath(%q) = %q, want %s", winRoot, got, wantTranslated)
 	}
 
 	// CreateFresh feeds the TRANSLATED path to termsvc; here it is neither
@@ -427,7 +436,12 @@ func TestCreateFreshShellRequest(t *testing.T) {
 			// authorization does not need the AI-tool fresh-launch gate.
 		},
 	})
-	a := &launchManagerAdapter{svc: svc}
+	// A plain shell is exempt from the budget rows and never loads the
+	// daemon's config or database (audit follow-up F4).
+	a := &launchManagerAdapter{svc: svc, budgetState: func(context.Context, string) (config.Config, *sql.DB, func(), error) {
+		t.Error("a plain shell launch loaded the daemon's config and database")
+		return config.Config{}, nil, nil, errors.New("not for a shell")
+	}}
 
 	if _, err := a.CreateFresh(dashapi.FreshLaunchSpec{
 		Tool:  termsvc.ShellTool,

@@ -54,14 +54,56 @@ import (
 // Named with the "cursor.hooks" substring so `observer doctor cursor`
 // scopes to it (Report.Filter matches on Name).
 func checkCursorHooks(homeDir, homeOverride string) Check {
+	return checkCursorHooksWith(homeDir, homeOverride, hook.ReadManagedHooks("cursor"))
+}
+
+// checkCursorHooksWith is checkCursorHooks with the node's enterprise
+// hooks.json (IDE-5) passed in: an event a trusted enterprise file already
+// runs Observer's hook for is covered, since Cursor merges the layers and
+// the registrar stands its per-node entry down for it.
+func checkCursorHooksWith(homeDir, homeOverride string, enterprise hook.ManagedHooks) Check {
 	const name = "cursor.hooks"
 
 	files := cursorHooksFiles(homeDir, homeOverride)
-	if len(files) == 0 {
+	entCov := enterprise.Coverage("cursor", hook.CursorEvents())
+	if len(files) == 0 && !enterprise.Found {
 		return Check{Name: name, Status: StatusOK, Message: "cursor not installed"}
 	}
 
 	var details []string
+	if enterprise.Found {
+		switch {
+		case enterprise.Untrusted != "":
+			details = append(details, fmt.Sprintf("%s (enterprise): not relied on: %s", enterprise.Source, enterprise.Untrusted))
+		default:
+			details = append(details, fmt.Sprintf("%s (enterprise): %d/%d events carry Observer's hook", enterprise.Source,
+				len(entCov.Covered), len(hook.CursorEvents())))
+		}
+	}
+	entCovered := map[string]bool{}
+	for _, ev := range entCov.Covered {
+		entCovered[ev] = true
+	}
+	for i := range files {
+		var left []string
+		for _, ev := range files[i].missingEvents {
+			if !entCovered[ev] {
+				left = append(left, ev)
+			}
+		}
+		files[i].missingEvents = left
+	}
+	if len(files) == 0 && len(entCov.Missing) > 0 {
+		if len(entCov.Covered) == 0 {
+			details = append(details, "no user hooks.json, and the enterprise hooks.json carries no Observer hook Observer can rely on")
+		} else {
+			details = append(details, "enterprise hooks.json is missing "+strings.Join(entCov.Missing, ", ")+" and no user hooks.json registers them")
+		}
+		return Check{
+			Name: name, Status: StatusWarn, Details: details,
+			Message: "some Cursor hook events have no observer entry - run `observer init --cursor` to register them",
+		}
+	}
 	var droppedFrom []string
 	var incomplete []string
 	for _, f := range files {
@@ -106,6 +148,30 @@ func checkCursorHooks(homeDir, homeOverride string) Check {
 				strings.Join(droppedFrom, ", "),
 			),
 			Details: details,
+		}
+	}
+
+	// IDE-5 follow-up: Cursor merges the layers, so an event the trusted
+	// enterprise file runs Observer's hook for AND a user file still
+	// registers fires twice. The registrar removes Observer's per-node copy
+	// on its next pass.
+	var dup []string
+	for _, f := range files {
+		for _, ev := range entCov.Covered {
+			if f.canonicalEvents[ev] {
+				dup = append(dup, fmt.Sprintf("%s (%s): %s", f.path, f.origin, ev))
+			}
+		}
+	}
+	if len(dup) > 0 {
+		details = append(details, "duplicates of the enterprise file: "+strings.Join(dup, "; "))
+		return Check{
+			Name:   name,
+			Status: StatusWarn,
+			Message: "Cursor runs Observer's hook twice for events the enterprise hooks.json already carries - run " +
+				remedy.Quote(remedy.Of(remedy.InitTool, "cursor")) + " to remove Observer's per-node copies",
+			Remediations: []remedy.Remediation{remedy.Of(remedy.InitTool, "cursor")},
+			Details:      details,
 		}
 	}
 
@@ -178,6 +244,11 @@ func CursorFinishHooksWiring(homeOverride string) cursorusage.HookWiring {
 		if h, err := os.UserHomeDir(); err == nil {
 			homeDir = h
 		}
+	}
+	// An enterprise hooks.json that runs every finish event is wiring too
+	// (IDE-5): the per-node registrar stands those events down.
+	if hook.ReadManagedHooks("cursor").Coverage("cursor", cursorusage.FinishHookEvents).Complete() {
+		return cursorusage.HookWiringComplete
 	}
 	return cursorFinishHooksWiring(cursorHooksFiles(homeDir, homeOverride))
 }

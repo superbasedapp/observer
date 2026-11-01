@@ -65,6 +65,14 @@ func TestNewMutationRoutesRequireConfirmToken(t *testing.T) {
 		{http.MethodPost, "/api/guard/mcp/reputation", `{"package":"left-pad"}`},
 		// T-530: the notification bell's read / dismiss write.
 		{http.MethodPost, "/api/notifications/state", `{"ids":["x"],"action":"read"}`},
+		// T-922: the first-run view's seen write.
+		{http.MethodPost, "/api/firstrun/seen", `{"seen":true}`},
+		// T-854: every messages write carries the token.
+		{http.MethodPost, "/api/messages", `{"thread_id":"t1","body":"x"}`},
+		{http.MethodPost, "/api/messages/threads/t1/read", ""},
+		{http.MethodPost, "/api/messages/7/ack", ""},
+		{http.MethodPost, "/api/messages/outbox/c1/retry", ""},
+		{http.MethodPost, "/api/messages/outbox/c1/discard", ""},
 		// T-537: the exporter wiring step, preview and write alike.
 		{http.MethodPost, "/api/setup/telemetry", `{"tool":"qwen-code","dry_run":true}`},
 		{http.MethodPost, "/api/setup/telemetry", `{"tool":"qwen-code","undo":true,"dry_run":true}`},

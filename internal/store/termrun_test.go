@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -1133,5 +1134,51 @@ func TestListLiveUncorrelatedRunsChronologicalOrdering(t *testing.T) {
 	}
 	if len(limited) != 2 || limited[0].RunID != "run-late" || limited[1].RunID != "run-mid" {
 		t.Errorf("limit=2 = %+v, want [run-late run-mid]", limited)
+	}
+}
+
+// TestEndTerminalRunOwnedOutlivesADaemonStop (P-074, lane SHR-FOLLOWUPS): a
+// sandboxed CLI run that keeps running across a graceful daemon stop is
+// swept to daemon_shutdown; when its own process then records the exit, the
+// row says child_exit with the real exit code. A reason the daemon stamped
+// for a real cause (an org floor) is kept, and a dashboard run's own exit
+// path (EndTerminalRun) still keeps daemon_shutdown.
+func TestEndTerminalRunOwnedOutlivesADaemonStop(t *testing.T) {
+	t.Parallel()
+	st, ctx := openTermRunTestStore(t)
+	base := time.Date(2026, 10, 22, 10, 0, 0, 0, time.UTC)
+	for _, id := range []string{"cli", "floor", "dash"} {
+		if err := st.InsertTerminalRun(ctx, TerminalRun{RunID: id, Tool: "claude-code", Kind: "fresh", LaunchedAt: base}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := st.StampTerminalRunEndReason(ctx, "floor", EndReasonOrgFloorHooksDrifted); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.StampLiveNonAttachRunsShutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.EndTerminalRunOwned(ctx, "cli", base.Add(time.Hour), 3, EndReasonChildExit); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.EndTerminalRunOwned(ctx, "floor", base.Add(time.Hour), 1, EndReasonChildExit); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.EndTerminalRun(ctx, "dash", base.Add(time.Minute), 0, EndReasonChildExit); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"cli": EndReasonChildExit, "floor": EndReasonOrgFloorHooksDrifted, "dash": EndReasonDaemonShutdown}
+	for id, reason := range want {
+		var got string
+		var code sql.NullInt64
+		if err := st.db.QueryRowContext(ctx, `SELECT end_reason, exit_code FROM terminal_run WHERE run_id = ?`, id).Scan(&got, &code); err != nil {
+			t.Fatal(err)
+		}
+		if got != reason {
+			t.Errorf("%s: end_reason %q, want %q", id, got, reason)
+		}
+		if id == "cli" && (!code.Valid || code.Int64 != 3) {
+			t.Errorf("cli: exit code %v, want 3", code)
+		}
 	}
 }

@@ -147,8 +147,20 @@ func (s *Service) inventoryFiles(ctx context.Context, tool string, sc inventoryS
 		if row, ok := fileRow(f.FileID); !ok || row.WriteNeeds == agentconfig.PrivNever {
 			continue
 		}
-		rel, err := filepath.Rel(base, f.Path)
-		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		var relID string
+		if sc.project == "" && f.relocatedID != "" {
+			// A file a relocation variable moved keeps the catalogue's
+			// home spelling as its id (FU-142): the same logical file,
+			// and no local path on the row.
+			relID = f.relocatedID
+		} else {
+			rel, err := filepath.Rel(base, f.Path)
+			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				continue
+			}
+			relID = prefix + filepath.ToSlash(rel)
+		}
+		if sc.project != "" && projectLinkEscapes(f.Path, sc.project) {
 			continue
 		}
 		b, present, err := s.readFile(f.Path)
@@ -158,7 +170,7 @@ func (s *Service) inventoryFiles(ctx context.Context, tool string, sc inventoryS
 		text, secret := s.ScrubOrgText(string(b))
 		row := orgcontract.AgentConfigStateRow{
 			Tool: tool, Setting: orgcontract.AgentConfigInventoryKindSetting(tool, string(f.Kind)),
-			FileID: orgcontract.AgentConfigInventoryFileID(tool, string(f.Kind), prefix+filepath.ToSlash(rel)),
+			FileID: orgcontract.AgentConfigInventoryFileID(tool, string(f.Kind), relID),
 			Scope:  string(f.Scope), ProjectHash: sc.hash, State: orgcontract.AgentConfigInventoryState,
 			ObservedHash: agentconfig.ValueHash(text), ObservedAt: now,
 		}

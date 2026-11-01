@@ -126,7 +126,7 @@ func TestCheckCodexProviderRoute(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			c := checkCodexProviderRoute(home, reqPath)
+			c := checkCodexProviderRoute(home, nil, reqPath)
 			if c.Name != codexRouteCheckName {
 				t.Errorf("Name = %q", c.Name)
 			}

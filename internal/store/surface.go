@@ -169,6 +169,37 @@ type SurfaceCount struct {
 	CostUSD     float64
 }
 
+// LoadSurfaceSessionCounts returns, for one tool, how many sessions each
+// (surface, surface_host) pair holds: a COUNT-only GROUP BY on the indexed
+// sessions.tool column, with no token join (the observed-surface route proof,
+// surface-gap AW-48, needs counts, not spend). All time on purpose: a surface
+// the node ever used keeps counting against the tool-wide route proof, the
+// conservative direction; a window would let an old bypass surface stop
+// counting. CostUSD is left zero. Read-only; node-local columns.
+func (s *Store) LoadSurfaceSessionCounts(ctx context.Context, tool string) ([]SurfaceCount, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT COALESCE(surface, ''), COALESCE(surface_host, ''), COUNT(*)
+	        FROM sessions
+	       WHERE tool = ?
+	       GROUP BY COALESCE(surface, ''), COALESCE(surface_host, '')
+	       ORDER BY COALESCE(surface, ''), COALESCE(surface_host, '')`, tool)
+	if err != nil {
+		return nil, fmt.Errorf("store.LoadSurfaceSessionCounts: %w", err)
+	}
+	defer rows.Close()
+	var out []SurfaceCount
+	for rows.Next() {
+		c := SurfaceCount{Tool: tool}
+		if err := rows.Scan(&c.Surface, &c.SurfaceHost, &c.Sessions); err != nil {
+			return nil, fmt.Errorf("store.LoadSurfaceSessionCounts: scan: %w", err)
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store.LoadSurfaceSessionCounts: rows: %w", err)
+	}
+	return out, nil
+}
+
 // LoadSurfaceCounts returns the per-(tool, surface, host) session +
 // spend rollup for the sessions whose started_at falls at/after since
 // (RFC3339; "" = all time). Spend is the deduped-by-nothing SUM of

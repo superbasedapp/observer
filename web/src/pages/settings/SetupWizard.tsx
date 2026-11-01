@@ -3,7 +3,7 @@ import type { CSSProperties, RefObject } from "react";
 import clsx from "clsx";
 import { Link } from "react-router-dom";
 import { Button, ConfirmButton, Icon } from "@/components/primitives";
-import { Obs } from "@/components/Obs";
+import { ObsLanding } from "@shared/primitives/ObsFlight";
 import { useApi } from "@/lib/useApi";
 import { localConfirmHeaders } from "@/lib/api";
 import { classifyRemoveReply, type RemoveOutcome } from "@/lib/wizardRemove";
@@ -143,7 +143,8 @@ export function SetupWizard({
       <RemovePanel tool={tool} steps={removable} onChanged={onChanged} initialOpen={initialRemoveOpen} />
       {allDone && (
         <div className="flex items-center gap-3 rounded-2 border border-success/30 bg-success-soft px-3 py-2">
-          <Obs state="jump" size={32} />
+          {/* Finish line (D-665..D-669): fly in, land, celebrate twice, rest on idle. */}
+          <ObsLanding size={32} />
           <span className="font-mono text-[11px] font-semibold tracking-[0.08em] text-success">
             ★ SETUP COMPLETE ★
           </span>
@@ -212,8 +213,9 @@ function CodexTrustCard() {
           Hook trust (inside codex)
         </span>
         <span className="basis-full text-[11px] text-fg-3">
-          codex asks you to trust each registered hook event before it runs.
-          Observer can read that state but never sets it.
+          codex runs a registered hook only once it is trusted. Registering
+          Observer&apos;s hooks records that trust for Observer&apos;s own entries;
+          review or revoke it in codex /hooks.
         </span>
       </div>
       <div className="mt-1 font-mono text-[10.5px] text-fg-3">
@@ -226,6 +228,15 @@ function CodexTrustCard() {
               {t.entries && t.entries.length > 0 &&
                 `: ${(t.untrusted_events?.length ?? 0) + (t.missing_events?.length ?? 0)} of ${t.entries.length} Observer events will not run`}
             </span>
+            {t.gate_off && (
+              <p className="mt-1 text-danger" data-testid="codex-trust-gate-off">
+                Codex hooks not trusted: Observer&apos;s Codex guard gate is off. Run the Register
+                hooks step again to record their trust, or approve them in codex /hooks.
+              </p>
+            )}
+            {t.origin && t.origin !== "native" && (
+              <p className="mt-1 text-fg-3">home: {t.origin}</p>
+            )}
             {t.instruction && (
               <p className="mt-1 whitespace-pre-wrap text-fg-2">
                 {t.instruction}
@@ -233,8 +244,8 @@ function CodexTrustCard() {
             )}
             {(t.status === "needs_trust" || t.status === "config_missing") && (
               <ol className="mt-1 list-decimal pl-4 text-fg-2" data-testid="codex-trust-steps">
-                <li>Run `codex` in any terminal.</li>
-                <li>Type /hooks and trust (re-trust, or turn back on) every entry whose command runs `observer hook codex`.</li>
+                <li>Run the Register hooks step above: it re-registers Observer&apos;s codex hooks and records their trust.</li>
+                <li>Or run `codex`, type /hooks and trust every entry whose command runs `observer hook codex`. An entry switched off there stays off until you turn it back on.</li>
                 <li>Come back here: the list below updates on the next load.</li>
               </ol>
             )}
@@ -261,17 +272,29 @@ function CodexTrustCard() {
             changed since you trusted it reads as trusted here.
           </p>
         )}
+        {t.other_homes && t.other_homes.length > 0 && (
+          <ul className="mt-2 text-fg-3" data-testid="codex-trust-other-homes">
+            {t.other_homes.map((o) => (
+              <li key={o.origin ?? o.hooks_file}>
+                {o.origin ?? "other home"}: {o.status.replace(/_/g, " ")}
+                {o.gate_off && " (guard gate off)"}
+                {o.instruction && ` - ${o.instruction}`}
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
     </div>
   );
 }
 
-// Per-event state labels for the codex trust card. Observer never trusts
-// a hook for you (decision D-148); each label says what to do in codex.
+// Per-event state labels for the codex trust card. Registering hooks
+// records trust for Observer's own entries (live check 2026-10-20); a
+// switched-off entry is only ever turned back on in codex /hooks.
 const CODEX_TRUST_STATE_LABEL: Record<CodexHookTrustEntry["state"], string> = {
   trusted: "trusted",
-  untrusted: "not trusted yet",
-  modified: "changed since trusted, re-trust",
+  untrusted: "not trusted yet: register hooks again",
+  modified: "changed since trusted: register hooks again",
   disabled: "switched off in /hooks",
   missing: "not registered yet: run the Hooks step or restart the daemon",
 };
@@ -389,6 +412,11 @@ function WizardStep({
           </Button>
         )}
       </div>
+      {spec.plan.tradeoff && !state.done && (
+        <p className="mt-1.5 text-[10.5px] leading-snug text-warn">
+          Trade-off: {spec.plan.tradeoff}
+        </p>
+      )}
       {spec.note && !state.done && (
         <p className="mt-1.5 text-[10.5px] leading-snug text-fg-3">
           {spec.note}

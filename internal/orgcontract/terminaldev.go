@@ -70,14 +70,51 @@ type TerminalRunRow struct {
 	// exit code, so it is not itself the signal — Exited is).
 	ExitCode int64 `json:"exit_code,omitempty"`
 	// EndReason mirrors terminal_run.end_reason (migration 072): ""
-	// (still live / unknown), "child_exit", "daemon_shutdown", or
-	// "resumed".
+	// (still live / unknown) or one of internal/termrun/endreason.go's
+	// vocabulary ("child_exit", "console_closed", "dashboard_stop",
+	// "stopped_outside", "process_gone", "daemon_shutdown", "resumed", the
+	// org floor's reason).
 	EndReason string `json:"end_reason,omitempty"`
 
 	// CommandCount is COUNT(*) over terminal_commands for this run — the
 	// same subquery internal/store/termrun.go::ListTerminalRuns already
 	// computes for the node's own terminal history view.
 	CommandCount int64 `json:"command_count"`
+
+	// The G19 isolation evidence (sandbox plan v2 section 8.4, node
+	// migration 179, server 240 / PostgreSQL 0107). Closed enums from
+	// internal/sandboxvocab; empty means not recorded (an old agent omits
+	// them, an old server ignores them). They ride on this row, so they ship
+	// exactly when it does (shipsRawContent()); nothing per-run is added
+	// under terminal_detail. This supersedes the "no sandboxed flag" note
+	// above: the node now records what each launch built.
+	IsolationClass string `json:"isolation_class,omitempty"`
+	// Stack is the backend ids, outermost first, comma separated.
+	Stack        string `json:"stack,omitempty"`
+	EgressTier   string `json:"egress_tier,omitempty"`
+	CaptureLevel string `json:"capture_level,omitempty"`
+	CaptureRule  string `json:"capture_rule,omitempty"`
+	// CaptureOrigin lets an org tell rows a box could have written
+	// (sandboxed, remote_sandbox) from rows the host attested (local).
+	CaptureOrigin      string `json:"capture_origin,omitempty"`
+	CaptureDegraded    bool   `json:"capture_degraded,omitempty"`
+	NativeSandboxState string `json:"native_sandbox_state,omitempty"`
+	Verification       string `json:"verification,omitempty"`
+	KeyCustody         string `json:"key_custody,omitempty"`
+	// EvidenceDigest is the run's execution evidence envelope digest
+	// (internal/execevidence, roadmap F0-13).
+	EvidenceDigest string `json:"evidence_digest,omitempty"`
+	// EvidenceProducer, EvidenceComponent and EvidenceComponentVersion are
+	// the producer inputs the digest was sealed over (node migration 181,
+	// server 242 / PostgreSQL 0109), so the digest can be recomputed from
+	// the row. An old agent omits them; an old server ignores them.
+	EvidenceProducer         string `json:"evidence_producer,omitempty"`
+	EvidenceComponent        string `json:"evidence_component,omitempty"`
+	EvidenceComponentVersion string `json:"evidence_component_version,omitempty"`
+	// EvidenceSeal is the run's signed seal (isolation.seal, execseal.go);
+	// absent unsealed. An old server ignores it; an old agent's row reads
+	// unsealed.
+	EvidenceSeal *ExecEvidenceSeal `json:"evidence_seal,omitempty"`
 }
 
 // TerminalCommandRow is one terminal_commands row (a turn boundary inside a

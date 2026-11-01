@@ -1,0 +1,5 @@
+{"periodStart":"2025-10-01","models":[
+ {"model":"helm-monthly","cap":2000000000,"tokensUsed":500000000,"remaining":1500000000,"periodEnd":"2025-11-01T00:00:00Z"},
+ {"model":"helm-rolling","cap":300000000,"tokensUsed":240000000,"remaining":60000000,"periodEnd":"2025-10-09T12:00:00Z","windowHours":4},
+ {"model":"helm-unlimited","cap":0,"tokensUsed":12}
+]}

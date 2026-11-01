@@ -161,5 +161,13 @@ func isInternalChildEnv(kv string) bool {
 		strings.HasPrefix(kv, envDaemonChild+"=") ||
 		// B9 (U9 finding): the sandbox marker is daemon-set on the child inside
 		// the boundary and must never be spoofable in via inherited/caller env.
-		strings.HasPrefix(kv, sandboxEnvMarker+"=")
+		strings.HasPrefix(kv, sandboxEnvMarker+"=") ||
+		// The source repository a sandboxed clone's trust check honours
+		// accepts for (launch_trust.go) is daemon-set the same way.
+		strings.HasPrefix(kv, repoTrustSourceEnv+"=") ||
+		strings.HasPrefix(kv, repoTrustBenchmarkSourceEnv+"=") ||
+		strings.HasPrefix(kv, repoTrustBenchmarkMarkerEnv+"=") ||
+		// The checked-launch marker names one launch's repository; a child
+		// gets it only from the launch that checked it (launch_trust.go).
+		strings.HasPrefix(kv, repoTrustCheckedEnv+"=")
 }

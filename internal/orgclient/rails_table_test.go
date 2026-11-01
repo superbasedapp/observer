@@ -28,7 +28,7 @@ import (
 func TestRailTablesKeepEveryMergedRail(t *testing.T) {
 	wantPushCycle := []string{
 		orgcontract.RailAgentConfig, orgcontract.RailAnnouncement, orgcontract.RailBudget,
-		orgcontract.RailDisplay, orgcontract.RailGrants, orgcontract.RailPricing, orgcontract.RailRouting,
+		orgcontract.RailDisplay, orgcontract.RailGrants, orgcontract.RailMessages, orgcontract.RailPricing, orgcontract.RailRouting,
 	}
 	var gotPushCycle []string
 	for k := range pushCycleRails {
@@ -38,7 +38,7 @@ func TestRailTablesKeepEveryMergedRail(t *testing.T) {
 
 	wantFetch := []string{
 		orgcontract.RailAgentConfig, orgcontract.RailAnnouncement, orgcontract.RailBudget, orgcontract.RailBundle,
-		orgcontract.RailDisplay, orgcontract.RailGrants, orgcontract.RailPricing, orgcontract.RailRouting,
+		orgcontract.RailDisplay, orgcontract.RailGrants, orgcontract.RailMessages, orgcontract.RailPricing, orgcontract.RailRouting,
 	}
 	var gotFetch []string
 	for _, row := range railFetchers {

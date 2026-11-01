@@ -46,7 +46,16 @@ import (
 // hooksShareCredentialFile reports whether tool (a Registry target, a
 // "-windows" bridge included) writes under the exception. It asks the
 // registry row: a capability, not a tool-name list.
+//
+// A host-home target (claude-code-xcode, codex-xcode, gemini-cli-xcode)
+// writes its base tool's file shape in another home, so it answers for its
+// base tool, as a WSL twin does (lane w8-writers audit item 2); one whose
+// file is the host's own (hostOwnedFile: gemini-cli-xcode) is under the
+// rules whatever the base row declares.
 func hooksShareCredentialFile(tool string) bool {
+	if t, ok := xcodeTargetFor(tool); ok {
+		return t.hostOwnedFile || integration.HooksShareCredentialFile(t.tool)
+	}
 	return integration.HooksShareCredentialFile(tool)
 }
 
@@ -572,7 +581,7 @@ func verifyTOMLHookEdit(body string, before map[string]any, hooks []map[string]a
 // the whole-file hash (recordChecksum) otherwise.
 func (r *Registry) recordHookChecksum(tool, path string) error {
 	if !hooksShareCredentialFile(tool) {
-		return r.recordChecksum(path)
+		return r.recordChecksum(tool, path)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -588,6 +597,9 @@ func (r *Registry) recordHookChecksum(tool, path string) error {
 		entry[hookdigest.KeyDigest] = digest
 		entry["registered"] = time.Now().UTC().Format(time.RFC3339)
 		entry["binary_path"] = r.opts.BinaryPath
+		if tool != "" {
+			entry["tool"] = tool
+		}
 	})
 }
 

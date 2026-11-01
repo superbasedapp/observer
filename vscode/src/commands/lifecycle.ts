@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import type { DaemonManager } from '../daemon';
 import { DashboardPanel } from '../webview/dashboard';
+import { messagesRoute } from '../notifications/decide';
 
 export function registerLifecycle(
   ctx: vscode.ExtensionContext,
@@ -20,6 +21,11 @@ export function registerLifecycle(
     // dashboard's Settings > Components page in the same panel.
     vscode.commands.registerCommand('observer.openComponents', () => {
       DashboardPanel.createOrShow(daemon, '/settings/components');
+    }),
+    // Messages from the organization's admins (T-854): the notification's
+    // Open and the "N from admin" status bar item land on the conversation.
+    vscode.commands.registerCommand('observer.openMessages', (threadId?: unknown) => {
+      DashboardPanel.createOrShow(daemon, messagesRoute(typeof threadId === 'string' ? threadId : undefined));
     }),
   ];
   ctx.subscriptions.push(...disposables);

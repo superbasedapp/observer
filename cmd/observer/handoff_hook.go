@@ -55,7 +55,7 @@ func handoffHookPayload(ctx context.Context, tool, cwd, configPath string) strin
 	if err != nil || !ok || docPath == "" {
 		return ""
 	}
-	body, err := os.ReadFile(docPath)
+	body, err := os.ReadFile(docPath) //nolint:gosec // G703: reads the user's own local file with the user's own rights
 	if err != nil {
 		return ""
 	}

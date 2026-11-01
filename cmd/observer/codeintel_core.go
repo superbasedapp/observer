@@ -33,11 +33,13 @@ func absPath(p string) (string, error) {
 	return filepath.Abs(p)
 }
 
-// resolveProjectRoot maps a directory to its git root (the project
-// identity sessions/turns already carry), falling back to the absolute
-// directory for non-git trees.
+// resolveProjectRoot maps a directory to the top level of its checkout,
+// falling back to the absolute directory for non-git trees. Inside a
+// linked worktree that is the worktree itself (git.FindCheckoutRoot,
+// F0-14): the index is built from the files the agent sees, and the MCP
+// symbol tools are asked about that same directory.
 func resolveProjectRoot(dir string) string {
-	if root, ok := git.FindRoot(dir); ok {
+	if root, ok := git.FindCheckoutRoot(dir); ok {
 		return root
 	}
 	if abs, err := absPath(dir); err == nil {

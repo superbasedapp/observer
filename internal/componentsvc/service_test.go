@@ -352,3 +352,52 @@ func contains(xs []string, x string) bool {
 	}
 	return false
 }
+
+// TestRemovingAModuleRootDeactivatesEveryDependent pins the contract the
+// first-run chooser relies on instead of a `withDependents` helper (lane
+// OPTMOD, sandbox plan v2 section 11.2): a "no" removes only the module
+// root, and the removal cascades to every active component whose requires
+// closure reaches it (an optional module's drivers use Requires, never
+// Bundles), so one "no" leaves the module and every driver inactive. The
+// test walks the whole catalog, so a future module root (security,
+// terminals.sandbox with its drivers) is covered by the same row.
+func TestRemovingAModuleRootDeactivatesEveryDependent(t *testing.T) {
+	s, _, _, _ := newSvc(t, seedConfig)
+	ctx := context.Background()
+	before, err := s.State(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := map[string]bool{}
+	for _, id := range before.ActiveIDs() {
+		active[id] = true
+	}
+	roots := 0
+	for _, c := range components.ForBinary(components.BinaryNode) {
+		if c.Class == components.ClassCore || !active[c.ID] {
+			continue
+		}
+		var deps []string
+		for _, d := range components.ForBinary(components.BinaryNode) {
+			if d.Class != components.ClassCore && active[d.ID] && contains(requiresClosure(d.ID), c.ID) {
+				deps = append(deps, d.ID)
+			}
+		}
+		if len(deps) == 0 {
+			continue
+		}
+		roots++
+		p, err := s.Preview(ctx, Change{Remove: []string{c.ID}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range deps {
+			if !contains(p.Deactivated, d) {
+				t.Errorf("removing %s leaves its dependant %s active: deactivated %v", c.ID, d, p.Deactivated)
+			}
+		}
+	}
+	if roots == 0 {
+		t.Fatal("no active component with dependants; the walk is stale")
+	}
+}

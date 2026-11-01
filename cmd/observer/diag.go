@@ -223,6 +223,12 @@ func newTailCmd() *cobra.Command {
 // once per daemon via db.RunStartupMaintenance, off the readiness path, and
 // as `observer doctor`'s reported `db.integrity` check.
 func loadConfigAndDB(ctx context.Context, configPath string) (config.Config, *sql.DB, func(), error) {
+	// Inside a relayed sandbox box the observer directory is a tmpfs: a
+	// database opened there would be a fresh empty one, so refuse instead
+	// of answering from it (lane sbx-p2).
+	if inRelayBox() {
+		return config.Config{}, nil, func() {}, errNoDatabaseInBox
+	}
 	cfg, err := config.Load(config.LoadOptions{GlobalPath: configPath})
 	if err != nil {
 		return config.Config{}, nil, func() {}, fmt.Errorf("load config: %w", err)
@@ -230,6 +236,39 @@ func loadConfigAndDB(ctx context.Context, configPath string) (config.Config, *sq
 	if err := os.MkdirAll(filepath.Dir(cfg.Observer.DBPath), 0o755); err != nil {
 		return config.Config{}, nil, func() {}, fmt.Errorf("ensure db dir: %w", err)
 	}
+	return openNodeDB(ctx, cfg, cfg.Observer.DBPath)
+}
+
+// errNoNodeDatabase is loadConfigAndDBNoCreate's answer when the node
+// database file does not exist.
+var errNoNodeDatabase = errors.New("the Observer database does not exist here")
+
+// loadConfigAndDBNoCreate is loadConfigAndDB for a caller that must never
+// create the node database (the launch gate's state load, OSH-R-007): a
+// launcher that cannot see the host's database must not answer from a fresh
+// empty one, which reads as "not enrolled" and so as "no managed budget".
+// When the file does not exist it creates nothing (no directory, no file)
+// and returns the loaded config with errNoNodeDatabase.
+func loadConfigAndDBNoCreate(ctx context.Context, configPath string) (config.Config, *sql.DB, func(), error) {
+	if inRelayBox() {
+		return config.Config{}, nil, func() {}, errNoDatabaseInBox
+	}
+	cfg, err := config.Load(config.LoadOptions{GlobalPath: configPath})
+	if err != nil {
+		return config.Config{}, nil, func() {}, fmt.Errorf("load config: %w", err)
+	}
+	if _, err := os.Stat(cfg.Observer.DBPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return cfg, nil, func() {}, fmt.Errorf("%w (%s)", errNoNodeDatabase, cfg.Observer.DBPath)
+		}
+		return config.Config{}, nil, func() {}, fmt.Errorf("stat db %s: %w", cfg.Observer.DBPath, err)
+	}
+	return openNodeDB(ctx, cfg, cfg.Observer.DBPath)
+}
+
+// openNodeDB opens the node database at path (":memory:" for an in-memory
+// one) with the config's [observer.db] tuning.
+func openNodeDB(ctx context.Context, cfg config.Config, path string) (config.Config, *sql.DB, func(), error) {
 	// T1.4b (2026-08-26 disk/compute remediation plan): thread the
 	// operator-tunable [observer.db] block into every db.Open call made
 	// through this one central opener, instead of only the ones that
@@ -240,14 +279,14 @@ func loadConfigAndDB(ctx context.Context, configPath string) (config.Config, *sq
 	// negative HardHeapLimitMB stays negative through the MB→bytes
 	// multiply, preserving the negative-disables convention.
 	database, err := db.Open(ctx, db.Options{
-		Path:               cfg.Observer.DBPath,
+		Path:               path,
 		HardHeapLimitBytes: int64(cfg.Observer.DB.HardHeapLimitMB) * (1 << 20),
 		TempStore:          cfg.Observer.DB.TempStore,
 		MaxOpenConns:       cfg.Observer.DB.MaxOpenConns,
 		ConnMaxIdleTime:    time.Duration(cfg.Observer.DB.ConnMaxIdleSeconds) * time.Second,
 	})
 	if err != nil {
-		return config.Config{}, nil, func() {}, fmt.Errorf("open db %s: %w", cfg.Observer.DBPath, err)
+		return config.Config{}, nil, func() {}, fmt.Errorf("open db %s: %w", path, err)
 	}
 	cleanup := func() { _ = database.Close() }
 	return cfg, database, cleanup, nil

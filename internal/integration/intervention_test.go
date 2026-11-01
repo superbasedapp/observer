@@ -9,9 +9,12 @@ import (
 func TestInterventionSurfacesCoverRegistry(t *testing.T) {
 	t.Parallel()
 
+	// No literal row count: the loop below is the structural check (every
+	// registry row has an intervention declaration), and the row total is
+	// pinned by docs/adapter-parity.md's generated summary.
 	tools := Tools()
-	if len(tools) != 45 {
-		t.Fatalf("Tools() = %d, want 45; update the intervention declarations for every new registry row", len(tools))
+	if len(tools) == 0 {
+		t.Fatal("Tools() is empty")
 	}
 	seen := make(map[string]bool)
 	for _, surface := range AllInterventionSurfaces() {

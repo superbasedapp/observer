@@ -74,17 +74,33 @@ var guiHosts = map[string]GUILaunchSpec{
 				"unaffected - inventory §4.1/§4.2. Env inheritance into a GUI-launched VS Code is NOT " +
 				"live-verified.",
 		},
+		// The second line joined 2026-10-28 (surface-gap lane w8-registry,
+		// docs/audits/vendor-surface-inventory-2026-10-25.md sections 3.3,
+		// 3.7, 3.8): extensions whose existence is vendor-grounded. Goose
+		// (block.vscode-goose) and Poolside Assistant are listed because the
+		// extension exists; whether each one's sessions reach the adapter's
+		// store is a grounding run each (integration.CodingSurfaces carries
+		// the per-surface state). The CLI-first tools with a VS Code
+		// extension but no `observer` launcher (Autohand, Dirac, Kimchi,
+		// Cortex Code) are deliberately NOT listed: Hosts also decides the
+		// New Terminal picker's "runs inside VS Code" note (unlaunchable.go),
+		// which would misdescribe a CLI; their extensions live in
+		// CodingSurfaces only.
+		// Antigravity: the Antigravity for VS Code extension writes the same
+		// ~/.gemini/antigravity/brain transcripts and runs hooks.json
+		// (live LC15 / LCX-5, 2026-10-26).
 		Hosts: []string{
 			"claude-code", "codex", "cline", "kilo-code", "kilo-code-cli", "copilot",
 			"gemini-cli", "qwen-code", "kimi-code", "mistral-code", "droid", "opencode",
 			"command-code",
+			"goose", "poolside", "antigravity",
 		},
 		Grounded: true,
 		Note: "Windows layout grounded on this box 2026-09-03: " +
 			"%LOCALAPPDATA%\\Programs\\Microsoft VS Code\\Code.exe (+ bin\\code, bin\\code.cmd). macOS " +
 			"bundle \"Visual Studio Code.app\" grounded from the Homebrew cask `visual-studio-code`. " +
-			"Hosts lists the 13 registry adapters whose extensions run inside VS Code (inventory §2.1-§2.13); " +
-			"extensions are never launch rows of their own (plan §0 consequence 3).",
+			"Hosts lists the registry adapters whose extensions run inside VS Code (inventory 2026-09-03 §2.1-§2.13, " +
+			"refreshed 2026-10-25); extensions are never launch rows of their own (plan §0 consequence 3).",
 	},
 
 	// Second-highest leverage (plan §2.2 / inventory §4.1): the JetBrains
@@ -163,6 +179,12 @@ var guiHosts = map[string]GUILaunchSpec{
 			// client_name "JetBrains.IntelliJ IDEA".
 			"junie", "claude-code", "codex", "kimi-code", "qwen-code", "mistral-code",
 			"droid", "grok", "copilot-cli",
+			// Joined 2026-10-28 (lane w8-registry): the ACP agents whose
+			// pointer sid round trip is live-proven (jetbrainshost acpAgents,
+			// 2026-09-04 / 09-05), plus Kilo Code for JetBrains v7
+			// (ai.kilocode.jetbrains, which downloads the pinned Kilo CLI and
+			// shares kilo.jsonc; inventory section 2.4).
+			"cline-cli", "kilo-code-cli", "devin", "opencode", "poolside", "antigravity-cli",
 		},
 		Grounded: true,
 		Note: "Unified IntelliJ IDEA (2025.3+), re-grounded 2026-10-03: winget JetBrains.IntelliJIDEA, " +
@@ -222,5 +244,33 @@ var guiHosts = map[string]GUILaunchSpec{
 			"(Electron - resources\\app.asar + LICENSE.electron.txt; the identifier-shaped data dir " +
 			"%APPDATA%\\com.qoder.app.stable is just its app name, not a Tauri layout), no bin\\ shim. " +
 			"macOS bundle NOT grounded - DarwinApp left empty.",
+	},
+	// Visual Studio 2022 / 2026 (surface-gap S-3, lane w8-registry,
+	// 2026-10-28). Copilot in Visual Studio reads MCP from
+	// %USERPROFILE%\.mcp.json and <SOLUTIONDIR>\.mcp.json and runs no hooks;
+	// Poolside Assistant also ships for it. UNVERIFIED as a launch row: the
+	// install roots are vendor-documented but the IDE executable's place
+	// under them is not grounded from a fetched page or a live install, so
+	// the row is listed for the record only.
+	"visual-studio": {
+		ID:      "visual-studio",
+		Label:   "Visual Studio",
+		Surface: "ide",
+		Wrap: WrapSpec{
+			Kind: WrapNone,
+			Reason: "no grounded routing lever: Copilot in Visual Studio talks to GitHub's service and reads only MCP " +
+				"files (learn.microsoft.com/visualstudio/ide/mcp-servers); its bring-your-own-model URL (18.10 " +
+				"Insiders) is a UI setting no writer reaches.",
+		},
+		Hosts:    []string{"copilot", "poolside"},
+		Grounded: false,
+		Note: "UNVERIFIED (2026-10-28): learn.microsoft.com documents the install paths " +
+			"C:\\Program Files\\Microsoft Visual Studio\\18\\<Edition> (Visual Studio 2026) and " +
+			"...\\2022\\<Edition>, and the winget ids Microsoft.VisualStudio.Community and " +
+			"Microsoft.VisualStudio.2022.Community (use-command-line-parameters-to-install-visual-studio); " +
+			"devenv.exe's directory under those roots was not grounded, so Binary is empty and the row is " +
+			"never launchable. Hosts: Copilot (no capture of its Visual Studio chat history yet) and " +
+			"Poolside Assistant for Visual Studio (store unverified); both are grounding runs " +
+			"(integration.CodingSurfaces).",
 	},
 }

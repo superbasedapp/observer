@@ -356,7 +356,7 @@ func TestDiscardUsesCanonicalCandidateTargets(t *testing.T) {
 
 func TestJudgeMergeRejectsUnrelatedCommitAndRollsBack(t *testing.T) {
 	repo := initArenaRepo(t)
-	r := startTestRunner(t, repo)
+	r := allowSkip(startTestRunner(t, repo)) // judge_merge runs only in the skip lane (audit F3)
 	ctx := context.Background()
 	prep, err := r.StartRun(ctx, validRunSpec("ancestry", repo))
 	if err != nil {

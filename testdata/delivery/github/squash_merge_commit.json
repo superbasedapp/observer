@@ -1,0 +1,14 @@
+{
+ "sha": "fb20d9af8b89e2507466702d6844f9e984012fb8",
+ "parents": [
+  {
+   "sha": "169ab67e722b5330b22c77f8deaea1622b554ce2"
+  }
+ ],
+ "commit": {
+  "message": "Make error overlay editor actions easier to discover (#100206)",
+  "committer": {
+   "date": "2026-10-15T15:34:58Z"
+  }
+ }
+}

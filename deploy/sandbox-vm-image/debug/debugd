@@ -1,0 +1,70 @@
+#!/bin/bash
+# debugd: the debug image set's root-side hook watcher (R-016, never
+# shipped). It waits for the guest init to mount the /tmp tmpfs, creates
+# the trigger directory 1777, and runs a fixed hook when the agent creates
+# a trigger file named after it. A trigger's content is never read. Each
+# hook's output lands at <name>.out beside the trigger, and the trigger is
+# removed.
+#
+#   kill-guest-helper  SIGKILL the guest helper (the sandbox-vm-init serve
+#                      child), for LIN-5: the run must end and offer native
+#                      resume.
+#   remount-root       run remount-root as guest root, for LIN-8: every
+#                      read-only root must stay read-only.
+#
+# debugd runs as root and the agent can write the trigger directory, so it
+# never follows a path the agent could have planted (LEFT2 audit S6):
+#   - the trigger directory and a root-only work directory are made with
+#     mkdir, never mkdir -p, and nothing is chmodded afterwards: a path that
+#     already exists (a directory or a link the agent planted first) makes
+#     debugd refuse to start;
+#   - a hook's output is written in the work directory and renamed over
+#     <name>.out (mv -T, a rename on the same tmpfs), so a link the agent
+#     planted at <name>.out is replaced, never written through.
+# The OBSERVER_DEBUG_* variables are test seams; the guest init sets none.
+set -u
+dir=${OBSERVER_DEBUG_DIR:-/tmp/observer-debug}
+work=${OBSERVER_DEBUG_WORK:-/tmp/.observer-debug-work}
+hooks=${OBSERVER_DEBUG_HOOKS:-/usr/libexec/observer-debug}
+if [ -z "${OBSERVER_DEBUG_NO_WAIT:-}" ]; then
+	for _ in $(seq 1 600); do
+		grep -q ' /tmp tmpfs ' /proc/mounts 2>/dev/null && break
+		sleep 0.1
+	done
+fi
+(umask 0 && mkdir -m 1777 -- "$dir") || {
+	echo "debugd: $dir already exists or cannot be made; refusing to start" >&2
+	exit 1
+}
+(umask 077 && mkdir -m 0700 -- "$work") || {
+	echo "debugd: $work already exists or cannot be made; refusing to start" >&2
+	exit 1
+}
+
+# run_hook NAME CMD...: CMD's output, written in the work directory and
+# renamed over $dir/NAME.out.
+run_hook() {
+	local name=$1 tmp
+	shift
+	tmp=$(mktemp "$work/$name.XXXXXX") || return 0
+	"$@" >"$tmp" 2>&1
+	chmod 0644 -- "$tmp"
+	mv -fT -- "$tmp" "$dir/$name.out" || rm -f -- "$tmp"
+}
+
+kill_guest_helper() {
+	echo "debugd: kill-guest-helper at $(date -u +%FT%TZ)"
+	pkill -KILL -f -- 'sandbox-vm-init --serve' && echo "sent SIGKILL to the guest helper" || echo "no guest helper found"
+}
+
+while :; do
+	if [ -e "$dir/kill-guest-helper" ]; then
+		rm -f -- "$dir/kill-guest-helper"
+		run_hook kill-guest-helper kill_guest_helper
+	fi
+	if [ -e "$dir/remount-root" ]; then
+		rm -f -- "$dir/remount-root"
+		run_hook remount-root "$hooks/remount-root"
+	fi
+	sleep 0.2
+done

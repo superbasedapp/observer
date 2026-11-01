@@ -82,13 +82,16 @@ func (f *fakeGuidanceSeams) seams() guidanceSeams {
 	return guidanceSeams{
 		Roots: func(context.Context) ([]string, error) { return f.roots, f.rootsErr },
 		Exists: func(root string) bool {
+			root = filepath.ToSlash(root)
 			return !f.missing[root]
 		},
 		SkipRoot: func(root string) (string, bool) {
+			root = filepath.ToSlash(root)
 			reason, ok := f.skip[root]
 			return reason, ok
 		},
 		Scan: func(ctx context.Context, root string) (guidance.Result, error) {
+			root = filepath.ToSlash(root)
 			f.scanned = append(f.scanned, root)
 			// Record the budget this pass granted (the ctx deadline's remaining
 			// time), so the adaptive growth is observable without any real
@@ -124,6 +127,7 @@ func (f *fakeGuidanceSeams) seams() guidanceSeams {
 			return guidance.Result{Files: f.files[root]}, nil
 		},
 		Persist: func(_ context.Context, root string, files []guidance.File, at time.Time) (store.GuidanceScanSummary, error) {
+			root = filepath.ToSlash(root)
 			f.persisted = append(f.persisted, root)
 			f.at = at
 			f.stampedAt[root] = at
@@ -265,7 +269,7 @@ func TestGuidanceScanPass(t *testing.T) {
 			if tc.wantRowWithErr != "" {
 				var found bool
 				for _, r := range res.Roots {
-					if r.Root == tc.wantRowWithErr && r.Err != "" {
+					if filepath.ToSlash(r.Root) == tc.wantRowWithErr && r.Err != "" {
 						found = true
 					}
 				}
@@ -344,7 +348,7 @@ func TestGuidanceScanPassPersistsAroundAHangingRoot(t *testing.T) {
 	}
 	rows := map[string]guidanceRootResult{}
 	for _, r := range res.Roots {
-		rows[r.Root] = r
+		rows[filepath.ToSlash(r.Root)] = r
 	}
 	slow := rows["/slow"]
 	if !slow.Incomplete {
@@ -465,10 +469,10 @@ func TestGuidanceScanPassStreamsEachRoot(t *testing.T) {
 	seams.OnRoot = func(r guidanceRootResult) {
 		// Streaming means the row arrives BEFORE the pass returns, i.e.
 		// as soon as its root has been persisted.
-		if !contains(fake.persisted, r.Root) {
+		if !contains(fake.persisted, filepath.ToSlash(r.Root)) {
 			t.Errorf("row for %s streamed before it was persisted", r.Root)
 		}
-		streamed = append(streamed, r.Root)
+		streamed = append(streamed, filepath.ToSlash(r.Root))
 	}
 	if _, err := guidanceScanPass(context.Background(), seams, nil); err != nil {
 		t.Fatalf("guidanceScanPass: %v", err)
@@ -1125,7 +1129,7 @@ func TestGuidanceRunLoopFirstScanPoll(t *testing.T) {
 	for _, l := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
 		if strings.Contains(l, "guidance first scan") {
 			lines++
-			if !strings.Contains(l, "/new") {
+			if !strings.Contains(l, "/new") && !strings.Contains(l, filepath.Clean("/new")) {
 				t.Errorf("first-scan log line does not name the root: %s", l)
 			}
 		}
@@ -1253,10 +1257,11 @@ func TestGuidanceUpdateOverrunState(t *testing.T) {
 // per-root budget across passes, capped at the ceiling, and an incomplete walk
 // is NEVER persisted regardless of how big its budget grows.
 func TestGuidanceRunLoopAdaptiveBudget(t *testing.T) {
-	// The pass cleans root spellings (filepath.Clean), and the fake consults
-	// its maps with that cleaned spelling — so key everything by the cleaned
-	// form to stay host-independent ("\slow" on Windows, "/slow" on unix).
-	slow := filepath.Clean("/slow")
+	// The pass cleans root spellings (filepath.Clean, "\slow" on Windows),
+	// and the fake turns every root it is handed back into slash form before
+	// it consults or records its maps, so key everything by "/slow" on every
+	// host (Windows 11 Pro rerun 2026-10-25, D5 group 4).
+	slow := "/slow"
 	fake := fakeGuidanceSeams{
 		roots:      []string{slow},
 		incomplete: map[string]bool{slow: true}, // overruns every pass, returns at once
@@ -1321,7 +1326,7 @@ func TestGuidanceRunLoopAdaptiveBudget(t *testing.T) {
 // pass is the base again, not the escalated value.
 func TestGuidanceRunLoopAdaptiveResetsOnPersist(t *testing.T) {
 	// Key by the cleaned root spelling (see TestGuidanceRunLoopAdaptiveBudget).
-	slow := filepath.Clean("/slow")
+	slow := "/slow" // the fake records slash-form roots (see above)
 	fake := fakeGuidanceSeams{
 		roots:        []string{slow},
 		scanOutcomes: map[string][]string{slow: {"incomplete", "incomplete", "ok", "incomplete"}},

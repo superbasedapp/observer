@@ -1,0 +1,1 @@
+{"session_id":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b","transcript_path":"C:\\Users\\dev\\.codex\\sessions\\2026\\10\\23\\rollout-2026-10-23T10-00-00-019a2b3c.jsonl","cwd":"{{CWD}}","hook_event_name":"PreToolUse","model":"gpt-5.5-codex","turn_id":"1","tool_name":"Bash","tool_input":{"command":"{{COMMAND}}"}}

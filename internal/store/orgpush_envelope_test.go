@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/commitlog"
+	"github.com/marmutapp/superbased-observer/internal/delivery"
 	"github.com/marmutapp/superbased-observer/internal/guard/mcpsec"
 	"github.com/marmutapp/superbased-observer/internal/loc"
 	"github.com/marmutapp/superbased-observer/internal/mcprelay/record"
@@ -90,9 +91,14 @@ var envelopeWireFamilies = map[string]string{
 	"ProcessSummaries":     "SelectProcessSummaries; drops trailing (day,tool) buckets",
 	"TerminalSummaries":    "SelectTerminalSummaries; drops trailing (day,tool,kind) buckets",
 	"RemoteAuditSummaries": "SelectRemoteAuditSummaries; drops trailing buckets",
-	"RoutingDetails":       "SelectRoutingDetail; drops trailing (day,model,turn_kind) buckets",
-	"LimitGauges":          "SelectLimitGauges; drops trailing (day,provider) buckets",
-	"MCPRelayActivity":     "SelectMCPRelayActivity; drops trailing (day,vserver,tool_hmac,decision,attestation) buckets",
+	"SandboxPosture":       "SelectSandboxPostureRows via composeSandboxPosture; drops trailing (day, isolation and capture enum) buckets",
+	// The security pillar wire (secorgrows.go composeSecurity, fitSnapshot).
+	"SecurityPosture":  "composeSecurity; one row per push, dropped whole when over budget",
+	"SecurityFindings": "SelectSecurityFindingRows via composeSecurity; drops the oldest-seen findings (last_seen DESC order)",
+	"AIChangeRecords":  "composeSecurity; drops trailing change records (no producer until phase F2)",
+	"RoutingDetails":   "SelectRoutingDetail; drops trailing (day,model,turn_kind) buckets",
+	"LimitGauges":      "SelectLimitGauges; drops trailing (day,provider) buckets",
+	"MCPRelayActivity": "SelectMCPRelayActivity; drops trailing (day,vserver,tool_hmac,decision,attestation) buckets",
 	// Agent Access P11 (c) discovery inventory (fitSnapshot, fingerprint-ordered).
 	"MCPInventory": "SelectMCPInventory; drops trailing configured servers in locator_fingerprint order",
 
@@ -109,6 +115,7 @@ var envelopeWireFamilies = map[string]string{
 	"SessionTaskItems":       "SelectSessionTaskItems; key-ordered per session, drops trailing items",
 	"SessionTaskTransitions": "SelectSessionTaskTransitions; chronological per session, drops trailing transitions",
 	"SessionToolAccounts":    "SelectSessionToolAccounts; chronological per session, drops trailing observations",
+	"SessionHookActivity":    "SelectSessionHookActivity; (session,tool,event) order, drops trailing keys",
 
 	// --- Lines-of-Code aggregates (fitSnapshot; DEFAULT posture, not
 	// shipsRawContent-gated) ---
@@ -119,6 +126,10 @@ var envelopeWireFamilies = map[string]string{
 	// Commit ownership (lane F-PROJ; fitSnapshot; DEFAULT posture, subject
 	// gated on shipsRawContent inside the row).
 	"CommitOwnership": "SelectCommitOwnershipRows; newest committed first, drops the oldest commits",
+	// Delivery (D-689; fitSnapshot; day counts DEFAULT posture, PR rows only
+	// under shipsRawContent).
+	"DeliveryDays": "SelectDeliveryWireRows; newest day first, drops the oldest days",
+	"PullRequests": "SelectDeliveryWireRows; repo-hash then number order, drops trailing PRs",
 
 	// --- wave-3 per-developer enterprise wires (fitRows) ---
 	"AdvisorSuggestions": "advisor provider snapshot; drops trailing suggestions",
@@ -208,6 +219,7 @@ func envelopeShareOptions() ShareOptions {
 		// a node can be in.
 		TaskDetail:        true,
 		ToolAccountDetail: true,
+		HookActivity:      true,
 	}
 }
 
@@ -440,6 +452,12 @@ func seedEveryWireFamily(t *testing.T, s *Store) {
 		if err := s.InsertTerminalRun(ctx, TerminalRun{
 			RunID: runKey, Tool: "claude-code", Kind: "attach",
 			LaunchedAt: now.Add(-time.Duration(i) * time.Minute),
+			// The G19 evidence feeds SandboxPosture; one bucket per run so
+			// the aggregate has rows to truncate.
+			Isolation: TerminalRunIsolation{
+				Class: "process", Stack: []string{"bwrap"}, CaptureLevel: "full",
+				CaptureOrigin: "sandboxed", Verification: fmt.Sprintf("v%d", i),
+			},
 		}); err != nil {
 			t.Fatalf("seed terminal run: %v", err)
 		}
@@ -535,6 +553,30 @@ func seedEveryWireFamily(t *testing.T, s *Store) {
 		t.Fatalf("seed commits: %v", err)
 	}
 
+	// the same commit's landing + the merged PR that holds it → DeliveryDays,
+	// and (raw posture) PullRequests. The title is padded like the subject.
+	var coCommitID int64
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM project_commits WHERE sha = 'co-sha-1'`).Scan(&coCommitID); err != nil {
+		t.Fatalf("seed delivery: commit id: %v", err)
+	}
+	linkID, err := s.CreateProviderLink(ctx, delivery.ProviderLink{Provider: delivery.ProviderGitHub, Host: "github.com", AuthMode: "token"})
+	if err != nil {
+		t.Fatalf("seed delivery: link: %v", err)
+	}
+	prID, err := s.UpsertPullRequest(ctx, delivery.PullRequest{
+		LinkID: linkID, Provider: delivery.ProviderGitHub, Host: "github.com", RepoSlug: "acme/widget", Number: 7,
+		Title: "feat: " + pad[:400], State: delivery.PRMerged, CreatedAt: coBase, MergedAt: coBase.Add(time.Hour), FetchedAt: now,
+	}, []delivery.PRCommit{{SHA: "co-sha-1"}})
+	if err != nil {
+		t.Fatalf("seed delivery: PR: %v", err)
+	}
+	if err := s.UpsertCommitLandings(ctx, []delivery.Landing{{
+		CommitID: coCommitID, Status: delivery.StatusLanded,
+		Kind: delivery.KindMerge, PRID: prID, PRNumber: 7, RuleID: "P1", RuleVersion: delivery.RuleVersion, EvaluatedAt: now,
+	}}); err != nil {
+		t.Fatalf("seed delivery: landing: %v", err)
+	}
+
 	// sessions score columns → SessionQuality (one row per scored session).
 	if _, err := s.db.ExecContext(ctx,
 		`UPDATE sessions SET quality_score = 0.8, redundancy_ratio = 0.1, error_rate = 0.05,
@@ -566,6 +608,18 @@ func seedEveryWireFamily(t *testing.T, s *Store) {
 			sessionID, fmt.Sprintf("task-%d", i), "pending", "in_progress",
 			timestamp(now), int64(i), fmt.Sprintf("evt-task-%d", i)); err != nil {
 			t.Fatalf("seed task_transitions: %v", err)
+		}
+	}
+
+	// hook_activity → SessionHookActivity (one padded event name per row so
+	// the family is budget-hungry like its siblings).
+	for i := 0; i < 20; i++ {
+		if _, err := s.db.ExecContext(ctx,
+			`INSERT INTO hook_activity (tool, event, session_id, count, first_at, last_at, env_classes)
+			 VALUES (?,?,?,?,?,?,?)`,
+			"claude-code", fmt.Sprintf("Event%d-%s", i, pad), sessionID, 1,
+			now.UTC().Format(hookActivityTimeLayout), now.UTC().Format(hookActivityTimeLayout), ""); err != nil {
+			t.Fatalf("seed hook_activity: %v", err)
 		}
 	}
 
@@ -646,6 +700,16 @@ func seedEveryWireFamily(t *testing.T, s *Store) {
 
 	// obs provider seam → the eight Obs* tiers.
 	s.SetObsOrgProviders(stubEnvelopeObsProviders())
+
+	// sandbox capability seam → SandboxPosture (+ the envelope-level
+	// SandboxCapability).
+	s.SetSandboxCapabilityProvider(func() (orgcontract.SandboxCapabilityRow, bool) {
+		return orgcontract.SandboxCapabilityRow{Backends: []string{"bwrap"}, MaxClass: "process", FullCapture: true}, true
+	})
+
+	// security seam → SecurityPosture / SecurityFindings / AIChangeRecords
+	// (secorgrows.go), at the findings level.
+	s.SetSecurityOrgProviders(stubEnvelopeSecurityProviders())
 
 	// Control lanes (agent migration 141): arm tracking for sessions only
 	// (so no seeded update queues a re-send) and queue one tombstone plus one
@@ -907,5 +971,36 @@ func TestSelectUnpushedSince_BudgetedCursorsNeverSkipRows(t *testing.T) {
 		if n != 1 {
 			t.Errorf("%s shipped %d times across the drain, want exactly 1", key, n)
 		}
+	}
+}
+
+// stubEnvelopeSecurityProviders binds the security seam with large rows so
+// each security family is seeded for the budget sentinel.
+func stubEnvelopeSecurityProviders() SecurityOrgProviders {
+	pad := strings.Repeat("a", 200)
+	return SecurityOrgProviders{
+		Level: func(context.Context, ShareOptions) SecurityShare {
+			return SecurityShare{Level: orgcontract.SecurityShareFindings}
+		},
+		Posture: func(_ context.Context, day string, _ SecurityScope) (orgcontract.SecurityPostureRow, bool, error) {
+			return orgcontract.SecurityPostureRow{Day: day, ShareLevel: orgcontract.SecurityShareFindings}, true, nil
+		},
+		Findings: func(context.Context, int, SecurityScope) ([]orgcontract.SecurityFindingRow, error) {
+			var out []orgcontract.SecurityFindingRow
+			for i := 0; i < 400; i++ {
+				out = append(out, orgcontract.SecurityFindingRow{
+					FindingRef: fmt.Sprintf("%032x", i), RuleID: "S-721.aws", Category: "secret", Severity: "high",
+					Status: "open", LastSeen: "2026-10-21T10:00:00Z", EvidenceRedacted: pad, RelPath: "src/" + pad[:100],
+				})
+			}
+			return out, nil
+		},
+		ChangeRecords: func(context.Context, int, SecurityScope) ([]orgcontract.AIChangeRecordRow, error) {
+			var out []orgcontract.AIChangeRecordRow
+			for i := 0; i < 400; i++ {
+				out = append(out, orgcontract.AIChangeRecordRow{CommitIdentityHash: fmt.Sprintf("%064x", i), Paths: []string{"src/" + pad[:100]}})
+			}
+			return out, nil
+		},
 	}
 }

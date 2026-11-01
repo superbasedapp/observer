@@ -146,6 +146,10 @@ linters:
       - internal/orgserver/api/gen
       - internal/orgserver/dashboard/gen
       - internal/orgclient/gen
+      # The in-module copy of a third-party package, kept byte-identical to
+      # its release except the patch its UPSTREAM file records (lane SEC-G5:
+      # internal/thirdparty/actionlint), so it is not linted as our code.
+      - internal/thirdparty
       # v1's default skipped directories (skip-dirs-use-default).
       - third_party$
       - builtin$

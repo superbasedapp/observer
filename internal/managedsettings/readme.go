@@ -75,6 +75,9 @@ func toolReadme(t ToolBundle) string {
 		if a.Note != "" {
 			b.WriteString(a.Note + "\n\n")
 		}
+		if w := ObserverWiring(a.FileID); w != "" {
+			b.WriteString("Observer's own route and hooks: " + w + "\n\n")
+		}
 		oses := make([]string, 0, len(a.Strength))
 		for o := range a.Strength {
 			oses = append(oses, o)

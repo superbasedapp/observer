@@ -1,0 +1,51 @@
+{
+  "config": {
+    "cpus": {"boot_vcpus": 2, "max_vcpus": 2, "topology": null, "kvm_hyperv": false, "max_phys_bits": 46, "affinity": null, "features": {"amx": false}},
+    "memory": {"size": 4294967296, "mergeable": false, "hotplug_method": "Acpi", "hotplug_size": null, "hotplugged_size": null, "shared": true, "hugepages": false, "hugepage_size": null, "prefault": false, "zones": null, "thp": true},
+    "payload": {
+      "firmware": null,
+      "kernel": "/home/u/.observer/sandbox-vm/runs/run-1/img/vmlinuz",
+      "cmdline": "console=ttyS0 reboot=k panic=-1 ro quiet init=/init observer.verity=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef observer.boot=obsboot observer.run=run-1 observer.port=1024",
+      "initramfs": "/home/u/.observer/sandbox-vm/runs/run-1/img/initrd.img"
+    },
+    "rate_limit_groups": null,
+    "disks": [
+      {"path": "/home/u/.observer/sandbox-vm/runs/run-1/img/rootfs.img", "readonly": true, "direct": false, "iommu": false, "num_queues": 1, "queue_size": 128, "vhost_user": false, "vhost_socket": null, "rate_limit_group": null, "rate_limiter_config": null, "id": "rootfs", "disable_io_uring": false, "disable_aio": false, "pci_segment": 0, "serial": null, "queue_affinity": null, "image_type": "Raw"},
+      {"path": "/home/u/.observer/sandbox-vm/runs/run-1/img/rootfs.verity", "readonly": true, "direct": false, "iommu": false, "num_queues": 1, "queue_size": 128, "vhost_user": false, "vhost_socket": null, "rate_limit_group": null, "rate_limiter_config": null, "id": "verity", "disable_io_uring": false, "disable_aio": false, "pci_segment": 0, "serial": null, "queue_affinity": null, "image_type": "Raw"}
+    ],
+    "net": null,
+    "rng": {"src": "/dev/urandom", "iommu": false},
+    "balloon": null,
+    "fs": [
+      {"tag": "obsboot", "socket": "/home/u/.observer/sandbox-vm/runs/run-1/fs-obsboot.sock", "num_queues": 1, "queue_size": 1024, "id": "fs-obsboot", "pci_segment": 0},
+      {"tag": "ws", "socket": "/home/u/.observer/sandbox-vm/runs/run-1/fs-ws.sock", "num_queues": 1, "queue_size": 1024, "id": "fs-ws", "pci_segment": 0}
+    ],
+    "pmem": null,
+    "serial": {"file": "/home/u/.observer/sandbox-vm/runs/run-1/serial.log", "mode": "File", "iommu": false, "socket": null},
+    "console": {"file": null, "mode": "Off", "iommu": false, "socket": null},
+    "devices": null,
+    "user_devices": null,
+    "vdpa": null,
+    "vsock": {"cid": 7, "socket": "/home/u/.observer/sandbox-vm/runs/run-1/vsock.sock", "iommu": false, "id": "vsock0", "pci_segment": 0},
+    "pvpanic": false,
+    "iommu": false,
+    "numa": null,
+    "watchdog": false,
+    "platform": null,
+    "tpm": null,
+    "preserved_fds": null,
+    "landlock_enable": false,
+    "landlock_rules": null
+  },
+  "state": "Running",
+  "memory_actual_size": 4294967296,
+  "device_tree": {
+    "rootfs": {"id": "rootfs", "resources": [], "children": [], "pci_bdf": "0000:00:02.0"},
+    "verity": {"id": "verity", "resources": [], "children": [], "pci_bdf": "0000:00:03.0"},
+    "fs-obsboot": {"id": "fs-obsboot", "resources": [], "children": [], "pci_bdf": "0000:00:04.0"},
+    "fs-ws": {"id": "fs-ws", "resources": [], "children": [], "pci_bdf": "0000:00:05.0"},
+    "vsock0": {"id": "vsock0", "resources": [], "children": [], "pci_bdf": "0000:00:06.0"},
+    "__rng": {"id": "__rng", "resources": [], "children": [], "pci_bdf": "0000:00:07.0"},
+    "__serial": {"id": "__serial", "resources": [], "children": [], "pci_bdf": null}
+  }
+}

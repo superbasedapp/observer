@@ -77,6 +77,11 @@ const (
 	ReasonDowngrade Reason = "downgrade_not_allowed"
 	// ReasonWindow: outside the node's maintenance window.
 	ReasonWindow Reason = "window"
+	// ReasonDeferredLiveSandbox: the apply deferred because sandboxed
+	// terminal runs are live (sandbox plan v2 section 5.5, I10, ledger
+	// SBX-UPD-1). It applies when they finish; `--force` does not override
+	// it, because ending a live sandboxed run needs its owner's consent.
+	ReasonDeferredLiveSandbox Reason = "deferred_live_sandbox"
 	// ReasonNoDiskSpace: state_dir's filesystem cannot hold the archive
 	// (§2.4's 3x rule) plus, when the target advances the schema, the
 	// pre-apply database snapshot. It is a BLOCK, not a failure: an

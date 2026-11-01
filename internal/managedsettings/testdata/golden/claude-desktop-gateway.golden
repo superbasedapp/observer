@@ -1,0 +1,134 @@
+===== cowork/managed-settings.json (file) =====
+{
+  "inferenceCredentialHelper": "/usr/local/bin/org-gateway-key",
+  "inferenceCredentialHelperArgs": [
+    "--profile",
+    "observer"
+  ],
+  "inferenceCredentialHelperWindows": "C:\\Program Files\\Org\\gateway-key.exe",
+  "inferenceCredentialKind": "helper-script",
+  "inferenceGatewayAuthScheme": "x-api-key",
+  "inferenceGatewayBaseUrl": "http://127.0.0.1:8820",
+  "inferenceProvider": "gateway"
+}
+
+===== cowork/managed-settings.mobileconfig (macos_profile) =====
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>PayloadContent</key>
+	<array>
+		<dict>
+			<key>PayloadDescription</key>
+			<string>Observer AI tool policy for Claude Desktop gateway route, version 0 (cowork).</string>
+			<key>PayloadDisplayName</key>
+			<string>Observer: cowork managed settings</string>
+			<key>PayloadIdentifier</key>
+			<string>app.superbased.observer.policy.cowork.managed-policy.com.anthropic.claudefordesktop</string>
+			<key>PayloadOrganization</key>
+			<string>Observer</string>
+			<key>PayloadType</key>
+			<string>com.anthropic.claudefordesktop</string>
+			<key>PayloadUUID</key>
+			<string>A27A160A-325D-5717-BECD-73AC58F38825</string>
+			<key>PayloadVersion</key>
+			<integer>1</integer>
+			<key>inferenceCredentialHelper</key>
+			<string>/usr/local/bin/org-gateway-key</string>
+			<key>inferenceCredentialHelperArgs</key>
+			<string>[&quot;--profile&quot;,&quot;observer&quot;]</string>
+			<key>inferenceCredentialHelperWindows</key>
+			<string>C:\Program Files\Org\gateway-key.exe</string>
+			<key>inferenceCredentialKind</key>
+			<string>helper-script</string>
+			<key>inferenceGatewayAuthScheme</key>
+			<string>x-api-key</string>
+			<key>inferenceGatewayBaseUrl</key>
+			<string>http://127.0.0.1:8820</string>
+			<key>inferenceProvider</key>
+			<string>gateway</string>
+		</dict>
+	</array>
+	<key>PayloadDescription</key>
+	<string>Observer AI tool policy for Claude Desktop gateway route, version 0 (cowork).</string>
+	<key>PayloadDisplayName</key>
+	<string>Observer: cowork managed settings</string>
+	<key>PayloadIdentifier</key>
+	<string>app.superbased.observer.policy.cowork.managed-policy</string>
+	<key>PayloadOrganization</key>
+	<string>Observer</string>
+	<key>PayloadRemovalDisallowed</key>
+	<true/>
+	<key>PayloadScope</key>
+	<string>System</string>
+	<key>PayloadType</key>
+	<string>Configuration</string>
+	<key>PayloadUUID</key>
+	<string>B337A048-6FDC-5AE7-A87B-A7A50A947230</string>
+	<key>PayloadVersion</key>
+	<integer>1</integer>
+</dict>
+</plist>
+
+===== cowork/managed-settings.reg (windows_registry) =====
+Windows Registry Editor Version 5.00<CRLF>
+<CRLF>
+; Observer AI tool policy for Claude Desktop gateway route, version 0 (cowork).<CRLF>
+; Import from an elevated prompt: reg import <file>, or deploy the same values with Group Policy Preferences or Intune.<CRLF>
+<CRLF>
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Claude]<CRLF>
+"inferenceCredentialHelper"="/usr/local/bin/org-gateway-key"<CRLF>
+"inferenceCredentialHelperArgs"="[\"--profile\",\"observer\"]"<CRLF>
+"inferenceCredentialHelperWindows"="C:\\Program Files\\Org\\gateway-key.exe"<CRLF>
+"inferenceCredentialKind"="helper-script"<CRLF>
+"inferenceGatewayAuthScheme"="x-api-key"<CRLF>
+"inferenceGatewayBaseUrl"="http://127.0.0.1:8820"<CRLF>
+"inferenceProvider"="gateway"<CRLF>
+
+===== README.md =====
+# Observer gateway route for Claude Desktop
+
+**Not live-verified (LC2).** Nobody has yet confirmed that Claude Desktop accepts
+`http://127.0.0.1:8820` as `inferenceGatewayBaseUrl` and that the proxy forwards the gateway
+credential upstream. Deploy it to one machine and check that a Code-tab session
+lands `api_turns` rows before a fleet rollout.
+
+The Desktop Code tab ignores `ANTHROPIC_BASE_URL` from every settings file,
+managed ones included: its only route is gateway mode. This policy sets
+`inferenceProvider = gateway`, `inferenceGatewayBaseUrl = http://127.0.0.1:8820`,
+`inferenceGatewayAuthScheme = x-api-key` and `inferenceCredentialKind = helper-script`.
+
+## What it costs
+
+Claude Desktop routes only in gateway mode, which needs a gateway credential (an API key a credential helper prints, not a claude.ai sign-in) and drops Anthropic-hosted cloud environments and Remote Control; skip the route to keep them.
+Use it for an API-key or org-gateway organization; a fleet that signs in to
+claude.ai keeps the direct route.
+
+## The credential
+
+Observer never writes a key into the policy. The Desktop runs the helper you
+deploy and sends what it prints as the gateway credential:
+
+- Linux and macOS: `/usr/local/bin/org-gateway-key`
+- Windows: `C:\Program Files\Org\gateway-key.exe`
+
+Keep the helper administrator-owned: it runs on every launch. The proxy must be
+running on the node; with it down, Desktop inference fails instead of going
+direct.
+
+## Deploy (one channel per machine)
+
+- `cowork/managed-settings.json` (linux, /etc/claude-desktop/managed-settings.json):
+  - sudo install -d -m 0755 -o root -g root "/etc/claude-desktop"
+  - sudo install -m 0644 -o root -g root "managed-settings.json" "/etc/claude-desktop/managed-settings.json"
+  - Fleet: ship the same file with your configuration management (Ansible, Puppet, Chef, Salt) or a package.
+- `cowork/managed-settings.mobileconfig` (darwin, macos_profile):
+  - Upload the .mobileconfig to your MDM (Jamf, Kandji, Mosyle, Intune) as a custom configuration profile scoped to the devices, or
+  - for one test Mac: open the file, then System Settings > Privacy and Security > Profiles > Install.
+  - The profile is unsigned: sign it with your MDM's certificate if your MDM requires signed profiles.
+  - Check with: sudo profiles show -type configuration | grep com.anthropic.claudefordesktop
+- `cowork/managed-settings.reg` (windows, windows_registry):
+  - From an elevated prompt: reg import managed-settings.reg
+  - Fleet: deploy the same values under HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Claude with Group Policy Preferences (Registry) or an Intune configuration profile.
+  - HKLM policy keys are writable by administrators only.

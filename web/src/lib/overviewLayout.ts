@@ -4,6 +4,9 @@
 
 export const OVERVIEW_SECTIONS = [
   { id: "kpis", label: "Headline numbers" },
+  // T-935: AI tools found here and how many are captured; links to the
+  // Tools page Coverage tab.
+  { id: "coverage", label: "Tool coverage" },
   { id: "trends", label: "Cost and activity over time" },
   { id: "top", label: "Top models and tools" },
   { id: "recent", label: "Recent sessions" },

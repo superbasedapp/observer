@@ -490,10 +490,42 @@ func (d *tomlDoc) Delete(path Path) (bool, error) {
 		return false, err
 	}
 	expected := treeDelete(before, path)
-	if lines, ok := d.surgicalDelete(path); ok && d.accept(lines, expected) {
-		return true, nil
+	if lines, ok := d.surgicalDelete(path); ok {
+		for _, want := range tomlDeleteOutcomes(expected, path) {
+			if d.accept(lines, want) {
+				return true, nil
+			}
+		}
 	}
 	return true, d.reserialize("delete", path, expected)
+}
+
+// tomlDeleteOutcomes lists the trees a surgical delete of path may
+// faithfully produce: expected itself, then expected with each ancestor
+// that the delete left empty pruned, innermost first. TOML cannot spell an
+// empty IMPLICIT table (one that exists only as the super-table of
+// [a.b.c] headers or dotted keys, with no [a.b] header of its own), so
+// removing its last child removes it too: deleting the only
+// [hooks.state."k"] table leaves no hooks.state at all, while an explicit
+// [hooks.state] header survives the delete and decodes as the exact
+// expected tree. Since surgicalDelete drops only lines under path, a
+// decode that matches a pruned candidate proves the pruned tables had no
+// defining line left, so nothing the user wrote is lost.
+func tomlDeleteOutcomes(expected map[string]any, path Path) []map[string]any {
+	out := []map[string]any{expected}
+	cur := expected
+	for k := len(path) - 1; k >= 1; k-- {
+		v, found, err := lookup(cur, path[:k])
+		if err != nil || !found {
+			break
+		}
+		if m, isMap := v.(map[string]any); !isMap || len(m) > 0 {
+			break
+		}
+		cur = treeDelete(cur, path[:k])
+		out = append(out, cur)
+	}
+	return out
 }
 
 // accept installs lines when they decode to exactly expected.
@@ -756,6 +788,14 @@ func (d *tomlDoc) surgicalDelete(path Path) ([]line, bool) {
 			continue
 		}
 		out = append(out, l)
+	}
+	// A removal that reached the end of the file takes the blank lines that
+	// only separated it from the content above (appendBlock writes one), so
+	// deleting what Set appended restores the file byte for byte.
+	if n := len(d.lines); n > 0 && drop[n-1] {
+		for len(out) > 0 && isBlank(out[len(out)-1].text) {
+			out = out[:len(out)-1]
+		}
 	}
 	// Keep the original "no final newline" state if the old last line was
 	// removed.

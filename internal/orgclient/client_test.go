@@ -236,7 +236,9 @@ func TestEnroll_MemberNotActiveVsGenuinelyInvalid(t *testing.T) {
 			wantErrIs: ErrMemberNotActive,
 			wantContains: []string{
 				"redeem your dashboard sign-in invite",
-				"run the same command again after you have signed in",
+				// WINNODE2 16d: the steps, in order.
+				"open the set-password link from your invitation first",
+				"then run the same command again",
 			},
 			wantNotContain: []string{"ask your admin for a new one"},
 		},

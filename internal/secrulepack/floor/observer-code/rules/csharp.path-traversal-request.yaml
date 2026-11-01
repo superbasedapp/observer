@@ -1,0 +1,72 @@
+rules:
+  - id: csharp.path-traversal-request
+    languages: [csharp]
+    severity: WARNING
+    message: A file path built from web request input is opened, so a caller can reach files outside the intended directory with ../; take Path.GetFileName or check the full path stays under the base directory.
+    metadata:
+      category: code_vuln
+      cwe: CWE-22
+    mode: taint
+    pattern-sources:
+      # Pack 1.3.1: request values that can carry a path. The request body
+      # is a stream, never a path, so it is no source.
+      - patterns:
+          - pattern-either:
+              - pattern: $REQ.Query[...]
+              - pattern: $REQ.Form[...]
+              - pattern: $REQ.Headers[...]
+              - pattern: $REQ.Cookies[...]
+              - pattern: $REQ.QueryString
+              - pattern: $REQ.RouteValues[...]
+              - pattern: $REQ.Params[...]
+              - pattern: $REQ.QueryString[...]
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(Request|request|req|HttpContext\.Request|context\.Request|ctx\.Request)$
+      # A bound action parameter that is text (a string or strings); a Guid,
+      # a number or a DTO carries an id the action looks up, not a path.
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $RT $M(..., [$ANN] $T $X, ...) { ... }
+              - pattern-inside: |
+                  $RT $M(..., [$ANN(...)] $T $X, ...) { ... }
+          - metavariable-regex:
+              metavariable: $ANN
+              regex: ^(FromQuery|FromRoute|FromBody|FromForm|FromHeader)$
+          - metavariable-regex:
+              metavariable: $T
+              regex: ^(string|string\?|string\[\]|String|IEnumerable<string>|List<string>)$
+          - pattern: $X
+    pattern-sanitizers:
+      - pattern: Path.GetFileName(...)
+      - pattern: int.Parse(...)
+      - pattern: Guid.Parse(...)
+    pattern-sinks:
+      # Pack 1.3.1: calls that open, write, list, move or delete what the
+      # path names. File.Exists and Directory.Exists only check, and a
+      # StreamReader over a stream opens no path.
+      - patterns:
+          - pattern-either:
+              - patterns:
+                  - pattern: File.$F($P, ...)
+                  - metavariable-regex:
+                      metavariable: $F
+                      regex: ^(ReadAllBytes|ReadAllText|ReadAllLines|ReadLines|ReadAllBytesAsync|ReadAllTextAsync|ReadAllLinesAsync|Open|OpenRead|OpenText|OpenWrite|Create|CreateText|WriteAllBytes|WriteAllText|WriteAllLines|WriteAllBytesAsync|WriteAllTextAsync|AppendAllText|AppendAllLines|AppendText|Copy|Move|Delete|Replace)$
+              - patterns:
+                  - pattern: Directory.$F($P, ...)
+                  - metavariable-regex:
+                      metavariable: $F
+                      regex: ^(GetFiles|GetDirectories|GetFileSystemEntries|EnumerateFiles|EnumerateDirectories|EnumerateFileSystemEntries|CreateDirectory|Delete|Move)$
+              - pattern: new FileStream($P, ...)
+              - pattern: new FileInfo($P)
+              - pattern: new DirectoryInfo($P)
+              - pattern: PhysicalFile($P, ...)
+              - patterns:
+                  - pattern: new StreamReader($P, ...)
+                  - metavariable-pattern:
+                      metavariable: $P
+                      patterns:
+                        - pattern-not: $R.Body
+                        - pattern-not: (Stream $S)
+          - focus-metavariable: $P

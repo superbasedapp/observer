@@ -132,6 +132,10 @@ tmp/
 # Secrets / env
 .env
 .env.local
+# The one-box demo's generated passwords, keys and rendered config.
+deploy/demo-box/state/
+# The standalone cloud kit's generated state (cloud-box.sh default).
+deploy/cloud-box/state/
 .aider*
 
 # Local tool state — never committed. These are listed because they are NOT
@@ -237,6 +241,20 @@ model-pricing/scripts/extract-cache/
 /marketing/
 /tmp/
 /website/
+# The model pricing explorer's source and its tooling (tokcron, the seed
+# generator, the release-notes sync and the price-snapshot gate).
+/model-pricing/
+/tools/pricing-seedgen/
+/scripts/tokcron
+/scripts/tokcron.cmd
+/scripts/tokcron.ps1
+/scripts/website-sync-releases.sh
+/scripts/verify-price-snapshot.sh
+# Internal spike records and maintainer-only scripts.
+/_spikes/
+/scripts/sectrust-timing.sh
+/scripts/merge-checks.sh
+/scripts/hooks/
 
 # Enterprise surface — the org/Teams rollup server and the general-
 # observability (Plane A) engine, plus their binaries, deployment
@@ -253,7 +271,21 @@ model-pricing/scripts/extract-cache/
 /internal/obs/
 /internal/edge/
 /internal/aigateway/
-/deploy/
+/internal/vendorsurface/livecheck/
+/harness-gateway/
+/tests/e2e/orgserver/
+# The org-server load test and the org-only helper packages.
+/cmd/observer-loadtest/
+/internal/loadgen/
+/internal/pgtune/
+/internal/orgmsg/
+/scripts/loadtest/
+/scripts/ci/perf/
+/.github/workflows/perf-smoke.yml
+# deploy/ except the sandbox image recipes (a public feature's inputs).
+/deploy/*
+!/deploy/sandbox-image/
+!/deploy/sandbox-vm-image/
 /web2/
 /charts/
 /Dockerfile.observer-org
@@ -276,6 +308,8 @@ model-pricing/scripts/extract-cache/
 # The adapter parity doc generator: rewrites docs/adapter-parity.md
 # (private) and its test reads that doc.
 /tools/adapterparitygen/
+# The shipped-migrations record generator: records private lineages from git.
+/tools/shippedmiggen/
 # Private CI + release pipelines. ci.yml stays (it is the public
 # contributor gate); ci-private.yml holds the five jobs whose inputs are
 # private-only paths.

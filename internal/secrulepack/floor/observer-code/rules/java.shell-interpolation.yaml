@@ -1,0 +1,23 @@
+rules:
+  - id: java.shell-interpolation
+    languages: [java]
+    severity: ERROR
+    message: A shell command line is built with values pasted in; run the program directly with a fixed argument list (ProcessBuilder with separate arguments) instead.
+    metadata:
+      category: code_vuln
+      cwe: CWE-78
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: new ProcessBuilder("$SH", "$C", <... "..." + $X ...>)
+              - pattern: new ProcessBuilder("$SH", "$C", String.format(...))
+              - pattern: '$RT.exec(new String[]{"$SH", "$C", <... "..." + $X ...>})'
+              - pattern: '$RT.exec(new String[]{"$SH", "$C", String.format(...)})'
+          - metavariable-regex:
+              metavariable: $SH
+              regex: ^(sh|bash|zsh|/bin/sh|/bin/bash|cmd|cmd\.exe|powershell|powershell\.exe|pwsh)$
+          - metavariable-regex:
+              metavariable: $C
+              regex: ^(-c|/c|/C|-Command)$
+      - pattern: Runtime.getRuntime().exec(<... "..." + $X ...>)
+      - pattern: Runtime.getRuntime().exec(String.format(...))

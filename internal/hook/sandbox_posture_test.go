@@ -1,4 +1,4 @@
-//go:build !sbo_omit_terminals_sandbox
+//go:build !sbo_omit_terminals_sandbox && !sbo_omit_isolation
 
 package hook
 

@@ -14,6 +14,7 @@ import (
 func TestArenaBudgetAdmissionRefusesManagedHardBudget(t *testing.T) {
 	t.Parallel()
 	cfgPath, _ := writeManagedBudgetLaunchFixture(t, true, "enforce")
+	allowArenaLaunches(t, cfgPath)
 
 	err := arenaBudgetAdmissionSeam(cfgPath)(context.Background(), "claude-code", "http://127.0.0.1:8820")
 	if !errors.Is(err, errBudgetLaunchUncontrolled) {
@@ -24,6 +25,7 @@ func TestArenaBudgetAdmissionRefusesManagedHardBudget(t *testing.T) {
 func TestArenaBudgetAdmissionAllowsIndividualNode(t *testing.T) {
 	t.Parallel()
 	cfgPath, dbPath := writeManagedBudgetLaunchFixture(t, true, "enforce")
+	allowArenaLaunches(t, cfgPath)
 	rewriteBudgetLaunchEnrolment(t, dbPath, func(enrolment *store.Enrolment) {
 		enrolment.Tenancy = orgcontract.TenancyIndividual
 	})

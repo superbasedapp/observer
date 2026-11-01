@@ -11,6 +11,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/marmutapp/superbased-observer/internal/config/migrate"
+	"github.com/marmutapp/superbased-observer/internal/testwriteguard"
 )
 
 // PatchMode says which write strategy PatchFile used.
@@ -215,6 +216,9 @@ func surgicalText(current string, patches []Patch) (text, reason string, ok bool
 // and the .bak still holds them, so a second restore is a no-op rather than
 // a swap. Returns os.ErrNotExist when there is no backup.
 func RestoreBackup(path string) error {
+	if err := testwriteguard.Check("write", path); err != nil {
+		return fmt.Errorf("config.RestoreBackup: %w", err)
+	}
 	bak, err := os.ReadFile(path + ".bak")
 	if err != nil {
 		return fmt.Errorf("config.RestoreBackup: %w", err)

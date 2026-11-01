@@ -76,7 +76,7 @@ func TestApplyAdmissionEditorPolicy(t *testing.T) {
 // persist writes config.toml, and a subsequent config.Load yields the policy.
 func TestAdmissionPolicyPersisterRoundTrip(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	pinToolHomesAt(t, home) // the persister writes <home>/.observer/config.toml (FU-20)
 	path := filepath.Join(home, ".observer", "config.toml")
 
 	if err := admissionPolicyPersister("")(context.Background(), editorPolicyJSON(t)); err != nil {
@@ -106,7 +106,7 @@ func TestAdmissionPolicyPersisterRoundTrip(t *testing.T) {
 // values preserved; hand-written comments are not — Option A, see WriteToml).
 func TestAdmissionPolicyPersisterPreservesUnrelated(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	pinToolHomesAt(t, home) // the persister writes <home>/.observer/config.toml (FU-20)
 	path := filepath.Join(home, ".observer", "config.toml")
 
 	// Seed an existing config carrying an unrelated setting + a judge.

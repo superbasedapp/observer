@@ -1,0 +1,1 @@
+{"host":{"arch":"amd64","cgroupVersion":"v2","conmon":{"package":"conmon_2.1.12-4_amd64","path":"/usr/bin/conmon","version":"conmon version 2.1.12, commit: unknown"},"ociRuntime":{"name":"crun","version":"crun version 1.21"},"security":{"rootless":false,"seccompEnabled":true}},"version":{"APIVersion":"5.7.0","Version":"5.7.0"}}

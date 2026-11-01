@@ -2,21 +2,27 @@
 // (arc-2 CI-P3 foundation). It is a wholly separate binary from `observer`
 // (the agent) and `observer-org` (the customer-self-hosted org server):
 // different config, a different database (Postgres, not SQLite), and a
-// different deployment (Azure Container Apps — substrate contract).
+// different deployment (one box under docker compose: deploy/cloud-box/; the
+// Azure Container Apps substrate is retired).
 //
 // Subcommands:
 //
 //	serve       run the /v1 API + portal-BFF HTTP server (the only public ingress)
-//	worker      run the inference-worker skeleton (lease → revalidate → no-op executor)
+//	worker      run the inference worker (lease → revalidate → provider call)
 //	migrate     apply the Postgres migration lineage and report the schema version
 //	grant-plan  assign an entitlement plan to an account (operator beta grant; runs
 //	            and exits — there is deliberately no HTTP route, because no payment
 //	            rail exists yet)
 //	prove       run the compiled-in synthetic fixture catalog through the real
-//	            Foundry pipeline (operator-only, fixture-only; runs and exits).
-//	            It has its OWN credential (SBCI_PROVE_FOUNDRY_API_KEY) and never
-//	            reads the worker's, so ordinary account admission stays
-//	            credential-absent — see internal/cloudserver/prove
+//	            provider pipeline (operator-only, fixture-only; runs and exits).
+//	            It has its OWN credential (SBCI_PROVE_ANTHROPIC_API_KEY, or
+//	            SBCI_PROVE_FOUNDRY_API_KEY for foundry) and never reads the
+//	            worker's, so ordinary account admission stays credential-absent
+//	            (see internal/cloudserver/prove)
+//	route bind-anthropic
+//	            bind the Claude Haiku 5.5 route to the Anthropic API: endpoint,
+//	            provider resource identity, and a price snapshot copied from
+//	            the pricing table (operator-only; runs and exits)
 //
 // Configuration is 12-factor (env):
 //
@@ -56,14 +62,19 @@
 //	                        (/portal/auth/workos/*). DARK BY DEFAULT: unset, those
 //	                        routes answer an honest 501 and browser sign-in stays
 //	                        dev-auth-only until the R7 exposure gates are green.
-//	                        Requires WORKOS_CLIENT_ID + WORKOS_API_KEY.
+//	                        Requires WORKOS_CLIENT_ID + WORKOS_API_KEY[_FILE]; set
+//	                        without them, serve refuses to start.
 //	WORKOS_CLIENT_ID        public AuthKit client id (also selects the production
 //	                        access-token verifier)
-//	WORKOS_API_KEY          WorkOS client secret, used ONLY for the server-side
+//	WORKOS_API_KEY / WORKOS_API_KEY_FILE
+//	                        WorkOS client secret (or a file holding it; setting
+//	                        both is a startup error), used ONLY for the server-side
 //	                        authorization-code exchange; never sent to a browser
 //	SBCI_WORKOS_AUTHORIZE_URL / SBCI_WORKOS_TOKEN_URL
 //	                        override the AuthKit endpoints (default: production)
-//	WORKOS_WEBHOOK_SECRET   shared secret the account-lifecycle webhook
+//	WORKOS_WEBHOOK_SECRET / WORKOS_WEBHOOK_SECRET_FILE
+//	                        shared secret (or a file holding it, never both) the
+//	                        account-lifecycle webhook
 //	                        (POST /portal/webhooks/workos) verifies its
 //	                        `WorkOS-Signature` HMAC against. UNSET ⇒ that route
 //	                        answers 501 and reads nothing (fail closed — an
@@ -88,6 +99,22 @@
 //	                        development may omit it.
 //	SBCI_QUEUE_MODE         pg (only mode implemented this phase; azure is a later swap)
 //	SBCI_WORKER_ID          worker identity (worker; default hostname-derived)
+//	SBCI_INFERENCE_PROVIDER anthropic (default) | foundry. Exactly one provider
+//	                        family is wired per process (cmd/observer-cloud/provider.go)
+//	SBCI_ANTHROPIC_API_KEY / SBCI_ANTHROPIC_API_KEY_FILE
+//	                        the Anthropic key (or a file holding it). UNSET ⇒
+//	                        credential ABSENT ⇒ every job parks
+//	                        provider_policy_unverified with no provider call
+//	SBCI_ANTHROPIC_EFFORT   output_config.effort: low (default) | medium | high
+//	SBCI_ANTHROPIC_PROMPT_CACHE=0
+//	                        drop the system-prompt cache breakpoint
+//	SBCI_FOUNDRY_API_KEY    the Azure AI Foundry key (foundry family only)
+//	SBCI_PROVIDER_RETENTION_DISCLOSED_RESOURCE / _POLICY_VERSION / _BY
+//	                        the disclosed attestation mode; the ONLY mode that
+//	                        authorizes the anthropic family (resource =
+//	                        anthropic:messages:<model>, see `route bind-anthropic`)
+//	SBCI_EVIDENCE_KEY / SBCI_EVIDENCE_KEY_FILE
+//	                        the shared evidence-blob AES-256-GCM key (64 hex chars)
 package main
 
 import (
@@ -108,11 +135,9 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/api"
-	"github.com/marmutapp/superbased-observer/internal/cloudserver/attest"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/community"
 	clouddb "github.com/marmutapp/superbased-observer/internal/cloudserver/db"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/deletionjournal"
-	"github.com/marmutapp/superbased-observer/internal/cloudserver/foundry"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/identity"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/jobs"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/store"
@@ -153,7 +178,7 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.AddCommand(newServeCmd(), newWorkerCmd(), newMigrateCmd(), newGrantPlanCmd(), newProveCmd(), newKillSwitchCmd(), newSchemaCheckCmd(), newRestoreSuppressCmd())
+	root.AddCommand(newServeCmd(), newWorkerCmd(), newMigrateCmd(), newGrantPlanCmd(), newProveCmd(), newKillSwitchCmd(), newSchemaCheckCmd(), newRestoreSuppressCmd(), newRouteCmd())
 	return root
 }
 
@@ -208,11 +233,18 @@ func openStoreForRole(ctx context.Context, role store.Role, dsn string) (*store.
 		return nil, err
 	}
 	// SBCI_EVIDENCE_KEY (64 hex chars ⇒ 32 bytes) shares the evidence-blob
-	// AES-256-GCM key across the api (seal) and worker (open) processes. Unset ⇒
-	// a process-random key (single-process/dev; a restarted worker treats a
-	// decrypt failure as evidence_expired). The Azure driver swaps a Key Vault
-	// envelope key behind the same store.Encryptor seam.
-	if hexKey := strings.TrimSpace(os.Getenv("SBCI_EVIDENCE_KEY")); hexKey != "" {
+	// AES-256-GCM key across the api (seal) and worker (open) processes; the
+	// SBCI_EVIDENCE_KEY_FILE form reads it from a mounted secret file (the
+	// single-box compose deploy). Unset ⇒ a process-random key
+	// (single-process/dev; a restarted worker treats a decrypt failure as
+	// evidence_expired, and a SEPARATE api and worker can never open each other's
+	// evidence). No cloud key service is required: plain env or a file.
+	hexKey, err := readSecretEnv("SBCI_EVIDENCE_KEY", "SBCI_EVIDENCE_KEY_FILE")
+	if err != nil {
+		pool.Close()
+		return nil, err
+	}
+	if hexKey != "" {
 		key, err := hex.DecodeString(hexKey)
 		if err != nil {
 			pool.Close()
@@ -224,6 +256,19 @@ func openStoreForRole(ctx context.Context, role store.Role, dsn string) (*store.
 			return nil, fmt.Errorf("SBCI_EVIDENCE_KEY: %w", err)
 		}
 		s.SetEvidenceEncryptor(enc)
+	}
+	// T-946: the budget pools' USD spend ceilings (SBCI_FREE_POOL_DAILY_USD /
+	// SBCI_FREE_POOL_MONTHLY_USD, default USD 5 / 50 for the Free pool). Both
+	// the api (reservation refusal) and the worker (pre-call park, cost
+	// accounting) enforce the same table; a malformed value fails startup.
+	ceilings, err := store.SpendCeilingsFromEnv(os.Getenv)
+	if err != nil {
+		pool.Close()
+		return nil, err
+	}
+	s.SetSpendCeilings(ceilings)
+	if c, ok := ceilings[store.FreeBudgetPool]; ok {
+		slog.Default().Info("observer-cloud: Free pool spend ceiling", "daily_usd", c.DailyUSD, "monthly_usd", c.MonthlyUSD)
 	}
 	// Deletion journal (W6d): an append-only record OUTSIDE the Postgres restore
 	// domain so a point-in-time restore can re-apply account tombstones before
@@ -242,78 +287,6 @@ func openStoreForRole(ctx context.Context, role store.Role, dsn string) (*store.
 	}
 	s.SetDeletionJournal(journal)
 	return s, nil
-}
-
-// chooseCredentials returns the Foundry credential source. Pre-approval the key
-// is simply NOT provisioned (SBCI_FOUNDRY_API_KEY unset) ⇒ AbsentCredentials,
-// and every job parks provider_policy_unverified with no provider call — the
-// §2.1 pre-approval boundary (the gate is credential absence).
-func chooseCredentials(log *slog.Logger) jobs.CredentialSource {
-	if k := strings.TrimSpace(os.Getenv("SBCI_FOUNDRY_API_KEY")); k != "" {
-		return jobs.StaticCredentials{Key: k}
-	}
-	log.Warn("observer-cloud: SBCI_FOUNDRY_API_KEY unset - provider credential ABSENT (pre-approval boundary); jobs park provider_policy_unverified")
-	return jobs.AbsentCredentials{}
-}
-
-// chooseAttestor builds the provider-posture attestation gate. Three modes,
-// selected by env, mutually exclusive between the two operator-asserted ones:
-//
-//   - default: the live ARM REST read of the ContentLogging capability
-//     (plan §2.2 — never `az`; token from attestTokenSourceFromEnv). With an
-//     unbound route or an empty token the gate fails closed.
-//   - SBCI_CONTENT_LOGGING_ATTESTED_RESOURCE (+ _BY): the operator-attested
-//     override (attest.OperatorAttestor) — an explicit, audit-labeled assertion
-//     that ContentLogging IS false on exactly that resource. Azure AIServices
-//     does not expose the capability as a readable ARM property, so a resource
-//     that HAS Modified Abuse Monitoring approval cannot be machine-verified;
-//     this is the mode for that case and for no other — on a resource whose
-//     logging is not off the assertion would be untrue.
-//   - SBCI_PROVIDER_RETENTION_DISCLOSED_RESOURCE (+ _POLICY_VERSION, _BY): the
-//     disclosed-posture mode (attest.DisclosedAttestor, operator ruling
-//     2026-09-15 option C, docs/modified-abuse-monitoring-filing.md s8): the
-//     provider's default flagged-sample retention is accepted and disclosed on
-//     the privacy page under the named policy version; the persisted record
-//     says "not-disabled" and never claims logging is off.
-//
-// Both operator modes set at once is an ambiguous deployment: it is logged at
-// startup and every job parks provider_policy_unverified until one is removed.
-func chooseAttestor(s *store.Store, log *slog.Logger) jobs.ProviderAttestor {
-	disclosed := strings.TrimSpace(os.Getenv("SBCI_PROVIDER_RETENTION_DISCLOSED_RESOURCE"))
-	attested := strings.TrimSpace(os.Getenv("SBCI_CONTENT_LOGGING_ATTESTED_RESOURCE"))
-	switch {
-	case disclosed != "" && attested != "":
-		log.Error("observer-cloud: BOTH SBCI_PROVIDER_RETENTION_DISCLOSED_RESOURCE and SBCI_CONTENT_LOGGING_ATTESTED_RESOURCE are set - conflicting attestation modes; every job parks provider_policy_unverified until one is removed")
-		// Returned WITHOUT the caching gate: a healthy record persisted before
-		// the conflict was introduced must not authorize jobs for up to the
-		// gate's max-age (review finding 2026-09-15).
-		return jobs.RefusingAttestor{Reason: "conflicting attestation modes configured (fail closed)"}
-	case disclosed != "":
-		d := attest.DisclosedAttestor{
-			AttestedResourceID: disclosed,
-			PolicyVersion:      strings.TrimSpace(os.Getenv("SBCI_PROVIDER_RETENTION_POLICY_VERSION")),
-			AttestedBy:         strings.TrimSpace(os.Getenv("SBCI_PROVIDER_RETENTION_DISCLOSED_BY")),
-		}
-		if d.PolicyVersion == "" {
-			log.Error("observer-cloud: SBCI_PROVIDER_RETENTION_DISCLOSED_RESOURCE is set but SBCI_PROVIDER_RETENTION_POLICY_VERSION is empty - the disclosed mode fails closed until a policy version is named")
-		} else {
-			log.Info("observer-cloud: attestation mode " + attest.ModeProviderRetentionDisclosed + " (provider flagged-sample retention disclosed; privacy policy v" + d.PolicyVersion + ")")
-		}
-		return jobs.NewAttestationGate(s, d, 15*time.Minute)
-	case attested != "":
-		op := attest.OperatorAttestor{
-			AttestedResourceID: attested,
-			AttestedBy:         strings.TrimSpace(os.Getenv("SBCI_CONTENT_LOGGING_ATTESTED_BY")),
-		}
-		log.Info("observer-cloud: attestation mode operator-attested (asserts ContentLogging=false for the named resource)")
-		return jobs.NewAttestationGate(s, op, 15*time.Minute)
-	}
-	arm := &attest.ARMAttestor{
-		Tokens:     attestTokenSourceFromEnv(),
-		BaseURL:    strings.TrimSpace(os.Getenv("SBCI_ARM_BASE_URL")),
-		APIVersion: strings.TrimSpace(os.Getenv("SBCI_ARM_API_VERSION")),
-	}
-	return jobs.NewAttestationGate(s, arm, 15*time.Minute)
 }
 
 func chooseVerifier(log *slog.Logger) identity.Verifier {
@@ -342,23 +315,37 @@ func chooseVerifier(log *slog.Logger) identity.Verifier {
 
 // portalWorkOSEnabled reads the SBCI_PORTAL_WORKOS activation gate for the
 // portal's WorkOS browser sign-in leg. It is OFF by default (R7: browser
-// sign-in stays dev-auth-only until every exposure gate is green), and it warns
-// loudly when the gate is set but the WorkOS credentials the server-side code
-// exchange needs are missing — in which case the routes still answer 501.
+// sign-in stays dev-auth-only until every exposure gate is green). A request
+// with incomplete credentials never reaches here as "enabled": the serve
+// command refuses to start first (requireWorkOSComplete).
 func portalWorkOSEnabled(log *slog.Logger) bool {
-	switch strings.TrimSpace(os.Getenv("SBCI_PORTAL_WORKOS")) {
-	case "1", "true":
-	default:
+	if !portalWorkOSRequested(os.Getenv) {
 		return false
-	}
-	if strings.TrimSpace(os.Getenv("WORKOS_CLIENT_ID")) == "" || strings.TrimSpace(os.Getenv("WORKOS_API_KEY")) == "" {
-		log.Warn("observer-cloud: SBCI_PORTAL_WORKOS is set but WORKOS_CLIENT_ID/WORKOS_API_KEY are incomplete — /portal/auth/workos/* will keep answering 501")
 	}
 	if os.Getenv("SBCI_DEV_AUTH") == "1" {
 		log.Warn("observer-cloud: SBCI_PORTAL_WORKOS is set but SBCI_DEV_AUTH=1 - the dev-auth stub wins and the WorkOS browser leg stays inactive")
 	}
 	log.Info("observer-cloud: portal WorkOS browser sign-in leg ACTIVE (/portal/auth/workos/*)")
 	return true
+}
+
+// resolveWorkOS resolves the serve process's WorkOS settings (the client id
+// plus two secrets, each from its plain env var or its _FILE form, never
+// both), refuses a browser sign-in request that lacks its credentials, warns
+// when the lifecycle webhook has no secret, and reports whether the browser
+// leg is active.
+func resolveWorkOS(log *slog.Logger) (workOSSettings, bool, error) {
+	workos, err := workOSSettingsFromEnv(os.Getenv, os.ReadFile)
+	if err != nil {
+		return workOSSettings{}, false, fmt.Errorf("observer-cloud: WorkOS configuration: %w", err)
+	}
+	if err := requireWorkOSComplete(portalWorkOSRequested(os.Getenv), workos); err != nil {
+		return workOSSettings{}, false, fmt.Errorf("observer-cloud: WorkOS configuration: %w", err)
+	}
+	if workos.WebhookSecret == "" {
+		log.Warn("observer-cloud: WORKOS_WEBHOOK_SECRET[_FILE] unset - POST /portal/webhooks/workos answers 501 (fail closed); WorkOS lifecycle revocation will NOT propagate")
+	}
+	return workos, portalWorkOSEnabled(log), nil
 }
 
 // requireDevAuthLoopbackOnly is the C1 startup guard (gap 2.3): the dev-auth
@@ -801,10 +788,10 @@ func newServeCmd() *cobra.Command {
 				log.Info("observer-cloud: canonical-host enforcement",
 					"portal_host", portalHost, "api_host", apiHost)
 			}
-			if strings.TrimSpace(os.Getenv("WORKOS_WEBHOOK_SECRET")) == "" {
-				log.Warn("observer-cloud: WORKOS_WEBHOOK_SECRET unset - POST /portal/webhooks/workos answers 501 (fail closed); WorkOS lifecycle revocation will NOT propagate")
+			workos, workosBrowserLeg, err := resolveWorkOS(log)
+			if err != nil {
+				return err
 			}
-			workosBrowserLeg := portalWorkOSEnabled(log)
 			// C1 (gap 2.3): the dev-auth stub must be provably impossible to reach
 			// from anywhere but a loopback origin, and never combined with the
 			// WorkOS browser leg. Refuses to start rather than warning, unlike the
@@ -835,58 +822,73 @@ func newServeCmd() *cobra.Command {
 			// fall back to store.DefaultBrowserSessionTTL (24h) /
 			// store.DefaultBrowserSessionIdleTTL (2h).
 			portalSessionTTL, portalSessionIdleTTL := portalSessionTTLFromEnv(log)
+			// The admission gate (FA6) answers with the SAME provider family,
+			// credential and attestation mode the worker uses.
+			family, credentials, err := chooseFamilyCredentials(log)
+			if err != nil {
+				return err
+			}
+			apiServer := api.New(api.Options{
+				Store:              s,
+				Queue:              jobs.NewPGQueue(s),
+				Verifier:           chooseVerifier(log),
+				Logger:             log,
+				ExternalBaseURL:    base,
+				PortalBaseURL:      portalBase,
+				PortalSecureCookie: secureCookie,
+				PortalSPA:          webcloud.Handler(),
+				// FA6: the admission gate is wired at ENQUEUE too, not only at
+				// execution. It is fail-closed: with no provider key provisioned
+				// for the selected family (SBCI_ANTHROPIC_API_KEY[_FILE] or
+				// SBCI_FOUNDRY_API_KEY unset), chooseCredentials resolves to
+				// AbsentCredentials and every submit is refused up front with 503
+				// provider_policy_unverified, so a credential-absent server never
+				// takes custody of evidence it cannot process.
+				Attestor:    chooseAttestor(s, log, family),
+				Credentials: credentials,
+				// The WorkOS browser sign-in leg. Dark unless SBCI_PORTAL_WORKOS=1
+				// AND both WorkOS credentials are present (portalWorkOSEnabled
+				// re-checks the credentials per request and 501s without them).
+				PortalWorkOSEnabled: workosBrowserLeg,
+				WorkOSClientID:      workos.ClientID,
+				WorkOSAPIKey:        workos.APIKey,
+				WorkOSAuthorizeURL:  strings.TrimSpace(os.Getenv("SBCI_WORKOS_AUTHORIZE_URL")),
+				WorkOSTokenURL:      strings.TrimSpace(os.Getenv("SBCI_WORKOS_TOKEN_URL")),
+				// D18 phase 1: the account-lifecycle webhook. Unset secret ⇒ the
+				// route answers 501 (fail closed), never "verify nothing".
+				WorkOSWebhookSecret: workos.WebhookSecret,
+				// C3: portal session lifetimes (SBCI_PORTAL_SESSION_TTL /
+				// SBCI_PORTAL_SESSION_IDLE_TTL).
+				PortalSessionTTL:     portalSessionTTL,
+				PortalSessionIdleTTL: portalSessionIdleTTL,
+				// W9 Paddle billing webhook. Unset secret ⇒ the route answers 501
+				// (fail closed); dark until the operator provisions Paddle.
+				PaddleWebhookSecret: strings.TrimSpace(os.Getenv("SBCI_PADDLE_WEBHOOK_SECRET")),
+				// A3 (gap 1.7): the previous secret during a rotation window, so
+				// flipping SBCI_PADDLE_WEBHOOK_SECRET to a new value is never an
+				// outage; keep the old one here until Paddle confirms the new
+				// secret is live, then drop it.
+				PaddleWebhookSecrets: []string{strings.TrimSpace(os.Getenv("SBCI_PADDLE_WEBHOOK_SECRET_PREVIOUS"))},
+				// A4/A5/A6: the validated checkout catalogue GET /portal/api/billing
+				// exposes to the portal (environment, client token, prices, trial).
+				PaddleCheckout: paddleCheckout,
+				// R5 canonical hosts. Unset ⇒ unenforced (single-host staging).
+				PortalHost: portalHost,
+				APIHost:    apiHost,
+				// W6e: authenticate the Cloudflare-to-ACA hop before accepting the
+				// one forwarded client identity used by shared rate-limit counters.
+				Edge: edge,
+			})
+			// T-964: check once, off the start path, that the WorkOS client id and
+			// API key belong together (a key from another WorkOS environment made
+			// every browser sign-in fail on 2026-10-23). WARN-only by design: the
+			// verdict is an ERROR log line plus /healthz "workos_signin", never a
+			// refusal to start, so a WorkOS outage at boot cannot take the device
+			// API down. A no-op when the browser sign-in leg is not active.
+			go apiServer.RunWorkOSSelfCheck(ctx)
 			srv := &http.Server{
-				Addr: listen,
-				Handler: api.New(api.Options{
-					Store:              s,
-					Queue:              jobs.NewPGQueue(s),
-					Verifier:           chooseVerifier(log),
-					Logger:             log,
-					ExternalBaseURL:    base,
-					PortalBaseURL:      portalBase,
-					PortalSecureCookie: secureCookie,
-					PortalSPA:          webcloud.Handler(),
-					// FA6: the admission gate is wired at ENQUEUE too, not only at
-					// execution. It is fail-closed — with no provider key provisioned
-					// (SBCI_FOUNDRY_API_KEY unset), chooseCredentials resolves to
-					// AbsentCredentials and every submit is refused up front with 503
-					// provider_policy_unverified, so a credential-absent server never
-					// takes custody of evidence it cannot process.
-					Attestor:    chooseAttestor(s, log),
-					Credentials: chooseCredentials(log),
-					// The WorkOS browser sign-in leg. Dark unless SBCI_PORTAL_WORKOS=1
-					// AND both WorkOS credentials are present (portalWorkOSEnabled
-					// re-checks the credentials per request and 501s without them).
-					PortalWorkOSEnabled: workosBrowserLeg,
-					WorkOSClientID:      strings.TrimSpace(os.Getenv("WORKOS_CLIENT_ID")),
-					WorkOSAPIKey:        strings.TrimSpace(os.Getenv("WORKOS_API_KEY")),
-					WorkOSAuthorizeURL:  strings.TrimSpace(os.Getenv("SBCI_WORKOS_AUTHORIZE_URL")),
-					WorkOSTokenURL:      strings.TrimSpace(os.Getenv("SBCI_WORKOS_TOKEN_URL")),
-					// D18 phase 1: the account-lifecycle webhook. Unset secret ⇒ the
-					// route answers 501 (fail closed), never "verify nothing".
-					WorkOSWebhookSecret: strings.TrimSpace(os.Getenv("WORKOS_WEBHOOK_SECRET")),
-					// C3: portal session lifetimes (SBCI_PORTAL_SESSION_TTL /
-					// SBCI_PORTAL_SESSION_IDLE_TTL).
-					PortalSessionTTL:     portalSessionTTL,
-					PortalSessionIdleTTL: portalSessionIdleTTL,
-					// W9 Paddle billing webhook. Unset secret ⇒ the route answers 501
-					// (fail closed); dark until the operator provisions Paddle.
-					PaddleWebhookSecret: strings.TrimSpace(os.Getenv("SBCI_PADDLE_WEBHOOK_SECRET")),
-					// A3 (gap 1.7): the previous secret during a rotation window, so
-					// flipping SBCI_PADDLE_WEBHOOK_SECRET to a new value is never an
-					// outage — keep the old one here until Paddle confirms the new
-					// secret is live, then drop it.
-					PaddleWebhookSecrets: []string{strings.TrimSpace(os.Getenv("SBCI_PADDLE_WEBHOOK_SECRET_PREVIOUS"))},
-					// A4/A5/A6: the validated checkout catalogue GET /portal/api/billing
-					// exposes to the portal (environment, client token, prices, trial).
-					PaddleCheckout: paddleCheckout,
-					// R5 canonical hosts. Unset ⇒ unenforced (single-host staging).
-					PortalHost: portalHost,
-					APIHost:    apiHost,
-					// W6e: authenticate the Cloudflare-to-ACA hop before accepting the
-					// one forwarded client identity used by shared rate-limit counters.
-					Edge: edge,
-				}).Handler(),
+				Addr:    listen,
+				Handler: apiServer.Handler(),
 				// Slowloris + idle-connection bounds (F9). ReadHeaderTimeout alone
 				// caps the header phase only: a client that sends complete headers
 				// and then dribbles a body one byte at a time holds a connection (and
@@ -1124,20 +1126,35 @@ func newWorkerCmd() *cobra.Command {
 				workerID = "sbci-worker-" + host
 			}
 			blobs := store.NewPGBlobStore(s)
+			// The provider seam: ONE router over the selected family's client
+			// (SBCI_INFERENCE_PROVIDER, default anthropic), and ONE pricer over
+			// the shared pricing table for routes whose deployment is a model id.
+			family, err := chooseProviderFamily()
+			if err != nil {
+				return err
+			}
+			router, err := chooseInferenceProvider(log, family)
+			if err != nil {
+				return err
+			}
+			pricer := tablePricer()
 			executors := map[string]jobs.Executor{
-				store.FeatureSessionEnrichment: jobs.NewLunaExecutor(s, blobs, &foundry.AzureClient{}),
-				// W5: the project-digest job kind shares the SAME Foundry client and
+				store.FeatureSessionEnrichment: jobs.NewLunaExecutor(s, blobs, router).WithPricer(pricer),
+				// W5: the project-digest job kind shares the SAME provider seam and
 				// lease discipline as session enrichment, dispatched by feature
 				// through the worker's feature -> Executor table.
-				store.FeatureProjectDigest: jobs.NewDigestExecutor(s, blobs, &foundry.AzureClient{}),
+				store.FeatureProjectDigest: jobs.NewDigestExecutor(s, blobs, router).WithPricer(pricer),
 			}
 			// ONE attestor and ONE credential source for the whole worker process:
 			// the lease loop and the digest scheduler's admission gate share the
 			// same instances (s12m review: two chooseAttestor calls printed the
 			// "attestation mode" startup line twice and held two caches over one
 			// persisted attestation record).
-			attestor := chooseAttestor(s, log)
-			credentials := chooseCredentials(log)
+			attestor := chooseAttestor(s, log, family)
+			credentials, err := chooseCredentials(log, family)
+			if err != nil {
+				return err
+			}
 			w := jobs.NewWorker(jobs.Config{
 				WorkerID: workerID, Logger: log,
 				Classes: []string{store.FeatureSessionEnrichment, store.FeatureProjectDigest},
@@ -1182,7 +1199,8 @@ func newWorkerCmd() *cobra.Command {
 			// window below the ≥30 floor or not yet finalized materializes nothing.
 			go runCommunityMaterialization(ctx, s, log)
 
-			log.Info("observer-cloud: worker running (Foundry Luna + digest executors; credential-absence + attestation gates fail closed)", "worker_id", workerID)
+			log.Info("observer-cloud: worker running (Luna + digest executors over the inference seam; credential-absence + attestation gates fail closed)",
+				"worker_id", workerID, "provider", string(family), "pricing", pricingTableVersion())
 			if err := w.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 				return err
 			}

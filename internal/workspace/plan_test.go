@@ -188,12 +188,16 @@ func TestPlanWorktreeRequiresAllow(t *testing.T) {
 	}
 }
 
-func TestPlanWorktreeRequiresBranch(t *testing.T) {
+func TestPlanWorktreeDefaultsTheBranchLabel(t *testing.T) {
 	req := baseReq()
 	req.Source = SourceWorktree
 	req.AllowWorktreeSource = true
-	if _, err := Plan(req); err == nil {
-		t.Fatalf("expected error: Branch is empty")
+	got, err := Plan(req)
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if want := "observer-sandbox/" + req.ID + "/work"; got.Branch != want {
+		t.Fatalf("Branch = %q, want %q", got.Branch, want)
 	}
 }
 
@@ -202,13 +206,30 @@ func TestPlanWorktree(t *testing.T) {
 	req.Source = SourceWorktree
 	req.AllowWorktreeSource = true
 	req.Branch = "wt-branch"
+	req.StartPoint = "0123456789abcdef0123456789abcdef01234567"
 	got, err := Plan(req)
 	if err != nil {
 		t.Fatalf("Plan: %v", err)
 	}
-	want := []string{"git", "-C", req.ProjectRoot, "worktree", "add", "-b", "wt-branch", "--", got.Dir}
-	if !reflect.DeepEqual(got.Steps[0].Argv, want) {
-		t.Fatalf("worktree argv = %v, want %v", got.Steps[0].Argv, want)
+	branch := "observer-sandbox/" + req.ID + "/wt-branch"
+	want := []string{"git", "-C", req.ProjectRoot, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "protocol.file.allow=never", "worktree", "add", "-b", branch, "--", got.Dir, req.StartPoint}
+	if !reflect.DeepEqual(got.Steps[0].Argv, want) || !got.Steps[0].Hardened {
+		t.Fatalf("worktree argv = %v (hardened %v), want %v hardened", got.Steps[0].Argv, got.Steps[0].Hardened, want)
+	}
+	if got.Branch != branch {
+		t.Fatalf("Branch = %q, want %q", got.Branch, branch)
+	}
+}
+
+func TestPlanWorktreeRefusesABadStartPoint(t *testing.T) {
+	for _, sp := range []string{"HEAD", "-x", "0123", "0123456789ABCDEF0123456789ABCDEF01234567"} {
+		req := baseReq()
+		req.Source = SourceWorktree
+		req.AllowWorktreeSource = true
+		req.StartPoint = sp
+		if _, err := Plan(req); err == nil {
+			t.Errorf("start point %q accepted", sp)
+		}
 	}
 }
 

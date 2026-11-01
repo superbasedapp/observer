@@ -58,6 +58,20 @@ type RouteGate struct {
 	// provider type (compared on the token before any '='; a value must
 	// follow). Read like ProviderTypeEnv.
 	ProviderTypeArguments []string
+	// AuthSettingKeys are settings keys whose PRESENCE means the product has
+	// a saved sign-in choice that can pin its vendor's own host whatever
+	// base URL the launcher sets (surface-gap CLI-6: Gemini CLI's
+	// security.auth.selectedType, an administrator's enforcedType). The
+	// launcher reads key presence only and says which key may override the
+	// route; the doctor classes the saved mode (agentconfig
+	// gemini-cli/security.auth.selectedType).
+	AuthSettingKeys []AuthSettingKey
+	// DotenvKeys are variables a .env file the product loads can set to
+	// switch its sign-in mode (GOOGLE_GENAI_USE_GCA); DotenvFiles are the
+	// files it loads, "~/" the home and "<project>/" the launch directory.
+	// Key presence only, never a value.
+	DotenvKeys  []string
+	DotenvFiles []string
 }
 
 // RouteGateOutcome is the closed result of EvaluateRouteGate.
@@ -83,6 +97,12 @@ const (
 	// their own provider settings rather than send that provider's credential
 	// to the route's upstream.
 	RouteGateForeignProvider RouteGateOutcome = "foreign_provider"
+
+	// RouteGateRoutedAuthPinned: apply the route, and say which saved
+	// sign-in setting (AuthSettingKeys, DotenvKeys) may still send the
+	// product to its vendor's own host (CLI-6). The route is never refused
+	// for it: the saved choice may be the API-key mode the route carries.
+	RouteGateRoutedAuthPinned RouteGateOutcome = "routed_auth_pinned"
 )
 
 // RouteGateInput is the resolved, boolean view of one launch, computed at the
@@ -99,6 +119,9 @@ type RouteGateInput struct {
 	// ForeignProvider: RouteGate.ProviderTypeEnv is set to a value outside
 	// RoutableProviderTypes.
 	ForeignProvider bool
+	// AuthPinned: an AuthSettingKeys key or a DotenvKeys variable is
+	// present, so a saved sign-in choice may override the route.
+	AuthPinned bool
 }
 
 // routeGateRule is one row of the ordered gate table: first match wins, one
@@ -122,7 +145,9 @@ var routeGateRules = []routeGateRule{
 	{RouteGateModelRequired, func(g RouteGate, in RouteGateInput) bool {
 		return g.RequiresModel() && !in.ModelPresent
 	}},
-	// 5. Everything the lane needs is present.
+	// 5. A saved sign-in choice may outrank the route: route, and say so.
+	{RouteGateRoutedAuthPinned, func(_ RouteGate, in RouteGateInput) bool { return in.AuthPinned }},
+	// 6. Everything the lane needs is present.
 	{RouteGateRouted, func(RouteGate, RouteGateInput) bool { return true }},
 }
 

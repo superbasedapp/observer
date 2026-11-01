@@ -250,3 +250,185 @@ func JSONEqual(a, b json.RawMessage) bool {
 	yb, _ := json.Marshal(y)
 	return bytes.Equal(xb, yb)
 }
+
+// ObjectMembers returns only the named top-level members of the JSON object
+// orig, as their source bytes (D16 / D9: a member-only read of a
+// credential-bearing file). A name the object does not hold is absent from
+// the result. Anything but a single object is ErrPatch. The other members are
+// scanned for their extent only; none is returned.
+func ObjectMembers(orig []byte, keys ...string) (map[string]json.RawMessage, error) {
+	members, _, err := scanObject(orig)
+	if err != nil {
+		return nil, err
+	}
+	want := map[string]bool{}
+	for _, k := range keys {
+		want[k] = true
+	}
+	out := map[string]json.RawMessage{}
+	for _, m := range members {
+		if want[m.key] {
+			out[m.key] = m.raw
+		}
+	}
+	return out, nil
+}
+
+// ObjectKeys returns the member names of the JSON object orig, in source
+// order, and none of their values. Anything but a single object is ErrPatch.
+func ObjectKeys(orig []byte) ([]string, error) {
+	members, _, err := scanObject(orig)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(members))
+	for _, m := range members {
+		out = append(out, m.key)
+	}
+	return out, nil
+}
+
+// IsObject reports whether raw holds a JSON object (it is not decoded).
+func IsObject(raw []byte) bool {
+	t := bytes.TrimSpace(raw)
+	return len(t) > 0 && t[0] == '{'
+}
+
+// ObjectPath returns the member at path (object keys, outermost first) and
+// whether every step exists. A step that is not an object, or a source that
+// is not one, is ErrPatch.
+func ObjectPath(orig []byte, path []string) (json.RawMessage, bool, error) {
+	cur := json.RawMessage(orig)
+	for _, k := range path {
+		got, err := ObjectMembers(cur, k)
+		if err != nil {
+			return nil, false, err
+		}
+		v, ok := got[k]
+		if !ok {
+			return nil, false, nil
+		}
+		cur = v
+	}
+	return cur, true, nil
+}
+
+// SetObjectPath is SetObjectMember for a nested member: it sets the member at
+// path (object keys, outermost first) to value (present) or removes it
+// (!present). Only the innermost object is spliced; every enclosing object
+// keeps its bytes except for the one value that changed, so a sibling at any
+// level (another provider's settings, its key) keeps its exact bytes and
+// position. A missing intermediate object is created when setting and the
+// removal is a no-op when it is absent. The result is verified to decode to
+// the original document with only path changed, or ErrPatch is returned.
+func SetObjectPath(orig []byte, path []string, value json.RawMessage, present bool) ([]byte, error) {
+	if len(path) == 0 {
+		return nil, ErrPatch
+	}
+	out, err := setObjectPath(orig, path, value, present)
+	if err != nil {
+		return nil, err
+	}
+	if bytes.Equal(out, orig) {
+		return orig, nil
+	}
+	want, ok := decodeExact(orig)
+	if len(bytes.TrimSpace(orig)) == 0 {
+		want, ok = map[string]any{}, true
+	}
+	if !ok {
+		return nil, ErrPatch
+	}
+	var v any
+	if present {
+		if v, ok = decodeExact(value); !ok {
+			return nil, ErrPatch
+		}
+	}
+	if !setDecodedPath(want, path, v, present) {
+		return nil, ErrPatch
+	}
+	got, ok := decodeExact(out)
+	if !ok || !reflect.DeepEqual(got, want) {
+		return nil, ErrPatch
+	}
+	return out, nil
+}
+
+// setObjectPath does SetObjectPath's splice without the final verification.
+func setObjectPath(orig []byte, path []string, value json.RawMessage, present bool) ([]byte, error) {
+	if t := bytes.TrimSpace(orig); len(t) > 0 && t[0] != '{' {
+		return nil, ErrPatch // a step on the path holds something other than an object
+	}
+	if len(path) == 1 {
+		return SetObjectMember(orig, path[0], value, present)
+	}
+	if len(bytes.TrimSpace(orig)) == 0 {
+		orig = []byte("{}\n")
+	}
+	members, _, err := scanObject(orig)
+	if err != nil {
+		return nil, err
+	}
+	for _, m := range members {
+		if m.key != path[0] {
+			continue
+		}
+		inner, err := setObjectPath(m.raw, path[1:], value, present)
+		if err != nil {
+			return nil, err
+		}
+		if bytes.Equal(inner, m.raw) {
+			return orig, nil
+		}
+		out := append([]byte{}, orig[:m.valueStart]...)
+		out = append(out, inner...)
+		return append(out, orig[m.valueEnd:]...), nil
+	}
+	if !present {
+		return orig, nil
+	}
+	// The member is absent: build the missing objects and add the outermost
+	// one as a new member.
+	nested := value
+	for i := len(path) - 1; i >= 1; i-- {
+		b, err := json.Marshal(map[string]json.RawMessage{path[i]: nested})
+		if err != nil {
+			return nil, ErrPatch
+		}
+		nested = b
+	}
+	return SetObjectMember(orig, path[0], nested, true)
+}
+
+// setDecodedPath applies a SetObjectPath edit to a decoded document, so the
+// splice can be checked against it. It reports false when a step on the path
+// is not an object.
+func setDecodedPath(doc any, path []string, v any, present bool) bool {
+	m, ok := doc.(map[string]any)
+	if !ok {
+		return false
+	}
+	for _, k := range path[:len(path)-1] {
+		next, exists := m[k]
+		if !exists {
+			if !present {
+				return true
+			}
+			child := map[string]any{}
+			m[k] = child
+			m = child
+			continue
+		}
+		if m, ok = next.(map[string]any); !ok {
+			return false
+		}
+	}
+	last := path[len(path)-1]
+	if present {
+		m[last] = v
+	} else {
+		delete(m, last)
+	}
+	return true
+}

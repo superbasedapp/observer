@@ -2,6 +2,7 @@ package guard
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/marmutapp/superbased-observer/internal/policy"
 )
@@ -75,6 +76,18 @@ type mergeState struct {
 // and the effective override list, with one-way checks applied
 // against the catalog reference and the org floor.
 func mergeLayers(org, user, project, trusted *policyFile) (extra []policy.Rule, overrides []policy.Override, disable []string, issues []string) {
+	return mergeLayersWithPack(nil, org, user, project, trusted)
+}
+
+// mergeLayersWithPack is mergeLayers with a module's rule pack composed in
+// (security pillar plan section 4.7 item 1): pack rows join the table
+// before every layer's rules and seed the effective reference like
+// built-ins, so a user override and the org floor may tune them and the
+// project layer may only escalate them. An override naming a pillar rule
+// id (S-7xx) whose pack is not loaded is dropped with a load issue instead
+// of failing engine construction, because a skipped module must not break
+// guard.
+func mergeLayersWithPack(pack []policy.Rule, org, user, project, trusted *policyFile) (extra []policy.Rule, overrides []policy.Override, disable []string, issues []string) {
 	// Multi-row IDs (R-152's write/read split) reduce to the STRICTEST
 	// row per ID — for relaxation checks the conservative reference is
 	// the strictest current stance (documented approximation: an
@@ -89,6 +102,15 @@ func mergeLayers(org, user, project, trusted *policyFile) (extra []policy.Rule, 
 		s.observe = policy.StricterOf(s.observe, info.Observe)
 		s.enforce = policy.StricterOf(s.enforce, info.Enforce)
 	}
+	for _, r := range pack {
+		if s := m.effective[r.ID]; s != nil {
+			s.observe = policy.StricterOf(s.observe, r.Observe)
+			s.enforce = policy.StricterOf(s.enforce, r.Enforce)
+			continue
+		}
+		m.effective[r.ID] = &stance{observe: r.Observe, enforce: r.Enforce, enforced: r.Enforced}
+	}
+	m.extra = append(m.extra, pack...)
 	m.applyOrg(org)
 	m.applyUser(user)
 	m.applyProject(project)
@@ -98,6 +120,60 @@ func mergeLayers(org, user, project, trusted *policyFile) (extra []policy.Rule, 
 	// agent-writable escalation — but the org floor still hard-blocks.
 	m.applyTrustedProject(trusted)
 	return m.extra, m.overrides, m.disable, m.issues
+}
+
+// configDisableOrgFloorIssues reports each config-level [guard.rules]
+// disable entry that names a rule the org layer defines or tunes
+// (OSH-R-014). That list never passes through the merge (it goes straight
+// to policy.Config.Disabled), and policy.New keeps the row as the hard
+// backstop; this note is what makes `observer guard status` say why the
+// disable did nothing instead of it being a silent no-op.
+func configDisableOrgFloorIssues(org *policyFile, disable []string) []string {
+	floor := orgLayerIDs(org)
+	if len(floor) == 0 || len(disable) == 0 {
+		return nil
+	}
+	var issues []string
+	for _, id := range disable {
+		if floor[id] {
+			issues = append(issues, fmt.Sprintf(
+				"[guard.rules] disable of %s ignored: your organization's policy sets this rule, and a local config may not remove it (org > config - spec §4.6, OSH-R-014)", id))
+		}
+	}
+	return issues
+}
+
+// orgLayerIDs is the set of rule ids the org layer defines or tunes, the
+// floor policy.New keeps against every below-org disable (OSH-R-014).
+func orgLayerIDs(org *policyFile) map[string]bool {
+	if org == nil {
+		return nil
+	}
+	floor := map[string]bool{}
+	for _, r := range org.rules {
+		floor[r.ID] = true
+	}
+	for _, ov := range org.overrides {
+		floor[ov.RuleID] = true
+	}
+	return floor
+}
+
+// effectiveConfigDisable is the config-level disable list as the engine
+// applies it: without the org-floored ids policy.New keeps anyway, so the
+// guard's own "which rows are loaded" reasoning agrees with the engine.
+func effectiveConfigDisable(org *policyFile, disable []string) []string {
+	floor := orgLayerIDs(org)
+	if len(floor) == 0 {
+		return disable
+	}
+	out := make([]string, 0, len(disable))
+	for _, id := range disable {
+		if !floor[id] {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // applyOrg folds the org layer (G13): rules join the table first
@@ -115,6 +191,9 @@ func (m *mergeState) applyOrg(org *policyFile) {
 	for _, ov := range org.overrides {
 		s := m.effective[ov.RuleID]
 		if s == nil {
+			if m.dropUnloadedPackOverride("org", ov) {
+				continue
+			}
 			// Unknown rule: surface at engine construction (the
 			// override still goes through so policy.New errors loudly
 			// with the same message lint shows).
@@ -157,6 +236,9 @@ func (m *mergeState) applyUser(user *policyFile) {
 		m.noteUngrantableOverridable(ov)
 		s := m.effective[ov.RuleID]
 		if s == nil {
+			if m.dropUnloadedPackOverride(ov.Layer, ov) {
+				continue
+			}
 			m.overrides = append(m.overrides, toPolicyOverride(ov))
 			continue
 		}
@@ -202,6 +284,9 @@ func (m *mergeState) applyProject(project *policyFile) {
 		m.noteUngrantableOverridable(ov)
 		s := m.effective[ov.RuleID]
 		if s == nil {
+			if m.dropUnloadedPackOverride(ov.Layer, ov) {
+				continue
+			}
 			m.overrides = append(m.overrides, toPolicyOverride(ov))
 			continue
 		}
@@ -221,6 +306,25 @@ func (m *mergeState) applyProject(project *policyFile) {
 		}
 		m.apply(s, ov)
 	}
+}
+
+// dropUnloadedPackOverride drops an override on a pillar rule id (S-7xx)
+// that no loaded row carries: the module that owns the rule is not active
+// (or not in this build). It records the load issue the plan words
+// (section 4.7 item 1) and reports true; any other unknown id is left for
+// policy.New to reject loudly, as before.
+func (m *mergeState) dropUnloadedPackOverride(layer string, ov rawOverride) bool {
+	if !strings.HasPrefix(ov.RuleID, policy.SecurityRuleIDPrefix) {
+		return false
+	}
+	if layer == "" {
+		layer = "policy"
+	}
+	m.issues = append(m.issues, fmt.Sprintf(
+		"%s override on %s dropped: rule %s is not loaded: Code security is not active",
+		layer, ov.RuleID, ov.RuleID,
+	))
+	return true
 }
 
 // noteUngrantableOverridable records the load issue for an
@@ -305,6 +409,9 @@ func (m *mergeState) applyTrustedProject(trusted *policyFile) {
 		m.noteUngrantableOverridable(ov)
 		s := m.effective[ov.RuleID]
 		if s == nil {
+			if m.dropUnloadedPackOverride(ov.Layer, ov) {
+				continue
+			}
 			m.overrides = append(m.overrides, toPolicyOverride(ov))
 			continue
 		}

@@ -53,9 +53,11 @@ and install via `code --install-extension <file>.vsix`.
 | **Dashboard webview** | `SuperBased: Open Dashboard` opens the full React analytics SPA inside an editor tab. Same surface as the standalone `http://127.0.0.1:8081/`. Remote-SSH / Codespaces work via `portMapping`. |
 | **File-freshness decorations** | A small dot in the explorer next to files your AI tools touched in the last 24 h, with a Markdown hover showing last-read-by, edit count, stale re-read count, and the tools that touched it. |
 | **Budget + watcher-lag notifications** | When spend hits 80 % of `intelligence.monthly_budget_usd`, a banner suggests review. When the watcher falls behind on a session file by > 10 kB, a banner names the lagging file. Both deduped so they don't nag. |
+| **Messages from your admin** | On a machine enrolled with an organization, a new admin message raises one notification (a warning for an alert): "Message from your admin, Asha Kim: subject", with Open (the dashboard's Messages page on that conversation), Acknowledge (only when the admin asked for one) and Later. A status bar item reads "1 from admin" while anything is unread. Polls `GET /api/messages/summary` every 60 s; announces each message once. Off when `[messages] vscode = false`; `alerts_only` limits it to alerts. `SuperBased: Open Messages from Your Admin` opens the page. |
 | **Daemon lifecycle** | The extension can attach to a daemon you started in a terminal (`detect` mode, the default), or spawn + supervise its own (`managed` / `auto`). Crash recovery with exponential backoff `[1 s, 2 s, 5 s]`; user-initiated stops are distinguished from crashes. |
 | **Terminal profile** | A contributed terminal profile titled **"AI Coding Tool (SuperBased-proxied)"** that pre-exports `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, and `ENABLE_TOOL_SEARCH=true` so any AI CLI launched from it routes through the observer proxy. |
 | **CodeLens on instruction files** | `CLAUDE.md`, `AGENTS.md`, and `.cursorrules` get two lenses at the top: **Refresh from SuperBased learnings** (runs `observer suggest --apply`) and **Preview suggestions** (dry-run, opens stdout beside the original). |
+| **Code security findings** | While the Code security component (`security`) is active, open findings of the workspace's project appear in the Problems panel on the files you have open (a high or critical finding is a warning, medium is information, low a hint; the text is the rule's templated message and fix hint, never the matched value), with a status bar count (`$(shield) 2 findings`) that opens `SuperBased: Show code security findings`. Polls `GET /api/security/editor` every 30 s per workspace folder. Hidden, and never polled, while the component is not active; off with `observer.securityDiagnostics.enabled = false`. Exceptions and baselines are set on the dashboard's Code security page or with `observer security exception` / `observer security baseline`. |
 | **Human line-count reporting** | On each save the extension counts how many lines you changed and posts the COUNTS to the local daemon, so the dashboard can show human-written lines next to AI-written ones. See [Human line counts](#human-line-counts). Off with `observer.loc.reportSaves = false`. |
 
 ## Human line counts
@@ -151,6 +153,7 @@ Open the command palette (`Ctrl+Shift+P` / `⌘⇧P`) and search for
 | `SuperBased: Copy Session ID` / `Copy Path` | Self-explanatory; right-click context menu. |
 | `SuperBased: Refresh Instructions from Learnings` | CodeLens on `CLAUDE.md` etc.: runs `observer suggest --apply --target <…>` for the current workspace. |
 | `SuperBased: Preview Instruction Suggestions` | Same as above but dry-run; opens stdout in a new editor beside the original. |
+| `SuperBased: Show code security findings` | List the workspace's open code security findings and jump to one. Shown only while the Code security component is active. |
 
 **Components that are not active.** The extension reads the daemon's
 component state (`GET /api/components/state`) when the daemon comes up
@@ -175,6 +178,7 @@ shows everything as before.
 | `observer.statusBar.enabled` | `true` | Today-spend status bar item. |
 | `observer.statusBar.wordmark` | `true` | Show the `▞ superbased` wordmark prefix on the status bar's live-state text. |
 | `observer.cacheStatusBar.enabled` | `true` | Cache-expiry status bar item (a countdown when a valuable prompt cache is about to go cold). |
+| `observer.securityDiagnostics.enabled` | `true` | Code security findings as Problems-panel diagnostics and a status bar count (only while the Code security component is active). |
 | `observer.loc.reportSaves` | `true` | Report line COUNTS (never content) to the local daemon on each save, so the dashboard can show human-written lines next to AI-written ones. See [Human line counts](#human-line-counts). |
 | `observer.loc.editorToken` | empty | Sent as `X-Observer-Token` on the saved-line-count report. **Leave it empty**: the daemon generates a per-install token on first start and the extension reads it from the observer home (`OBSERVER_HOME` if set, else `~/.observer/loc-editor-token`). Set it only when the daemon runs somewhere the extension cannot read that file, or when you moved the file with the daemon's `[loc].editor_token_file` key. |
 | `observer.apiToken` | empty | **Deprecated, no longer read.** The saved-line-count report was the only request that ever sent this header; it now uses `observer.loc.editorToken`. |
@@ -232,6 +236,17 @@ one**:
   (`extension_version` on the update posture row - empty when no
   extension is running, never `"0"`).
 
+**Windows warm-up of a newly adopted binary.** On Windows the first run of
+a new executable costs about 2 s while Microsoft Defender scans it, and the
+AI tools' hooks run the same binary, so after an extension update the
+extension runs the adopted binary once in the background (`--version`,
+`vscode/src/warmup.ts`), bounded at 30 s and never awaited by activation,
+so the scan is not paid by the first hook. It runs once per adopted path
+and version (remembered in the extension's global state), and not at all
+on Linux or macOS. The `--version` acceptance probe above already runs the
+binary during activation, so on today's adoption paths this is usually the
+second, cheap run.
+
 The inverse case needs no guard: a `vscode`-owned daemon binary (one
 living in the extension's own global-storage cache) is not something the
 node updater will ever touch - the install-method table marks it
@@ -262,11 +277,12 @@ executable or read a secret off disk.
 
 ## Local-first guarantees
 
-- **No telemetry.** The extension respects `telemetry.telemetryLevel`
-  and never reports usage, crash, or session data.
+- **No usage data is sent to us today.** The extension currently sends
+  no usage or crash data to SuperBased, and your content never leaves
+  without your consent.
 - **No outbound network calls** except to GitHub Releases on first
   install (for the binary, when none is found locally).
-- **No data leaves your machine.** All `/api/*` traffic is to
+- **Your content stays on your machine.** All `/api/*` traffic is to
   `127.0.0.1:<dashboard.port>` on the workspace host. Under
   Remote-SSH / Codespaces the iframe `portMapping` routes the
   webview-side `127.0.0.1` to the same loopback on the host, no

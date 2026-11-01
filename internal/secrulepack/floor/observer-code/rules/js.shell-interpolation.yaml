@@ -1,0 +1,32 @@
+rules:
+  - id: js.shell-interpolation
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: Web request input reaches a shell command line; use execFile or spawn with an argument list instead.
+    metadata:
+      category: code_vuln
+      cwe: CWE-78
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: $REQ.query
+              - pattern: $REQ.body
+              - pattern: $REQ.params
+              - pattern: $REQ.cookies
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(req|request|ctx\.request)$
+    pattern-sanitizers:
+      - pattern: parseInt(...)
+      - pattern: Number(...)
+      - pattern: parseFloat(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: $CP.$EXEC($CMD, ...)
+              - pattern: $EXEC($CMD, ...)
+          - metavariable-regex:
+              metavariable: $EXEC
+              regex: ^(exec|execSync)$
+          - focus-metavariable: $CMD

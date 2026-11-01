@@ -13,7 +13,7 @@ const crushKey = "routed-key-def"
 func newCrushRegistrar(t *testing.T, home string) *Registrar {
 	t.Helper()
 	// Force homeDir/.config/crush resolution (no env override).
-	t.Setenv("CRUSH_CONFIG", "")
+	t.Setenv("CRUSH_GLOBAL_CONFIG", "")
 	t.Setenv("XDG_CONFIG_HOME", "")
 	r, err := NewRegistrar(RegisterOptions{ProxyPort: 8820, HomeDir: home})
 	if err != nil {

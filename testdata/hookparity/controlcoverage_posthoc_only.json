@@ -1,6 +1,7 @@
 [
   "antigravity",
   "antigravity-cli",
+  "autohand",
   "chatgpt-web",
   "claude-web",
   "cline",
@@ -21,5 +22,6 @@
   "open-interpreter",
   "openclaw",
   "perplexity-web",
+  "stakpak",
   "zed"
 ]

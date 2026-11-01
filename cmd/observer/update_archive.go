@@ -135,7 +135,18 @@ func extractZipMember(archivePath, dest string, a update.Artifact) (string, erro
 		}
 		sum, err := writeMember(dest, rc)
 		_ = rc.Close()
-		return sum, err
+		if err != nil {
+			return sum, err
+		}
+		// The declared companion files the binary needs beside it (the
+		// Windows sandbox driver's mxc\ set, update_bundle.go), staged and
+		// checked against their manifest; nothing when the archive carries
+		// none.
+		if err := extractZipBundles(&zr.Reader, sel, dest); err != nil {
+			_ = os.Remove(dest)
+			return "", err
+		}
+		return sum, nil
 	}
 	return "", fmt.Errorf("observer update: member %q vanished between passes over %s", sel.Member.Name, filepath.Base(archivePath))
 }

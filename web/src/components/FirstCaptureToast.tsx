@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { Obs } from "@/components/Obs";
+import { ObsLanding } from "@shared/primitives/ObsFlight";
 import { useApi } from "@/lib/useApi";
 import type { StatusSnapshot } from "@/lib/types";
 import { Icon } from "@/components/primitives";
@@ -73,7 +73,8 @@ export function FirstCaptureToast() {
   if (!show) return null;
   return (
     <div className="fixed bottom-5 right-5 z-50 flex items-center gap-3 rounded-3 border border-line-2 bg-bg-2 px-4 py-3 shadow-3">
-      <Obs state="jump" size={36} />
+      {/* Finish line (D-665..D-669): Obs lands on the first capture. */}
+      <ObsLanding size={36} />
       <div className="text-[12px]">
         <div className="font-semibold text-fg-1">First session captured.</div>
         <Link

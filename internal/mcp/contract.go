@@ -38,10 +38,15 @@ type ContractTool struct {
 	Tier ContractTier `json:"tier"`
 	// ConfigGated is true when the tool is registered only if its own
 	// config flag (and the [intelligence.mcp].features allow-list) permit
-	// it. Always true for TierConditional rows and false for every other
-	// tier — the flag is carried explicitly so a machine consumer never has
-	// to re-derive it from the tier string.
+	// it. Always true for TierConditional rows and for module rows (Module
+	// set), false for every other row; the flag is carried explicitly so a
+	// machine consumer never has to re-derive it from the tier string.
 	ConfigGated bool `json:"config_gated"`
+	// Module names the optional component whose tools the host adds to the
+	// server (Options.ExtraTools) only while that module is active and its
+	// own setting is on; "" for the server's built-in tools. A module tool
+	// is never on a server whose host did not add it.
+	Module string `json:"module,omitempty"`
 }
 
 // contractTools is THE tool-stability table — the single owner of the tier
@@ -54,6 +59,11 @@ type ContractTool struct {
 // tool fails TestStableToolNamesPinned.
 var contractTools = []ContractTool{
 	{Name: "cache_status", Tier: TierStable},
+	// check_change and get_security_findings are the security module's
+	// tools (internal/secmcp, lane sec-c3): `observer serve` adds them only
+	// while the `security` module is active and [security.mcp].tools is on,
+	// so their presence is gated twice; new, so experimental.
+	{Name: "check_change", Tier: TierExperimental, ConfigGated: true, Module: "security"},
 	{Name: "check_command_freshness", Tier: TierStable},
 	{Name: "check_file_freshness", Tier: TierStable},
 	// continue_session / get_session_message are the two session-handoff
@@ -83,6 +93,7 @@ var contractTools = []ContractTool{
 	{Name: "get_redundancy_report", Tier: TierStable},
 	{Name: "get_relations", Tier: TierConditional, ConfigGated: true},
 	{Name: "get_routing_status", Tier: TierStable},
+	{Name: "get_security_findings", Tier: TierExperimental, ConfigGated: true, Module: "security"},
 	{Name: "get_session_message", Tier: TierExperimental},
 	{Name: "get_session_recovery_context", Tier: TierStable},
 	{Name: "get_session_summary", Tier: TierStable},

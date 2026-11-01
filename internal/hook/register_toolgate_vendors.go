@@ -2,9 +2,10 @@ package hook
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
+	"strings"
 
 	"github.com/marmutapp/superbased-observer/internal/hook/commandcodemod"
 )
@@ -33,6 +34,23 @@ var installedToolGateDirs = []struct {
 	{"cline-cli", [][]string{{".cline"}}},
 	{"muse", [][]string{{".config", "muse"}}},
 	{"kimi-code", [][]string{{".kimi-code"}}},
+	{"kiro-cli", [][]string{{".kiro"}}},
+	// The 2026-10-21 wave: each vendor's own home (the default location;
+	// an env-relocated home is not an install signal of its own).
+	{"ibm-bob", [][]string{{".bob"}}},
+	{"codebuddy", [][]string{{".codebuddy"}}},
+	{"deepagents-code", [][]string{{".deepagents"}}},
+	{"dimcode", [][]string{{".dimcode"}}},
+	{"dirac", [][]string{{".dirac"}}},
+	{"autohand", [][]string{{".autohand"}}},
+	{"vtcode", [][]string{{".config", "vtcode"}, {"AppData", "Roaming", "vinhnx", "vtcode"}}},
+	{"kimchi", [][]string{{".config", "kimchi"}}},
+	// Surface-gap W-2a: Cortex Code, detected only through the
+	// cortex-code/user-hooks artifact's directory (homeArtifacts), so
+	// CORTEX_HOME / SNOWFLAKE_HOME move the signal with the file (its hook
+	// writer refuses until live check LC18, so detection only makes init
+	// say so).
+	{"cortex-code", nil},
 }
 
 // Handler timeouts Observer registers where the vendor default is too
@@ -56,10 +74,13 @@ func commandHandler(timeoutKey string, timeout int) func(string) map[string]any 
 }
 
 // grokHooksTarget: Grok Build loads every ~/.grok/hooks/*.json (always
-// trusted); Observer owns one file there.
+// trusted); Observer owns one file there. The directory is the grok/user-hooks
+// artifact, so GROK_HOME moves it (S-17, CLI-4).
 func (r *Registry) grokHooksTarget() jsonHooksTarget {
+	dir, err := r.artifactDir("grok/user-hooks")
 	return jsonHooksTarget{
-		tool: "grok", dir: filepath.Join(r.opts.HomeDir, ".grok", "hooks"), file: "superbased-observer.json",
+		dirErr: err,
+		tool:   "grok", dir: dir, file: "superbased-observer.json",
 		eventsPath: []string{"hooks"}, events: []string{"PreToolUse"},
 		grouped: true, handler: commandHandler("timeout", grokHookTimeoutSeconds), commandKey: "command",
 		dedicated: true, errPrefix: "hook.registerGrok",
@@ -67,18 +88,141 @@ func (r *Registry) grokHooksTarget() jsonHooksTarget {
 }
 
 // copilotCLIHooksTarget: Copilot CLI loads every ~/.copilot/hooks/*.json
-// (version 1); the handler's shell command is the "bash" field.
+// (version 1); the handler's shell command is the "bash" field, plus the
+// "powershell" field when this Observer runs on Windows (a Windows-native
+// observer.exe writing the Windows ~/.copilot).
 func (r *Registry) copilotCLIHooksTarget() jsonHooksTarget {
-	return jsonHooksTarget{
-		tool: "copilot-cli", dir: filepath.Join(r.opts.HomeDir, ".copilot", "hooks"), file: "superbased-observer.json",
-		eventsPath: []string{"hooks"}, events: []string{"preToolUse"},
+	var ps func(event string) string
+	if r.hostGOOS() == "windows" {
+		ps = func(event string) string { return r.copilotPowerShellCommand("& ", event) }
+	}
+	// The hooks directory sits in the Copilot home beside settings.json, so
+	// it follows COPILOT_HOME with the copilot-cli/user-settings artifact
+	// (CLI-4; no hooks-directory row is catalogued yet).
+	home, err := r.artifactDir("copilot-cli/user-settings")
+	t := r.copilotCLIHooksTargetAt(filepath.Join(home, "hooks"), "", "", "hook.registerCopilotCLI", ps)
+	t.dirErr = err
+	return t
+}
+
+// copilotCLIWindowsHooksTarget is the copilot-cli-windows bridge: a WSL
+// daemon writing the Windows-side ~/.copilot/hooks file, each command
+// running `observer hook copilot-cli <event>` inside the daemon's distro.
+// The bash field carries the Git Bash spelling every other "-windows" bridge
+// uses (ownership is read from it); the powershell field, the one Copilot
+// CLI actually runs on Windows, uses `wsl.exe -e` so a Linux path argument
+// with a space survives (PowerShell 5.1 strips the quotes, and `--` would
+// re-split it in the Linux shell; `-e` executes without a shell).
+func (r *Registry) copilotCLIWindowsHooksTarget(copilotDir, distro string) jsonHooksTarget {
+	ps := func(event string) string {
+		return r.copilotPowerShellCommand("wsl.exe -d "+psQuoteIfNeeded(distro)+" -e ", event)
+	}
+	return r.copilotCLIHooksTargetAt(filepath.Join(copilotDir, "hooks"), "copilot-cli-windows", gitBashWrapper(distro), "hook.registerCopilotCLIWindows", ps)
+}
+
+// copilotCLIHooksTargetAt is the one Copilot CLI hooks-file row, at dir.
+// label and wrapper make it the cross-OS bridge. psCommand, when non-nil,
+// adds the handler's "powershell" field: Copilot CLI on Windows runs a
+// hook's powershell command, not its bash one (copilot 1.0.80 bundle:
+// hookSelectShellScript(bash, powershell, platform === "win32")), so a hook
+// file without it never fires there (live check 2026-10-20: the Windows
+// install had no Observer hook and a core.hooksPath bypass commit ran
+// unguarded).
+func (r *Registry) copilotCLIHooksTargetAt(dir, label, wrapper, errPrefix string, psCommand func(event string) string) jsonHooksTarget {
+	t := jsonHooksTarget{
+		tool: "copilot-cli", label: label, wrapper: wrapper, dir: dir, file: "superbased-observer.json",
+		eventsPath: []string{"hooks"}, events: []string{"preToolUse", "userPromptSubmitted"},
 		handler: func(cmd string) map[string]any {
 			return map[string]any{"type": "command", "bash": cmd, "timeoutSec": 30}
 		},
 		commandKey: "bash",
 		settings:   []jsonSetting{{path: []string{"version"}, value: 1}},
-		dedicated:  true, errPrefix: "hook.registerCopilotCLI",
+		dedicated:  true, errPrefix: errPrefix,
 	}
+	if psCommand != nil {
+		t.eventHandler = func(event, cmd string) map[string]any {
+			return map[string]any{"type": "command", "bash": cmd, "powershell": psCommand(event), "timeoutSec": 30}
+		}
+	}
+	return t
+}
+
+// copilotPowerShellCommand is Observer's PowerShell command for a Copilot CLI
+// event: prefix ("& " for a native Windows binary, the wsl.exe bridge
+// otherwise), then the binary and its arguments, each PowerShell-quoted,
+// then copilotPowerShellExit. Copilot reads the hook's exit code as the
+// PowerShell process's: without the explicit exit, Windows PowerShell's own
+// view of the native command (a stderr line read as an error record) can
+// make that non-zero, which Copilot reports as "Denied by preToolUse hook
+// (hook errored)" and drops the deny's reason (WINNODE2 item 10). With it,
+// the exit code is exactly observer's.
+func (r *Registry) copilotPowerShellCommand(prefix, event string) string {
+	cmd := prefix + psQuoteIfNeeded(forwardSlashPath(r.opts.BinaryPath)) + " hook copilot-cli " + event
+	if r.opts.ConfigPath != "" {
+		cmd += " --config " + psQuoteIfNeeded(forwardSlashPath(r.opts.ConfigPath))
+	}
+	return cmd + copilotPowerShellExit
+}
+
+// copilotPowerShellExit ends every Copilot PowerShell hook command. It
+// exits with observer's own exit code, and with 1 when there is none: a
+// command that never ran (observer.exe missing after an extension update
+// deleted its bundled binary, or an uninstall that left the hooks file)
+// leaves $LASTEXITCODE unset, and a bare `exit $LASTEXITCODE` then exits 0,
+// which Copilot reads as allow. Exiting 1 keeps the gate fail-closed: a
+// non-zero exit denies (WINNODE2 merge, audit H3). Measured with Windows
+// PowerShell 5.1: missing binary 1, a binary exiting 0 gives 0, exiting 2
+// gives 2.
+const copilotPowerShellExit = "; if ($LASTEXITCODE -is [int]) { exit $LASTEXITCODE } else { exit 1 }"
+
+// psQuoteIfNeeded returns s as a PowerShell argument: verbatim when it holds
+// no character PowerShell treats specially, else a single-quoted literal
+// with embedded single quotes doubled (PowerShell's own escape; the POSIX
+// '\” form shellQuote writes is not valid PowerShell).
+func psQuoteIfNeeded(s string) string {
+	if s == "" {
+		return "''"
+	}
+	if !strings.ContainsAny(s, " \t'\"`$;&|(){}@#<>,") {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+}
+
+// registerCopilotCLIWindows installs Observer's Copilot CLI hooks file into
+// the Windows-side ~/.copilot/hooks (typically
+// /mnt/c/Users/<u>/.copilot/hooks/superbased-observer.json) as the
+// copilot-cli-windows bridge. Same ownership-verified Windows home
+// detection and sandbox rule as every other "-windows" target.
+func (r *Registry) registerCopilotCLIWindows() RegistrationResult {
+	res := RegistrationResult{Tool: "copilot-cli-windows", DryRun: r.opts.DryRun}
+	dir := r.detectWindowsCopilotHome()
+	if dir == "" {
+		if r.foreignAutoDetectSuppressed(r.opts.WindowsCopilotHome) {
+			r.sandboxSkipResult(&res, ".copilot", "WindowsCopilotHome", r.opts.WindowsCopilotHome)
+			return res
+		}
+		res.Error = errors.New("hook.registerCopilotCLIWindows: no Windows-side .copilot/ detected (set WindowsCopilotHome explicitly or run on a host where crossmount sees /mnt/c/Users/<u>/.copilot/)")
+		return res
+	}
+	distro, err := r.resolveWSLDistro("hook.registerCopilotCLIWindows")
+	if err != nil {
+		res.Error = err
+		return res
+	}
+	return r.registerJSONHooks(r.copilotCLIWindowsHooksTarget(dir, distro))
+}
+
+// unregisterCopilotCLIWindows removes the copilot-cli-windows bridge's hooks
+// file. A host with no Windows-side .copilot is a no-op Skip. Ownership is
+// read from each entry's command, so the distro does not have to match.
+func (r *Registry) unregisterCopilotCLIWindows() UnregistrationResult {
+	dir := r.detectWindowsCopilotHome()
+	if dir == "" {
+		return UnregistrationResult{Tool: "copilot-cli-windows", DryRun: r.opts.DryRun, Skipped: true}
+	}
+	distro, _ := r.resolveWSLDistro("hook.unregisterCopilotCLIWindows")
+	return r.unregisterJSONHooks(r.copilotCLIWindowsHooksTarget(dir, distro))
 }
 
 // goosePluginManifest is the plugin.json an Open Plugins directory needs.
@@ -91,36 +235,64 @@ var goosePluginManifest = []byte(`{
 
 // gooseHooksTarget: Goose loads Open Plugins from ~/.agents/plugins/<name>;
 // Observer owns one plugin directory (manifest + hooks/hooks.json).
+//
+// Goose's PreToolUse action fails OPEN by default (an Observer crash, a
+// timeout or an unparseable reply lets the call run); "on_failure":"block"
+// (read on PreToolUse only, goose 1.53.0 hooks loader) makes it fail
+// closed. Observer writes it only while guard enforcement closes the tool
+// gate (Options.ToolGateFailsClosed), so a node that does not enforce never
+// has a tool call blocked by an Observer failure. The entry differs between
+// the two states, so the next registration rewrites it in place.
 func (r *Registry) gooseHooksTarget() jsonHooksTarget {
+	handler := commandHandler("timeout", 30)
+	if r.opts.ToolGateFailsClosed {
+		handler = func(cmd string) map[string]any {
+			return map[string]any{"type": "command", "command": cmd, "timeout": 30, "on_failure": "block"}
+		}
+	}
 	return jsonHooksTarget{
 		tool: "goose", dir: filepath.Join(r.opts.HomeDir, ".agents", "plugins", "superbased-observer"), file: filepath.Join("hooks", "hooks.json"),
 		eventsPath: []string{"hooks"}, events: []string{"PreToolUse"},
-		grouped: true, matcher: ".*", handler: commandHandler("timeout", 30), commandKey: "command",
+		grouped: true, matcher: ".*", handler: handler, commandKey: "command",
 		dedicated: true, extraFiles: map[string][]byte{"plugin.json": goosePluginManifest},
 		errPrefix: "hook.registerGoose",
 	}
 }
 
 // junieHooksTarget: Junie CLI reads the "hooks" key of ~/.junie/config.json
-// (Claude-shaped matcher groups; CLI only, not the IDE / ACP mode).
+// (Claude-shaped matcher groups; CLI only, not the IDE / ACP mode). The file
+// is the junie/user-config artifact, so JUNIE_HOME moves it (W-4).
 func (r *Registry) junieHooksTarget() jsonHooksTarget {
+	dir, err := r.artifactDir("junie/user-config")
 	return jsonHooksTarget{
-		tool: "junie", dir: filepath.Join(r.opts.HomeDir, ".junie"), file: "config.json",
+		dirErr: err,
+		tool:   "junie", dir: dir, file: "config.json",
 		eventsPath: []string{"hooks"}, events: []string{"PreToolUse"},
 		grouped: true, handler: commandHandler("timeout", junieHookTimeoutSeconds), commandKey: "command",
 		errPrefix: "hook.registerJunie",
 	}
 }
 
+// crushObserverEntryName is the "name" of Observer's Crush hook entry.
+const crushObserverEntryName = "superbased-observer"
+
 // crushHooksTarget: Crush reads flat {name, matcher, command, timeout}
-// entries under crush.json "hooks" (global ~/.config/crush/crush.json).
+// entries under crush.json "hooks" (global ~/.config/crush/crush.json). The
+// file is the crush/user-json artifact, the same file the route writer
+// edits, so CRUSH_GLOBAL_CONFIG and XDG_CONFIG_HOME move both (FU-17). The
+// higher layers Crush also loads (the data-dir crush.json, a crushrc in the
+// same directory, project files) are reported by the effective-layer work,
+// not written here.
 func (r *Registry) crushHooksTarget() jsonHooksTarget {
+	dir, err := r.artifactDir("crush/user-json")
 	return jsonHooksTarget{
-		tool: "crush", dir: filepath.Join(r.opts.HomeDir, ".config", "crush"), file: "crush.json",
+		dirErr: err,
+		tool:   "crush", dir: dir, file: "crush.json",
 		eventsPath: []string{"hooks"}, events: []string{"PreToolUse"},
 		handler: func(cmd string) map[string]any {
-			return map[string]any{"name": "superbased-observer", "command": cmd, "timeout": 30}
+			return map[string]any{"name": crushObserverEntryName, "command": cmd, "timeout": 30}
 		},
+		entryName:  crushObserverEntryName,
 		commandKey: "command", errPrefix: "hook.registerCrush",
 	}
 }
@@ -130,9 +302,15 @@ func (r *Registry) crushHooksTarget() jsonHooksTarget {
 // The [features] hooks switch lives in ~/.openinterpreter/config.toml,
 // which can hold plaintext provider keys: Observer never reads or rewrites
 // it (the developer enables hooks and trusts the entry with /hooks).
+//
+// hooks.json sits in the Open Interpreter home beside config.toml, so it
+// follows INTERPRETER_HOME with the open-interpreter/user-config artifact
+// (OI-1; that file is only resolved, never opened).
 func (r *Registry) openInterpreterHooksTarget() jsonHooksTarget {
+	dir, err := r.artifactDir("open-interpreter/user-config")
 	return jsonHooksTarget{
-		tool: "open-interpreter", dir: filepath.Join(r.opts.HomeDir, ".openinterpreter"), file: "hooks.json",
+		dirErr: err,
+		tool:   "open-interpreter", dir: dir, file: "hooks.json",
 		eventsPath: []string{"hooks"}, events: []string{"PreToolUse"},
 		grouped: true, matcher: "*", handler: commandHandler("", 0), commandKey: "command",
 		errPrefix: "hook.registerOpenInterpreter",
@@ -313,14 +491,29 @@ func (r *Registry) unregisterZcode() UnregistrationResult {
 // Cascade events are cascadeEvents).
 var devinCLIEvents = []string{"PreToolUse"}
 
-// devinCLIConfigDir is the Devin CLI's user config directory:
-// ~/.config/devin (Linux, macOS), %APPDATA%\devin (Windows), per
-// docs.devin.ai/cli/extensibility/hooks/overview (fetched 2026-10-06).
+// devinCLIConfigDir is the Devin CLI's user config directory, per
+// docs.devin.ai/cli/extensibility/hooks/overview (fetched 2026-10-06) and
+// docs.devin.ai/desktop/cascade/mcp (surface-gap S-10, 2026-10-25):
+//
+//   - Windows: %APPDATA%\devin, else <home>\AppData\Roaming\devin (the
+//     roaming profile can live off the default drive, so the variable wins
+//     over the derived path);
+//   - Linux and macOS: $XDG_CONFIG_HOME/devin, else ~/.config/devin.
+//
+// The same directory is the install signal (register_core.go), so detection
+// and the write follow one rule. A relative variable value is ignored, as
+// every other env-relocated writer here does (envDir). On Windows the
+// directory is also Devin Desktop's Electron user-data dir (%APPDATA%\Devin,
+// NTFS is case-insensitive; internal/adapter/devin/surface.go).
+//
+// Since FU-5 the rule is the devin/user-config artifact (its %APPDATA% token
+// and its Linux-only XDG_CONFIG_HOME relocation), not a copy here.
 func (r *Registry) devinCLIConfigDir() string {
-	if runtime.GOOS == "windows" {
-		return filepath.Join(r.opts.HomeDir, "AppData", "Roaming", "devin")
+	fallback := filepath.Join(r.opts.HomeDir, ".config", "devin")
+	if r.hostGOOS() == "windows" {
+		fallback = filepath.Join(r.opts.HomeDir, "AppData", "Roaming", "devin")
 	}
-	return filepath.Join(r.opts.HomeDir, ".config", "devin")
+	return r.artifactDirOr("devin/user-config", fallback)
 }
 
 // devinCLIHooksTarget: the Devin CLI reads the "hooks" key of its user
@@ -354,6 +547,15 @@ func (r *Registry) registerDevinAll() RegistrationResult {
 	if res.ConfigPath == "" {
 		res.ConfigPath = c.ConfigPath
 	}
+	if res.Skipped {
+		// The Cascade file stood down for the system hooks file (IDE-6),
+		// but the CLI half still registers: report the stand-down as a note
+		// on a result that wrote the CLI file.
+		res.Warnings = append(res.Warnings, "Devin Desktop: "+res.SkipReason+"; "+res.SkipAdvice)
+		res.Skipped, res.SkipKind, res.SkipReason, res.SkipAdvice = false, "", "", ""
+		res.ConfigPath = c.ConfigPath
+	}
+	res.Warnings = append(res.Warnings, c.Warnings...)
 	res.HooksAdded = append(res.HooksAdded, c.HooksAdded...)
 	res.AlreadySet = append(res.AlreadySet, c.AlreadySet...)
 	if c.Error != nil {

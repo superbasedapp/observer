@@ -159,8 +159,13 @@ func (s *Server) handleShellWrapDisable(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	// No governance check: undo is never blocked - a pin must not leave a
-	// developer unable to take the shims back out of their own shell.
+	// No governance read-only check: a section lock never blocks undo. The
+	// one exception is the applier's own (surface-gap CLI-1b, operator
+	// decision D6): on a managed node whose organization pinned
+	// shell_wrap.org_maintain ON, the native disable answers 409 with
+	// shellwrapsvc.ErrOrgMaintained. A developer is still never locked out
+	// of a tool: every shim runs the real command when observer is missing,
+	// and SBO_SHIM_BYPASS=1 always does.
 	s.configWriteMu.Lock()
 	out, err := s.opts.ShellWrap.DisableFor(r.Context(), target, body.DryRun)
 	s.configWriteMu.Unlock()

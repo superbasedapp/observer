@@ -1,0 +1,1 @@
+{"Budget":{"BudgetName":"bedrock-monthly","BudgetLimit":{"Amount":"250.0","Unit":"USD"},"CostFilters":{"Service":["Amazon Bedrock"]},"TimeUnit":"MONTHLY","TimePeriod":{"Start":1.7040672E9,"End":3.7064736E9},"CalculatedSpend":{"ActualSpend":{"Amount":"87.42","Unit":"USD"},"ForecastedSpend":{"Amount":"190.1","Unit":"USD"}},"BudgetType":"COST","LastUpdatedTime":1.7599968E9}}

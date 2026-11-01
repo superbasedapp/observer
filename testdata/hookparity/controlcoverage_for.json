@@ -47,6 +47,22 @@
       "PromptProxyScope": ""
     }
   },
+  "autohand": {
+    "has_pre_send_prompt_seam": false,
+    "ok": true,
+    "row": {
+      "Tool": "autohand",
+      "ToolCallChannel": "hook_block",
+      "PromptSubmit": "probe_required",
+      "BudgetChannel": "",
+      "RouteProof": "none",
+      "Note": "PromptLane=hook declared but no blocking conformance row found - investigate",
+      "PromptWarnBeforeModel": false,
+      "RouteProbeRequired": true,
+      "PromptHookScope": "",
+      "PromptProxyScope": ""
+    }
+  },
   "chatgpt-web": {
     "has_pre_send_prompt_seam": false,
     "ok": true,
@@ -71,12 +87,12 @@
       "ToolCallChannel": "hook_block",
       "PromptSubmit": "block_ask",
       "BudgetChannel": "observer_proxy",
-      "RouteProof": "proven",
+      "RouteProof": "unproven",
       "Note": "process exit code 2 with NO stdout reply; stderr is the user-visible reason and the prompt is erased (LIVE CORRECTION 2026-09-07: permissionDecision is PreToolUse-only and is silently ignored on this event). Allow/warn reply with the bare hookSpecificOutput envelope (+ additionalContext on warn)",
       "PromptWarnBeforeModel": false,
       "RouteProbeRequired": false,
       "PromptHookScope": "",
-      "PromptProxyScope": ""
+      "PromptProxyScope": "Only Claude Code CLI sessions are proven to go through the proxy; Claude Desktop's Code tab ignores the settings route, and the IDE extensions and Agent SDK embeddings can override it, so their prompts are judged by the hooks or flagged after send."
     }
   },
   "claude-web": {
@@ -106,7 +122,7 @@
       "RouteProof": "none",
       "Note": "vendor prompt-submit wire shape unverified - `observer doctor --probe-hook` decides",
       "PromptWarnBeforeModel": false,
-      "RouteProbeRequired": false,
+      "RouteProbeRequired": true,
       "PromptHookScope": "",
       "PromptProxyScope": ""
     }
@@ -117,12 +133,28 @@
     "row": {
       "Tool": "cline-cli",
       "ToolCallChannel": "hook_block",
-      "PromptSubmit": "proxy_only",
+      "PromptSubmit": "block_only",
       "BudgetChannel": "observer_proxy",
       "RouteProof": "proven",
-      "Note": "no prompt-submit hook exists; the proxy request-path prompt scan is this tool's only prompt-submit lever",
+      "Note": "Cline Plugin API beforeModel, before EVERY model call; the plugin judges each user message once (setup ctx.session.sessionId keys it). A deny is {stop:true, reason} (zero model requests; the reason is shown nowhere, so an ask is a block and a flag is recorded and toasted); a redact returns {messages} with the masked text. A returned {messages} lasts one request and a stopped message stays in the history, so the plugin re-applies every withhold and redaction on every later call. macOS/Linux only (the plugin sandbox is untested on Windows)",
       "PromptWarnBeforeModel": false,
       "RouteProbeRequired": false,
+      "PromptHookScope": "",
+      "PromptProxyScope": ""
+    }
+  },
+  "codebuddy": {
+    "has_pre_send_prompt_seam": true,
+    "ok": true,
+    "row": {
+      "Tool": "codebuddy",
+      "ToolCallChannel": "hook_block",
+      "PromptSubmit": "block_only",
+      "BudgetChannel": "",
+      "RouteProof": "none",
+      "Note": "the top-level-block dialect: {\"decision\":\"block\",\"reason\"} with exit 2 blocked live with a clean reason and no model call; additionalContext and plain stdout reach the model as a system reminder; a timeout blocks the prompt",
+      "PromptWarnBeforeModel": false,
+      "RouteProbeRequired": true,
       "PromptHookScope": "",
       "PromptProxyScope": ""
     }
@@ -154,7 +186,7 @@
       "RouteProof": "none",
       "Note": "Part B item 2, phase-3a - live-fetched 2026-09-07 (commandcode.ai/docs/mods): a Mods-SDK TypeScript module (cmd.hooks({transformInput({text}){...}})), not a shell hook - registered as ~/.commandcode/mods/observer-guard.ts (go:embed template, hermesplugin precedent) that shells out to `observer hook command-code transformInput`. The ONLY documented field is `text` - there is no session/conversation id anywhere in the signature, so an ask-once finding here fails closed to a HARD, unconditional block (no resend override) per the engine's own documented empty-session-id rule. REDACT wired (hook-parity Lane B, 2026-10-03): under [guard.prompt] mode redact a secret-only prompt is answered with {action:'transform',text} (masking needs no session key)",
       "PromptWarnBeforeModel": false,
-      "RouteProbeRequired": false,
+      "RouteProbeRequired": true,
       "PromptHookScope": "",
       "PromptProxyScope": ""
     }
@@ -181,10 +213,10 @@
     "row": {
       "Tool": "copilot-cli",
       "ToolCallChannel": "hook_block",
-      "PromptSubmit": "proxy_only",
+      "PromptSubmit": "block_ask",
       "BudgetChannel": "observer_proxy",
       "RouteProof": "proven",
-      "Note": "no prompt-submit hook exists; the proxy request-path prompt scan is this tool's only prompt-submit lever",
+      "Note": "live 2026-10-15 (copilot 1.0.96), superseding the hooks-reference page's \"command hooks have their output dropped\": a block is {handled:true, responseContent:\u003creason\u003e, modifiedPrompt:\u003cmarker\u003e} (zero model requests, the reason printed as the assistant reply; modifiedPrompt is required because a handled prompt otherwise stays in the session history and reaches the model on the next turn), a resend in the same session confirms an ask, a redact is modifiedPrompt (the request and the history carry the masked text), a warning is additionalContext (the model only, so a flag also toasts). Exit code 2 does not block; a timeout fails open. Registered in ~/.copilot/hooks/superbased-observer.json beside preToolUse",
       "PromptWarnBeforeModel": false,
       "RouteProbeRequired": false,
       "PromptHookScope": "",
@@ -201,6 +233,22 @@
       "BudgetChannel": "",
       "RouteProof": "none",
       "Note": "",
+      "PromptWarnBeforeModel": false,
+      "RouteProbeRequired": false,
+      "PromptHookScope": "",
+      "PromptProxyScope": ""
+    }
+  },
+  "cortex-code": {
+    "has_pre_send_prompt_seam": true,
+    "ok": true,
+    "row": {
+      "Tool": "cortex-code",
+      "ToolCallChannel": "hook_block",
+      "PromptSubmit": "block_only",
+      "BudgetChannel": "",
+      "RouteProof": "none",
+      "Note": "reached through Observer's Claude Code hooks like PreToolUse; judged as cortex-code. Block and additionalContext live on WSL; the Windows PowerShell lane waits on AP-119",
       "PromptWarnBeforeModel": false,
       "RouteProbeRequired": false,
       "PromptHookScope": "",
@@ -250,6 +298,22 @@
       "RouteProof": "none",
       "Note": "continue:false + user_message (NOT the permission field the shell/MCP/file channels use); prompt cannot be modified",
       "PromptWarnBeforeModel": false,
+      "RouteProbeRequired": false,
+      "PromptHookScope": "",
+      "PromptProxyScope": ""
+    }
+  },
+  "deepagents-code": {
+    "has_pre_send_prompt_seam": true,
+    "ok": true,
+    "row": {
+      "Tool": "deepagents-code",
+      "ToolCallChannel": "hook_block",
+      "PromptSubmit": "block_only",
+      "BudgetChannel": "",
+      "RouteProof": "none",
+      "Note": "exit 2 with stderr, decision block and continue:false all blocked live with no model call (\"Operation stopped by hook: \u003creason\u003e\"); additionalContext reached the model. No ask",
+      "PromptWarnBeforeModel": false,
       "RouteProbeRequired": true,
       "PromptHookScope": "",
       "PromptProxyScope": ""
@@ -266,7 +330,7 @@
       "RouteProof": "none",
       "Note": "",
       "PromptWarnBeforeModel": false,
-      "RouteProbeRequired": false,
+      "RouteProbeRequired": true,
       "PromptHookScope": "",
       "PromptProxyScope": ""
     }
@@ -284,6 +348,38 @@
       "PromptWarnBeforeModel": false,
       "RouteProbeRequired": false,
       "PromptHookScope": "Devin Desktop / Windsurf only (Cascade pre_user_prompt). Devin CLI sessions have no registered prompt hook, so the rule flags them after send.",
+      "PromptProxyScope": ""
+    }
+  },
+  "dimcode": {
+    "has_pre_send_prompt_seam": true,
+    "ok": true,
+    "row": {
+      "Tool": "dimcode",
+      "ToolCallChannel": "hook_block",
+      "PromptSubmit": "block_only",
+      "BudgetChannel": "",
+      "RouteProof": "none",
+      "Note": "exit 2 with the stderr reason blocked live: no model call, `dim exec` fails with the reason as the session error and the prompt is not stored; additionalContext reached the model. No ask",
+      "PromptWarnBeforeModel": false,
+      "RouteProbeRequired": true,
+      "PromptHookScope": "",
+      "PromptProxyScope": ""
+    }
+  },
+  "dirac": {
+    "has_pre_send_prompt_seam": true,
+    "ok": true,
+    "row": {
+      "Tool": "dirac",
+      "ToolCallChannel": "hook_block",
+      "PromptSubmit": "block_only",
+      "BudgetChannel": "",
+      "RouteProof": "none",
+      "Note": "awaited before the model call: {\"cancel\":true} cancelled the task with zero API requests on both OSes. It fires before EVERY API request of a task (twice with the initial prompt, then with prompt \"\" per tool-result turn): the dialect judges a non-empty prompt once and lets empty ones pass. No redact (contextModification only appends)",
+      "PromptWarnBeforeModel": false,
+      "RouteProbeRequired": false,
+      "PromptHookScope": "",
       "PromptProxyScope": ""
     }
   },
@@ -415,6 +511,22 @@
       "PromptProxyScope": ""
     }
   },
+  "ibm-bob": {
+    "has_pre_send_prompt_seam": true,
+    "ok": true,
+    "row": {
+      "Tool": "ibm-bob",
+      "ToolCallChannel": "hook_block",
+      "PromptSubmit": "block_only",
+      "BudgetChannel": "",
+      "RouteProof": "none",
+      "Note": "exit 2 with the stderr reason blocked live: nothing reaches the model and the developer sees \"Prompt blocked by hook\" with the reason; hookSpecificOutput.additionalContext reached the model. No ask",
+      "PromptWarnBeforeModel": false,
+      "RouteProbeRequired": true,
+      "PromptHookScope": "",
+      "PromptProxyScope": ""
+    }
+  },
   "junie": {
     "has_pre_send_prompt_seam": false,
     "ok": true,
@@ -442,7 +554,7 @@
       "RouteProof": "none",
       "Note": "",
       "PromptWarnBeforeModel": false,
-      "RouteProbeRequired": false,
+      "RouteProbeRequired": true,
       "PromptHookScope": "",
       "PromptProxyScope": ""
     }
@@ -458,7 +570,23 @@
       "RouteProof": "none",
       "Note": "",
       "PromptWarnBeforeModel": false,
-      "RouteProbeRequired": false,
+      "RouteProbeRequired": true,
+      "PromptHookScope": "",
+      "PromptProxyScope": ""
+    }
+  },
+  "kimchi": {
+    "has_pre_send_prompt_seam": true,
+    "ok": true,
+    "row": {
+      "Tool": "kimchi",
+      "ToolCallChannel": "hook_block",
+      "PromptSubmit": "block_only",
+      "BudgetChannel": "",
+      "RouteProof": "none",
+      "Note": "project-scoped natively; served through the claude-code-hook-adapter replay like PreToolUse. exit 2, hookSpecificOutput deny and decision block blocked live with no model call; the blocked prompt is NOT written to the transcript; an ask is an allow",
+      "PromptWarnBeforeModel": false,
+      "RouteProbeRequired": true,
       "PromptHookScope": "",
       "PromptProxyScope": ""
     }
@@ -485,11 +613,11 @@
     "row": {
       "Tool": "kiro-cli",
       "ToolCallChannel": "sandbox_enforce",
-      "PromptSubmit": "probe_required",
+      "PromptSubmit": "none",
       "BudgetChannel": "",
       "RouteProof": "none",
-      "Note": "vendor prompt-submit wire shape unverified - `observer doctor --probe-hook` decides",
-      "PromptWarnBeforeModel": false,
+      "Note": "",
+      "PromptWarnBeforeModel": true,
       "RouteProbeRequired": false,
       "PromptHookScope": "",
       "PromptProxyScope": ""
@@ -683,6 +811,38 @@
       "Note": "documented decision enum is allow|deny|block|ask; observer emits \"block\" (the verb every sibling top-level-block vendor's docs confirm) rather than guessing a semantic split between deny/block/ask the docs don't draw",
       "PromptWarnBeforeModel": false,
       "RouteProbeRequired": false,
+      "PromptHookScope": "",
+      "PromptProxyScope": ""
+    }
+  },
+  "stakpak": {
+    "has_pre_send_prompt_seam": false,
+    "ok": true,
+    "row": {
+      "Tool": "stakpak",
+      "ToolCallChannel": "recorded_acceptance",
+      "PromptSubmit": "none",
+      "BudgetChannel": "",
+      "RouteProof": "none",
+      "Note": "",
+      "PromptWarnBeforeModel": false,
+      "RouteProbeRequired": true,
+      "PromptHookScope": "",
+      "PromptProxyScope": ""
+    }
+  },
+  "vtcode": {
+    "has_pre_send_prompt_seam": true,
+    "ok": true,
+    "row": {
+      "Tool": "vtcode",
+      "ToolCallChannel": "hook_block",
+      "PromptSubmit": "block_only",
+      "BudgetChannel": "",
+      "RouteProof": "none",
+      "Note": "exit 2 with the stderr reason blocked live on both OSes (the reason shown, the prompt never reached the model and was written to events.jsonl as an interjected event); decision block and continue:false block too; additionalContext reached the model. The allow is an empty stdout (any stdout is echoed). No ask",
+      "PromptWarnBeforeModel": false,
+      "RouteProbeRequired": true,
       "PromptHookScope": "",
       "PromptProxyScope": ""
     }

@@ -9,10 +9,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	_ "modernc.org/sqlite" // read-only SQLite driver (pure Go)
 
+	"github.com/marmutapp/superbased-observer/internal/agentconfig"
 	"github.com/marmutapp/superbased-observer/internal/planlimits"
 )
 
@@ -65,11 +67,21 @@ func (r Reader) base(b string) (string, error) {
 		h, err := r.home()
 		return filepath.Join(h, ".codex"), err
 	case planlimits.BaseClaudeHome:
-		if v := strings.TrimSpace(r.getenv("CLAUDE_CONFIG_DIR")); v != "" {
-			return v, nil
+		// The one Claude config directory resolver (FU-131, FU-138):
+		// CLAUDE_CONFIG_DIR, then ANTHROPIC_CONFIG_DIR, then ~/.claude; a
+		// relative value names no directory.
+		h, herr := r.home()
+		if herr != nil {
+			h = ""
 		}
-		h, err := r.home()
-		return filepath.Join(h, ".claude"), err
+		dir, refused := agentconfig.ClaudeConfigDir(agentconfig.PathEnv{GOOS: runtime.GOOS, Home: h, Getenv: r.getenv})
+		if refused != "" {
+			return "", fmt.Errorf("%w: %s is set to a relative path", planlimits.ErrUnavailable, refused)
+		}
+		if dir == "" {
+			return "", herr
+		}
+		return dir, nil
 	}
 	return "", fmt.Errorf("planlimitslocal: unknown base %q", b)
 }
@@ -85,7 +97,50 @@ func (r Reader) Path(s planlimits.LocalSpec) (string, error) {
 	if rel == "" || filepath.IsAbs(rel) || strings.HasPrefix(filepath.Clean(rel), "..") {
 		return "", fmt.Errorf("planlimitslocal: bad relative path %q", s.Rel)
 	}
-	return filepath.Join(dir, rel), nil
+	segs := strings.Split(s.Rel, "/")
+	star := -1
+	for i, seg := range segs {
+		switch {
+		case seg == "*" && star < 0:
+			star = i
+		case seg == ".." || strings.ContainsAny(seg, "*?["):
+			// One whole-segment wildcard at most; no partial patterns.
+			return "", fmt.Errorf("planlimitslocal: bad relative path %q", s.Rel)
+		}
+	}
+	if star < 0 {
+		return filepath.Join(dir, rel), nil
+	}
+	return newestMatch(dir, segs[:star], segs[star+1:])
+}
+
+// newestMatch resolves one "*" path segment (a vendor's per-product,
+// per-version folder such as JetBrains/IntelliJIdea2026.2) to the match
+// whose file was modified most recently. No match is ErrUnavailable.
+func newestMatch(dir string, before, after []string) (string, error) {
+	parent := filepath.Join(append([]string{dir}, before...)...)
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return "", fmt.Errorf("%w: file not found", planlimits.ErrUnavailable)
+	}
+	best, bestAt := "", int64(0)
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		p := filepath.Join(append([]string{parent, e.Name()}, after...)...)
+		fi, err := os.Stat(p)
+		if err != nil || !fi.Mode().IsRegular() {
+			continue
+		}
+		if t := fi.ModTime().UnixNano(); best == "" || t > bestAt {
+			best, bestAt = p, t
+		}
+	}
+	if best == "" {
+		return "", fmt.Errorf("%w: file not found", planlimits.ErrUnavailable)
+	}
+	return best, nil
 }
 
 // Read performs every spec of a source and returns the bytes by key. The

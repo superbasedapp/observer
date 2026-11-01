@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -317,5 +318,53 @@ func TestEnrolmentStatus_PushPausedSurfacesBreaker(t *testing.T) {
 	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/enrolment/status", nil))
 	if strings.Contains(rec.Body.String(), "push_paused") {
 		t.Errorf("push_paused present on a healthy node: %s", rec.Body.String())
+	}
+}
+
+// TestEnrolmentStatus_RetentionHeldSurfacesStuckPush pins the T-830 dashboard
+// surface: an enrolled node with an action past max_age_days (default 180)
+// that the org push has not accepted reports retention_held, and once the
+// push cursor passes it the key is omitted.
+func TestEnrolmentStatus_RetentionHeldSurfacesStuckPush(t *testing.T) {
+	fake := &fakeEnrolment{state: orgclient.EnrolmentState{Enrolled: true, OrgID: "org-1", OrgName: "Acme"}}
+	srv := newEnrolmentServer(t, fake)
+	ctx := context.Background()
+	st := store.New(srv.opts.DB)
+	if err := st.WriteEnrolment(ctx, store.Enrolment{OrgID: "org-1", OrgServerURL: "https://org.example", UserID: "u-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Ingest(ctx, []models.ToolEvent{{
+		SourceFile: "f", SourceEventID: "old", SessionID: "sess-old", ProjectRoot: "/repo",
+		Timestamp: time.Now().AddDate(0, 0, -400), Tool: models.ToolClaudeCode,
+		ActionType: models.ActionRunCommand, Target: "go test", Success: true,
+	}}, nil, store.IngestOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	status := func() enrolmentStatusResponse {
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/enrolment/status", nil))
+		var resp enrolmentStatusResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	resp := status()
+	if resp.RetentionHeld == nil || resp.RetentionHeld.Actions != 1 || resp.RetentionHeld.MaxAgeDays != 180 {
+		t.Fatalf("retention_held = %+v, want 1 held action at max_age_days 180", resp.RetentionHeld)
+	}
+	var maxID int64
+	if err := srv.opts.DB.QueryRowContext(ctx, `SELECT MAX(id) FROM actions`).Scan(&maxID); err != nil {
+		t.Fatal(err)
+	}
+	var maxSess int64
+	if err := srv.opts.DB.QueryRowContext(ctx, `SELECT MAX(rowid) FROM sessions`).Scan(&maxSess); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SavePushCursor(ctx, store.PushCursor{Actions: maxID, Sessions: maxSess}); err != nil {
+		t.Fatal(err)
+	}
+	if resp := status(); resp.RetentionHeld != nil {
+		t.Fatalf("retention_held = %+v after the push accepted everything, want omitted", resp.RetentionHeld)
 	}
 }

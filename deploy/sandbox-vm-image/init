@@ -1,0 +1,44 @@
+#!/bin/busybox sh
+# init: the initramfs's /init (busybox) of Observer's microVM guest image
+# (lane SBX-P4). It loads the virtio-fs, vsock and dm-verity modules, opens
+# the read-only rootfs (/dev/vda) under dm-verity with the root hash the
+# kernel command line carries (observer.verity=, signed in the image set's
+# descriptor), mounts it read-only, mounts the run's boot share (tag
+# observer.boot=) and hands PID 1 to the verified guest observer's
+# sandbox-vm-init. It never waits for a network: the VM has no NIC. Any
+# failure powers the VM off; the host helper reports it from the serial log.
+# Only busybox applets run here (through $B; the initramfs has no other
+# programs but /sbin/veritysetup), and every module in /etc/observer-modules
+# is a plain .ko (decompressed at build) listed in load order, dependencies
+# first: a module that does not load stops the boot. build.sh runs
+# selfcheck.sh over the tree and fails the build if anything here is missing.
+set -eu
+B=/bin/busybox
+fail() { echo "observer-init: $*" >/dev/console 2>/dev/null || true; $B poweroff -f; }
+$B mkdir -p /proc /sys /dev /newroot
+$B mount -t proc proc /proc
+$B mount -t sysfs sysfs /sys
+$B mount -t devtmpfs devtmpfs /dev
+verity=; boot=; for kv in $($B cat /proc/cmdline); do
+	case "$kv" in
+	observer.verity=*) verity=${kv#observer.verity=} ;;
+	observer.boot=*) boot=${kv#observer.boot=} ;;
+	esac
+done
+case "$verity" in *[!0-9a-f]* | "") fail "no verity root hash on the command line" ;; esac
+[ ${#verity} -eq 64 ] || fail "the verity root hash is not 64 hex"
+[ -n "$boot" ] || fail "no boot share tag"
+for m in $($B cat /etc/observer-modules); do
+	$B insmod "/lib/modules/$m.ko" || fail "the module $m did not load"
+done
+/sbin/veritysetup open --panic-on-corruption /dev/vda vroot /dev/vdb "$verity" || fail "the rootfs did not verify under its signed root hash"
+$B mount -t ext4 -o ro,nodev /dev/mapper/vroot /newroot || fail "the verified rootfs did not mount"
+$B mkdir -p /run/observer-boot
+$B mount -t virtiofs -o ro,nodev,nosuid "$boot" /run/observer-boot || fail "the boot share did not mount"
+[ -x /run/observer-boot/observer-guest ] || fail "no guest observer on the boot share"
+# The rootfs is read-only: /run is a fresh tmpfs holding the boot share.
+$B mount -t tmpfs -o mode=0755,nodev,nosuid tmpfs /newroot/run || fail "no /run in the rootfs"
+$B mkdir -p /newroot/run/observer-boot
+$B mount --move /run/observer-boot /newroot/run/observer-boot || fail "the boot share did not move"
+$B umount /proc /sys 2>/dev/null || true
+exec $B switch_root /newroot /run/observer-boot/observer-guest sandbox-vm-init --boot /run/observer-boot

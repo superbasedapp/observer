@@ -68,6 +68,44 @@ func (c *Client) pushSchedConfig() pushsched.Config {
 type loopRetry struct {
 	backoff, authBackoff         time.Duration
 	failDeduper, authFailDeduper failureDeduper
+	// backingOff is true while the last cycle failed on the retryable ladder.
+	// runLoopKickFn then holds kicks until the backoff elapses (D-704): a
+	// kick must not defeat the backoff, or a waker that is itself fed by the
+	// failing cycle (the policy-state reporter kicking the bundle poll on a
+	// missing bundle, the poll's outcome poking the reporter) turns a
+	// persistent local failure into a tight loop.
+	backingOff bool
+}
+
+// retryFailureMessage is the WARN a retryable cycle failure logs, chosen
+// from an ordered table (first match wins; the last row is the default). A
+// failure the node caused locally must not send the operator after the org
+// server or tell them to unenrol (D-704: a directory planted at the bundle
+// path read "org push failed ... run `observer unenroll`").
+type retryFailureMessage struct {
+	match func(err error) bool
+	msg   string
+}
+
+var retryFailureMessages = []retryFailureMessage{
+	{
+		func(err error) bool { return errors.Is(err, errPolicyLocalPreResponse) },
+		"org policy fetch failed on this node, backing off - a local file or database error (see err), not an org server or enrolment problem; fix the local error and the next retry recovers",
+	},
+	{
+		func(error) bool { return true },
+		"org push failed, backing off - if the org server stays unreachable, fix it, run `observer unenroll`, or set [org_client].enabled = false to stop retrying",
+	},
+}
+
+// retryFailureMessageFor returns the table's WARN for err.
+func retryFailureMessageFor(err error) string {
+	for _, row := range retryFailureMessages {
+		if row.match(err) {
+			return row.msg
+		}
+	}
+	return retryFailureMessages[len(retryFailureMessages)-1].msg
 }
 
 func newLoopRetry() *loopRetry {
@@ -78,6 +116,7 @@ func newLoopRetry() *loopRetry {
 // (interval for success / errIdle), stop reports a cancelled context, and ok
 // reports a success.
 func (r *loopRetry) after(c *Client, err error, interval time.Duration) (sleep time.Duration, stop, ok bool) {
+	r.backingOff = false
 	switch {
 	case errors.Is(err, context.Canceled):
 		return 0, true, false
@@ -105,10 +144,13 @@ func (r *loopRetry) after(c *Client, err error, interval time.Duration) (sleep t
 		// here would double-report it with strictly less detail.
 		return oversizedBatchBackoff, false, false
 	case err != nil:
-		warnOnce(c.logger, &r.failDeduper, err,
-			"org push failed, backing off - if the org server stays unreachable, fix it, run `observer unenroll`, or set [org_client].enabled = false to stop retrying",
+		warnOnce(c.logger, &r.failDeduper, err, retryFailureMessageFor(err),
 			"backoff", r.backoff.String())
-		sleep = jitter(r.backoff)
+		r.backingOff = true
+		// The server's Retry-After (503 log_full / unavailable, 429) is a
+		// floor under the jittered ladder, never a ceiling: the unpushed rows
+		// stay in the store and the loop retries without end (T-823).
+		sleep = max(jitter(r.backoff), retryAfterOf(err))
 		r.backoff = nextBackoff(r.backoff)
 		return sleep, false, false
 	default:

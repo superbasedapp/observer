@@ -1,0 +1,28 @@
+rules:
+  - id: js.eval-request-input
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: Input from a web request reaches eval or a code constructor, so a caller can run code on the server.
+    metadata:
+      category: code_vuln
+      cwe: CWE-95
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: $REQ.query
+              - pattern: $REQ.body
+              - pattern: $REQ.params
+              - pattern: $REQ.headers
+              - pattern: $REQ.cookies
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(req|request|ctx\.request)$
+    pattern-sinks:
+      - pattern-either:
+          - pattern: eval(...)
+          - pattern: new Function(...)
+          - pattern: Function(...)
+          - pattern: vm.runInNewContext(...)
+          - pattern: vm.runInThisContext(...)
+          - pattern: setTimeout("..." + $X, ...)

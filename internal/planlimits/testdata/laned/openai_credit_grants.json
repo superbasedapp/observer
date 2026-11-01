@@ -1,0 +1,1 @@
+{"object":"credit_summary","total_granted":18.0,"total_used":5.25,"total_available":12.75,"grants":{"object":"list","data":[{"object":"credit_grant","grant_amount":18.0,"used_amount":5.25,"effective_at":1756684800,"expires_at":1767225600}]}}

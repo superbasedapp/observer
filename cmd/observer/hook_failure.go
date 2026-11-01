@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -58,6 +59,9 @@ type hookFailurePlan struct {
 	UserPolicyFailClosed bool
 	// SpoolPath is guard-hookfail.jsonl beside the global config.
 	SpoolPath string
+	// Started is when this invocation started (runHookInvocation's start):
+	// the quick scan's clamp counts the time spent since (LEFT2 audit E4).
+	Started time.Time
 }
 
 // hookPlanPtr is the current invocation's plan (nil = the zero, fail-open
@@ -162,6 +166,7 @@ func resetHookInvocationState() {
 	hookFailureExited = false
 	hookFailOpenRecorded = false
 	hookPlanPtr.Store(nil)
+	resetHookInvocationComponents()
 }
 
 // markHookDecided records, in ONE step under the reply lock, that the reply
@@ -192,7 +197,7 @@ func hookExit(code int) {
 	if hookFailureOwned {
 		return
 	}
-	hookOSExit(code)
+	hookExitProcess(code)
 }
 
 // hookArgvSpelling maps a mechanism whose registered `observer hook` argv
@@ -200,6 +205,39 @@ func hookExit(code int) {
 // the mechanism (capability shape), never a tool.
 var hookArgvSpelling = map[integration.HookMechanism]func(native string) string{
 	integration.HookClaudeSettings: hook.ClaudeCodeEventArg,
+}
+
+// hookEventAliases maps a mechanism whose host ALSO invokes Observer under a
+// second spelling of a native event to that spelling: Kiro CLI's V3
+// standalone hooks file names the triggers in PascalCase (PreToolUse) where
+// the 2.x agent JSON the bindings describe uses camelCase (preToolUse).
+// Keyed on the mechanism (capability shape), never a tool.
+var hookEventAliases = map[integration.HookMechanism]func(native string) string{
+	integration.HookKiroAgentJSON: upperFirst,
+}
+
+// canonicalHookEvent folds an alias spelling of a native event (the
+// mechanism's hookEventAliases entry) onto the binding's NativeEvent, so
+// every receiver downstream sees one spelling. Any other event is returned
+// unchanged.
+func canonicalHookEvent(tool, event string) string {
+	c, ok := integration.For(tool)
+	if !ok {
+		return event
+	}
+	if _, ok := c.Hook.Binding(event); ok {
+		return event
+	}
+	alias, ok := hookEventAliases[c.Hook.Mechanism]
+	if !ok {
+		return event
+	}
+	for _, b := range c.Hook.Bindings {
+		if alias(b.NativeEvent) == event {
+			return b.NativeEvent
+		}
+	}
+	return event
 }
 
 // resolveHookInvocationBinding returns the registry binding an `observer
@@ -311,10 +349,48 @@ func hookPreliminaryFailsClosed(resolvedConfig, configPath string, c integration
 	return p.FailsClosed(string(c))
 }
 
+// registrationToolGateFailsClosed answers hook.Options.ToolGateFailsClosed
+// for a registration: whether a tool-gate failure on this node fails closed,
+// the same interim answer an `observer hook` invocation starts from (a
+// trusted fresh posture, else the config). False when the config path
+// cannot be resolved. It never opens the database.
+func registrationToolGateFailsClosed(configPath string) bool {
+	resolved, err := config.ResolveGlobalPath(configPath)
+	if err != nil {
+		return false
+	}
+	return hookPreliminaryFailsClosed(resolved, configPath, integration.HookCapToolGate)
+}
+
+// registrationWindowsBridgeFailClosed answers hook.Options.
+// WindowsBridgeFailClosed for a registration (surface-gap AW-37): the node
+// reads as MANAGED (lockReadsManaged) and a tool-gate failure on it fails
+// closed (registrationToolGateFailsClosed). An individual or non-enforcing
+// node keeps today's bridge, which fails open when wsl.exe cannot run
+// (docs/security.md HOOKFAIL-4). It never opens the database.
+func registrationWindowsBridgeFailClosed(configPath string) bool {
+	cfg, err := config.Load(config.LoadOptions{GlobalPath: configPath})
+	if err != nil || !lockReadsManaged(cfg.Guard.Lock) {
+		return false
+	}
+	return registrationToolGateFailsClosed(configPath)
+}
+
+// lockReadsManaged is the managed reading of the org lock for the hook
+// bridge: a verified lock recording managed tenancy, OR a tampered lock
+// whose anchors say an organization is expected (OrgExpected, the same
+// conservative reading the guard floor applies, internal/config
+// guardfloor.go). Without the second half a same-user process that
+// corrupts the lock would get the fail-open bridge written on the next
+// registration (second audit of 4767d49c1, item 1).
+func lockReadsManaged(l config.GuardOrgLock) bool {
+	return (l.TenancyKnown && l.Managed) || l.OrgExpected
+}
+
 // pathExists reports whether path exists (any error but "not exist" counts
 // as existing: the conservative reading for a file that could enforce).
 func pathExists(path string) bool {
-	_, err := os.Stat(path)
+	_, err := os.Stat(path) //nolint:gosec // G703: a metadata read of the user's own local path; no privilege boundary is crossed
 	return err == nil || !os.IsNotExist(err)
 }
 
@@ -365,27 +441,39 @@ func hookRemaining(start time.Time, budget time.Duration) time.Duration {
 // moved.
 func hookPostureFailsClosed(resolvedConfig, configPath string, c integration.HookCap) hookPostureAnswer {
 	ld := guardposture.Load(guardposture.PosturePath(resolvedConfig), guardposture.KeyPath(resolvedConfig))
+	var held hookPostureAnswer
 	if ld.State == guardposture.StateValid {
-		why := ld.Posture.Stale(time.Now(), fileModTime(resolvedConfig))
-		if why == "" {
-			return hookPostureAnswer{
-				FailsClosed:          ld.Posture.FailsClosed(string(c)),
-				UserPolicyFailClosed: ld.Posture.UserPolicyClosesGate(string(c)),
-			}
+		now, mod := time.Now(), fileModTime(resolvedConfig)
+		postureAnswer := hookPostureAnswer{
+			FailsClosed:          ld.Posture.FailsClosed(string(c)),
+			UserPolicyFailClosed: ld.Posture.UserPolicyClosesGate(string(c)),
 		}
-		fmt.Fprintf(os.Stderr, "observer-hook: guard posture stale (%s); ignored, %s failures follow the config\n", why, c)
+		why := ld.Posture.Stale(now, mod)
+		if why == "" {
+			return postureAnswer
+		}
+		if ld.Posture.Managed && ld.Posture.StaleOnlyByConfig(now, mod) {
+			// A managed node whose config.toml was just edited (T-864 gap
+			// 2): the organization's last answer stays in force alongside
+			// the (floored) config's until the daemon re-signs, so a local
+			// edit cannot open a gate the organization holds closed.
+			held = postureAnswer
+			fmt.Fprintf(os.Stderr, "observer-hook: guard posture stale (%s); managed node, %s failures follow the stricter of the posture and the config\n", why, c)
+		} else {
+			fmt.Fprintf(os.Stderr, "observer-hook: guard posture stale (%s); ignored, %s failures follow the config\n", why, c)
+		}
 	}
 	if ld.State == guardposture.StateTampered {
 		fmt.Fprintf(os.Stderr, "observer-hook: guard posture unverifiable (%s); ignored, %s failures follow the config\n", ld.Detail, c)
 	}
 	cfg, err := config.Load(config.LoadOptions{GlobalPath: configPath})
 	if err != nil {
-		return hookPostureAnswer{}
+		return held
 	}
 	p := postureFromEnforcement(hookFallbackGateEnforcement(cfg))
 	return hookPostureAnswer{
-		FailsClosed:          p.FailsClosed(string(c)),
-		UserPolicyFailClosed: p.UserPolicyClosesGate(string(c)),
+		FailsClosed:          held.FailsClosed || p.FailsClosed(string(c)),
+		UserPolicyFailClosed: held.UserPolicyFailClosed || p.UserPolicyClosesGate(string(c)),
 	}
 }
 
@@ -431,7 +519,7 @@ func hookUserPolicyGate(configPath string, stdin io.Reader) bool {
 	handled, code := answerFailureLocked(guardposture.KindUserPolicyFailClosed, guard.UserPolicyBlockReason(st), hookPayloadSessionID(body), os.Stderr)
 	if handled && code != 0 {
 		hookFailureExited = true
-		hookOSExit(code)
+		hookExitProcess(code)
 	}
 	return handled
 }
@@ -441,7 +529,7 @@ func fileModTime(path string) time.Time {
 	if path == "" {
 		return time.Time{}
 	}
-	st, err := os.Stat(path)
+	st, err := os.Stat(path) //nolint:gosec // G703: a metadata read of the user's own local path; no privilege boundary is crossed
 	if err != nil {
 		return time.Time{}
 	}
@@ -494,12 +582,12 @@ func hookFallbackGateEnforcement(cfg config.Config) guard.GateEnforcement {
 // way the daemon does. Shared by the hook fallback above and the CLI launch
 // sandbox decision (launch_sandbox_gate.go). Nil when no guard can be built.
 func nodeGuard(ctx context.Context, cfg config.Config, st *store.Store) *guard.Guard {
-	pin, managed := nodeGuardPolicyInputs(ctx, st, nil)
+	pin, managed, bundleExpected := nodeGuardPolicyInputs(ctx, st, nil)
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = ""
 	}
-	gd, err := hookGuardNew(guard.Options{Config: cfg.Guard, Home: home, OrgKeyPinHash: pin, ManagedTenancy: managed})
+	gd, err := hookGuardNew(guard.Options{Config: cfg.Guard, Home: home, OrgKeyPinHash: pin, ManagedTenancy: managed, OrgBundleExpected: bundleExpected})
 	if err != nil {
 		return nil
 	}
@@ -572,7 +660,7 @@ func answerFailureLocked(kind, reason, sessionID string, stderr io.Writer) (hand
 		_, _ = hookReplyTarget().Write(reply.Stdout)
 	}
 	if reply.StderrReason || kind == guardposture.KindUserPolicyFailClosed {
-		fmt.Fprintln(stderr, reason)
+		hook.WriteStderrBlockReason(stderr, reason)
 	} else {
 		fmt.Fprintf(stderr, "observer-hook: %s:%s failed closed (%s): guard enforcement is on\n", plan.Tool, plan.Event, kind)
 	}
@@ -624,9 +712,53 @@ func hookFailClosed(kind string, body []byte) bool {
 	handled, code := answerFailureLocked(kind, "", hookPayloadSessionID(body), os.Stderr)
 	if handled && code != 0 {
 		hookFailureExited = true
-		hookOSExit(code)
+		hookExitProcess(code)
 	}
 	return handled
+}
+
+// loadGateConfig loads a gate receiver's config (FU-185): config.Load's
+// answer, plus an explicit --config that names no file as a failure of its
+// own. config.Load reads a missing file as the defaults, so a hook whose
+// --config pointed at a moved or deleted file used to run on the defaults
+// and approve. Now, under guard enforcement, a missing or unreadable
+// explicit config is a "cannot evaluate" case: the call fails closed through
+// hookFailClosed(KindConfig) (the hook-failure plan decides, so only an
+// enforced gate blocks) and stop is true. Otherwise (enforcement off) a
+// missing file is said on stderr and the hook runs on the defaults, and so
+// does one that exists but cannot be read or parsed (FU-185 ruling): every
+// caller then has a loaded config and cfgErr nil. Only when even the
+// defaults cannot be loaded (the environment or the home is broken) is the
+// error returned for the caller's own fallback. The load error's text is
+// not printed: a parse error can quote the file.
+func loadGateConfig(configPath string, body []byte, stderr io.Writer) (cfg config.Config, stop bool, cfgErr error) {
+	cfg, cfgErr = config.Load(config.LoadOptions{GlobalPath: configPath})
+	missing := cfgErr == nil && hookConfigMissing(configPath)
+	if (cfgErr != nil || missing) && hookFailClosed(guardposture.KindConfig, body) {
+		return cfg, true, cfgErr
+	}
+	if missing {
+		fmt.Fprintf(stderr, "observer-hook: config %s does not exist; running on the defaults\n", configPath)
+	}
+	if cfgErr != nil {
+		def, derr := config.Load(config.LoadOptions{NoGlobal: true})
+		if derr != nil {
+			fmt.Fprintf(stderr, "observer-hook: config %s could not be read or parsed, and the defaults could not be loaded either\n", configPath)
+			return cfg, false, cfgErr
+		}
+		fmt.Fprintf(stderr, "observer-hook: config %s could not be read or parsed; running on the defaults\n", configPath)
+		return def, false, nil
+	}
+	return cfg, false, cfgErr
+}
+
+// hookConfigMissing reports whether an explicit --config names no file.
+func hookConfigMissing(path string) bool {
+	if path == "" {
+		return false
+	}
+	_, err := os.Stat(path) //nolint:gosec // G703: a metadata read of the hook's own --config path; no privilege boundary is crossed
+	return errors.Is(err, os.ErrNotExist)
 }
 
 // hookReplyBarrier runs as newHookCmd's Run returns. Taking the reply lock
@@ -638,7 +770,7 @@ func hookReplyBarrier() {
 	defer hookReplyMu.Unlock()
 	if hookFailureOwned && !hookFailureExited && hookPendingExitCode != 0 {
 		hookFailureExited = true
-		hookOSExit(hookPendingExitCode)
+		hookExitProcess(hookPendingExitCode)
 	}
 }
 
@@ -649,20 +781,27 @@ func hookPayloadUnparseable(body []byte) bool {
 }
 
 // hookPayloadSessionID best-effort reads the session id a payload carries
-// under any of the spellings the gate dialects use ("" when none).
+// under any of the spellings the gate dialects use ("" when none), in the
+// one precedence order hookliveness.PayloadSessionID states (FU-127):
+// session_id, sessionId, conversation_id, conversationId, trajectory_id. It
+// keeps the struct decode (so its encoding/json behaviour, pinned by the
+// jsoncompat golden, is unchanged for every payload without the two new
+// keys).
 func hookPayloadSessionID(body []byte) string {
 	if len(body) == 0 {
 		return ""
 	}
 	var p struct {
-		SessionID      string `json:"session_id"`
-		SessionIDCamel string `json:"sessionId"`
-		ConversationID string `json:"conversation_id"`
+		SessionID           string `json:"session_id"`
+		SessionIDCamel      string `json:"sessionId"`
+		ConversationID      string `json:"conversation_id"`
+		ConversationIDCamel string `json:"conversationId"`
+		TrajectoryID        string `json:"trajectory_id"`
 	}
 	if json.Unmarshal(bytes.TrimPrefix(body, []byte{0xEF, 0xBB, 0xBF}), &p) != nil {
 		return ""
 	}
-	for _, s := range []string{p.SessionID, p.SessionIDCamel, p.ConversationID} {
+	for _, s := range []string{p.SessionID, p.SessionIDCamel, p.ConversationID, p.ConversationIDCamel, p.TrajectoryID} {
 		if s != "" {
 			return s
 		}

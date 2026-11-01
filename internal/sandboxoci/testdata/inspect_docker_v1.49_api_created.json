@@ -1,0 +1,308 @@
+{
+  "Id": "307584cba9f6ea277511a4a22795017412a9ca041950996aa2e7ecdb13358826",
+  "Created": "2026-10-22T12:04:53.816680617Z",
+  "Path": "/home/dev/.local/bin/observer",
+  "Args": [
+    "sandbox-oci-init",
+    "--",
+    "/home/dev/.local/bin/observer",
+    "claude"
+  ],
+  "State": {
+    "Status": "created",
+    "Running": false,
+    "Paused": false,
+    "Restarting": false,
+    "OOMKilled": false,
+    "Dead": false,
+    "Pid": 0,
+    "ExitCode": 0,
+    "Error": "",
+    "StartedAt": "0001-01-01T00:00:00Z",
+    "FinishedAt": "0001-01-01T00:00:00Z"
+  },
+  "Image": "sha256:d4c45f66efc59f89b0597d343a9bd72808493c0eacecde5285961743252cee23",
+  "ResolvConfPath": "",
+  "HostnamePath": "",
+  "HostsPath": "",
+  "LogPath": "",
+  "Name": "/observer-sbx-0a1b2c3d-RUNID0123456789abc",
+  "RestartCount": 0,
+  "Driver": "overlay2",
+  "Platform": "linux",
+  "MountLabel": "",
+  "ProcessLabel": "",
+  "AppArmorProfile": "",
+  "ExecIDs": null,
+  "HostConfig": {
+    "Binds": null,
+    "ContainerIDFile": "",
+    "LogConfig": {
+      "Type": "none",
+      "Config": {}
+    },
+    "NetworkMode": "none",
+    "PortBindings": null,
+    "RestartPolicy": {
+      "Name": "no",
+      "MaximumRetryCount": 0
+    },
+    "AutoRemove": false,
+    "VolumeDriver": "",
+    "VolumesFrom": null,
+    "ConsoleSize": [
+      0,
+      0
+    ],
+    "CapAdd": [],
+    "CapDrop": [
+      "ALL"
+    ],
+    "CgroupnsMode": "private",
+    "Dns": null,
+    "DnsOptions": null,
+    "DnsSearch": null,
+    "ExtraHosts": null,
+    "GroupAdd": null,
+    "IpcMode": "private",
+    "Cgroup": "",
+    "Links": null,
+    "OomScoreAdj": 0,
+    "PidMode": "",
+    "Privileged": false,
+    "PublishAllPorts": false,
+    "ReadonlyRootfs": true,
+    "SecurityOpt": [
+      "no-new-privileges"
+    ],
+    "Tmpfs": {
+      "/home/dev": "rw,nosuid,nodev,size=1073741824,mode=0700,uid=1000,gid=1000",
+      "/tmp": "rw,nosuid,nodev,size=1073741824,mode=0700,uid=1000,gid=1000"
+    },
+    "UTSMode": "",
+    "UsernsMode": "",
+    "ShmSize": 67108864,
+    "Runtime": "runc",
+    "Isolation": "",
+    "CpuShares": 0,
+    "Memory": 0,
+    "NanoCpus": 0,
+    "CgroupParent": "",
+    "BlkioWeight": 0,
+    "BlkioWeightDevice": null,
+    "BlkioDeviceReadBps": null,
+    "BlkioDeviceWriteBps": null,
+    "BlkioDeviceReadIOps": null,
+    "BlkioDeviceWriteIOps": null,
+    "CpuPeriod": 0,
+    "CpuQuota": 0,
+    "CpuRealtimePeriod": 0,
+    "CpuRealtimeRuntime": 0,
+    "CpusetCpus": "",
+    "CpusetMems": "",
+    "Devices": null,
+    "DeviceCgroupRules": null,
+    "DeviceRequests": null,
+    "MemoryReservation": 0,
+    "MemorySwap": 0,
+    "MemorySwappiness": null,
+    "OomKillDisable": false,
+    "PidsLimit": 4096,
+    "Ulimits": null,
+    "CpuCount": 0,
+    "CpuPercent": 0,
+    "IOMaximumIOps": 0,
+    "IOMaximumBandwidth": 0,
+    "Mounts": [
+      {
+        "Type": "bind",
+        "Source": "/home/dev/src/app",
+        "Target": "/home/dev/src/app",
+        "BindOptions": {
+          "Propagation": "rprivate"
+        }
+      },
+      {
+        "Type": "bind",
+        "Source": "/home/dev/.local/bin/observer",
+        "Target": "/home/dev/.local/bin/observer",
+        "ReadOnly": true,
+        "BindOptions": {
+          "Propagation": "rprivate"
+        }
+      },
+      {
+        "Type": "bind",
+        "Source": "/home/dev/.claude",
+        "Target": "/home/dev/.claude",
+        "BindOptions": {
+          "Propagation": "rprivate"
+        }
+      },
+      {
+        "Type": "bind",
+        "Source": "/tmp/observer-sbx-RUNID0123456789abc",
+        "Target": "/tmp/observer-sbx-RUNID0123456789abc",
+        "ReadOnly": true,
+        "BindOptions": {
+          "Propagation": "rprivate"
+        }
+      },
+      {
+        "Type": "bind",
+        "Source": "/dev/null",
+        "Target": "/home/dev/.claude/.credentials-secret",
+        "ReadOnly": true,
+        "BindOptions": {
+          "Propagation": "rprivate"
+        }
+      }
+    ],
+    "MaskedPaths": [
+      "/proc/asound",
+      "/proc/acpi",
+      "/proc/interrupts",
+      "/proc/kcore",
+      "/proc/keys",
+      "/proc/latency_stats",
+      "/proc/timer_list",
+      "/proc/timer_stats",
+      "/proc/sched_debug",
+      "/proc/scsi",
+      "/sys/firmware",
+      "/sys/devices/virtual/powercap"
+    ],
+    "ReadonlyPaths": [
+      "/proc/bus",
+      "/proc/fs",
+      "/proc/irq",
+      "/proc/sys",
+      "/proc/sysrq-trigger"
+    ],
+    "Init": false
+  },
+  "GraphDriver": {
+    "Data": {
+      "ID": "307584cba9f6ea277511a4a22795017412a9ca041950996aa2e7ecdb13358826",
+      "LowerDir": "/var/lib/docker/overlay2/9a3112e0a57a270f5bc1ac531e96b1a6c2017a4ba19d5012cadcc8d57c5e08b2-init/diff:/var/lib/docker/overlay2/c685b9b881ad5d72151369838462c465dcc8697faacab5edad0d262caea40fcf/diff",
+      "MergedDir": "/var/lib/docker/overlay2/9a3112e0a57a270f5bc1ac531e96b1a6c2017a4ba19d5012cadcc8d57c5e08b2/merged",
+      "UpperDir": "/var/lib/docker/overlay2/9a3112e0a57a270f5bc1ac531e96b1a6c2017a4ba19d5012cadcc8d57c5e08b2/diff",
+      "WorkDir": "/var/lib/docker/overlay2/9a3112e0a57a270f5bc1ac531e96b1a6c2017a4ba19d5012cadcc8d57c5e08b2/work"
+    },
+    "Name": "overlay2"
+  },
+  "Mounts": [
+    {
+      "Type": "bind",
+      "Source": "/tmp/observer-sbx-RUNID0123456789abc",
+      "Destination": "/tmp/observer-sbx-RUNID0123456789abc",
+      "Mode": "",
+      "RW": false,
+      "Propagation": "rprivate"
+    },
+    {
+      "Type": "bind",
+      "Source": "/dev/null",
+      "Destination": "/home/dev/.claude/.credentials-secret",
+      "Mode": "",
+      "RW": false,
+      "Propagation": "rprivate"
+    },
+    {
+      "Type": "bind",
+      "Source": "/home/dev/src/app",
+      "Destination": "/home/dev/src/app",
+      "Mode": "",
+      "RW": true,
+      "Propagation": "rprivate"
+    },
+    {
+      "Type": "bind",
+      "Source": "/home/dev/.local/bin/observer",
+      "Destination": "/home/dev/.local/bin/observer",
+      "Mode": "",
+      "RW": false,
+      "Propagation": "rprivate"
+    },
+    {
+      "Type": "bind",
+      "Source": "/home/dev/.claude",
+      "Destination": "/home/dev/.claude",
+      "Mode": "",
+      "RW": true,
+      "Propagation": "rprivate"
+    }
+  ],
+  "Config": {
+    "Hostname": "307584cba9f6",
+    "Domainname": "",
+    "User": "1000:1000",
+    "AttachStdin": true,
+    "AttachStdout": true,
+    "AttachStderr": true,
+    "Tty": true,
+    "OpenStdin": true,
+    "StdinOnce": false,
+    "Env": [
+      "HOME=/home/dev",
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    ],
+    "Cmd": [],
+    "Image": "debian:bookworm-slim",
+    "Volumes": null,
+    "WorkingDir": "/home/dev/src/app",
+    "Entrypoint": [
+      "/home/dev/.local/bin/observer",
+      "sandbox-oci-init",
+      "--",
+      "/home/dev/.local/bin/observer",
+      "claude"
+    ],
+    "OnBuild": null,
+    "Labels": {
+      "app.superbased.observer.install": "0a1b2c3d4e5f6a7b",
+      "app.superbased.observer.role": "sandbox",
+      "app.superbased.observer.run": "RUNID0123456789abc"
+    },
+    "StopSignal": "SIGTERM",
+    "StopTimeout": 10
+  },
+  "NetworkSettings": {
+    "Bridge": "",
+    "SandboxID": "",
+    "SandboxKey": "",
+    "Ports": {},
+    "HairpinMode": false,
+    "LinkLocalIPv6Address": "",
+    "LinkLocalIPv6PrefixLen": 0,
+    "SecondaryIPAddresses": null,
+    "SecondaryIPv6Addresses": null,
+    "EndpointID": "",
+    "Gateway": "",
+    "GlobalIPv6Address": "",
+    "GlobalIPv6PrefixLen": 0,
+    "IPAddress": "",
+    "IPPrefixLen": 0,
+    "IPv6Gateway": "",
+    "MacAddress": "",
+    "Networks": {
+      "none": {
+        "IPAMConfig": null,
+        "Links": null,
+        "Aliases": null,
+        "MacAddress": "",
+        "DriverOpts": null,
+        "GwPriority": 0,
+        "NetworkID": "",
+        "EndpointID": "",
+        "Gateway": "",
+        "IPAddress": "",
+        "IPPrefixLen": 0,
+        "IPv6Gateway": "",
+        "GlobalIPv6Address": "",
+        "GlobalIPv6PrefixLen": 0,
+        "DNSNames": null
+      }
+    }
+  }
+}

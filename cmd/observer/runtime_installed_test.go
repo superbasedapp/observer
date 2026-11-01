@@ -48,6 +48,7 @@ func node1PkgEnv(pkgJSON []byte) toolresolve.Env {
 }
 
 func TestLaunchRuntimePrefersInstalledEngines(t *testing.T) {
+	skipLinuxFakeOnWindows(t)
 	spec := mustBinary(t, "gemini-cli") // registry floor: node >= 20
 	cases := []struct {
 		name      string
@@ -104,6 +105,7 @@ func TestLaunchRuntimePrefersInstalledEngines(t *testing.T) {
 
 // TestDoctorNamesInstalledFloor: doctor says where the floor came from.
 func TestDoctorNamesInstalledFloor(t *testing.T) {
+	skipLinuxFakeOnWindows(t)
 	swapRuntimeProbe(t, probeReturns("v20.11.0", nil))
 	swapDashEnv(t, node1PkgEnv([]byte(`{"engines":{"node":">=22"}}`)))
 	msg, _, blocking, ok := runtimeDoctorLine("gemini-cli")

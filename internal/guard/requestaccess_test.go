@@ -12,83 +12,91 @@ import (
 // display with it.
 const longSession = "0f6b9d2e-6c1a-4f53-9a8e-2b7d1c4e9f10"
 
-// TestRequestAccessLine pins the G4 sentence (design §1.3): an org-locked
-// block names the rule and offers the node request form, prefilled with the
-// rule and the session, or the CLI command; never more than 200 bytes (the
+// TestRequestAccessLine pins the G4 sentence (design §1.3) as revised by
+// WINNODE2 16d: an org-locked block names the rule and tells the developer
+// how to ask (the Observer dashboard's Requests page, or the CLI command),
+// with NO URL, because the agent reads it in band and an agent treated the
+// localhost link as an undocumented service; never more than 200 bytes (the
 // node dashboard shows the first 200 of an error), one line, hyphens only,
-// US spelling.
+// US spelling. The link itself is RequestAccessLink, for human surfaces.
 func TestRequestAccessLine(t *testing.T) {
 	t.Parallel()
 	base := "http://127.0.0.1:8081"
 	cases := []struct {
-		name       string
-		av         ActionVerdict
-		session    string
-		want       []string
-		wantAbsent []string
+		name string
+		av   ActionVerdict
+		want []string
 	}{
 		{
-			name:    "link with rule and session, and the command",
-			av:      ActionVerdict{Kind: policy.KindShellExec, OrgLocked: true, RequestBase: base, Verdict: policy.Verdict{RuleID: "R-171"}},
-			session: "s-1",
+			name: "the dashboard page and the command",
+			av:   ActionVerdict{Kind: policy.KindShellExec, OrgLocked: true, RequestBase: base, Verdict: policy.Verdict{RuleID: "R-171"}},
 			want: []string{
 				"observer: R-171 blocked this command; your organization locks this rule.",
-				"Request access: " + base + "/requests?rule=R-171&session=s-1",
+				"Observer dashboard, Requests page",
 				"observer request access --rule R-171",
 			},
 		},
 		{
-			name:    "a long session id keeps the link, drops the command",
-			av:      ActionVerdict{Kind: policy.KindConfigChange, OrgLocked: true, RequestBase: base, Verdict: policy.Verdict{RuleID: "R-171"}},
-			session: longSession,
-			want:    []string{"/requests?rule=R-171&session=" + longSession},
+			name: "a long kind noun still fits with the command",
+			av:   ActionVerdict{Kind: policy.KindConfigChange, OrgLocked: true, RequestBase: base, Verdict: policy.Verdict{RuleID: "R-171"}},
+			want: []string{"Observer dashboard, Requests page", "observer request access --rule R-171"},
 		},
 		{
-			name:       "no session id: the link carries the rule only",
-			av:         ActionVerdict{Kind: policy.KindAPIRequest, OrgLocked: true, RequestBase: base, Verdict: policy.Verdict{RuleID: "R-172"}},
-			want:       []string{base + "/requests?rule=R-172", "observer request access --rule R-172"},
-			wantAbsent: []string{"session="},
-		},
-		{
-			name:       "no dashboard origin: the command only",
-			av:         ActionVerdict{Kind: policy.KindFileAccess, OrgLocked: true, Verdict: policy.Verdict{RuleID: "R-152"}},
-			session:    "s-2",
-			want:       []string{"Request access: run `observer request access --rule R-152"},
-			wantAbsent: []string{"http"},
-		},
-		{
-			name:    "a hostile rule id is escaped in the link",
-			av:      ActionVerdict{Kind: policy.KindShellExec, OrgLocked: true, RequestBase: base, Verdict: policy.Verdict{RuleID: "R-1&x=<y>"}},
-			session: "s 3",
-			want:    []string{"rule=R-1%26x%3D%3Cy%3E", "session=s+3"},
+			name: "no dashboard origin: the same instruction",
+			av:   ActionVerdict{Kind: policy.KindFileAccess, OrgLocked: true, Verdict: policy.Verdict{RuleID: "R-152"}},
+			want: []string{"Observer dashboard, Requests page", "observer request access --rule R-152"},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got := HumanBlockLine(tc.av, tc.session)
+			got := HumanBlockLine(tc.av, longSession)
 			if len(got) > RequestAccessMaxBytes {
 				t.Fatalf("line is %d bytes, over %d: %q", len(got), RequestAccessMaxBytes, got)
 			}
-			if strings.ContainsAny(got, "\n\r—–") || strings.Contains(got, "organisation") || strings.Contains(got, "ask your admin") {
+			if strings.ContainsAny(got, "\n\r—–") || strings.Contains(got, "organisation") {
 				t.Fatalf("copy rule broken: %q", got)
+			}
+			if strings.Contains(got, "http") || strings.Contains(got, "127.0.0.1") || strings.Contains(got, "/requests?") {
+				t.Fatalf("an in-band line carries a URL an agent might call: %q", got)
 			}
 			for _, w := range tc.want {
 				if !strings.Contains(got, w) {
 					t.Errorf("line %q missing %q", got, w)
 				}
 			}
-			for _, a := range tc.wantAbsent {
-				if strings.Contains(got, a) {
-					t.Errorf("line %q must not contain %q", got, a)
-				}
-			}
 		})
 	}
 }
 
-// TestRequestAccessLineFitsEveryKind: whatever the event kind and with the
-// longest session id, the line fits and still offers a way to ask.
+// TestRequestAccessLink: the request form's link, for the human surfaces
+// only, prefilled with the rule and the session (escaped), or the budget
+// increase form for a budget stop; empty without a dashboard origin.
+func TestRequestAccessLink(t *testing.T) {
+	t.Parallel()
+	base := "http://127.0.0.1:8081"
+	locked := ActionVerdict{
+		Kind: policy.KindShellExec, OrgLocked: true, RequestBase: base,
+		Verdict: policy.Verdict{RuleID: "R-1&x=<y>"}, Input: ActionInput{SessionID: "s 3"},
+	}
+	if got := RequestAccessLink(locked); got != base+"/requests?rule=R-1%26x%3D%3Cy%3E&session=s+3" {
+		t.Fatalf("org-locked link = %q", got)
+	}
+	budget := ActionVerdict{RequestBase: base, Category: string(policy.CategoryBudget), Verdict: policy.Verdict{RuleID: "B-602"}}
+	if got := RequestAccessLink(budget); got != base+BudgetIncreaseRequestPath {
+		t.Fatalf("budget link = %q", got)
+	}
+	locked.RequestBase = ""
+	if got := RequestAccessLink(locked); got != "" {
+		t.Fatalf("no origin: link = %q", got)
+	}
+	if got := RequestAccessLink(ActionVerdict{RequestBase: base, Verdict: policy.Verdict{RuleID: "R-1"}}); got != "" {
+		t.Fatalf("nothing to request: link = %q", got)
+	}
+}
+
+// TestRequestAccessLineFitsEveryKind: whatever the event kind, the line fits
+// and still offers a way to ask, with no URL.
 func TestRequestAccessLineFitsEveryKind(t *testing.T) {
 	t.Parallel()
 	kinds := []policy.EventKind{policy.EventKind("brand_new_kind")}
@@ -99,7 +107,7 @@ func TestRequestAccessLineFitsEveryKind(t *testing.T) {
 		for _, base := range []string{"", "http://127.0.0.1:8081", "http://[::1]:65535"} {
 			av := ActionVerdict{Kind: k, OrgLocked: true, RequestBase: base, Verdict: policy.Verdict{RuleID: "R-1234"}}
 			got := HumanBlockLine(av, longSession)
-			if len(got) > RequestAccessMaxBytes || !strings.Contains(got, "Request access") {
+			if len(got) > RequestAccessMaxBytes || !strings.Contains(got, "Ask your admin") || strings.Contains(got, "http") {
 				t.Errorf("kind %s base %q: %d bytes %q", k, base, len(got), got)
 			}
 		}
@@ -107,8 +115,8 @@ func TestRequestAccessLineFitsEveryKind(t *testing.T) {
 }
 
 // TestRequestAccessStampedByTheGuard: the guard stamps its configured
-// dashboard origin on every verdict it builds, so the hook reply, the proxy
-// deny and the desktop toast all link the same request form.
+// dashboard origin on every verdict it builds, so the desktop notification
+// links the request form, while the hook reply names the dashboard page.
 func TestRequestAccessStampedByTheGuard(t *testing.T) {
 	t.Parallel()
 	env, pin := signedEnvelope(t, 11, orgOverridableBundleTOML)
@@ -130,13 +138,16 @@ func TestRequestAccessStampedByTheGuard(t *testing.T) {
 		t.Fatalf("RequestBase = %q", av.RequestBase)
 	}
 	em := HumanizeEmission(Emission{Permission: "deny", Enforced: true, Reason: "rule reason"}, av, "sA")
-	if !strings.HasPrefix(em.Reason, "observer: ") || !strings.Contains(em.Reason, "http://127.0.0.1:9999/requests?rule=") {
-		t.Fatalf("emission does not lead with the request line: %q", em.Reason)
+	if !strings.HasPrefix(em.Reason, "observer: ") || !strings.Contains(em.Reason, "Requests page") || strings.Contains(em.Reason, "http") {
+		t.Fatalf("emission does not lead with the request line, or carries a URL: %q", em.Reason)
+	}
+	if !strings.HasPrefix(RequestAccessLink(av), "http://127.0.0.1:9999/requests?rule=") {
+		t.Fatalf("link = %q", RequestAccessLink(av))
 	}
 }
 
 // TestPromptRequestAccessHint: an org-locked prompt block offers the same
-// request path (the prompt gate's own house message appends it).
+// request path (the prompt gate's own house message appends it), no URL.
 func TestPromptRequestAccessHint(t *testing.T) {
 	t.Parallel()
 	pv := PromptVerdict{
@@ -144,7 +155,7 @@ func TestPromptRequestAccessHint(t *testing.T) {
 		Outcome: PromptOutcomeBlocked, OrgLocked: true, RequestBase: "http://127.0.0.1:8081",
 	}
 	got := PromptRequestAccessHint(pv, "s-9")
-	if !strings.Contains(got, "/requests?rule=R-172&session=s-9") || len(got) > RequestAccessMaxBytes {
+	if !strings.Contains(got, "Requests page") || strings.Contains(got, "http") || len(got) > RequestAccessMaxBytes {
 		t.Fatalf("hint %q", got)
 	}
 	pv.OrgLocked = false
@@ -155,7 +166,7 @@ func TestPromptRequestAccessHint(t *testing.T) {
 
 // TestProxyPromptHouseMessage_OrgLockedOffersRequestAccess: the proxy
 // lane's prompt block offers the same request line as the hook lane, inside
-// the first 200 bytes.
+// the first 200 bytes, with no URL.
 func TestProxyPromptHouseMessage_OrgLockedOffersRequestAccess(t *testing.T) {
 	t.Parallel()
 	pv := PromptVerdict{
@@ -164,9 +175,9 @@ func TestProxyPromptHouseMessage_OrgLockedOffersRequestAccess(t *testing.T) {
 		Detectors: "github_pat", OrgLocked: true, RequestBase: "http://127.0.0.1:8081",
 	}
 	got := proxyPromptHouseMessage(pv, "s9")
-	link := "Request access: http://127.0.0.1:8081/requests?rule=R-172&session=s9"
-	i := strings.Index(got, link)
-	if i < 0 || i+len(link) > RequestAccessMaxBytes || !strings.Contains(got, "secret in prompt") {
+	ask := "Observer dashboard, Requests page"
+	i := strings.Index(got, ask)
+	if i < 0 || i+len(ask) > RequestAccessMaxBytes || !strings.Contains(got, "secret in prompt") || strings.Contains(got, "http") {
 		t.Fatalf("message %q", got)
 	}
 }

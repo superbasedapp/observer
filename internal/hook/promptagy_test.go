@@ -78,11 +78,14 @@ func TestExtractAntigravityPreInvocationPrompt(t *testing.T) {
 }
 
 // judgedEvaluator is a stubPromptEvaluator that also answers
-// PromptAlreadyJudged.
+// PromptAlreadyJudged and PromptSessionStopped.
 type judgedEvaluator struct {
 	stubPromptEvaluator
 	judged bool
 	calls  int
+	// stop, when non-empty, is the conversation's earlier stopped prompt.
+	stop       guard.PromptSessionStop
+	stopChecks int
 }
 
 func (j *judgedEvaluator) PromptAlreadyJudged(string, string, time.Time) bool {
@@ -90,59 +93,190 @@ func (j *judgedEvaluator) PromptAlreadyJudged(string, string, time.Time) bool {
 	return j.judged
 }
 
+func (j *judgedEvaluator) PromptSessionStopped(tool, sessionID string) (guard.PromptSessionStop, bool) {
+	j.stopChecks++
+	return j.stop, j.stop.RuleID != "" && tool == models.ToolAntigravityCLI && sessionID == "conv-1"
+}
+
+// withAgyHost runs fn with the agy host probes replaced: chain is the
+// hook's ancestor chain (nil: unreadable) and version what `agy --version`
+// answers ("" unknown). Not parallel-safe: callers do not t.Parallel().
+func withAgyHost(t *testing.T, chain []procInfo, version string) {
+	t.Helper()
+	oldAnc, oldVer := hostAncestry, agyVersionProbe
+	hostAncestry = func() ([]procInfo, bool) { return chain, chain != nil }
+	agyVersionProbe = func(string) (string, bool) { return version, version != "" }
+	t.Cleanup(func() { hostAncestry, agyVersionProbe = oldAnc, oldVer })
+}
+
+// interactiveAgy is an ancestor chain whose agy runs the interactive TUI.
+var interactiveAgy = []procInfo{
+	{PID: 300, Argv: []string{"/bin/sh", "-c", "observer hook antigravity-cli PreInvocation"}, Exe: "/bin/dash"},
+	{PID: 200, Argv: []string{"agy"}, Exe: "/home/u/.local/bin/agy"},
+}
+
 // TestHandlePromptSubmitGuarded_AntigravityPreInvocation pins the agy
-// seam: a finding warns the MODEL through injectSteps (warn-only, never
-// stops), the developer toast stays on (WarnIndirect), a prompt already
-// judged is skipped, and a clean prompt replies {} with no DB lookup.
+// seam (guard-enforcement fix, 2026-10-15): a flag warns the DEVELOPER (a
+// userMessage step) and the model (an ephemeralMessage), with no toast; a
+// deny or an ask on an agy proven to abort is the abort {"injectSteps":[{}]}
+// with a silent-block toast (ask has no confirm or resend here, so its
+// ladder lands on block); an older or unidentified agy degrades the block
+// to the warning; a prompt already judged is skipped; a clean prompt replies
+// {} with no lookup; and a conversation that already carries a stopped
+// prompt is aborted again whatever its new prompt says.
 func TestHandlePromptSubmitGuarded_AntigravityPreInvocation(t *testing.T) {
-	t.Parallel()
 	path := agyTranscript(t, "push with the token please")
 	finding := []policy.SecretFinding{{Type: "github_pat_fine", Hash: "h"}}
-	ask := guard.PromptVerdict{
-		Verdict: policy.Verdict{Decision: policy.DecisionAsk, RuleID: "R-172", Reason: "detected github_pat_fine in the prompt text"},
-		Outcome: guard.PromptOutcomeBlocked,
+	verdict := func(d policy.Decision, o guard.PromptOutcome) guard.PromptVerdict {
+		return guard.PromptVerdict{
+			Verdict: policy.Verdict{Decision: d, RuleID: "R-172", Severity: policy.SeverityCritical, Reason: "detected github_pat_fine in the prompt text"},
+			Outcome: o,
+		}
 	}
+	ask := verdict(policy.DecisionAsk, guard.PromptOutcomeBlocked)
+	deny := verdict(policy.DecisionDeny, guard.PromptOutcomeBlocked)
+	flag := verdict(policy.DecisionFlag, guard.PromptOutcomeWarned)
+	const abort = `{"injectSteps":[{}]}` + "\n"
 	cases := []struct {
 		name        string
+		chain       []procInfo
+		version     string
 		ev          *judgedEvaluator
-		wantInject  bool
+		wantAction  guard.PromptAction
+		wantWanted  guard.PromptAction
+		wantStdout  string // exact, when set
+		wantNotice  bool   // a userMessage + ephemeralMessage warning
 		wantPersist bool
+		wantSilent  bool
 		wantLookups int
+		wantDegrade string
 	}{
-		{"finding warns the model", &judgedEvaluator{stubPromptEvaluator: stubPromptEvaluator{secrets: finding, verdict: ask}}, true, true, 1},
-		{"already judged: skipped", &judgedEvaluator{stubPromptEvaluator: stubPromptEvaluator{secrets: finding, verdict: ask}, judged: true}, false, false, 1},
-		{"clean prompt: no lookup", &judgedEvaluator{stubPromptEvaluator: stubPromptEvaluator{verdict: allowVerdict()}}, false, false, 0},
+		{
+			name: "flag warns the developer and the model", chain: interactiveAgy, version: "1.3.5",
+			ev:         &judgedEvaluator{stubPromptEvaluator: stubPromptEvaluator{secrets: finding, verdict: flag}},
+			wantAction: guard.PromptActionWarn, wantNotice: true, wantPersist: true, wantLookups: 1,
+		},
+		{
+			name: "deny aborts the turn on agy 1.3.5", chain: interactiveAgy, version: "1.3.5",
+			ev:         &judgedEvaluator{stubPromptEvaluator: stubPromptEvaluator{secrets: finding, verdict: deny}},
+			wantAction: guard.PromptActionBlock, wantStdout: abort, wantPersist: true, wantSilent: true, wantLookups: 1,
+		},
+		{
+			name: "ask lands on block (no confirm, no resend)", chain: interactiveAgy, version: "1.4.0",
+			ev:         &judgedEvaluator{stubPromptEvaluator: stubPromptEvaluator{secrets: finding, verdict: ask}},
+			wantAction: guard.PromptActionBlock, wantWanted: guard.PromptActionConfirm, wantStdout: abort, wantPersist: true, wantSilent: true, wantLookups: 1,
+		},
+		{
+			name: "older agy degrades the block to the warning", chain: interactiveAgy, version: "1.3.0",
+			ev:         &judgedEvaluator{stubPromptEvaluator: stubPromptEvaluator{secrets: finding, verdict: deny}},
+			wantAction: guard.PromptActionWarn, wantWanted: guard.PromptActionBlock, wantNotice: true, wantPersist: true, wantLookups: 1,
+		},
+		{
+			name: "no agy ancestor degrades the block to the warning", chain: nil, version: "1.3.5",
+			ev:         &judgedEvaluator{stubPromptEvaluator: stubPromptEvaluator{secrets: finding, verdict: deny}},
+			wantAction: guard.PromptActionWarn, wantWanted: guard.PromptActionBlock, wantNotice: true, wantPersist: true, wantLookups: 1,
+		},
+		{
+			name: "already judged: skipped", chain: interactiveAgy, version: "1.3.5",
+			ev:         &judgedEvaluator{stubPromptEvaluator: stubPromptEvaluator{secrets: finding, verdict: deny}, judged: true},
+			wantStdout: "{}\n", wantLookups: 1,
+		},
+		{
+			name: "clean prompt: no lookup", chain: interactiveAgy, version: "1.3.5",
+			ev:         &judgedEvaluator{stubPromptEvaluator: stubPromptEvaluator{verdict: allowVerdict()}},
+			wantStdout: "{}\n",
+		},
+		{
+			name: "tainted conversation aborts a clean prompt", chain: interactiveAgy, version: "1.3.5",
+			ev: &judgedEvaluator{
+				stubPromptEvaluator: stubPromptEvaluator{verdict: allowVerdict()},
+				stop:                guard.PromptSessionStop{RuleID: "R-172", Severity: "critical"},
+			},
+			wantAction: guard.PromptActionBlock, wantStdout: abort, wantPersist: true, wantSilent: true,
+			wantDegrade: guard.DegradedFromTaintedSession,
+		},
+		{
+			name: "tainted conversation on an older agy is judged on its own prompt", chain: interactiveAgy, version: "1.2.16",
+			ev: &judgedEvaluator{
+				stubPromptEvaluator: stubPromptEvaluator{verdict: allowVerdict()},
+				stop:                guard.PromptSessionStop{RuleID: "R-172", Severity: "critical"},
+			},
+			wantStdout: "{}\n",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			withAgyHost(t, tc.chain, tc.version)
 			var stdout bytes.Buffer
 			var got guard.PromptVerdict
+			var gotEm guard.Emission
 			persisted := false
 			handled, after, exit := HandlePromptSubmitGuarded(models.ToolAntigravityCLI, PromptDialectAntigravityPreInvocation, "PreInvocation",
 				agyPayload(t, path), false, tc.ev,
-				func(pv guard.PromptVerdict, _ guard.Emission, _ string) { got, persisted = pv, true }, &stdout, io.Discard)
+				func(pv guard.PromptVerdict, em guard.Emission, _ string) { got, gotEm, persisted = pv, em, true }, &stdout, io.Discard)
 			if !handled || exit != 0 {
-				t.Fatalf("handled=%v exit=%d, want handled with exit 0 (the seam never stops)", handled, exit)
+				t.Fatalf("handled=%v exit=%d, want handled with exit 0 (the reply carries the block)", handled, exit)
 			}
 			if after != nil {
 				after()
 			}
-			if persisted != tc.wantPersist || tc.ev.calls != tc.wantLookups {
-				t.Fatalf("persisted=%v lookups=%d, want %v/%d", persisted, tc.ev.calls, tc.wantPersist, tc.wantLookups)
+			if persisted != tc.wantPersist || tc.ev.calls != tc.wantLookups || tc.ev.stopChecks != 1 {
+				t.Fatalf("persisted=%v lookups=%d stopChecks=%d, want %v/%d/1", persisted, tc.ev.calls, tc.ev.stopChecks, tc.wantPersist, tc.wantLookups)
 			}
-			hasInject := strings.Contains(stdout.String(), `"injectSteps"`)
-			if hasInject != tc.wantInject {
-				t.Fatalf("stdout = %q, want injectSteps=%v", stdout.String(), tc.wantInject)
+			out := stdout.String()
+			if tc.wantStdout != "" && out != tc.wantStdout {
+				t.Fatalf("stdout = %q, want %q", out, tc.wantStdout)
+			}
+			if tc.wantNotice {
+				var r agyPreInvocationReply
+				if err := json.Unmarshal([]byte(out), &r); err != nil || len(r.InjectSteps) != 2 ||
+					!strings.HasPrefix(r.InjectSteps[0].UserMessage, "SuperBased Observer: detected github_pat_fine") ||
+					r.InjectSteps[0].EphemeralMessage != "" || r.InjectSteps[1].UserMessage != "" ||
+					!strings.Contains(r.InjectSteps[1].EphemeralMessage, "Do not repeat, store, or use the flagged value") {
+					t.Fatalf("warning reply = %q (err %v)", out, err)
+				}
 			}
 			if !tc.wantPersist {
 				return
 			}
-			if got.Action != guard.PromptActionWarn || got.ActionDegradedFrom != guard.PromptActionConfirm || got.Lane != "hook" || !got.WarnIndirect {
-				t.Errorf("verdict = action %q wanted %q lane %q indirect %v, want warn (degraded from confirm), indirect",
-					got.Action, got.ActionDegradedFrom, got.Lane, got.WarnIndirect)
+			if got.Action != tc.wantAction || got.ActionDegradedFrom != tc.wantWanted || got.Lane != "hook" ||
+				got.WarnIndirect || (tc.wantSilent && !got.BlockSilent) || got.DegradedFrom != tc.wantDegrade {
+				t.Errorf("verdict = action %q wanted %q lane %q indirect %v silent %v degraded %q, want %q/%q/hook/false/%v/%q",
+					got.Action, got.ActionDegradedFrom, got.Lane, got.WarnIndirect, got.BlockSilent, got.DegradedFrom,
+					tc.wantAction, tc.wantWanted, tc.wantSilent, tc.wantDegrade)
 			}
-			if !strings.Contains(stdout.String(), "SuperBased Observer guard notice") || strings.Contains(stdout.String(), "github_pat_11") {
-				t.Errorf("model notice = %q", stdout.String())
+			if wantPerm := map[bool]string{true: "deny", false: "allow"}[tc.wantAction == guard.PromptActionBlock]; gotEm.Permission != wantPerm {
+				t.Errorf("emission permission = %q, want %q", gotEm.Permission, wantPerm)
+			}
+			if strings.Contains(out, "github_pat_11") {
+				t.Errorf("reply leaks the value: %q", out)
+			}
+		})
+	}
+}
+
+// TestBuildAntigravityPreInvocationReply pins each outcome's wire shape.
+func TestBuildAntigravityPreInvocationReply(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		out  promptReplyOutcome
+		want string
+	}{
+		{"allow", promptReplyOutcome{}, `{}`},
+		{"block is the empty step", promptReplyOutcome{Blocking: true, Reason: "observer: x"}, `{"injectSteps":[{}]}`},
+		{
+			"warn is a userMessage then an ephemeralMessage",
+			promptReplyOutcome{Warn: true, Reason: "observer: found y (forwarded)"},
+			`{"injectSteps":[{"userMessage":"SuperBased Observer: found y (forwarded)"},` +
+				`{"ephemeralMessage":"SuperBased Observer guard notice for the user: observer: found y (forwarded) The user has been shown this notice. Do not repeat, store, or use the flagged value."}]}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b, err := json.Marshal(buildAntigravityPreInvocationReply(tc.out))
+			if err != nil || string(b) != tc.want {
+				t.Fatalf("reply = %s (err %v), want %s", b, err, tc.want)
 			}
 		})
 	}

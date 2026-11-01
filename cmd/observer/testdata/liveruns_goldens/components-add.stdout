@@ -1,0 +1,2 @@
+activates: terminals.sandbox
+Applied. The daemon reads this selection when it starts. A change applies to new commands at once and to the daemon's background work after the next restart.

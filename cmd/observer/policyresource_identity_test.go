@@ -38,6 +38,7 @@ const identTestOrgURL = "https://org.example"
 // the org rail on and node.features accepted and preauthorized.
 func identTestStore(t *testing.T) (config.Config, *store.Store) {
 	t.Helper()
+	pinToolHomes(t) // config.Default() puts the guard org-bundle cache under the home (FU-20)
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "observer.db")
 	conn, err := dbtemplate.Open(context.Background(), db.Options{Path: dbPath})

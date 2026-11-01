@@ -1,0 +1,132 @@
+package dirac
+
+import (
+	"encoding/json"
+	"time"
+
+	"github.com/marmutapp/superbased-observer/internal/adapter/cacheobs"
+	"github.com/marmutapp/superbased-observer/internal/models"
+)
+
+// MaxBlocksPerSession caps the per-session Tier-2 accumulator's running
+// block count. Matches the claudecode template's cap (same memory
+// budget, same OOM guard).
+const MaxBlocksPerSession = cacheobs.DefaultMaxBlocksPerSession
+
+// accumulateTextCache feeds one text block's (already scrubbed) content
+// into acc, tagged by the message's role.
+func accumulateTextCache(acc *cacheobs.Accumulator, text, role string) {
+	canon, ok := marshalCacheTextBlock(text)
+	if !ok {
+		return
+	}
+	acc.ObserveBlocks([]models.CacheBlockMeta{{
+		LevelLabel:     "message", // R1: transcripts never expose tools/system
+		Kind:           "text",
+		CanonicalBytes: canon,
+		Role:           role,
+	}})
+}
+
+// accumulateToolCallCache feeds one tool_use block's name + (already
+// scrubbed) input JSON into acc.
+func accumulateToolCallCache(acc *cacheobs.Accumulator, name, scrubbedInput string) {
+	canon, ok := marshalCacheToolUseBlock(name, scrubbedInput)
+	if !ok {
+		return
+	}
+	acc.ObserveBlocks([]models.CacheBlockMeta{{
+		LevelLabel:     "message",
+		Kind:           "tool_use",
+		CanonicalBytes: canon,
+		Role:           "assistant",
+	}})
+}
+
+// accumulateToolResultCache feeds one tool_result block's (already
+// scrubbed, already flattened) text into acc.
+func accumulateToolResultCache(acc *cacheobs.Accumulator, scrubbedText string) {
+	canon, ok := marshalCacheToolResultBlock(scrubbedText)
+	if !ok {
+		return
+	}
+	acc.ObserveBlocks([]models.CacheBlockMeta{{
+		LevelLabel:     "message",
+		Kind:           "tool_result",
+		CanonicalBytes: canon,
+		Role:           "tool",
+	}})
+}
+
+// marshalCacheTextBlock produces the deterministic JSON canonical form of
+// a plain text block. Each payload is an explicit STRUCT (never a map)
+// so encoding/json's deterministic field order preserves the R3
+// byte-stability invariant.
+func marshalCacheTextBlock(text string) ([]byte, bool) {
+	if text == "" {
+		return nil, false
+	}
+	payload := struct {
+		Type string `json:"type"`
+		Text string `json:"text,omitempty"`
+	}{Type: "text", Text: text}
+	buf, err := json.Marshal(payload)
+	if err != nil {
+		return nil, false
+	}
+	return buf, true
+}
+
+// marshalCacheToolUseBlock produces the canonical form of one assistant
+// tool_use call.
+func marshalCacheToolUseBlock(name, input string) ([]byte, bool) {
+	if name == "" && input == "" {
+		return nil, false
+	}
+	payload := struct {
+		Type  string `json:"type"`
+		Name  string `json:"name,omitempty"`
+		Input string `json:"input,omitempty"`
+	}{Type: "tool_use", Name: name, Input: input}
+	buf, err := json.Marshal(payload)
+	if err != nil {
+		return nil, false
+	}
+	return buf, true
+}
+
+// marshalCacheToolResultBlock produces the canonical form of one tool
+// result's flattened text.
+func marshalCacheToolResultBlock(text string) ([]byte, bool) {
+	if text == "" {
+		return nil, false
+	}
+	payload := struct {
+		Type string `json:"type"`
+		Text string `json:"text,omitempty"`
+	}{Type: "tool_result", Text: text}
+	buf, err := json.Marshal(payload)
+	if err != nil {
+		return nil, false
+	}
+	return buf, true
+}
+
+// emitCacheObservation drains acc into one CacheTurnObservation for a
+// token-bearing assistant message. Returns nil for an all-zero bundle.
+// The provider id is mapped onto the cachetrack vocabulary first so an
+// OpenAI-family turn takes the implicit-cache path (§15.3 overlay).
+func emitCacheObservation(acc *cacheobs.Accumulator, path, sessionID, messageID, model, provider string, ts time.Time, tp tokenSplit) *models.CacheTurnObservation {
+	usage := models.CacheUsage{
+		NetInputTokens:      tp.input,
+		OutputTokens:        tp.output,
+		CacheReadTokens:     tp.cacheRead,
+		CacheCreationTokens: tp.cacheWrite,
+	}
+	if cacheobs.IsZeroUsage(usage) {
+		return nil
+	}
+	obs := acc.Emit(path, sessionID, messageID, model, ts, usage, false)
+	obs = cacheobs.ApplyImplicitCacheOverlay(obs, cacheProvider(provider), model)
+	return &obs
+}

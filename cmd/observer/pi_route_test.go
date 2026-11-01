@@ -137,7 +137,7 @@ func TestPiRouteFor(t *testing.T) {
 func runPiLauncherWithSettings(t *testing.T, settings string) ([]string, string) {
 	t.Helper()
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	// A key for the session-scoped observer provider (Sol A5-08): without one
 	// the launcher writes no provider and starts pi unrouted before the
 	// model-routing decision is ever reached.
@@ -154,13 +154,11 @@ func runPiLauncherWithSettings(t *testing.T, settings string) ([]string, string)
 	dir := t.TempDir()
 	argsFile := filepath.Join(dir, "argv.txt")
 	bin := filepath.Join(dir, "pi")
-	script := "#!/bin/sh\n: > " + argsFile + "\nprov=; model=\n" +
-		"while [ $# -gt 0 ]; do printf '%s\\n' \"$1\" >> " + argsFile + "\n" +
+	script := "#!/bin/sh\n: > " + stubShPath(argsFile) + "\nprov=; model=\n" +
+		"while [ $# -gt 0 ]; do printf '%s\\n' \"$1\" >> " + stubShPath(argsFile) + "\n" +
 		"  case \"$1\" in --provider) prov=1;; --model) model=$2;; esac; shift; done\n" +
 		"if [ -n \"$prov\" ] && [ -z \"$model\" ]; then echo 'Error: --provider requires --model' >&2; exit 1; fi\nexit 0\n"
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	bin = writeShellStub(t, bin, script)
 
 	cmd := newPiCmd()
 	var out strings.Builder

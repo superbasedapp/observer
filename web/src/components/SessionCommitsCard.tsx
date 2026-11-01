@@ -1,13 +1,29 @@
 import { useNavigate } from "react-router-dom";
+import clsx from "clsx";
+import { CircleCheck, CircleX, ExternalLink, GitPullRequestArrow, Monitor, Upload } from "lucide-react";
 import { ChartState } from "@/components/ChartState";
-import { IdLink, Pill, Tooltip } from "@/components/primitives";
+import { Button, Icon, IdLink, Pill, Tooltip } from "@/components/primitives";
+import { VocabPill } from "@shared/lib/vocabPill";
 import { describeTruncation, TruncationBanner } from "@/components/projectdetail/TruncationBanner";
 import { ownerReasonMeta, SHARE_BASIS_TIP } from "@/components/projectdetail/commitOwner";
 import { CodeCommentSplit } from "@shared/primitives/CodeCommentSplit";
-import { sessionCommitsPath } from "@/lib/api";
+import { sessionCommitsPath, sessionDeliveryPath } from "@/lib/api";
 import { fmtInt, fmtPct, fmtRelative, fmtShortId } from "@/lib/format";
 import { useApi } from "@/lib/useApi";
-import type { SessionCommitRow, SessionCommitsResponse } from "@/lib/types";
+import type { SessionCommitRow, SessionCommitsResponse, SessionDelivery, SessionDeliveryRow } from "@/lib/types";
+import {
+  LANDING_KIND,
+  LANDING_STATUS,
+  PR_CHIP,
+  entry,
+  facetSentence,
+  landingDetail,
+  prChipKey,
+  prChipLabel,
+  sessionHeadline,
+  type SessionHeadline,
+  CODE_HOSTS_HREF,
+} from "@/lib/deliveryModel";
 import { COMMIT_CAPTURE } from "@/lib/vocabTones";
 
 // SessionCommitsCard - the session detail's "Commits" section (operator ask
@@ -27,6 +43,18 @@ import { COMMIT_CAPTURE } from "@/lib/vocabTones";
 export function SessionCommitsCard({ sessionId }: { sessionId: string }) {
   const navigate = useNavigate();
   const res = useApi<SessionCommitsResponse>(sessionCommitsPath(sessionId), undefined, [sessionId]);
+  // Delivery (D-689): where each commit went. A failed or empty read leaves
+  // the card exactly as it was; delivery adds, never hides.
+  const del = useApi<SessionDelivery>(sessionDeliveryPath(sessionId), undefined, [sessionId]);
+  const deliveryByCommit = new Map<number, SessionDeliveryRow>();
+  for (const r of del.data?.rows ?? []) deliveryByCommit.set(r.commit_id, r);
+  const headline = del.data
+    ? sessionHeadline(del.data.rows, {
+        defaultBranch: del.data.default_branch,
+        providerLinked: del.data.provider_linked,
+        rel: (iso?: string) => (iso ? fmtRelative(iso) : "at an unknown time"),
+      })
+    : null;
   const data = res.data;
   const rows = data?.rows ?? [];
   const captureOk = !data?.commit_capture || data.commit_capture === "ok";
@@ -49,6 +77,10 @@ export function SessionCommitsCard({ sessionId }: { sessionId: string }) {
         the whole commit.
       </p>
 
+      {headline && rows.length > 0 && (
+        <DeliveryHeadline h={headline} providerLinked={del.data?.provider_linked ?? false} onConnect={() => navigate(CODE_HOSTS_HREF)} />
+      )}
+
       {truncationNote && (
         <div className="mt-2">
           <TruncationBanner>{truncationNote}</TruncationBanner>
@@ -68,7 +100,7 @@ export function SessionCommitsCard({ sessionId }: { sessionId: string }) {
           ) : (
             <ul className="mt-2 divide-y divide-line-1">
               {rows.map((r) => (
-                <CommitLine key={r.id} r={r} onOpenSession={openSession} />
+                <CommitLine key={r.id} r={r} delivery={deliveryByCommit.get(r.id)} onOpenSession={openSession} />
               ))}
             </ul>
           ))}
@@ -77,7 +109,15 @@ export function SessionCommitsCard({ sessionId }: { sessionId: string }) {
   );
 }
 
-function CommitLine({ r, onOpenSession }: { r: SessionCommitRow; onOpenSession: (id: string) => void }) {
+function CommitLine({
+  r,
+  delivery,
+  onOpenSession,
+}: {
+  r: SessionCommitRow;
+  delivery?: SessionDeliveryRow;
+  onOpenSession: (id: string) => void;
+}) {
   const meta = ownerReasonMeta(r.reason);
   return (
     <li className="flex flex-col gap-1 py-2 text-[11px]">
@@ -115,6 +155,95 @@ function CommitLine({ r, onOpenSession }: { r: SessionCommitRow; onOpenSession: 
         </span>
         <CodeCommentSplit split={r.split} compact />
       </div>
+      {delivery && <DeliveryLine d={delivery} />}
     </li>
+  );
+}
+
+// HEADLINE_ICON is the headline glyph per kind (the tone comes from the model).
+const HEADLINE_ICON: Record<SessionHeadline["kind"], typeof CircleCheck> = {
+  landed_pr: GitPullRequestArrow,
+  landed_local: CircleCheck,
+  in_review: GitPullRequestArrow,
+  blocked: CircleX,
+  pushed: Upload,
+  local: Monitor,
+  closed: CircleX,
+  abandoned: CircleX,
+  mixed: GitPullRequestArrow,
+  pending: Monitor,
+};
+
+const HEADLINE_BOX: Record<SessionHeadline["tone"], string> = {
+  success: "border-success/30 bg-success-soft/60",
+  info: "border-info/30 bg-info-soft/60",
+  warn: "border-warn/30 bg-warn-soft/60",
+  danger: "border-danger/30 bg-danger-soft/60",
+  neutral: "border-line-2 bg-bg-3/60",
+};
+
+// DeliveryHeadline is the one sentence at the top of the card: where this
+// session's work went (landed in PR #N, in review and blocked, pushed, local
+// only, closed unmerged), with the PR link and, when PR state needs it, the
+// way to connect a code host.
+function DeliveryHeadline({ h, providerLinked, onConnect }: { h: SessionHeadline; providerLinked: boolean; onConnect: () => void }) {
+  return (
+    <div role="status" className={clsx("mt-2 flex flex-col gap-2 rounded-2 border px-3 py-2 text-[11px] text-fg-2 sm:flex-row sm:items-center", HEADLINE_BOX[h.tone])}>
+      <span className="flex min-w-0 flex-1 items-start gap-2">
+        <Icon icon={HEADLINE_ICON[h.kind]} size="sm" className="mt-0.5 shrink-0 text-fg-2" />
+        <span className="min-w-0">
+          <span className="font-semibold text-fg-1">{h.title}</span> {h.body}
+        </span>
+      </span>
+      {h.pr?.url ? (
+        <Button size="sm" variant="secondary" iconRight={ExternalLink} href={h.pr.url} target="_blank" rel="noreferrer noopener">
+          Open PR #{h.pr.number}
+        </Button>
+      ) : !providerLinked && (h.kind === "landed_local" || h.kind === "pushed") ? (
+        <Button size="sm" variant="secondary" onClick={onConnect}>
+          Connect a code host
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
+// DeliveryLine is one commit's "Delivery" line: its landing chips, the PR it
+// is in (linked to the code host) and the first blocking reason.
+function DeliveryLine({ d }: { d: SessionDeliveryRow }) {
+  if (!d.evaluated || !d.landing) {
+    return (
+      <div className="flex items-center gap-2 text-fg-3">
+        <span className="w-14 shrink-0 text-fg-4">Delivery</span>
+        <span>not evaluated yet</span>
+      </div>
+    );
+  }
+  const l = d.landing;
+  const pr = d.pr;
+  const detail = landingDetail(l, Boolean(pr));
+  const facets = pr && (pr.state === "open" || pr.state === "draft") ? facetSentence(pr) : null;
+  return (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-fg-3">
+      <span className="w-14 shrink-0 text-fg-4">Delivery</span>
+      {pr ? (
+        <VocabPill vocab="deliveryPR" table={PR_CHIP} value={prChipKey(pr)} title={PR_CHIP[prChipKey(pr)]?.tip} className={clsx(pr.stale && "opacity-60")}>
+          {prChipLabel(pr)}
+        </VocabPill>
+      ) : (
+        <VocabPill vocab="landingStatus" table={LANDING_STATUS} value={l.status} title={entry(LANDING_STATUS, l.status).tip} />
+      )}
+      {l.kind && !(pr && pr.merge_method && pr.state === "merged") && (
+        <VocabPill vocab="landingKind" table={LANDING_KIND} value={l.kind} title={entry(LANDING_KIND, l.kind).tip} />
+      )}
+      {pr?.url && (
+        <a href={pr.url} target="_blank" rel="noreferrer noopener" className="inline-flex items-center gap-0.5 text-accent hover:underline">
+          PR #{pr.number}
+          <Icon icon={ExternalLink} size="xs" />
+        </a>
+      )}
+      {facets && <span>{facets}</span>}
+      {detail && <span>{detail}</span>}
+    </div>
   );
 }

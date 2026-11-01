@@ -23,6 +23,22 @@ type PathEnv struct {
 	// under Home or Project (managed / system files). Tests set it so a
 	// resolution never names the real /etc or C:\Program Files.
 	SystemRoot string
+	// Relocate applies the row's relocation rules (fileRelocations,
+	// relocate.go) before token expansion. Off by default so an existing
+	// caller keeps resolving the
+	// documented default path; a writer that names an artifact resolves
+	// with it on (ResolveArtifact).
+	Relocate bool
+	// IsAbs, when set, decides whether an environment value is an absolute
+	// path. nil (every production caller) judges by GOOS's path syntax: a
+	// drive or UNC path for windows, a leading "/" elsewhere. That is the
+	// FU-143 ruling: a relocation value is judged by the syntax of the OS
+	// whose row is resolved, so a Windows row resolved on Linux accepts
+	// C:\x and refuses /x, and the reverse. In production GOOS is the
+	// running OS and this equals filepath.IsAbs; the two differ only where a
+	// caller pins another OS (tests, cross-OS tables). Only a unit test that
+	// models another rule sets it.
+	IsAbs func(string) bool
 }
 
 // PathStatus says whether a row resolved to one concrete file.
@@ -41,6 +57,16 @@ const (
 	// PathGlob: the row is a glob (instruction / skill / agent rows); the
 	// boundary lists its matches.
 	PathGlob PathStatus = "glob"
+	// PathRelocationUnresolved: a relocation variable (RelocatedBy) holds a
+	// relative value the tool reads against its own working directory, so
+	// the file has no path Observer can name. Path is empty; a writer must
+	// not fall back to the default location (relocate.go, FU-31).
+	PathRelocationUnresolved PathStatus = "relocation_unresolved"
+	// PathEnvUnset: the row's path is rooted at a variable-only token (an
+	// extra config directory the tool reads only when the variable names
+	// one, such as $OPENCODE_CONFIG_DIR) and the variable is unset or not
+	// an absolute path, so the tool reads no such file. Path is empty.
+	PathEnvUnset PathStatus = "env_unset"
 )
 
 // ResolvedPath is one row's resolution.
@@ -49,6 +75,12 @@ type ResolvedPath struct {
 	// Path is the expanded path (also set for PathGlob and PathDirectory,
 	// expanded as far as the tokens go).
 	Path string
+	// RelocatedBy names the environment variable that moved the file, ""
+	// when none did.
+	RelocatedBy string
+	// RelocationIgnored lists each set variable that was refused, as
+	// "<ENV>:<reason>" (RelocIgnore).
+	RelocationIgnored []string
 }
 
 func (e PathEnv) windows() bool { return e.GOOS == "windows" }
@@ -108,49 +140,98 @@ type tokenRule struct {
 	// Expand returns the replacement for the token; "" leaves the path
 	// unresolvable.
 	Expand func(e PathEnv) string
+	// Env, when set, makes the token variable-only: it is the variable's
+	// absolute value or nothing (no default), and a row rooted at it
+	// resolves to PathEnvUnset while the variable is unset. Such a row is a
+	// location the tool adds when the variable is set, never a relocation
+	// of another row.
+	Env string
 }
 
-// pathTokens is the closed token table (OSPaths doc comment).
+// envSigil is the prefix of a variable token in the table ("$XDG_..."). A
+// named constant so the token is not read as a dollar figure by the
+// no-bare-USD check (cmd/observer/no_bare_usd_test.go).
+const envSigil = "$"
+
+// envOnlyToken is a variable-only tokenRule for env.
+func envOnlyToken(env string) tokenRule {
+	return tokenRule{Token: envSigil + env, Env: env, Expand: func(e PathEnv) string {
+		if v := e.env(env); v != "" && e.isAbs(v) {
+			return v
+		}
+		return ""
+	}}
+}
+
+// pathTokens is the closed token table (OSPaths doc comment). A profile or
+// XDG variable holding a relative value is ignored and the derived default
+// used, as the XDG spec and Windows' own profile resolution do.
+//
+//nolint:gosec // G101: Token is a path placeholder (%LOCALAPPDATA%, $XDG_DATA_HOME), never a credential.
 var pathTokens = []tokenRule{
-	{"<project>", func(e PathEnv) string { return e.Project }},
-	{"~", func(e PathEnv) string { return e.Home }},
-	{"%USERPROFILE%", func(e PathEnv) string { return e.Home }},
-	{"%APPDATA%", func(e PathEnv) string {
-		if v := e.env("APPDATA"); v != "" {
+	{Token: "<project>", Expand: func(e PathEnv) string { return e.Project }},
+	{Token: "~", Expand: func(e PathEnv) string { return e.Home }},
+	{Token: "%USERPROFILE%", Expand: func(e PathEnv) string { return e.Home }},
+	{Token: "%APPDATA%", Expand: func(e PathEnv) string {
+		if v := e.env("APPDATA"); v != "" && e.isAbs(v) {
 			return v
 		}
 		return e.Join(e.Home, "AppData", "Roaming")
 	}},
-	{"%LOCALAPPDATA%", func(e PathEnv) string {
-		if v := e.env("LOCALAPPDATA"); v != "" {
+	{Token: "%LOCALAPPDATA%", Expand: func(e PathEnv) string {
+		if v := e.env("LOCALAPPDATA"); v != "" && e.isAbs(v) {
 			return v
 		}
 		return e.Join(e.Home, "AppData", "Local")
 	}},
-	{"%ProgramData%", func(e PathEnv) string {
+	{Token: "%ProgramData%", Expand: func(e PathEnv) string {
 		if v := e.env("ProgramData"); v != "" {
 			return e.system(v)
 		}
 		return e.system(`C:\ProgramData`)
 	}},
-	{"%ProgramFiles%", func(e PathEnv) string {
+	{Token: "%ProgramFiles%", Expand: func(e PathEnv) string {
 		if v := e.env("ProgramFiles"); v != "" {
 			return e.system(v)
 		}
 		return e.system(`C:\Program Files`)
 	}},
-	{"$XDG_CONFIG_HOME", func(e PathEnv) string {
-		if v := e.env("XDG_CONFIG_HOME"); v != "" {
+	{Token: "$XDG_CONFIG_HOME", Expand: func(e PathEnv) string {
+		if v := e.env("XDG_CONFIG_HOME"); v != "" && e.isAbs(v) {
 			return v
 		}
 		return e.Join(e.Home, ".config")
 	}},
-	{"$XDG_DATA_HOME", func(e PathEnv) string {
-		if v := e.env("XDG_DATA_HOME"); v != "" {
+	{Token: "$XDG_DATA_HOME", Expand: func(e PathEnv) string {
+		if v := e.env("XDG_DATA_HOME"); v != "" && e.isAbs(v) {
 			return v
 		}
 		return e.Join(e.Home, ".local", "share")
 	}},
+	// OpenCode's extra config directory (FU-103, MAC-4): opencode loads
+	// $OPENCODE_CONFIG_DIR/opencode.json in addition to the global file.
+	envOnlyToken("OPENCODE_CONFIG_DIR"),
+}
+
+// envOnlyTokenOf returns the variable-only token raw starts with.
+func envOnlyTokenOf(raw string) (tokenRule, bool) {
+	for _, t := range pathTokens {
+		if t.Env != "" && (raw == t.Token || strings.HasPrefix(raw, t.Token+"/") || strings.HasPrefix(raw, t.Token+`\`)) {
+			return t, true
+		}
+	}
+	return tokenRule{}, false
+}
+
+// pathTokenVariables lists the variables of the variable-only tokens.
+func pathTokenVariables() []string {
+	var out []string
+	for _, t := range pathTokens {
+		if t.Env != "" {
+			out = append(out, t.Env)
+		}
+	}
+	return out
 }
 
 // system re-roots an absolute system path under SystemRoot when set.
@@ -165,16 +246,39 @@ func (e PathEnv) system(p string) string {
 	return e.Join(e.SystemRoot, rel)
 }
 
-// ResolvePath expands a row's path for the env.
+// ResolvePath expands a row's path for the env. With e.Relocate set, the
+// row's relocation rules are applied first (relocate.go).
 func ResolvePath(f FileRow, e PathEnv) ResolvedPath {
 	raw := e.rawPath(f.Paths)
 	if raw == "" {
 		return ResolvedPath{Status: PathNoOS}
 	}
-	expanded, ok := e.expand(raw)
+	var rel relocation
+	if e.Relocate {
+		rel = e.relocate(f, raw)
+	}
+	if rel.unresolved != "" {
+		return ResolvedPath{Status: PathRelocationUnresolved, RelocatedBy: rel.unresolved, RelocationIgnored: rel.ignored}
+	}
+	res := e.resolveRaw(raw, rel)
+	res.RelocatedBy, res.RelocationIgnored = rel.env, rel.ignored
+	return res
+}
+
+// resolveRaw expands raw, or takes the relocated path when a relocation
+// applied (already absolute and native, so never re-rooted under
+// SystemRoot), and classifies the result.
+func (e PathEnv) resolveRaw(raw string, rel relocation) ResolvedPath {
+	expanded, ok := rel.path, rel.applied
+	if !ok {
+		expanded, ok = e.expand(raw)
+	}
 	if !ok {
 		if strings.HasPrefix(raw, "<project>") {
 			return ResolvedPath{Status: PathNeedsProject}
+		}
+		if _, envOnly := envOnlyTokenOf(raw); envOnly {
+			return ResolvedPath{Status: PathEnvUnset}
 		}
 		return ResolvedPath{Status: PathNoOS}
 	}

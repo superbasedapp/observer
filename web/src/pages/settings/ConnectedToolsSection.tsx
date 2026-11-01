@@ -1,6 +1,7 @@
 import {
   Check,
   Copy,
+  History,
   RefreshCw,
   type LucideIcon,
 } from "lucide-react";
@@ -16,6 +17,7 @@ import { localConfirmHeaders } from "@/lib/api";
 import { fmtInt } from "@/lib/format";
 import { probeLabel } from "@/lib/toolProbe";
 import { hasWizard } from "@/lib/wizardSteps";
+import { openFirstRun } from "@/lib/firstRun";
 import type {
   ToolLaunchResponse,
   ToolProbe,
@@ -24,6 +26,7 @@ import type {
 } from "@/lib/types";
 import { SetupWizard } from "./SetupWizard";
 import { WindowsHomesCard } from "./WindowsHomesCard";
+import { CodeHostsCard } from "./CodeHostsCard";
 import { DashboardInstallsList } from "./DashboardInstallsList";
 import { ToolDoctorPanel } from "./ToolDoctorPanel";
 
@@ -77,6 +80,10 @@ export function ConnectedToolsSection({ icon }: { icon?: LucideIcon }) {
         {/* WSL daemon only (T-421 item 4): choose the Windows-side home an
             AI tool's config lives in; renders nothing elsewhere. */}
         <WindowsHomesCard focusTarget={linkOpen === "windows-home" ? params.get("target") : null} />
+        {/* Code hosts (commit to PR to merge, D-689): connect GitHub for PR
+            state, manage Observer-owned mirrors. `?section=tools&open=code-hosts`
+            (every "Connect a code host" button) scrolls here. */}
+        <CodeHostsCard focus={linkOpen === "code-hosts"} />
         {/* Tools THIS dashboard installed, with their Uninstall (owner-local;
             renders nothing when there are none or the read is refused). */}
         <div className="mt-3">
@@ -95,6 +102,10 @@ export function ConnectedToolsSection({ icon }: { icon?: LucideIcon }) {
         <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-line-1 pt-3 text-[11px] text-fg-3">
           <Button variant="secondary" size="sm" iconLeft={RefreshCw} onClick={status.reload}>
             Refresh
+          </Button>
+          {/* T-922: reopen the first-run capture view. */}
+          <Button variant="secondary" size="sm" iconLeft={History} onClick={openFirstRun}>
+            Show history capture
           </Button>
           <span>
             <strong className="font-semibold text-fg-2">Set up</strong> walks

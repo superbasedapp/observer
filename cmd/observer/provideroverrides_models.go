@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/marmutapp/superbased-observer/internal/integration"
+	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
@@ -35,8 +36,8 @@ func resolveLauncherManagedNode(ctx context.Context, configPath string) bool {
 		return false
 	}
 	defer cleanup()
-	enr, err := store.New(database).LoadEnrolment(ctx)
-	return err == nil && enr.IsManaged()
+	managed, err := orgclient.NodeManaged(ctx, store.New(database)) // P-204: switched nodes too
+	return err == nil && managed
 }
 
 // providerOverridesSpec describes one launcher's built-in provider table.

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/marmutapp/superbased-observer/internal/clientwire"
 	"github.com/marmutapp/superbased-observer/internal/components"
 	"github.com/marmutapp/superbased-observer/internal/componentstate"
 	"github.com/marmutapp/superbased-observer/internal/componentsvc"
@@ -40,10 +41,29 @@ type chooserGroup struct {
 // browser-chat adapters the catalog bundles with it, so a "no" turns the
 // listener and its five site adapters off together (step 1 leaves those
 // adapters to this row).
+//
+// An optional module's row lists its ROOT only, never its drivers (lane
+// OPTMOD; the sandbox plan's proposed `withDependents` helper is not needed
+// and would be wrong here). A "no" removes the root, and componentsvc's
+// removal cascade takes every active component that Requires it along
+// (TestRemovingAModuleRootDeactivatesEveryDependent pins that), so one "no"
+// leaves the module and every driver inactive. A "yes" adds what the row
+// lists that the base leaves off, so expanding the row to every dependant
+// would turn on drivers that are meant to stay off until chosen one by one.
+// withBundles stays right for capture.browser: Bundles are compiled and
+// chosen together by definition.
 var chooserGroups = []chooserGroup{
 	{"Proxy and compression", []string{"capture.proxy", "proxy.compression", "proxy.routing", "integration.proxy-route"}},
-	{"Terminals", []string{"terminals", "terminals.ssh", "terminals.sandbox", "remote"}},
+	{"Terminals", []string{"terminals", "terminals.ssh", "remote"}},
+	// The sandbox module (sandbox plan v2 section 11.2): its own row, the
+	// plain module root, unchecked by default. A "yes" also activates the
+	// isolation engine it Requires (the resolver adds required rows); a
+	// "no" leaves the module and every driver inactive.
+	{"Sandboxes and VMs", []string{"terminals.sandbox"}},
 	{"Code intelligence", []string{"codeintel"}},
+	// The security pillar's module root only (lane OPTMOD rule above): a
+	// "no" cascades to every security.* child.
+	{"Code security", []string{"security"}},
 	{"Browser chat capture", withBundles("capture.browser")},
 	{"Org and updates", []string{"org.client", "org.update", "agentaccess.relay"}},
 	{"Telemetry", []string{"ingest.otlp", "export.otel", "processobs"}},
@@ -242,7 +262,7 @@ func runComponentChooser(ctx context.Context, out io.Writer, p *initPrompter, sv
 	// the base's other adapters go inactive when the operator says so.
 	have := map[string]bool{}
 	for _, t := range detected {
-		have[strings.TrimSuffix(t, "-windows")] = true
+		have[clientwire.HookTargetBase(t)] = true
 	}
 	var others, turnOn []string
 	for _, c := range components.ForBinary(components.BinaryNode) {

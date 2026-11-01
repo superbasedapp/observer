@@ -187,6 +187,14 @@ export const HELP_REGISTRY: HelpEntry[] = [
     related: ["card.privacy_scrub_tester", "card.privacy_org_push", "glossary.settings_secrets", "glossary.settings_org_share"],
   },
   {
+    id: "tab.messages",
+    category: "tab",
+    title: "Messages",
+    oneLiner: "Conversations between you and your organization's admins: notes, coaching and alerts, your replies, and questions you start.",
+    detail: "Shown on a machine enrolled with an organization, and never hidden by it. Messages arrive with this machine's regular sync (a pull: no new port is opened), so a new one can take up to a sync interval to show. Attachments are links to your OWN copy of the session, prompt, project, model or budget on this machine; the org does not send their content. Some messages ask you to acknowledge them; Acknowledge tells the admin who wrote it that you have seen it. When your organization has read receipts on, the admins can also see when you opened a conversation, and the conversation says so. A reply is saved on this machine first and sent at once; when the org server cannot be reached it waits, marked Queued, and sends on the next sync. A reply the org refuses is kept so you can copy it, retry or discard it. 'Ask my admin' starts a conversation on one of the topics your organization offers; for a budget or access question it can point you to a request instead, which the admins approve or decline. Ctrl+Enter sends. Where a new message also shows up (the toast here, VS Code, the status line, a desktop notification) is your choice, in Settings > Org sharing > Where messages show up (the [messages] section of this machine's config file); your organization cannot turn these on for you, and muting a surface never hides a message from this page.",
+    related: ["glossary.notifications"],
+  },
+  {
     id: "card.privacy_capture_map",
     category: "metric",
     title: "Capture map",
@@ -1779,7 +1787,7 @@ export const HELP_REGISTRY: HelpEntry[] = [
     category: "glossary",
     title: "Health (Settings) - the doctor checks",
     oneLiner: "observer doctor in the dashboard: DB integrity, hook checksums, MCP registrations, pidbridge, concurrent daemons, codex trust, org enrolment - each warn/fail with its fix hint.",
-    detail: "The Health section runs the same checks as `observer doctor` and renders one row per check: ✓ ok, ⚠ warn, ✗ fail. The indented bullet lines under a warn/fail are the remediation hints - the same text the CLI prints. Where a fix has a dashboard control (set up or remove a tool's wiring, choose a Windows-side home, enrol or unenrol, restart the daemon, run a tool's checks), a button under the check opens it; hover it for the equivalent command. Command and button come from one table, so they always name the same fix.\n\nThe checks: schema version · database integrity · DB size vs retention · adapter storage paths · antigravity family state · hook checksums (has a registered hook file been modified since observer wrote it?) · hook commands vs the running binary path (stale registrations after a binary move) · MCP registrations · pidbridge health · concurrent daemons (two observers on one DB) · codex hook trust · proxy routing gap (a routed tool kept capturing while ZERO proxy turns arrived - the daemon was down or unreachable while the tool ran; routed tools HANG in that state, so this row is the after-the-fact tell) · org enrolment + clock skew.\n\nChecks run when the section opens and on Re-run - deliberately not polled, because the DB integrity check costs real time on a multi-hundred-MB observer.db. All green earns the CLI's one celebratory line: all checks passed ★.",
+    detail: "The Health section runs the same checks as `observer doctor` and renders one row per check: ✓ ok, ⚠ warn, ✗ fail. The indented bullet lines under a warn/fail are the remediation hints - the same text the CLI prints. Where a fix has a dashboard control (set up or remove a tool's wiring, choose a Windows-side home, enrol or unenrol, restart the daemon, run a tool's checks), a button under the check opens it; hover it for the equivalent command. Command and button come from one table, so they always name the same fix.\n\nThe checks: schema version · database integrity · DB size vs retention · adapter storage paths · antigravity family state · hook checksums (has a registered hook file been modified since observer wrote it?) · hook commands vs the running binary path (stale registrations after a binary move) · MCP registrations · pidbridge health · concurrent daemons (two observers on one DB) · codex hook trust · route.observed (per tool and capture surface, how many sessions of the last 7 days reached this machine's proxy; it warns when a routable surface ran sessions that never did, and reads a surface whose traffic cannot be joined to its sessions as not judged, never as a bypass) · org enrolment + clock skew.\n\nChecks run when the section opens and on Re-run - deliberately not polled, because the DB integrity check costs real time on a multi-hundred-MB observer.db. All green earns the CLI's one celebratory line: all checks passed ★.",
     related: ["tab.settings", "glossary.connected_tools", "glossary.watcher_lag"],
   },
   {
@@ -1798,7 +1806,17 @@ export const HELP_REGISTRY: HelpEntry[] = [
       "The empty-DB checklist: check connected tools, optionally route through the proxy, then just use your AI tool - the first session appears on its own.",
     detail:
       "On a fresh install the Overview opens with a three-step welcome instead of empty charts:\n\n1. Connected tools - see which AI tools are detected on this machine and run the per-tool setup wizard. Every write shows a preview first and runs only on its own button.\n2. Proxy routing (optional but recommended) - the one-click durable route for Claude Code / Codex unlocks exact token accounting, conversation compression, and cache tracking.\n3. Use your tool - capture is passive; the first session lands by itself.\n\nThe card shows only while the database has zero sessions and the ✕ dismisses it permanently (a browser-local flag). The first time a session is captured while the dashboard is open, a one-time corner toast points at it - that one also never repeats. CLI twin for step 1+2: `observer init`.",
-    related: ["tab.overview", "glossary.connected_tools", "glossary.setup_wizard", "glossary.route_through_proxy"],
+    related: ["tab.overview", "glossary.connected_tools", "glossary.setup_wizard", "glossary.route_through_proxy", "glossary.history_capture"],
+  },
+  {
+    id: "glossary.history_capture",
+    category: "glossary",
+    title: "History capture (first-run dialog)",
+    oneLiner:
+      "On the first visit after a fresh install, a dialog lists the AI tools found on this machine and shows how much of their existing history is captured.",
+    detail:
+      "When SuperBased starts, its background watcher reads the session files your AI tools already wrote, so past work shows up without you doing anything. The first-run dialog makes that work visible.\n\nFor each tool found on this machine it shows where the tool's session folder was found, how it is captured (session files, hooks, and the optional proxy route), how many sessions and projects are captured so far, and whether its first pass is reading, done, paused or could not read some files. The overall bar counts the session files read out of those found, and updates every few seconds while it is moving. The projects list shows the most recently active projects found in that history.\n\nWhen it opens: by itself once, on the first dashboard visit after a fresh install (a database that was empty when the daemon first started with this version). An install that already had sessions never opens it by itself.\n\nClosing it while the capture is still running hides it for this browser visit, so the next visit shows the outcome. Closing it after the capture finished, or choosing Don't show this again, records that on this machine (beside its database), so every browser and the remote dashboard agree. The product tour waits until the dialog is closed.\n\nReopen it any time from the command palette (Show history capture) or Settings, Connected tools. Nothing here rescans your files: the numbers come from the watcher's own first pass since the daemon started, and a restart starts a new count.",
+    related: ["glossary.onboarding", "glossary.connected_tools"],
   },
   {
     id: "glossary.milestones",
@@ -2353,8 +2371,8 @@ export const HELP_REGISTRY: HelpEntry[] = [
     oneLiner:
       "Per-project spend, commits, AI-vs-human lines, and prompt-to-commit alignment - is the money turning into shipped work?",
     detail:
-      "One row per project. The list follows the whole filter bar: the window bounds the counted sessions and actions and the spend / AI-lines / commits columns (a project with nothing in the window drops out), the Tool and Model filters narrow sessions, actions and spend (AI lines and commits stay project totals), and the Project filter keeps its one row. Each row carries a capture chip a capture chip when commit capture is unavailable ('no git' or 'not scanned yet'). Click a row to open the detail panel: Overview (KPI band + ROI proxy tiles, each with its own formula and caveat, never colour-graded), Spend (by session/tool/model/day/task/commit), Commits (the commit ledger with linked prompts), Prompts (prompt -> commit chains with a status and, opt-in, an LLM-graded delivered/missed alignment), Tasks (this project's todo/plan rollup), and Guidance (the instructions/skills/agents/commands/rules inventory, unchanged from before this arc). A row with no numeric id yet (an installation predating this feature, or a project the scanner hasn't touched) falls back to the legacy Guidance-only view.",
-    related: ["glossary.projects_attribution", "glossary.projects_roi_proxies", "glossary.projects_alignment_grading"],
+      "One row per project. The list follows the whole filter bar: the window bounds the counted sessions and actions and the spend / AI-lines / commits columns (a project with nothing in the window drops out), the Tool and Model filters narrow sessions, actions and spend (AI lines and commits stay project totals), and the Project filter keeps its one row. Each row carries a capture chip a capture chip when commit capture is unavailable ('no git' or 'not scanned yet'). Click a row to open the detail panel: Overview (KPI band + ROI proxy tiles, each with its own formula and caveat, never colour-graded), Spend (by session/tool/model/day/task/commit), Commits (the commit ledger with linked prompts), Delivery (where AI-touched commits went: pushed, in a PR, merged or landed on the default branch), Prompts (prompt -> commit chains with a status and, opt-in, an LLM-graded delivered/missed alignment), Tasks (this project's todo/plan rollup), and Guidance (the instructions/skills/agents/commands/rules inventory, unchanged from before this arc). A row with no numeric id yet (an installation predating this feature, or a project the scanner hasn't touched) falls back to the legacy Guidance-only view.",
+    related: ["glossary.projects_attribution", "glossary.projects_roi_proxies", "glossary.projects_alignment_grading", "glossary.delivery_landing"],
   },
   {
     id: "glossary.projects_attribution",
@@ -2385,6 +2403,65 @@ export const HELP_REGISTRY: HelpEntry[] = [
     detail:
       "Local: the file-reach status plus overlap numbers - always available, no LLM involved. Judge: an opt-in local/configured LLM call over the SAME judge endpoint [observability] already uses for other features - which may be a remote provider (OpenRouter by default), so the page names it 'the judge configured under [observability]' and scrubs the request when the endpoint isn't loopback. Cloud: Cloud Intelligence, signed-in, with the two-digest preview-then-consent protocol before anything uploads - like every other Cloud Intelligence action. The hosted executor for this arc is not deployed yet, so a Cloud grade attempt reports an honest 'not available' with the reason rather than a fabricated result. A prompt's Grade button only offers the tiers the row's grade_available says it can actually run.",
     related: ["tab.projects", "glossary.projects_roi_proxies"],
+  },
+
+  // ----- delivery: commit to PR to merge (D-689, 2026-10-15) -----
+  {
+    id: "glossary.delivery_landing",
+    category: "glossary",
+    title: "Delivery: where an AI-touched commit went",
+    oneLiner:
+      "Each AI-touched commit is local only, pushed, in a PR, landed on the default branch, or abandoned, decided by one ordered rule table.",
+    detail:
+      "Only commits with at least one AI contributor are followed (merges, teammates' commits and human-only commits are left out, the same gates as commit ownership). Landed is checked in order: the PR the code host says contains the commit was merged; the exact sha is on the default branch; a default-branch commit carries the same patch under a new sha (rebase or cherry-pick); a squash commit equals the branch the commit was on; a squash touched every file the commit touched but the patch differs. A commit on a remote branch but in no PR is 'pushed'; one rewritten away and never landed for 30 days is 'abandoned'. Landed means on the default branch AS OF the last fetch (or the last sync with a code host or mirror). A commit that landed and later disappeared from a rewritten default branch reads 'landing lost', never silently deleted.",
+    related: ["glossary.delivery_accepted_rate", "glossary.delivery_sources", "glossary.projects_attribution"],
+  },
+  {
+    id: "glossary.delivery_accepted_rate",
+    category: "glossary",
+    title: "Accepted-work rate",
+    oneLiner: "AI-touched commits that landed, out of those that landed or were abandoned. Work still in flight is left out of both sides.",
+    formula: "landed / (landed + abandoned), over AI-touched commits committed in the window",
+    detail:
+      "In-flight work (local only, pushed, in an open PR) is shown next to the rate, never counted against it. Squash and rebase merges count through patch matching. 'Likely landed' (content overlap) is excluded unless [delivery].count_likely is on. The tile is not coloured: a low number can mean exploratory work that was meant to be thrown away. With nothing landed or abandoned yet the rate is unknown, never 0. PR merge rate and open-and-mergeable counts need a code host connection; without one they read unknown.",
+    related: ["glossary.delivery_landing", "glossary.delivery_funnel"],
+  },
+  {
+    id: "glossary.delivery_funnel",
+    category: "glossary",
+    title: "From prompt to landed",
+    oneLiner: "Prompts whose AI edits were committed, pushed, put in a PR and landed. A prompt counts when any commit that carried its files did.",
+    detail:
+      "Prompt units, from the same prompt to commit attribution the Prompts tab uses. File-level reach, not line survival. Each step shows its conversion from the step before.",
+    related: ["glossary.projects_attribution", "glossary.delivery_landing"],
+  },
+  {
+    id: "glossary.delivery_sources",
+    category: "glossary",
+    title: "Delivery sources and freshness",
+    oneLiner:
+      "Local git (your own fetches, zero network), a code host connection (GitHub's API), or an Observer-owned mirror. Observer never fetches in, or writes to, your repository.",
+    detail:
+      "Local git reads your remote-tracking refs exactly as your last fetch left them, so the page says how old that fetch is and warns past 7 days. A code host connection (Settings, Connected tools, Code hosts) adds what only the host knows: open, draft, conflicts, checks, reviews, closed without merging. A project whose remote has no connection can opt into an Observer mirror: a bare, blobless copy under ~/.observer/delivery/mirrors, refreshed by Check now or on a schedule of at least 30 minutes, using your own git credentials read-only.",
+    related: ["glossary.delivery_code_hosts", "glossary.delivery_mirrors"],
+  },
+  {
+    id: "glossary.delivery_code_hosts",
+    category: "glossary",
+    title: "Code hosts",
+    oneLiner: "An opt-in GitHub connection for pull request state. A fine-grained read-only token is recommended; your gh login also works.",
+    detail:
+      "The token is checked against GitHub before anything is saved, then kept in the system keychain (never the database). Permissions: Metadata, Pull requests, Contents and Commit statuses, all read. The gh option borrows your gh login and stores nothing, but that login is usually a read and write token on every repository you can reach; Observer only reads with it. Observer calls api.github.com only, with GET requests, no redirects, about every [delivery].poll_minutes while a repository has unlanded AI-touched commits. Test restarts a stopped connection; Disconnect deletes the keychain entry and the PR data it fetched. GitLab, Bitbucket and Azure DevOps are not supported yet.",
+    related: ["glossary.delivery_sources", "glossary.delivery_mirrors"],
+  },
+  {
+    id: "glossary.delivery_mirrors",
+    category: "glossary",
+    title: "Observer mirrors",
+    oneLiner: "A bare, blobless copy of a remote that Observer owns, so landing stays fresh without fetching in your repository.",
+    detail:
+      "Off by default and per project. Created with a blobless bare clone under ~/.observer/delivery/mirrors, refreshed only by Check now or on the schedule you pick (at least every 30 minutes); each refresh first asks the remote whether the default branch moved and skips the download when it did not. It uses your own git credential helper read-only and never prompts: a remote that asks for a password reads 'needs non-interactive credentials'. All mirrors together are capped by [delivery].mirror_cap_mb (2 GB by default); sizes and Delete are on the Code hosts card.",
+    related: ["glossary.delivery_sources"],
   },
 ];
 // The registry as the dashboard shows it: verbatim normally, the token-usage

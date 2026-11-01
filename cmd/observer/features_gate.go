@@ -50,7 +50,7 @@ func disallowKeys(m map[string]bool) []string {
 // disallow list rewrites byte-identical content) and best-effort: a write
 // failure is logged, never fatal. Returns nil when no sidecar path resolves
 // (no DB configured) — the handle then no-ops.
-func makeFeaturesSidecarWriter(cfg config.Config, version string, logger *slog.Logger) func(disallow []string) {
+func makeFeaturesSidecarWriter(cfg config.Config, version string, logger *slog.Logger) func(disallow []string, terminals *lkgsidecar.Terminals) {
 	path := config.ResolveFeaturesSidecarPath(cfg, "")
 	if path == "" {
 		return nil
@@ -58,7 +58,7 @@ func makeFeaturesSidecarWriter(cfg config.Config, version string, logger *slog.L
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return func(disallow []string) {
+	return func(disallow []string, terminals *lkgsidecar.Terminals) {
 		f := lkgsidecar.NewFile(version, disallow, time.Time{}, time.Now())
 		raw, err := lkgsidecar.Encode(f)
 		if err != nil {
@@ -67,7 +67,17 @@ func makeFeaturesSidecarWriter(cfg config.Config, version string, logger *slog.L
 		}
 		if err := os.WriteFile(path, raw, 0o600); err != nil {
 			logger.Warn("node.features: could not write the tools.disallow sidecar - bare launchers may not see the live disallow list", "path", path, "err", err)
+		}
+		// The terminals rule goes in its own sibling file (OSH-R-003, audit
+		// F2), so the disallow sidecar keeps the exact shape an older binary
+		// decodes. Written on every state change, nil when not governed.
+		traw, err := lkgsidecar.EncodeTerminals(lkgsidecar.NewTerminalsFile(version, terminals, time.Now()))
+		if err != nil {
+			logger.Warn("node.features: could not encode the terminals sidecar", "err", err)
 			return
+		}
+		if err := os.WriteFile(lkgsidecar.TerminalsPath(path), traw, 0o600); err != nil {
+			logger.Warn("node.features: could not write the terminals sidecar - bare launchers may not see the live terminals rule", "path", lkgsidecar.TerminalsPath(path), "err", err)
 		}
 	}
 }

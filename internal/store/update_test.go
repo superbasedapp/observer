@@ -72,7 +72,8 @@ func TestSaveAndLoadUpdateStateRoundTrips(t *testing.T) {
 			PreviousDBBackupPath:  "/state/preupgrade-v1.32.0.db",
 			ApplyingStartedAt:     "2026-09-07T10:01:00Z",
 		},
-		ManifestJSON: `{"schema":"sbo.update-manifest.v1"}`,
+		ManifestJSON:         `{"schema":"sbo.update-manifest.v1"}`,
+		PreviousAppliedSteps: 37,
 	}
 	if err := s.SaveUpdateState(ctx, want); err != nil {
 		t.Fatalf("SaveUpdateState: %v", err)
@@ -94,6 +95,7 @@ func TestSaveAndLoadUpdateStateRoundTrips(t *testing.T) {
 		{"previous_schema_version", got.PreviousSchemaVersion, want.PreviousSchemaVersion},
 		{"previous_db_backup_path", got.PreviousDBBackupPath, want.PreviousDBBackupPath},
 		{"manifest_json", got.ManifestJSON, want.ManifestJSON},
+		{"previous_applied_steps", got.PreviousAppliedSteps, want.PreviousAppliedSteps},
 	} {
 		if c.got != c.want {
 			t.Errorf("%s = %v, want %v", c.name, c.got, c.want)
@@ -222,6 +224,13 @@ func TestSnapshotDatabaseProducesAReadableCopy(t *testing.T) {
 	}
 	if live != snap {
 		t.Fatalf("snapshot schema %d, live %d", snap, live)
+	}
+	// Release this test's own reader before the overwrite. Windows refuses
+	// to remove a file another handle holds open, so with the copy still
+	// open the case below would test this test's handle, not a stale file
+	// left by an abandoned apply (nothing in the apply path holds one).
+	if err := copyDB.Close(); err != nil {
+		t.Fatalf("closing the snapshot copy: %v", err)
 	}
 	// A second snapshot to the same path must overwrite rather than fail on
 	// a stale file from an abandoned apply.
@@ -517,5 +526,26 @@ func TestPruneUpdateArtifactsAllowListMatchesVersionShapes(t *testing.T) {
 		if _, err := os.Stat(d); err != nil {
 			t.Errorf("the retention pass deleted %s, which this feature does not own", d)
 		}
+	}
+}
+
+// TestAppliedMigrationStepsCountsTheLineage pins the rollback seam on a real
+// database: a fresh node database ran every embedded step, so the count is the
+// lineage length, and recording it for the rollback leaves it unchanged.
+func TestAppliedMigrationStepsCountsTheLineage(t *testing.T) {
+	s := updateTestStore(t)
+	ctx := context.Background()
+	n, err := s.AppliedMigrationSteps(ctx)
+	if err != nil {
+		t.Fatalf("AppliedMigrationSteps: %v", err)
+	}
+	if n == 0 {
+		t.Fatal("a fresh database reports 0 applied steps")
+	}
+	if err := s.SaveUpdateState(ctx, UpdateStateRow{NodeState: update.DefaultNodeState(), PreviousAppliedSteps: n}); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := s.AppliedMigrationSteps(ctx); again != n {
+		t.Fatalf("saving the update row moved the count %d -> %d", n, again)
 	}
 }

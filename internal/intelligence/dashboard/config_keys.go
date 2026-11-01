@@ -593,5 +593,12 @@ func (s *Server) handleAdminRestartStatus(w http.ResponseWriter, r *http.Request
 			resp["proxy_recent_requests"] = n
 		}
 	}
+	// Live sandboxed runs (restart_liveruns.go): the header always, the
+	// fields only while a run is live or an answer is pending.
+	if seam := s.opts.LiveSandboxRuns; seam != nil {
+		st := seam.State()
+		setLiveRunsHeader(w, len(st.Runs))
+		addLiveRunsStatus(resp, st)
+	}
 	writeJSON(w, resp)
 }

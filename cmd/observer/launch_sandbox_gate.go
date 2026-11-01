@@ -1,16 +1,13 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
 
-	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/dashapi"
 	"github.com/marmutapp/superbased-observer/internal/guard"
 	"github.com/marmutapp/superbased-observer/internal/guardfallback"
 	"github.com/marmutapp/superbased-observer/internal/integration"
-	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
 // launch_sandbox_gate.go is the ONE owner of the "proxied tool without a
@@ -19,7 +16,9 @@ import (
 // launch (launchManagerAdapter.CreateFresh); `observer <tool>` typed in any
 // terminal started the same tool unsandboxed, so the org setting was a
 // dashboard preference rather than a node rule. Both paths now ask this file
-// and render the same reason, so they cannot drift.
+// and render the same reason, so they cannot drift. The launch-gate table
+// (launch_gates.go, row sandbox.select) is what calls the decision on both
+// paths and fixes its place among the other launch gates.
 
 // sandboxLaunchOutcome is what a launch must do about the sandbox.
 type sandboxLaunchOutcome int
@@ -118,22 +117,6 @@ var cliLaunchToolGate = func(configPath, tool string) nodeToolGateState {
 	return nodeToolGate(bin, configPath, tool)
 }
 
-// enforceSandboxFallbackLaunch applies the decision to an `observer <tool>`
-// launch, called from the shared launch admission chokepoint
-// (enforceBudgetControlledLaunch) so every launcher reaches it. A CLI launch
-// is never sandboxed by Observer, so "no sandbox here" is the truth for it
-// whatever the machine could do; an upgrade is not possible on this path and
-// never reached (the decision only upgrades when a sandbox is available).
-//
-// A guard that is disabled or off costs nothing: no guard is built.
-func enforceSandboxFallbackLaunch(ctx context.Context, cfg config.Config, st *store.Store, configPath, tool string) error {
-	if !cfg.Guard.Enabled || cfg.Guard.Mode == "off" || cliSandboxedEnv() {
-		return nil
-	}
-	gd := cliLaunchGuard(ctx, cfg, st)
-	gate := func(t string) nodeToolGateState { return cliLaunchToolGate(configPath, t) }
-	if sandboxLaunchDecision(gd, tool, false, nil, gate) == sandboxLaunchRefuse {
-		return cliSandboxRefusal(tool)
-	}
-	return nil
-}
+// cliLaunchDir is the directory an `observer <tool>` launch starts the tool
+// in (the process's working directory). A seam for tests.
+var cliLaunchDir = os.Getwd

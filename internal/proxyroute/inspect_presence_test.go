@@ -18,11 +18,15 @@ import (
 //
 // One row per reader, three outcomes each:
 //
-//	missing artifact   → absent, never drift (either tenancy)
-//	artifact, no key   → absent, drift ONLY on a managed enforcing node
-//	artifact, wrong host → drifted under BOTH tenancies
+//	missing artifact   → absent, never drift (any drift mode)
+//	artifact, no key   → absent, drift ONLY where routes are maintained
+//	artifact, wrong host → drifted where routes are maintained; with
+//	                       maintenance off, or no posture and no route the
+//	                       organization wrote, the developer's own setup
 func TestRouteReaderArtifactPresence(t *testing.T) {
-	const remote = "https://api.openai.com/v1"
+	// A third-party host, not any tool's stock default (qwen-code's default
+	// api.openai.com/v1 reads as "not routed yet", see readQwenCodeBaseURL).
+	const remote = "https://llm.example.com/v1"
 
 	cases := []struct {
 		tool string
@@ -55,7 +59,7 @@ func TestRouteReaderArtifactPresence(t *testing.T) {
 			tool: "kimi-code",
 			writeNoKey: func(t *testing.T, home string) {
 				writeFile(t, filepath.Join(home, ".kimi-code"), "config.toml",
-					"[providers.anthropic]\napi_key = \"redacted\"\n")
+					"[providers.openai]\napi_key = \"redacted\"\n")
 			},
 			writeRemote: func(t *testing.T, home string) {
 				writeFile(t, filepath.Join(home, ".kimi-code"), "config.toml",
@@ -65,7 +69,7 @@ func TestRouteReaderArtifactPresence(t *testing.T) {
 		{
 			tool: "qwen-code",
 			writeNoKey: func(t *testing.T, home string) {
-				writeFile(t, filepath.Join(home, ".qwen"), "settings.json", `{"model":{"name":"qwen3"}}`)
+				writeFile(t, filepath.Join(home, ".qwen"), "settings.json", `{"model":{"name":"qwen3","baseUrl":"https://api.openai.com/v1"}}`)
 			},
 			writeRemote: func(t *testing.T, home string) {
 				writeFile(t, filepath.Join(home, ".qwen"), "settings.json",
@@ -76,7 +80,7 @@ func TestRouteReaderArtifactPresence(t *testing.T) {
 			tool: "crush",
 			writeNoKey: func(t *testing.T, home string) {
 				writeFile(t, filepath.Join(home, ".config", "crush"), "crush.json",
-					`{"providers":{"anthropic":{}}}`)
+					`{"providers":{"openai":{"api_key":"redacted"}}}`)
 			},
 			writeRemote: func(t *testing.T, home string) {
 				writeFile(t, filepath.Join(home, ".config", "crush"), "crush.json",
@@ -91,21 +95,22 @@ func TestRouteReaderArtifactPresence(t *testing.T) {
 		t.Helper()
 		home := t.TempDir()
 		t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-		t.Setenv("CRUSH_CONFIG", "")
+		t.Setenv("CRUSH_GLOBAL_CONFIG", "")
 		t.Setenv("KIMI_CODE_HOME", "")
 		t.Setenv("QWEN_HOME", "")
 		return home
 	}
 
-	driftedUnder := func(t *testing.T, home, tool string, absentIsDrift bool) bool {
+	driftedUnder := func(t *testing.T, home, tool string, mode DriftMode) bool {
 		t.Helper()
-		for _, got := range DriftedTools(InspectRoutes(home), absentIsDrift) {
+		for _, got := range DriftedTools(InspectRoutes(home), DriftPolicy{Mode: mode}) {
 			if got == tool {
 				return true
 			}
 		}
 		return false
 	}
+	allModes := []DriftMode{DriftModeOff, DriftModeOrgRoutes, DriftModeMaintained}
 
 	for _, tc := range cases {
 		t.Run(tc.tool, func(t *testing.T) {
@@ -118,9 +123,9 @@ func TestRouteReaderArtifactPresence(t *testing.T) {
 				if got.ArtifactPresent {
 					t.Fatal("ArtifactPresent = true with nothing on disk")
 				}
-				for _, absentIsDrift := range []bool{false, true} {
-					if driftedUnder(t, home, tc.tool, absentIsDrift) {
-						t.Fatalf("absentIsDrift=%v: an uninstalled tool must never be drift", absentIsDrift)
+				for _, mode := range allModes {
+					if driftedUnder(t, home, tc.tool, mode) {
+						t.Fatalf("%s: an uninstalled tool must never be drift", mode)
 					}
 				}
 			})
@@ -135,11 +140,13 @@ func TestRouteReaderArtifactPresence(t *testing.T) {
 				if !got.ArtifactPresent {
 					t.Fatal("ArtifactPresent = false although the config file exists")
 				}
-				if driftedUnder(t, home, tc.tool, false) {
-					t.Fatal("individual node: a missing route key must not be drift")
+				for _, mode := range []DriftMode{DriftModeOff, DriftModeOrgRoutes} {
+					if driftedUnder(t, home, tc.tool, mode) {
+						t.Fatalf("%s: a missing route key the organization never wrote must not be drift", mode)
+					}
 				}
-				if !driftedUnder(t, home, tc.tool, true) {
-					t.Fatal("managed + enforce: a config present with the route key gone IS drift")
+				if !driftedUnder(t, home, tc.tool, DriftModeMaintained) {
+					t.Fatal("maintained: a config present with the route key gone IS drift")
 				}
 			})
 
@@ -153,9 +160,12 @@ func TestRouteReaderArtifactPresence(t *testing.T) {
 				if !got.ArtifactPresent {
 					t.Fatal("ArtifactPresent = false although the config file exists")
 				}
-				for _, absentIsDrift := range []bool{false, true} {
-					if !driftedUnder(t, home, tc.tool, absentIsDrift) {
-						t.Fatalf("absentIsDrift=%v: a repointed route is drift under both tenancies", absentIsDrift)
+				if !driftedUnder(t, home, tc.tool, DriftModeMaintained) {
+					t.Fatal("maintained: a repointed route is drift")
+				}
+				for _, mode := range []DriftMode{DriftModeOff, DriftModeOrgRoutes} {
+					if driftedUnder(t, home, tc.tool, mode) {
+						t.Fatalf("%s: a host the organization never routed is the developer's own setup", mode)
 					}
 				}
 			})

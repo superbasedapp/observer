@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"testing"
+
+	"github.com/marmutapp/superbased-observer/internal/testhome"
 )
 
 // hermeticHome is the throwaway home directory every test in this package
@@ -26,25 +28,20 @@ import (
 var hermeticHome string
 
 func TestMain(m *testing.M) {
-	dir, err := os.MkdirTemp("", "dashboard-test-home-")
+	// testhome.PinProcess moves HOME and USERPROFILE as this TestMain always
+	// did, and also APPDATA and LOCALAPPDATA (surface-gap FU-102: on Windows
+	// a tool-resolution probe here ran `npm prefix -g`, and npm wrote its
+	// debug log into the developer's real %LOCALAPPDATA%\npm-cache\_logs).
+	// XDG locations derive from HOME when unset; a set one would still point
+	// at the developer's real tree, so PinProcess drops them for the run.
+	dir, cleanup, err := testhome.PinProcess()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "dashboard TestMain: create hermetic home:", err)
 		os.Exit(2)
 	}
 	hermeticHome = dir
-	for _, k := range []string{"HOME", "USERPROFILE"} {
-		if err := os.Setenv(k, dir); err != nil {
-			fmt.Fprintln(os.Stderr, "dashboard TestMain: set", k+":", err)
-			os.Exit(2)
-		}
-	}
-	// XDG locations derive from HOME when unset; a set one would still
-	// point at the developer's real tree, so drop it for the run.
-	for _, k := range []string{"XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "OBSERVER_CONFIG"} {
-		_ = os.Unsetenv(k)
-	}
 	code := m.Run()
-	_ = os.RemoveAll(dir)
+	cleanup()
 	os.Exit(code)
 }
 

@@ -460,3 +460,29 @@ func TestGUIUnadvertisedLifecycleIsNeverAdvertised(t *testing.T) {
 		t.Error("an ungrounded GUI row on an active adapter is Advertised — it must never be offered")
 	}
 }
+
+// TestFU148DesktopRows: the CLI-first tools whose vendor documents a desktop
+// app carry an UNGROUNDED GUI row (listed, never launchable, the vendor page
+// cited in the Note), and the ones whose desktop app no vendor page
+// documents carry none (FU-148, vendor docs only, 2026-10-29).
+func TestFU148DesktopRows(t *testing.T) {
+	for tool, wantGUI := range map[string]bool{
+		"ibm-bob": true, "codebuddy": true, "cortex-code": true,
+		"dimcode": false, "poolside": false,
+	} {
+		c, ok := For(tool)
+		if !ok {
+			t.Fatalf("%s: no registry row", tool)
+		}
+		if (c.GUI != nil) != wantGUI {
+			t.Errorf("%s: GUI row present = %v, want %v", tool, c.GUI != nil, wantGUI)
+			continue
+		}
+		if c.GUI == nil {
+			continue
+		}
+		if c.GUI.Grounded || c.GUI.Launchable() || !strings.Contains(c.GUI.Note, "Vendor docs only") {
+			t.Errorf("%s: GUI row %+v, want ungrounded, not launchable, citing the vendor docs", tool, *c.GUI)
+		}
+	}
+}

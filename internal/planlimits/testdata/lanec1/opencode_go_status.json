@@ -1,0 +1,4 @@
+{"access":{"endsAt":"2026-11-01T00:00:00Z","meters":{
+  "fiveHour":{"usedMicroCents":"89062297","limitMicroCents":"1200000000","resetsAt":"2026-10-09T12:31:21Z"},
+  "week":{"usedMicroCents":"703325271","limitMicroCents":"3000000000","resetsAt":"2026-10-12T00:00:00Z"},
+  "month":{"usedMicroCents":"600000000","limitMicroCents":"6000000000"}}}}

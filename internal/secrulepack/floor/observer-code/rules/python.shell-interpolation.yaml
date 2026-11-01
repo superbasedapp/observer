@@ -1,0 +1,29 @@
+rules:
+  - id: python.shell-interpolation
+    languages: [python]
+    severity: ERROR
+    message: Web request input reaches a shell command line; pass an argument list without a shell instead.
+    metadata:
+      category: code_vuln
+      cwe: CWE-78
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: flask.request.$ATTR
+              - pattern: request.$ATTR
+              - pattern: self.request.$ATTR
+          - metavariable-regex:
+              metavariable: $ATTR
+              regex: ^(args|form|values|json|data|files|cookies|get_json|get_data|GET|POST|body|COOKIES|FILES|query_params)$
+    pattern-sanitizers:
+      - pattern: int(...)
+      - pattern: float(...)
+      - pattern: shlex.quote(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: os.system($CMD)
+              - pattern: os.popen($CMD, ...)
+              - pattern: subprocess.$F($CMD, ..., shell=True, ...)
+          - focus-metavariable: $CMD

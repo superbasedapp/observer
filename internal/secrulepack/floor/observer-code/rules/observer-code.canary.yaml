@@ -1,0 +1,6 @@
+rules:
+  - id: observer-code.canary
+    languages: [python]
+    severity: INFO
+    message: Observer's self-test marker.
+    pattern: observer_code_canary_7f3a9c($X)

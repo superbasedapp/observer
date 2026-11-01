@@ -16,7 +16,7 @@ func ensureTokenFilePrivate(path string, info os.FileInfo) error {
 		return fmt.Errorf("token file %s is owned by another account; refusing to use it", path)
 	}
 	if info.Mode().Perm()&0o077 != 0 {
-		if err := os.Chmod(path, 0o600); err != nil {
+		if err := os.Chmod(path, 0o600); err != nil { //nolint:gosec // G703: writes under the user's own local state with the user's own rights
 			return fmt.Errorf("token file %s is readable by other accounts and could not be made private: %w", path, err)
 		}
 	}

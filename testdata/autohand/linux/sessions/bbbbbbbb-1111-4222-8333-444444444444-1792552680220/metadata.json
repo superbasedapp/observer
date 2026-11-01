@@ -1,0 +1,26 @@
+{
+  "sessionId": "bbbbbbbb-1111-4222-8333-444444444444-1792552680220",
+  "createdAt": "2026-10-21T03:18:00.221Z",
+  "lastActiveAt": "2026-10-21T03:40:43.221Z",
+  "projectPath": "/home/user/proj",
+  "projectName": "proj",
+  "model": "fantail",
+  "messageCount": 36,
+  "status": "completed",
+  "client": "terminal",
+  "title": "Inspect empty project folder",
+  "titleSource": "auto",
+  "usage": {
+    "promptTokens": 300986,
+    "completionTokens": 2490,
+    "totalTokens": 303476,
+    "cacheReadTokens": 165425,
+    "cacheWriteTokens": 0,
+    "turnCount": 4,
+    "tokenUsageStatus": "unavailable",
+    "longestTurnDurationMs": 46468,
+    "updatedAt": "2026-10-21T03:28:23.301Z"
+  },
+  "closedAt": "2026-10-21T03:40:43.221Z",
+  "summary": "Create a hello world python file and run it. Then update the"
+}

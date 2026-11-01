@@ -1,0 +1,48 @@
+rules:
+  - id: js.insecure-token-randomness
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: A secret value (a password, key, one-time code or reset code) is made with Math.random, which is predictable; use crypto.randomBytes or crypto.randomUUID.
+    metadata:
+      category: code_vuln
+      cwe: CWE-338
+    patterns:
+      # A value built with Date.now() is excluded only under a unique-id
+      # name (one ending in "id": resetTokenId, secretId); a password or
+      # key that also mixes in Date.now() still matches.
+      - pattern-either:
+          - patterns:
+              - pattern-either:
+                  - pattern: const $TOK = <... Math.random() ...>;
+                  - pattern: let $TOK = <... Math.random() ...>;
+                  - pattern: var $TOK = <... Math.random() ...>;
+                  - pattern: $TOK = <... Math.random() ...>
+                  - pattern: $TOK += <... Math.random() ...>
+                  - pattern: '{..., $TOK: <... Math.random() ...>, ...}'
+              - pattern-not: const $TOK = <... Date.now() ...>;
+              - pattern-not: let $TOK = <... Date.now() ...>;
+              - pattern-not: $TOK = <... Date.now() ...>
+          - patterns:
+              - pattern-either:
+                  - pattern: const $TOK = <... Math.random() ...>;
+                  - pattern: let $TOK = <... Math.random() ...>;
+                  - pattern: var $TOK = <... Math.random() ...>;
+                  - pattern: $TOK = <... Math.random() ...>
+                  - pattern: $TOK += <... Math.random() ...>
+                  - pattern: '{..., $TOK: <... Math.random() ...>, ...}'
+              - metavariable-regex:
+                  metavariable: $TOK
+                  regex: (?i)^(.*[^d]|.*[^i]d|d)$
+      - metavariable-regex:
+          metavariable: $TOK
+          regex: (?i)^(.*\.)?\w*(secret|password|passwd|apikey|api_key|privatekey|private_key|otp|resetcode|reset_code|resettoken|reset_token)\w*$
+      - pattern-not-inside: describe(...)
+      - pattern-not-inside: it(...)
+      - pattern-not-inside: test(...)
+      - pattern-not-inside: $X.test(...)
+      - pattern-not-inside: beforeEach(...)
+      - pattern-not-inside: beforeAll(...)
+      - pattern-not-inside: afterEach(...)
+      - pattern-not-inside: afterAll(...)
+      - pattern-not-inside: before(...)
+      - pattern-not-inside: after(...)

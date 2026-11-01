@@ -206,10 +206,10 @@ func TestPrimeAgentSeededLaunchInjectsProviderExactlyOnce(t *testing.T) {
 	if err := os.MkdirAll(home, 0o755); err != nil {
 		t.Fatalf("mkdir home: %v", err)
 	}
-	t.Setenv("HOME", home)
+	pinToolHomesAt(t, home)
 	t.Setenv(observerProviderAPIKeyEnv, "test-not-a-secret") // a key is available, so the provider IS written
 	cfgPath := filepath.Join(dir, "config.toml")
-	if err := os.WriteFile(cfgPath, []byte("[observer]\ndb_path = \""+filepath.Join(dir, "observer.db")+"\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("[observer]\ndb_path = \""+filepath.ToSlash(filepath.Join(dir, "observer.db"))+"\"\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
@@ -255,13 +255,13 @@ func ensurePrimeAgentObserverProvider(baseURL string) error {
 func TestPrimeAgentManagementVerbsAreRejectedForSeeding(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.toml")
-	if err := os.WriteFile(cfgPath, []byte("[observer]\ndb_path = \""+filepath.Join(dir, "observer.db")+"\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("[observer]\ndb_path = \""+filepath.ToSlash(filepath.Join(dir, "observer.db"))+"\"\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	for _, verb := range []string{"status", "doctor", "config", "shutdown", "session"} {
 		t.Run(verb, func(t *testing.T) {
 			home := filepath.Join(dir, "home-"+verb)
-			t.Setenv("HOME", home)
+			pinToolHomesAt(t, home)
 			cmd := newPrimeAgentCmd()
 			var out bytes.Buffer
 			cmd.SetOut(&out)
@@ -321,7 +321,7 @@ func assertPrimeAgentProviderFile(t *testing.T, path, wantBaseURL string) {
 // existing ~/.prime/agent/models.json.
 func TestEnsurePrimeAgentObserverProvider_FreshFile(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	pinToolHomesAt(t, home)
 
 	if err := ensurePrimeAgentObserverProvider("http://127.0.0.1:8820/v1"); err != nil {
 		t.Fatalf("ensurePrimeAgentObserverProvider: %v", err)
@@ -335,7 +335,7 @@ func TestEnsurePrimeAgentObserverProvider_FreshFile(t *testing.T) {
 // observer entry is (re)written.
 func TestEnsurePrimeAgentObserverProvider_PreservesExisting(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	pinToolHomesAt(t, home)
 	dir := filepath.Join(home, ".prime", "agent")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -386,7 +386,7 @@ func TestEnsurePrimeAgentObserverProvider_PreservesExisting(t *testing.T) {
 // port updates only the observer entry's baseUrl.
 func TestEnsurePrimeAgentObserverProvider_Idempotent(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	pinToolHomesAt(t, home)
 	path := filepath.Join(home, ".prime", "agent", "models.json")
 
 	if err := ensurePrimeAgentObserverProvider("http://127.0.0.1:8820/v1"); err != nil {
@@ -417,7 +417,7 @@ func TestEnsurePrimeAgentObserverProvider_Idempotent(t *testing.T) {
 // corrupt existing models.json returns an error rather than clobbering it.
 func TestEnsurePrimeAgentObserverProvider_CorruptExistingFileErrors(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	pinToolHomesAt(t, home)
 	dir := filepath.Join(home, ".prime", "agent")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)

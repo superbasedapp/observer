@@ -88,6 +88,29 @@ var egressProfiles = []EgressProfile{
 	},
 }
 
+// EnvEgress names the egress tier a sandboxed launch runs under. A launcher
+// that knows the tier sets it beside EnvMarker, so the in-sandbox launcher
+// can say the tier's real model route when its proxy check fails (live run
+// 2, finding N2). It changes only what is said, never a route.
+const EnvEgress = "OBSERVER_SANDBOX_EGRESS"
+
+// ModelRouteNotice is what a launcher inside a sandbox of tier p says when
+// it finds no model proxy, read from the tier's columns: "" when the tier
+// leaves a direct route (the shared host network, or the egress gateway),
+// so the caller's own notice stands; for a tier whose only route is the
+// forwarded proxy, that the model is unreachable this run; for a tier with
+// nothing forwarded, that the sandbox has no route to the model at all.
+func ModelRouteNotice(p EgressProfile, tool, proxyURL string) string {
+	switch {
+	case !p.UnshareNet || p.Gateway:
+		return ""
+	case p.ForwardProxy:
+		return fmt.Sprintf("observer %s: this sandbox's network tier is %s (%s): the observer proxy at %s is its only route to the model API and it is not reachable, so %s cannot reach the model in this run (nothing goes straight to the provider; turns are NOT captured).", tool, p.Mode, p.Summary, proxyURL, tool)
+	default:
+		return fmt.Sprintf("observer %s: this sandbox's network tier is %s (%s): %s is launched without proxy routing and has no route to the model API in this run (nothing is sent to the provider from here; the transcript is still captured).", tool, p.Mode, p.Summary, tool)
+	}
+}
+
 // EgressProfiles returns a copy of the tier table in its canonical order.
 func EgressProfiles() []EgressProfile {
 	return append([]EgressProfile(nil), egressProfiles...)
@@ -149,6 +172,20 @@ const (
 	flagProxySock   = "--proxy-sock"
 	flagGatewayPort = "--gateway-port"
 	flagGatewaySock = "--gateway-sock"
+	// flagProviderBlock turns the gateway's model-provider host block on
+	// (sandbox plan v2 section 7.3); flagProviderHost adds one host to the
+	// closed provider list (the proxy's own configured upstreams).
+	flagProviderBlock = "--provider-block"
+	flagProviderHost  = "--provider-host"
+	// flagPrivateNet tells the host helper the plan unshares the network, so
+	// its post-launch re-check (sandboxselect.RecheckBwrap) requires the
+	// sandbox's network namespace to differ from the host's.
+	flagPrivateNet = "--private-net"
+	// flagRelayRun and flagObserverDir turn the capture relay on in the
+	// host helper (lane sbx-p2): the run record's id, and the host
+	// observer directory that holds it and the daemon's link endpoint.
+	flagRelayRun    = "--relay-run"
+	flagObserverDir = "--observer-dir"
 
 	// defaultGatewayPort is the in-namespace port the egress gateway is
 	// forwarded on. The namespace is private, so any port is free; this one
@@ -173,11 +210,18 @@ const (
 //     host helper verbatim (one flag per entry) for a tier with a gateway and
 //     ignored otherwise; the helper parses them with the gateway's own
 //     validator and refuses to start on a bad entry.
+//   - ProviderBlock turns on the gateway's model-provider host block for this
+//     run (section 7.3): set by the cmd seam when the run's computed capture
+//     is full only through the gateway (rule C6). Ignored without a gateway.
+//   - ProviderHosts are hosts added to the gateway's closed provider list
+//     (the proxy's own configured upstream hosts).
 type NetRequest struct {
 	Egress           Egress
 	HostSocketDir    string
 	ProxyPort        int
 	EgressAllowCIDRs []string
+	ProviderBlock    bool
+	ProviderHosts    []string
 }
 
 // GatewayPort is the in-namespace port the egress gateway listens on for a
@@ -199,15 +243,8 @@ func resolveNet(n NetRequest) (EgressProfile, error) {
 		return EgressProfile{}, err
 	}
 	if prof.ForwardProxy || prof.Gateway {
-		if err := validateAbs(n.HostSocketDir, true); err != nil {
-			return EgressProfile{}, fmt.Errorf("host socket dir: %w", err)
-		}
-		if filepath.Clean(n.HostSocketDir) != n.HostSocketDir {
-			return EgressProfile{}, fmt.Errorf("host socket dir %q must be clean", n.HostSocketDir)
-		}
-		longest := filepath.Join(n.HostSocketDir, GatewaySocketName)
-		if len(longest) > maxUnixSocketPath {
-			return EgressProfile{}, fmt.Errorf("host socket dir %q is too long for a unix socket path (%d > %d bytes)", n.HostSocketDir, len(longest), maxUnixSocketPath)
+		if err := validateSockDir(n.HostSocketDir); err != nil {
+			return EgressProfile{}, err
 		}
 	}
 	if prof.ForwardProxy && (n.ProxyPort <= 0 || n.ProxyPort > 65535) {
@@ -219,8 +256,29 @@ func resolveNet(n NetRequest) (EgressProfile, error) {
 				return EgressProfile{}, fmt.Errorf("egress allow cidr: %w", err)
 			}
 		}
+		for _, h := range n.ProviderHosts {
+			if err := validateToken(h); err != nil {
+				return EgressProfile{}, fmt.Errorf("provider host: %w", err)
+			}
+		}
 	}
 	return prof, nil
+}
+
+// validateSockDir checks a per-run host socket dir: absolute, clean, and
+// short enough for every socket it will hold.
+func validateSockDir(dir string) error {
+	if err := validateAbs(dir, true); err != nil {
+		return fmt.Errorf("host socket dir: %w", err)
+	}
+	if filepath.Clean(dir) != dir {
+		return fmt.Errorf("host socket dir %q must be clean", dir)
+	}
+	longest := filepath.Join(dir, GatewaySocketName)
+	if len(longest) > maxUnixSocketPath {
+		return fmt.Errorf("host socket dir %q is too long for a unix socket path (%d > %d bytes)", dir, len(longest), maxUnixSocketPath)
+	}
+	return nil
 }
 
 // validateToken guards a free-form helper argument (a CIDR): non-empty, not
@@ -240,8 +298,8 @@ func validateToken(v string) error {
 
 // HostArgv returns the host-side helper prefix for a network request with no
 // protected-path placeholders (see Plan.HostArgv, which the launch path
-// uses): [observerBin, HostVerb, --sock-dir D, --proxy-addr 127.0.0.1:P,
-// (--gateway (--egress-allow-cidr C)...), "--"]. The cmd seam appends the
+// uses): [observerBin, HostVerb, --sock-dir D, (--private-net),
+// --proxy-addr 127.0.0.1:P, (--gateway (--egress-allow-cidr C)...), "--"]. The cmd seam appends the
 // resolved bwrap path and the plan's argv after it. It returns nil when the
 // helper has nothing to do, where bwrap is exec'd directly.
 func HostArgv(observerBin string, n NetRequest) ([]string, error) {
@@ -254,27 +312,46 @@ func HostArgv(observerBin string, n NetRequest) ([]string, error) {
 // first) and remove again afterwards. It returns nil when the helper has
 // nothing to do.
 func (p Plan) HostArgv(observerBin string) ([]string, error) {
-	return hostArgv(observerBin, p.net, p.placeholders)
+	return hostArgvRelay(observerBin, p.net, p.placeholders, p.relay)
 }
 
 // hostArgv composes the helper prefix. --sock-dir is emitted only for a tier
 // that forwards something; placeholders ride as --placeholder-file /
 // --placeholder-dir, one flag per path.
 func hostArgv(observerBin string, n NetRequest, placeholders []Overlay) ([]string, error) {
+	return hostArgvRelay(observerBin, n, placeholders, RelayRequest{})
+}
+
+// hostArgvRelay is hostArgv with the relay: a relayed run always runs the
+// helper (it serves the relay socket), with the socket dir and the relay
+// flags.
+func hostArgvRelay(observerBin string, n NetRequest, placeholders []Overlay, relay RelayRequest) ([]string, error) {
 	prof, err := resolveNet(n)
 	if err != nil {
 		return nil, fmt.Errorf("sandbox.HostArgv: %w", err)
 	}
 	forwards := prof.ForwardProxy || prof.Gateway
-	if !forwards && len(placeholders) == 0 {
+	if !forwards && len(placeholders) == 0 && !relay.Enabled() {
 		return nil, nil
 	}
 	if err := validateAbs(observerBin, false); err != nil {
 		return nil, fmt.Errorf("sandbox.HostArgv: observer bin: %w", err)
 	}
 	out := []string{observerBin, HostVerb}
-	if forwards {
+	if forwards || relay.Enabled() {
 		out = append(out, flagSockDir, n.HostSocketDir)
+	}
+	if relay.Enabled() {
+		if !validRunToken(relay.RunID) {
+			return nil, fmt.Errorf("sandbox.HostArgv: relay run id %q", relay.RunID)
+		}
+		if err := validateAbs(relay.HostObserverDir, false); err != nil {
+			return nil, fmt.Errorf("sandbox.HostArgv: relay observer dir: %w", err)
+		}
+		out = append(out, flagRelayRun, relay.RunID, flagObserverDir, relay.HostObserverDir)
+	}
+	if prof.UnshareNet {
+		out = append(out, flagPrivateNet)
 	}
 	if prof.ForwardProxy {
 		out = append(out, flagProxyAddr, "127.0.0.1:"+strconv.Itoa(n.ProxyPort))
@@ -283,6 +360,12 @@ func hostArgv(observerBin string, n NetRequest, placeholders []Overlay) ([]strin
 		out = append(out, flagGateway)
 		for _, c := range n.EgressAllowCIDRs {
 			out = append(out, flagAllowCIDR, c)
+		}
+		if n.ProviderBlock {
+			out = append(out, flagProviderBlock)
+			for _, h := range n.ProviderHosts {
+				out = append(out, flagProviderHost, h)
+			}
 		}
 	}
 	for _, o := range placeholders {
@@ -334,7 +417,19 @@ type HostArgs struct {
 	// the helper creates before bwrap and removes afterwards if untouched.
 	PlaceholderFiles []string
 	PlaceholderDirs  []string
-	Command          []string
+	// ProviderBlock turns the gateway's model-provider host block on;
+	// ProviderHosts are the extra hosts for its list.
+	ProviderBlock bool
+	ProviderHosts []string
+	// PrivateNet: the plan unshares the network (every tier but host); the
+	// helper's post-launch re-check holds the built sandbox to it.
+	PrivateNet bool
+	// RelayRun and ObserverDir turn the capture relay on: the helper reads
+	// the run record under ObserverDir, writes the box record into SockDir
+	// and serves the relay socket there.
+	RelayRun    string
+	ObserverDir string
+	Command     []string
 }
 
 // GuestArgs is the parsed guest-helper command line.
@@ -357,17 +452,40 @@ func ParseHostArgs(args []string) (HostArgs, error) {
 		flagAllowCIDR: func(v string) error { h.AllowCIDRs = append(h.AllowCIDRs, v); return validateToken(v) },
 		flagPlaceFile: func(v string) error { h.PlaceholderFiles = append(h.PlaceholderFiles, v); return validateAbs(v, true) },
 		flagPlaceDir:  func(v string) error { h.PlaceholderDirs = append(h.PlaceholderDirs, v); return validateAbs(v, true) },
+		flagProviderHost: func(v string) error {
+			h.ProviderHosts = append(h.ProviderHosts, v)
+			return validateToken(v)
+		},
+		flagRelayRun: func(v string) error {
+			h.RelayRun = v
+			if !validRunToken(v) {
+				return fmt.Errorf("relay run id %q", v)
+			}
+			return nil
+		},
+		flagObserverDir: func(v string) error { h.ObserverDir = v; return validateAbs(v, false) },
 	}, map[string]func(){
-		flagGateway: func() { h.Gateway = true },
+		flagGateway:       func() { h.Gateway = true },
+		flagProviderBlock: func() { h.ProviderBlock = true },
+		flagPrivateNet:    func() { h.PrivateNet = true },
 	})
 	if err != nil {
 		return HostArgs{}, fmt.Errorf("sandbox.ParseHostArgs: %w", err)
 	}
-	if (h.ProxyAddr != "" || h.Gateway) && h.SockDir == "" {
+	if (h.RelayRun == "") != (h.ObserverDir == "") {
+		return HostArgs{}, fmt.Errorf("sandbox.ParseHostArgs: %s and %s go together", flagRelayRun, flagObserverDir)
+	}
+	if (h.ProxyAddr != "" || h.Gateway || h.RelayRun != "") && h.SockDir == "" {
 		return HostArgs{}, fmt.Errorf("sandbox.ParseHostArgs: %s is required", flagSockDir)
 	}
 	if len(h.AllowCIDRs) > 0 && !h.Gateway {
 		return HostArgs{}, fmt.Errorf("sandbox.ParseHostArgs: %s needs %s", flagAllowCIDR, flagGateway)
+	}
+	if (h.ProviderBlock || len(h.ProviderHosts) > 0) && !h.Gateway {
+		return HostArgs{}, fmt.Errorf("sandbox.ParseHostArgs: %s and %s need %s", flagProviderBlock, flagProviderHost, flagGateway)
+	}
+	if len(h.ProviderHosts) > 0 && !h.ProviderBlock {
+		return HostArgs{}, fmt.Errorf("sandbox.ParseHostArgs: %s needs %s", flagProviderHost, flagProviderBlock)
 	}
 	h.Command = rest
 	return h, nil
@@ -454,4 +572,22 @@ func GuestProxyEnv(gatewayPort int) []string {
 		"NO_PROXY=" + noProxy,
 		"no_proxy=" + noProxy,
 	}
+}
+
+// RelayOfWrap returns the capture relay's run id and host observer directory
+// from a wrap argv HostArgv composed (the host helper's own flags), so the
+// launcher can name the run record that belongs to the run it spawns.
+// ok=false: the argv carries no host helper or no relay.
+func RelayOfWrap(argv []string) (runID, observerDir string, ok bool) {
+	for i := 1; i < len(argv); i++ {
+		if argv[i] != HostVerb {
+			continue
+		}
+		h, err := ParseHostArgs(argv[i+1:])
+		if err != nil || h.RelayRun == "" {
+			return "", "", false
+		}
+		return h.RelayRun, h.ObserverDir, true
+	}
+	return "", "", false
 }

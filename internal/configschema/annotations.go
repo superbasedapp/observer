@@ -88,6 +88,7 @@ const (
 	ownerSSHProfiles   = "the Terminals > Settings > Remote systems editor (PUT /api/terminal/ssh/profiles) / config.toml [[terminal.ssh.profiles]]"
 	ownerLaunchTools   = "config.toml [launch.tools.<tool>] (per-tool launch overrides)"
 	ownerShellWrap     = "`observer shell-wrap enable|disable` / the Settings → Terminal \"Command wrapping\" card (writes these keys AND the shell files together)"
+	ownerOrgGovernance = "your organization's node governance policy (the admin dashboard pins it; the local value is not read)"
 	ownerComponents    = "`observer components select|add|remove` / `observer init --components` / Settings > Components (writes these keys AND runs the teardown of a removed component)"
 )
 
@@ -113,6 +114,9 @@ var rules = []rule{
 	// storage breakdown and wants to trade history for disk.
 	{prefix: "observer.retention.compaction_events_days", exact: true, prominence: ProminenceAdvanced},
 	{prefix: "observer.retention.compression_events_days", exact: true, prominence: ProminenceAdvanced},
+	// The org push hold ceiling (T-839): only meaningful on an enrolled node,
+	// and lowering it trades unsent data for disk.
+	{prefix: "observer.retention.held_max_mb", exact: true, prominence: ProminenceAdvanced},
 	{prefix: "observer.hooks", section: "hooks"},
 	{prefix: "observer.antigravity", section: "antigravity"},
 	{prefix: "observer.antigravity.dump_shape_mismatches_dir", exact: true, prominence: ProminenceExpert},
@@ -159,6 +163,18 @@ var rules = []rule{
 	{prefix: "proxy.org_route.mode", exact: true, enum: []string{"", "gateway"}},
 	{prefix: "proxy.force_chatgpt_http", exact: true, prominence: ProminenceAdvanced},
 	{prefix: "proxy.prewarm_targets", exact: true, prominence: ProminenceAdvanced},
+	// OSH-R-009: proxy client authentication. The token file path is T2 (it
+	// names a credential); the switches change who may use the proxy.
+	{prefix: "proxy.require_client_auth", exact: true, tier: TierSensitive, prominence: ProminenceAdvanced},
+	{prefix: "proxy.client_auth_routes", exact: true, tier: TierSensitive, prominence: ProminenceAdvanced},
+	{prefix: "proxy.client_token_file", exact: true, tier: TierSensitive, prominence: ProminenceExpert},
+	// lane P1: the admin's managed route-maintenance switch. Org-pinned only
+	// (govern.Effective.RoutePosture reads the pinned value live).
+	{prefix: "proxy.maintain_routes", exact: true, tier: TierOwnerElsewhere, ownedBy: ownerOrgGovernance, restart: RestartLive, prominence: ProminenceExpert},
+	// CLI-1b: the admin's managed command-wrapping switch (org-pinned only)
+	// and the applier's provenance record.
+	{prefix: "shell_wrap.org_maintain", exact: true, tier: TierOwnerElsewhere, ownedBy: ownerOrgGovernance, restart: RestartLive, prominence: ProminenceExpert},
+	{prefix: "shell_wrap.org_applied", exact: true, tier: TierOwnerElsewhere, ownedBy: ownerShellWrap, prominence: ProminenceExpert},
 
 	// --------------------------------------------------------------- dashboard
 	{prefix: "dashboard", tier: TierPlain, restart: RestartRequired, section: "dashboard"},
@@ -187,6 +203,16 @@ var rules = []rule{
 	// Each AI session spawns a fresh `observer serve` that runs config.Load
 	// itself — a restart chip would lie (plan §3.2).
 	{prefix: "intelligence.mcp", restart: RestartNextSpawn, section: "mcp"},
+
+	// ---------------------------------------------------------------- messages
+	// [messages]: where messages from the org's admins surface on this
+	// machine (T-854). Every key is read where it is used (the dashboard per
+	// request, the org client per message), so a change is live. The surface
+	// switches are plain local display choices; read_receipts decides whether
+	// a fact about the developer (that they read a message) leaves for the
+	// org, so it is an egress switch (SENSITIVE), like the share keys.
+	{prefix: "messages", tier: TierPlain, restart: RestartLive, section: "org"},
+	{prefix: "messages.read_receipts", exact: true, tier: TierSensitive},
 
 	// -------------------------------------------------------------- org_client
 	// Every share/scope switch is data egress consent (§4.2).
@@ -268,6 +294,21 @@ var rules = []rule{
 	{prefix: "projects.active_project_days", exact: true, min: f(0)},
 	{prefix: "projects.skill_history_skew_seconds", exact: true, min: f(0)},
 
+	// [delivery] - commit to PR to merge tracking (D-689,
+	// docs/plans/commit-pr-merge-tracking-plan-2026-10-15.md). Read once by
+	// the commit scanner's landing step and the provider service at daemon
+	// start, so a change needs a restart. Plain: local, read-only,
+	// network-free bounds. Provider egress is NOT a config key here (a code
+	// host connection is made explicitly per host). Same "intelligence"
+	// section as [projects], whose Projects page it feeds.
+	{prefix: "delivery", tier: TierPlain, restart: RestartRequired, section: "intelligence", prominence: ProminenceAdvanced},
+	{prefix: "delivery.local", exact: true, prominence: ProminencePrimary},
+	{prefix: "delivery.poll_minutes", exact: true, min: f(1)},
+	{prefix: "delivery.mirror_cap_mb", exact: true, min: f(0)},
+	{prefix: "delivery.abandon_after_days", exact: true, min: f(1)},
+	{prefix: "delivery.count_likely", exact: true},
+	{prefix: "delivery.content_overlap_min", exact: true, min: f(0), max: f(1)},
+
 	// ----------------------------------------------------------------- browser
 	// [tasks] — session-level task/todo/plan checklist tracking
 	// (docs/task-tracking.md; merged from origin/main 2026-09-10). Binds once at
@@ -315,7 +356,25 @@ var rules = []rule{
 	{prefix: "terminal.sandbox.home_mode", exact: true, enum: []string{"", "tmpfs", "readonly"}},
 	{prefix: "terminal.sandbox.egress", exact: true, enum: []string{"", "host", "internet", "proxy_only", "none"}},
 	{prefix: "terminal.sandbox.prep_timeout_seconds", exact: true, tier: TierPlain, prominence: ProminenceAdvanced},
+	// Lane SBX-UPD: how soon a deferred update asks (a closed choice).
+	{prefix: "terminal.sandbox.live_run_update_policy", exact: true, tier: TierPlain, enum: []string{"", "defer", "ask_immediately"}},
+	{prefix: "terminal.sandbox.seatbelt.driver", exact: true, enum: []string{"", "sandbox-exec", "mxc-exec-mac"}},
 	{prefix: "terminal.sandbox.workspace_retention_days", exact: true, tier: TierPlain},
+	// provider_direct (DEC-9, OBS-8a): org-pinned only; the local value is
+	// not read (config.sandboxProviderDirectInForce).
+	{prefix: "terminal.sandbox.provider_direct", exact: true, tier: TierOwnerElsewhere, ownedBy: ownerOrgGovernance, enum: []string{"", "refuse_all", "capture_rule", "allow"}, prominence: ProminenceExpert},
+	// vendor_forced_native (lane SBX-P3D): a closed choice.
+	{prefix: "terminal.sandbox.vendor_forced_native", exact: true, enum: []string{"", "nest_or_refuse", "refuse"}},
+	// The container driver (lane SBX-P3A): sensitive like the rest of the
+	// sandbox block; the user namespace is a closed choice.
+	{prefix: "terminal.sandbox.oci.podman_userns", exact: true, enum: []string{"", "keep-id", "default"}},
+	{prefix: "terminal.sandbox.oci.stop_grace_seconds", exact: true, tier: TierPlain, prominence: ProminenceAdvanced},
+	// The Windows driver (lane SBX-P6).
+	{prefix: "terminal.sandbox.mxc.stop_grace_seconds", exact: true, tier: TierPlain, prominence: ProminenceAdvanced},
+	{prefix: "terminal.sandbox.mxc.probe_timeout_seconds", exact: true, tier: TierPlain, prominence: ProminenceAdvanced},
+	// The hosted rows (lane SBX-P7): two closed choices.
+	{prefix: "terminal.sandbox.hosted.key_custody", exact: true, enum: []string{"home_relay", "in_box_api_key", "in_box_oauth_seed", "provider_injected"}},
+	{prefix: "terminal.sandbox.hosted.memory_images", exact: true, enum: []string{"avoid", "refuse"}},
 	// Read per launch through the live terminal config holder (T-488), like
 	// terminal.launch: a profile or switch change binds on the next launch.
 	{prefix: "terminal.ssh", tier: TierSensitive, restart: RestartNextSpawn},
@@ -345,6 +404,22 @@ var rules = []rule{
 	{prefix: "codeintel.semantic", prominence: ProminenceAdvanced},
 	{prefix: "codeintel.max_file_bytes", exact: true, prominence: ProminenceAdvanced},
 	{prefix: "codeintel.auto_index_limit", exact: true, prominence: ProminenceAdvanced},
+
+	// ---------------------------------------------------------------- security
+	// The security pillar's [security] block (component `security`). Its
+	// node home is the Code security card; on the closed org-facing section
+	// vocabulary it maps onto Guard's section, the Security nav group it
+	// sits in (security pillar plan sections 4.10 and 6.5).
+	{prefix: "security", tier: TierPlain, restart: RestartRequired, section: "guard"},
+	// [security.custom] is re-read by the custom scanner schedule on every
+	// 15-minute tick (cmd/observer security_custom_schedule.go), so a
+	// change takes effect within 15 minutes with no restart.
+	{prefix: "security.custom", restart: RestartLive},
+	// The signed package index download's off switch (operator ruling
+	// PT-19): the feed loop reloads the config before every refresh and,
+	// while it waits, re-reads the file every 30 seconds, so a change
+	// takes effect with no restart (cmd/observer security_deps_daemon.go).
+	{prefix: "security.deps.index_download", exact: true, restart: RestartLive},
 
 	// ----------------------------------------------------------------- archive
 	{prefix: "archive", tier: TierPlain, restart: RestartRequired, section: "storage"},
@@ -430,6 +505,9 @@ var rules = []rule{
 
 	// --------------------------------------------------------------- benchmark
 	{prefix: "benchmark", tier: TierPlain, restart: RestartRequired, section: "storage", prominence: ProminenceAdvanced},
+	// Read again before every Arena drive (cmd/observer/arena_permissions.go),
+	// never bound at start (OSH-R-005, audit F6).
+	{prefix: "benchmark.arena_allow_skip_permissions", exact: true, restart: RestartNextSpawn},
 
 	// ---------------------------------------------------------- email / digest
 	// Outbound SMTP is data egress (§4.2).

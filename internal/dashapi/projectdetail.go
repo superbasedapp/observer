@@ -8,6 +8,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
 	"github.com/marmutapp/superbased-observer/internal/loc"
+	"github.com/marmutapp/superbased-observer/internal/platform/pathnorm"
 	"github.com/marmutapp/superbased-observer/internal/projectroi"
 	"github.com/marmutapp/superbased-observer/internal/store"
 	"github.com/marmutapp/superbased-observer/internal/taskflow"
@@ -40,6 +41,10 @@ type ProjectDetailInput struct {
 	LinkWindow time.Duration
 	CostEngine *cost.Engine
 	Taskflow   taskflow.Options
+	// CanRescan is true when the caller can run "Rescan now" for this
+	// project (the dashboard has a CommitRescan seam wired). The CLI
+	// leaves it false.
+	CanRescan bool
 }
 
 // ComposeProjectDetail loads every row the Projects-page detail summary
@@ -102,10 +107,11 @@ func ComposeProjectDetail(ctx context.Context, st *store.Store, in ProjectDetail
 	if err != nil {
 		return ProjectDetail{}, fmt.Errorf("dashboard.ComposeProjectDetail: load LOC totals: %w", err)
 	}
-	commitCapture, err := st.CommitCaptureState(ctx, projectID)
+	scanHealth, err := st.CommitScanHealth(ctx, projectID)
 	if err != nil {
 		return ProjectDetail{}, fmt.Errorf("dashboard.ComposeProjectDetail: load commit-capture state: %w", err)
 	}
+	commitCapture := scanHealth.State
 
 	linkage := projectroi.Link(prompts, edits, commits, projectroi.Options{LinkWindow: in.LinkWindow})
 	spend := projectroi.AttributeSpend(linkage, turns, prompts)
@@ -206,9 +212,47 @@ func ComposeProjectDetail(ctx context.Context, st *store.Store, in ProjectDetail
 	detail.Tasks.Done = tasksDone
 	detail.Tasks.CostUSD = tasksCostUSD
 	detail.Tasks.Available = tasksAvailable
-	detail.Capture = APIProjectCaptureInfo{Commits: commitCapture, HumanLOC: humanCapture}
+	detail.Capture = APIProjectCaptureInfo{
+		Commits:     commitCapture,
+		HumanLOC:    humanCapture,
+		CommitsKind: CommitsKindFor(scanHealth),
+		CommitScan:  CommitScanInfo(scanHealth, meta.RootPath, in.CanRescan),
+	}
 
 	return detail, nil
+}
+
+// CommitsKindFor is the list-and-detail CommitsKind: the failure kind, only
+// when the capture state is the generic "error" (the specific states
+// already name their cause).
+func CommitsKindFor(h store.CommitScanHealth) string {
+	if h.State != "error" {
+		return ""
+	}
+	return h.Kind
+}
+
+// CommitScanInfo renders the detail panel's scan health. ScanRoot is set
+// only when the scanner runs git somewhere other than the stored root (a
+// Windows path translated for a WSL daemon), so the page can say so.
+func CommitScanInfo(h store.CommitScanHealth, storedRoot string, canRescan bool) *APICommitScanInfo {
+	info := &APICommitScanInfo{
+		Kind:           h.Kind,
+		Detail:         h.Detail,
+		Failures:       h.Failures,
+		HistoryPending: h.HistoryPending,
+		CanRescan:      canRescan,
+	}
+	if scan := pathnorm.Normalize(storedRoot); scan != storedRoot {
+		info.ScanRoot = scan
+	}
+	if !h.LastScanAt.IsZero() {
+		info.LastScanAt = h.LastScanAt.UTC().Format(time.RFC3339)
+	}
+	if !h.LastSuccessAt.IsZero() {
+		info.LastSuccessAt = h.LastSuccessAt.UTC().Format(time.RFC3339)
+	}
+	return info
 }
 
 // projectSpend is the priced spend substrate every /api/project/{id}*

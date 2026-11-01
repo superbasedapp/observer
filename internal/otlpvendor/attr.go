@@ -24,21 +24,38 @@ func attrMap(kvs []*commonpb.KeyValue) attrs {
 }
 
 // view is the lookup scope of one record: its own attributes first, then
-// its resource's attributes as the fallback (session ids often live on the
-// resource).
+// (only for a rule that sets Fields.FromSpanEvents) the attributes of the
+// span's events, then its resource's attributes as the fallback (session ids
+// often live on the resource).
 type view struct {
 	rec, res attrs
+	// evt holds the span's event attributes, first value per key; nil for a
+	// log record or a rule that does not read events.
+	evt attrs
+}
+
+// scopes is the lookup order of one view.
+func (v view) scopes() []attrs {
+	if v.evt != nil {
+		return []attrs{v.rec, v.evt, v.res}
+	}
+	return []attrs{v.rec, v.res}
+}
+
+// withEvents returns v reading evt between the record and the resource.
+func (v view) withEvents(evt attrs) view {
+	v.evt = evt
+	return v
 }
 
 // lookup returns the first value present across the candidate keys, record
 // before resource for each key.
 func (v view) lookup(keys []string) (*commonpb.AnyValue, bool) {
 	for _, k := range keys {
-		if val, ok := v.rec[k]; ok && val != nil && val.GetValue() != nil {
-			return val, true
-		}
-		if val, ok := v.res[k]; ok && val != nil && val.GetValue() != nil {
-			return val, true
+		for _, m := range v.scopes() {
+			if val, ok := m[k]; ok && val != nil && val.GetValue() != nil {
+				return val, true
+			}
 		}
 	}
 	return nil, false
@@ -49,11 +66,10 @@ func (v view) lookup(keys []string) (*commonpb.AnyValue, bool) {
 // id never arrives as a number.
 func (v view) str(keys []string) string {
 	for _, k := range keys {
-		if s := v.rec[k].GetStringValue(); s != "" {
-			return s
-		}
-		if s := v.res[k].GetStringValue(); s != "" {
-			return s
+		for _, m := range v.scopes() {
+			if s := m[k].GetStringValue(); s != "" {
+				return s
+			}
 		}
 	}
 	return ""
@@ -65,7 +81,7 @@ func (v view) str(keys []string) string {
 // exporters use integers.
 func (v view) num(keys []string) (float64, bool) {
 	for _, k := range keys {
-		for _, m := range []attrs{v.rec, v.res} {
+		for _, m := range v.scopes() {
 			if f, ok := numVal(m[k]); ok {
 				return f, true
 			}

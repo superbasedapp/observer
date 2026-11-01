@@ -79,6 +79,11 @@ type handshakeResult struct {
 	Detail string
 	// ChildPID is the pid the parent spawned, for the log line.
 	ChildPID int
+	// Started reports that the new binary at exePath was started as the
+	// child. Started is the Windows warm-up: that run paid the first-run
+	// Defender scan of the swapped-in file before any hook could
+	// (update_handshake_warmup.go).
+	Started bool
 }
 
 // superviseNewBinary spawns exePath as a child and watches it.
@@ -140,7 +145,7 @@ func superviseNewBinary(ctx context.Context, exePath string, argv []string, stat
 		case msg := <-reported:
 			ok, detail := interpretHandshakeMessage(msg, nonce)
 			if ok {
-				return handshakeResult{Ready: true, Detail: detail, ChildPID: pid}, nil
+				return handshakeResult{Ready: true, Detail: detail, ChildPID: pid, Started: true}, nil
 			}
 			if strings.TrimSpace(msg) == "" {
 				// The channel closed with nothing written, which is what a
@@ -156,13 +161,13 @@ func superviseNewBinary(ctx context.Context, exePath string, argv []string, stat
 					if werr != nil {
 						detail = fmt.Sprintf("the new binary exited before completing its self-check (%v)", werr)
 					}
-					return handshakeResult{Detail: detail, ChildPID: pid}, fmt.Errorf("observer update: %s", detail)
+					return handshakeResult{Detail: detail, ChildPID: pid, Started: true}, fmt.Errorf("observer update: %s", detail)
 				case <-time.After(handshakeExitGrace):
 				}
 			}
 			killHandshakeChild(cmd)
 			<-exited
-			return handshakeResult{Detail: detail, ChildPID: pid}, fmt.Errorf("observer update: the new binary failed its self-check: %s", detail)
+			return handshakeResult{Detail: detail, ChildPID: pid, Started: true}, fmt.Errorf("observer update: the new binary failed its self-check: %s", detail)
 
 		case werr := <-exited:
 			// Failure shape (b): the child died. A child that reported ready
@@ -178,7 +183,7 @@ func superviseNewBinary(ctx context.Context, exePath string, argv []string, stat
 			select {
 			case msg := <-reported:
 				if ok, detail := interpretHandshakeMessage(msg, nonce); !ok && strings.TrimSpace(msg) != "" {
-					return handshakeResult{Detail: detail, ChildPID: pid}, fmt.Errorf("observer update: the new binary failed its self-check: %s", detail)
+					return handshakeResult{Detail: detail, ChildPID: pid, Started: true}, fmt.Errorf("observer update: the new binary failed its self-check: %s", detail)
 				}
 			case <-time.After(handshakeExitGrace):
 			}
@@ -186,19 +191,19 @@ func superviseNewBinary(ctx context.Context, exePath string, argv []string, stat
 			if werr != nil {
 				detail = fmt.Sprintf("the new binary exited before completing its self-check (%v)", werr)
 			}
-			return handshakeResult{Detail: detail, ChildPID: pid}, fmt.Errorf("observer update: %s", detail)
+			return handshakeResult{Detail: detail, ChildPID: pid, Started: true}, fmt.Errorf("observer update: %s", detail)
 
 		case <-timer.C:
 			// Failure shape (c): the child is alive but silent.
 			killHandshakeChild(cmd)
 			<-exited
 			detail := fmt.Sprintf("the new binary did not report within the %s handshake timeout", timeout)
-			return handshakeResult{Detail: detail, ChildPID: pid}, fmt.Errorf("observer update: %s", detail)
+			return handshakeResult{Detail: detail, ChildPID: pid, Started: true}, fmt.Errorf("observer update: %s", detail)
 
 		case <-ctx.Done():
 			killHandshakeChild(cmd)
 			<-exited
-			return handshakeResult{Detail: "the apply was cancelled during the handshake", ChildPID: pid}, ctx.Err()
+			return handshakeResult{Detail: "the apply was cancelled during the handshake", ChildPID: pid, Started: true}, ctx.Err()
 		}
 	}
 }

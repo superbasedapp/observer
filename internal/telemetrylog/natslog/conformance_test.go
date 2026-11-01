@@ -27,7 +27,6 @@ func TestNatslogConformance(t *testing.T) {
 			DuplicateWindow: cfg.DuplicateWindow,
 			MaxDeliver:      cfg.MaxDeliver,
 			AckWait:         cfg.AckWait,
-			MaxAge:          cfg.DuplicateWindow * 4,
 		}))
 		if err != nil {
 			t.Fatalf("natslog.Embedded: %v", err)

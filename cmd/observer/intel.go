@@ -50,6 +50,19 @@ type orgIntelSnapshot struct {
 	Status      orgintel.Status
 }
 
+// orgIntelNodeManaged reports whether the org decides org intel for this
+// node with no developer consent: a managed enrolment, or one whose org
+// switched it to enterprise (operator rulings P-204 and P-205; the org server
+// admits such a member as managed). A grant read error falls back to the
+// enrolment's own class, the answer before the switch was honoured.
+func orgIntelNodeManaged(ctx context.Context, st *store.Store, enr *store.Enrolment) bool {
+	managed, err := orgclient.NodeManagedFor(ctx, st, enr)
+	if err != nil {
+		return enr.IsManaged()
+	}
+	return managed
+}
+
 // loadOrgIntelSnapshot resolves the boundary inputs and derives the status
 // through the pure orgintel table.
 func loadOrgIntelSnapshot(ctx context.Context, st *store.Store, configOptIn bool, now time.Time) (orgIntelSnapshot, error) {
@@ -59,7 +72,11 @@ func loadOrgIntelSnapshot(ctx context.Context, st *store.Store, configOptIn bool
 		return snap, err
 	}
 	snap.Enrolment = enr
-	in := orgintel.Inputs{Enrolled: enr != nil, Managed: enr.IsManaged(), ConfigOptIn: configOptIn, Now: now}
+	managed, err := orgclient.NodeManagedFor(ctx, st, enr) // P-205: switched nodes are managed for org intel too
+	if err != nil {
+		return snap, err
+	}
+	in := orgintel.Inputs{Enrolled: enr != nil, Managed: managed, ConfigOptIn: configOptIn, Now: now}
 	if enr != nil {
 		if row, ok, rerr := st.GetOrgIntelRequirement(ctx); rerr != nil {
 			return snap, rerr
@@ -189,7 +206,7 @@ func acceptOrgIntel(ctx context.Context, b orgBundle, configPath, shownDigest, m
 	if enr == nil {
 		return orgIntelActionResult{}, errOrgIntelNotEnrolled
 	}
-	if enr.IsManaged() {
+	if orgIntelNodeManaged(ctx, b.store, enr) {
 		return orgIntelActionResult{}, errOrgIntelManaged
 	}
 	// Refresh the terms first (best effort: an unreachable server falls back
@@ -254,7 +271,7 @@ func withdrawOrgIntel(ctx context.Context, b orgBundle, configPath, mode string)
 	if enr == nil {
 		return orgIntelActionResult{}, errOrgIntelNotEnrolled
 	}
-	if enr.IsManaged() {
+	if orgIntelNodeManaged(ctx, b.store, enr) {
 		return orgIntelActionResult{}, errOrgIntelManaged
 	}
 	if _, err := b.store.RecordOrgIntelConsent(ctx, store.OrgIntelConsentEvent{
@@ -376,7 +393,7 @@ func runIntelAcceptCLI(cmd *cobra.Command, b orgBundle, configPath string, yes b
 	if enr == nil {
 		return nil, errOrgIntelNotEnrolled
 	}
-	if enr.IsManaged() {
+	if orgIntelNodeManaged(ctx, b.store, enr) {
 		return nil, errOrgIntelManaged
 	}
 	_, _ = b.client.RefreshIntelRequirement(ctx)
@@ -461,7 +478,7 @@ func offerOrgIntelAtEnrol(cmd *cobra.Command, b orgBundle, configPath string, ac
 	ctx := cmd.Context()
 	out := cmd.OutOrStdout()
 	enr, err := b.store.LoadEnrolment(ctx)
-	if err != nil || enr == nil || enr.IsManaged() {
+	if err != nil || enr == nil || orgIntelNodeManaged(ctx, b.store, enr) {
 		return
 	}
 	if _, err := b.client.RefreshIntelRequirement(ctx); err != nil {

@@ -152,6 +152,13 @@ const (
 	// accounting orgcontract.ReasonFamilyNotAccepted exists to give. It
 	// pairs with PRDeliveredUnaccepted only (see acceptPolicyResource).
 	PRRejectFamilyNotAccepted PolicyResourceRejectCode = "family_not_accepted"
+	// PRRejectPostureLoosened is the result-based posture check's refusal
+	// (roadmap F0-8, JSP-1 R9): the body verified, compiled and was accepted
+	// by family, but applying it would make this node weaker on at least one
+	// of the family's posture axes. Detail names the axis; the prior LKG is
+	// kept. Only a family that registers a posture evaluator can produce it,
+	// and the cmd layer binds the check (PolicyResourceOptions.CheckPosture).
+	PRRejectPostureLoosened PolicyResourceRejectCode = "posture_loosened"
 )
 
 // PolicyResourceResult summarises one policy-resource fetch+accept cycle.
@@ -230,6 +237,14 @@ type PolicyResourceOptions struct {
 	// uncorroborated — that is what keeps an upgrade from breaking a fleet
 	// that has not configured attributes yet.
 	NodeAttrs orgcontract.Selectors
+	// CheckPosture is the result-based posture gate (roadmap F0-8). It is
+	// called after every other gate passed and before the durable install,
+	// with the compiled family spec. A non-nil error refuses the body with
+	// PRRejectPostureLoosened naming the returned axis, and the node keeps
+	// its last known good. The cmd layer binds it from the family's
+	// registered evaluator (policyfam.LinkedFamily.CheckPosture), so a family
+	// with no evaluator always passes. Nil keeps today's behaviour exactly.
+	CheckPosture func(family string, spec any) (axis string, err error)
 }
 
 // Fetch-outcome classification sentinels (mirrors errPolicyTransport /
@@ -408,6 +423,17 @@ func (c *Client) receivePolicyResource(ctx context.Context, orgURL, family, bear
 	case http.StatusUnauthorized, http.StatusForbidden:
 		return orgcontract.SignedPolicyResource{}, PolicyResourceResult{}, false, nil, "",
 			fmt.Errorf("orgclient.FetchAndAcceptPolicyResource: %w", ErrAuthFailed)
+	case http.StatusBadRequest:
+		// An org server older than a family (security.scanning and
+		// terminals.isolation, roadmap F0-9) answers 400 unknown_family for
+		// its name. That is the server saying it publishes nothing for the
+		// family: read it as PRNone (keep, never clear) instead of an error
+		// logged on every poll.
+		if unknownFamilyReply(resp) {
+			return orgcontract.SignedPolicyResource{}, PolicyResourceResult{Status: PRNone, Detail: "the org server does not know this family"}, true, nil, "", nil
+		}
+		return orgcontract.SignedPolicyResource{}, PolicyResourceResult{}, false, nil, "",
+			fmt.Errorf("orgclient.FetchAndAcceptPolicyResource: server returned %d: %w", resp.StatusCode, errPolicyResourceIndeterminate)
 	default:
 		if resp.StatusCode >= 500 && resp.StatusCode <= 599 {
 			return orgcontract.SignedPolicyResource{}, PolicyResourceResult{}, false, nil, "",
@@ -597,12 +623,44 @@ func (c *Client) acceptPolicyResourceGates(
 			Detail:     "family verified but not in [org_client.policy].accept_families - not installed",
 		}, true, nil
 	}
+	if rej, refused := checkPolicyResourcePosture(opts, family, spec, resource.Version); refused {
+		return nil, false, "", rej, true, nil
+	}
 	enforceAllowed = true
 	if policyfam.SpecRequestsEnforceMode(family, spec) && !stringInSet(family, opts.PreauthorizeEnforce) {
 		enforceAllowed = false
 		inertReason = "not_preauthorized"
 	}
 	return spec, enforceAllowed, inertReason, PolicyResourceResult{}, false, nil
+}
+
+// unknownFamilyReply reports whether a 400 carries the org server's
+// {"error":"unknown_family"} body.
+func unknownFamilyReply(resp *http.Response) bool {
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&body); err != nil {
+		return false
+	}
+	return body.Error == "unknown_family"
+}
+
+// checkPolicyResourcePosture is the F0-8 result gate: the bound CheckPosture
+// refusing the compiled spec rejects the body posture_loosened, naming the
+// axis. A nil CheckPosture always passes.
+func checkPolicyResourcePosture(opts PolicyResourceOptions, family string, spec any, version int64) (PolicyResourceResult, bool) {
+	if opts.CheckPosture == nil {
+		return PolicyResourceResult{}, false
+	}
+	axis, err := opts.CheckPosture(family, spec)
+	if err == nil {
+		return PolicyResourceResult{}, false
+	}
+	return PolicyResourceResult{
+		Status: PRRejected, Version: version, RejectCode: PRRejectPostureLoosened,
+		Detail: fmt.Sprintf("the body would loosen this node's posture on axis %q: %v", axis, err),
+	}, true
 }
 
 // acceptPolicyResource runs the four-gate accept (signature, pin, closed

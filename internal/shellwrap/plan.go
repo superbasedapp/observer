@@ -31,6 +31,10 @@ type Candidate struct {
 	// Routes / TrafficProven echo integration.WrappedCommand.
 	Routes        bool `json:"routes"`
 	TrafficProven bool `json:"traffic_proven"`
+	// RouteFlag echoes integration.WrappedCommand.RouteFlag: the opt-in
+	// launcher argument (e.g. "--proxy") that would route a wrapped verb
+	// whose bare form does not ("" otherwise, and on a bridge shim).
+	RouteFlag string `json:"route_flag,omitempty"`
 	// Honesty + HonestyText: what wrapping buys (see HonestyFor).
 	Honesty     Honesty `json:"honesty"`
 	HonestyText string  `json:"honesty_text"`
@@ -122,6 +126,9 @@ func CandidateOn(id string, h Host) (Candidate, bool) {
 		// through such a shim.
 		env = BridgeEnvFor(id)
 		w.Routes, w.TrafficProven, w.RouteConditional = len(env) > 0, false, false
+		// The launcher flag is an argument of the WSL observer's launcher,
+		// which a host-side shim does not run.
+		w.RouteFlag = ""
 	}
 	hon, text := HonestyFor(w)
 	c := Candidate{
@@ -132,6 +139,7 @@ func CandidateOn(id string, h Host) (Candidate, bool) {
 		Commands:      cmds,
 		Routes:        w.Routes,
 		TrafficProven: w.TrafficProven,
+		RouteFlag:     w.RouteFlag,
 		Honesty:       hon,
 		HonestyText:   text,
 		Side:          side,

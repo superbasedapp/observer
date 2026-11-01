@@ -37,6 +37,15 @@ type VocabPinnableKey struct {
 	Min   int64  `json:"min,omitempty"`
 	Max   int64  `json:"max,omitempty"`
 	Label string `json:"label"`
+	// Help is the row's optional plain-language note (PinnableKey.Help).
+	Help string `json:"help,omitempty"`
+}
+
+// VocabNotPinnable is the wire shape of one NotPinnableYet row.
+type VocabNotPinnable struct {
+	Key    string `json:"key"`
+	Label  string `json:"label"`
+	Reason string `json:"reason"`
 }
 
 // VocabShareKey is the wire shape of one ShareKeys row. Direction is always
@@ -87,9 +96,13 @@ type Vocab struct {
 	NavTabs          []VocabTab         `json:"nav_tabs"`
 	SettingsSections []VocabSection     `json:"settings_sections"`
 	PinnableKeys     []VocabPinnableKey `json:"pinnable_keys"`
-	ShareKeys        []VocabShareKey    `json:"share_keys"`
-	Features         []VocabFeature     `json:"features"`
-	AuthorityTokens  []VocabAuthority   `json:"authority_tokens"`
+	// NotPinnableYet lists keys the pin panel shows as "not pinnable yet",
+	// each with its reason (NotPinnableYet in pinnable.go). Omitted when
+	// empty, so an older console that does not read it sees nothing new.
+	NotPinnableYet  []VocabNotPinnable `json:"not_pinnable_yet,omitempty"`
+	ShareKeys       []VocabShareKey    `json:"share_keys"`
+	Features        []VocabFeature     `json:"features"`
+	AuthorityTokens []VocabAuthority   `json:"authority_tokens"`
 }
 
 // The authority-token literals are duplicated here rather than imported from
@@ -128,8 +141,11 @@ func Vocabulary() Vocab {
 	for _, k := range PinnableKeys {
 		v.PinnableKeys = append(v.PinnableKeys, VocabPinnableKey{
 			Key: k.Key, Kind: k.Kind, Enum: k.Enum,
-			Direction: string(k.Direction), Safe: k.Safe, Min: k.Min, Max: k.Max, Label: k.Label,
+			Direction: string(k.Direction), Safe: k.Safe, Min: k.Min, Max: k.Max, Label: k.Label, Help: k.Help,
 		})
+	}
+	for _, k := range NotPinnableYet {
+		v.NotPinnableYet = append(v.NotPinnableYet, VocabNotPinnable{Key: k.Key, Label: k.Label, Reason: k.Reason})
 	}
 	for _, k := range ShareKeys {
 		v.ShareKeys = append(v.ShareKeys, VocabShareKey{

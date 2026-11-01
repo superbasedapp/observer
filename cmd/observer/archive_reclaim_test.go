@@ -71,7 +71,7 @@ func reclaimTestDB(t *testing.T, dir string) (string, *db.Footprint) {
 func writeReclaimConfig(t *testing.T, dir, dbPath string) string {
 	t.Helper()
 	cfgPath := filepath.Join(dir, "config.toml")
-	body := "[observer]\ndb_path = \"" + dbPath + "\"\n\n[proxy]\nport = 1\n"
+	body := "[observer]\ndb_path = \"" + filepath.ToSlash(dbPath) + "\"\n\n[proxy]\nport = 1\n"
 	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -260,7 +260,7 @@ func TestArchiveReclaimRefusesWhileDaemonLive(t *testing.T) {
 	port := ln.Addr().(*net.TCPAddr).Port
 
 	cfgPath := filepath.Join(dir, "config.toml")
-	body := "[observer]\ndb_path = \"" + dbPath + "\"\n\n[proxy]\nport = " +
+	body := "[observer]\ndb_path = \"" + filepath.ToSlash(dbPath) + "\"\n\n[proxy]\nport = " +
 		strconv.Itoa(port) + "\n"
 	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)

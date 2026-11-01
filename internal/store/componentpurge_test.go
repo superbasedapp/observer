@@ -335,6 +335,13 @@ func TestPurgeRefusesComponentsWithoutAReviewedPlan(t *testing.T) {
 	}
 }
 
+// purgeSessionListColumns are the node schema's JSON lists of session ids
+// whose column name does not say session_id, so the schema scan cannot find
+// them: each needs its remove_from_list decision.
+var purgeSessionListColumns = map[string]bool{
+	"commit_landings.contributors_json": true,
+}
+
 // purgeSchemaSessionColumns lists every (table, column) of the migrated
 // node schema whose column name contains session_id or thread_id.
 func purgeSchemaSessionColumns(t *testing.T, database *sql.DB) map[string]bool {
@@ -369,7 +376,7 @@ func TestPurgeSessionDecisionsCoverTheSchema(t *testing.T) {
 	seen := map[string]int{}
 	valid := map[purgeDecisionKind]bool{
 		purgeKeepSession: true, purgeDeleteWithSession: true, purgeNullLink: true,
-		purgeKeepDangling: true, purgeOwnerReconciles: true,
+		purgeKeepDangling: true, purgeOwnerReconciles: true, purgeRemoveFromList: true,
 	}
 	hasColumn := func(tbl, col string) bool {
 		var n int
@@ -381,7 +388,12 @@ func TestPurgeSessionDecisionsCoverTheSchema(t *testing.T) {
 	for _, d := range purgeSessionDecisions {
 		key := d.table + "." + d.column
 		seen[key]++
-		if !schema[key] {
+		switch {
+		case d.kind == purgeRemoveFromList:
+			if !hasColumn(d.table, d.column) || !purgeSessionListColumns[key] {
+				t.Errorf("remove_from_list %s: no such column, or not in purgeSessionListColumns", key)
+			}
+		case !schema[key]:
 			t.Errorf("decision for %s names no session-keyed column of the schema", key)
 		}
 		if !valid[d.kind] {
@@ -406,6 +418,11 @@ func TestPurgeSessionDecisionsCoverTheSchema(t *testing.T) {
 		}
 	}
 	var missing []string
+	for key := range purgeSessionListColumns {
+		if seen[key] == 0 {
+			missing = append(missing, key)
+		}
+	}
 	for key := range schema {
 		if seen[key] == 0 {
 			missing = append(missing, key)
@@ -508,6 +525,7 @@ func TestAdapterPurgeAppliesSessionDecisions(t *testing.T) {
 		"arena_candidates":          {"run_id": "ar1"},
 		"benchmark_session_members": {"run_id": "br1", "attempt_id": attempt},
 		"org_intel_outbox":          {"trigger_kind": "background", "state": "pending"},
+		"org_message_outbox":        {"kind": "post"},
 		"mcp_relay_record": {
 			"record_kind": "decision", "capture_level": "L1", "corr_confidence": "exact",
 			"call_id": "call-1", "event_kind": "mcp_call", "decision": "allow",
@@ -691,5 +709,55 @@ func TestListScheduledComponentPurgePlans(t *testing.T) {
 	}
 	if len(got) != 2 || got[0].ID != a.ID || got[1].ID != b.ID || got[0].State != PurgeGracePending || got[1].State != PurgeCancelled || got[0].PolicyVersion != "v1" {
 		t.Fatalf("listed = %+v", got)
+	}
+}
+
+// TestAdapterPurgeRemovesSessionFromCommitContributors pins the
+// remove_from_list decision for commit_landings.contributors_json: a purged
+// session's opaque id leaves every contributor list that holds it, the
+// landing row itself stays, and the ids of sessions the purge keeps (another
+// tool's, or one another source references) stay in the list in order.
+func TestAdapterPurgeRemovesSessionFromCommitContributors(t *testing.T) {
+	t.Parallel()
+	s, database := newTestStore(t)
+	ctx := context.Background()
+	seedMixedAdapters(t, s)
+	seq := 0
+	lists := []struct{ before, after string }{
+		{`["z1","c1"]`, `["c1"]`},
+		{`["mixed","z1","z2"]`, `["mixed"]`},
+		{`["z2"]`, `[]`},
+		{`["c1"]`, `["c1"]`},
+		{`[]`, `[]`},
+	}
+	ids := make([]int64, len(lists))
+	for i, l := range lists {
+		cid := purgeSeedRow(t, database, &seq, "project_commits", map[string]any{"project_id": 1, "sha": fmt.Sprintf("%040d", i)})
+		purgeSeedRow(t, database, &seq, "commit_landings", map[string]any{
+			"commit_id": cid, "project_id": 1, "status": "landed", "evaluated_at": "2026-10-07T00:00:00Z", "contributors_json": l.before,
+		})
+		ids[i] = cid
+	}
+	plan, err := s.CreateComponentPurgePlan(ctx, ComponentPurgeSpec{Kind: PurgeInteractive, Component: "adapter.zed", CatalogVersion: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.ExecuteComponentPurgePlan(ctx, plan.ID, nil, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, l := range lists {
+		var got string
+		if err := database.QueryRow(`SELECT contributors_json FROM commit_landings WHERE commit_id = ?`, ids[i]).Scan(&got); err != nil {
+			t.Fatalf("landing %d: %v", i, err)
+		}
+		if got != l.after {
+			t.Errorf("contributors %s after the zed purge = %s, want %s", l.before, got, l.after)
+		}
+	}
+	// z1 rewrites lists 0 and 1, z2 rewrites lists 1 and 2: one count per
+	// list per purged session.
+	if res.Nulled["commit_landings"] != 4 {
+		t.Errorf("rewritten contributor lists = %d, want 4", res.Nulled["commit_landings"])
 	}
 }

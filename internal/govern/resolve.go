@@ -251,7 +251,7 @@ func directiveClasses() []directiveClass {
 			// fleet. The individual plane is unchanged: there the token is
 			// still the only key.
 			authorized: func(in resolveInput) bool {
-				return in.authority[AuthorityDashboardVisibility] || ManagedConsent(in.grant.ConsentMode)
+				return in.authority[AuthorityDashboardVisibility] || GrantIsManaged(in.grant)
 			},
 			apply: func(e *Effective, s nodegov.PolicySpec) {
 				e.HiddenSections = append(e.HiddenSections, s.HiddenSections...)
@@ -389,14 +389,15 @@ func (e *Effective) normalize(grant *Grant) {
 		known, unknown := splitAuthority(grant.Authority)
 		e.Authority = known
 		e.UnknownAuthority = unknown
-		e.Managed = ManagedConsent(grant.ConsentMode)
+		e.Managed = GrantIsManaged(grant)
 	}
 	e.Hash = e.contentHash()
 }
 
 // HonoredAuthority returns the subset of a grant's authority tokens the node
 // will actually act on. It strips the managed-only tokens (ManagedAuthority)
-// unless the grant was recorded under managed-class consent (ManagedConsent).
+// unless the grant was recorded under managed-class consent on an enrolment
+// whose tenancy allows it (GrantIsManaged, OSH-R-013).
 // This is THE single gate that keeps the individual plane inert against
 // enforce.*/extract.managed even if a grant somehow carries them (an older or
 // mis-configured server): every directive class keyed on a managed authority
@@ -408,7 +409,7 @@ func HonoredAuthority(grant *Grant) []string {
 	if grant == nil {
 		return nil
 	}
-	managed := ManagedConsent(grant.ConsentMode)
+	managed := GrantIsManaged(grant)
 	out := make([]string, 0, len(grant.Authority))
 	for _, a := range grant.Authority {
 		if ManagedAuthority(a) && !managed {

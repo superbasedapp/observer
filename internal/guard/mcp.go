@@ -97,7 +97,11 @@ func (g *Guard) mcpApproved(server string) bool {
 }
 
 // mcpRegistryPaths returns the normalized locate-table paths for the
-// rescan trigger, computed once at construction.
+// rescan trigger, computed once at construction. A location with no file (a
+// relocation variable holding a relative value, locate.Location.Unresolved,
+// FU-130) has nothing to watch and is left out by that reason, never as the
+// "." an empty path would normalize to; the guard's MCP inventory
+// (mcpsec.Inventory) reports the variable.
 func mcpRegistryPaths(home string) []string {
 	if home == "" {
 		return nil
@@ -105,6 +109,9 @@ func mcpRegistryPaths(home string) []string {
 	locs := locate.Locations(home)
 	out := make([]string, 0, len(locs))
 	for _, loc := range locs {
+		if loc.Unresolved != "" || loc.Path == "" {
+			continue
+		}
 		out = append(out, normalizeMCPPath(loc.Path))
 	}
 	return out

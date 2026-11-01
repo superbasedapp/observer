@@ -182,7 +182,7 @@ func absProject(p string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if fi, err := os.Stat(abs); err != nil || !fi.IsDir() {
+	if fi, err := os.Stat(abs); err != nil || !fi.IsDir() { //nolint:gosec // G703: false positive; the operator's own --project flag on their own machine, only stat'd to check it is a directory
 		return "", fmt.Errorf("--project %s is not a directory", p)
 	}
 	return abs, nil
@@ -231,7 +231,7 @@ func newAgentConfigInspectCmd(configPath *string) *cobra.Command {
 			if asJSON {
 				return printJSON(out, v)
 			}
-			printToolView(out, v, all)
+			printToolView(out, v, env.svc.RelocationNotes(tool, proj), all)
 			return nil
 		},
 	}
@@ -242,7 +242,9 @@ func newAgentConfigInspectCmd(configPath *string) *cobra.Command {
 	return cmd
 }
 
-func printToolView(out io.Writer, v agentconfig.ToolView, all bool) {
+// printToolView prints a tool view; relocated maps a file id to the note
+// saying which relocation variable moved it (Service.RelocationNotes).
+func printToolView(out io.Writer, v agentconfig.ToolView, relocated map[string]string, all bool) {
 	if v.Access.ReadOnly {
 		fmt.Fprintf(out, "read-only: %s\n\n", v.Access.Reason)
 	}
@@ -264,6 +266,11 @@ func printToolView(out io.Writer, v agentconfig.ToolView, all bool) {
 		}
 		if !f.Editable && f.NotEditable != "" && f.State != agentconfig.FileNeverRead {
 			notes = append(notes, "read-only")
+		}
+		// Which relocation variable moved the file (so the PATH column is the
+		// file a save edits), or why a set one leaves it without a path.
+		if n := relocated[f.ID]; n != "" {
+			notes = append(notes, n)
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", f.ID, f.Scope, f.State, f.Path, strings.Join(notes, ", "))
 	}

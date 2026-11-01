@@ -28,7 +28,12 @@ import (
 //
 // The rewrite form is `<binary> run -- <original>`. The `--` is intentional
 // so that flags embedded in the wrapped command (e.g. `git --no-pager log`)
-// are never consumed by `observer run` itself.
+// are never consumed by `observer run` itself. The binary is one POSIX shell
+// word (shellWord): a path with a space, a backslash or another shell
+// character is single-quoted, so `/home/a b/observer` is not split (FU-163).
+// The caller passes a path the target shell can exec; a native Windows hook
+// does not rewrite at all (decidePreToolRewrite, reason "windows-shell", or
+// "wsl-interop" when a WSL shell runs it through interop).
 func RewriteBash(binary, original string, excludeCommands []string) (string, bool) {
 	trimmed := strings.TrimSpace(original)
 	if trimmed == "" || binary == "" {
@@ -53,7 +58,33 @@ func RewriteBash(binary, original string, excludeCommands []string) (string, boo
 			return original, false
 		}
 	}
-	return binary + " run -- " + trimmed, true
+	return shellWord(binary) + " run -- " + trimmed, true
+}
+
+// shellWord returns s as a single POSIX shell word. A string made only of
+// characters every POSIX shell reads literally in a command word is returned
+// as it is (so the usual `/usr/local/bin/observer` and
+// `C:/Users/.../observer.exe` forms stay unchanged); anything else is
+// single-quoted, with an embedded single quote written as '\”. `=` and `~`
+// are quoted too: an unquoted `NAME=x` first word is an assignment and a
+// leading `~` expands.
+func shellWord(s string) string {
+	literal := s != ""
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case strings.ContainsRune("/._-:+,@%", r):
+		default:
+			literal = false
+		}
+		if !literal {
+			break
+		}
+	}
+	if literal {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // shellBuiltins is the set of shell builtins that must never be wrapped in

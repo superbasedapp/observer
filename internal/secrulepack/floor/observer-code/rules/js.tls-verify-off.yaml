@@ -1,0 +1,29 @@
+rules:
+  - id: js.tls-verify-off
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: TLS certificate verification is turned off unconditionally, so anyone on the network path can read or change the traffic; keep verification on and trust a specific CA if needed.
+    metadata:
+      category: code_vuln
+      cwe: CWE-295
+    patterns:
+      - pattern-either:
+          - pattern: '{..., rejectUnauthorized: false, ...}'
+          - pattern: process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"
+          - pattern: process.env["NODE_TLS_REJECT_UNAUTHORIZED"] = "0"
+          - pattern: process.env.NODE_TLS_REJECT_UNAUTHORIZED = 0
+          - pattern: '{..., strictSSL: false, ...}'
+          - pattern: '{..., checkServerIdentity: () => undefined, ...}'
+      - pattern-not-inside: describe(...)
+      - pattern-not-inside: it(...)
+      - pattern-not-inside: test(...)
+      - pattern-not-inside: $X.test(...)
+      - pattern-not-inside: beforeEach(...)
+      - pattern-not-inside: beforeAll(...)
+      - pattern-not-inside: afterEach(...)
+      - pattern-not-inside: afterAll(...)
+      - pattern-not-inside: before(...)
+      - pattern-not-inside: after(...)
+      - pattern-not-inside: |
+          if ($COND) { ... }
+      - pattern-not-inside: "$COND ? $A : $B"

@@ -1,0 +1,15 @@
+rules:
+  - id: js.jwt-verification-off
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: A JWT is accepted without verifying its signature (the none algorithm, an empty key, or decode in place of verify); verify with a key and a fixed algorithm list.
+    metadata:
+      category: code_vuln
+      cwe: CWE-347
+    pattern-either:
+      - pattern: '$JWT.verify($T, $K, {..., algorithms: [..., "none", ...], ...}, ...)'
+      - pattern: $JWT.verify($T, "", ...)
+      - pattern: $JWT.verify($T, null, ...)
+      - pattern: $JWT.verify($T, undefined, ...)
+      - pattern: '$JWT.decode($T, {..., verify: false, ...})'
+      - pattern: '$JWT.decode($T, $K, true, ...)'

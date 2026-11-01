@@ -1,0 +1,2 @@
+{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"actionlint","version":"1.7.4","rules":[{"id":"expression","shortDescription":{"text":"expression"}}]}},
+ "results":[{"ruleId":"expression","message":{"text":"\"github.event.issue.title\" is potentially untrusted"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":".github/workflows/ci.yml"},"region":{"startLine":20}}}]}]}]}

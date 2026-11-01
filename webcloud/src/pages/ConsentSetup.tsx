@@ -7,6 +7,7 @@ import { Toggle } from "@shared/primitives/Toggle";
 import { Pill } from "@shared/primitives/Pill";
 import { ErrorState } from "@shared/primitives/ErrorState";
 import { InlineLoading } from "@shared/primitives/Spinner";
+import { ObsLanding } from "@shared/primitives/ObsFlight";
 import { Lock } from "lucide-react";
 import { DisclosureMark, SensitivityMeter } from "../components/Disclosure";
 import { CONSENT_PURPOSE, orderPurposes } from "../lib/vocab";
@@ -94,10 +95,18 @@ export function ConsentSetup() {
       width="wide"
       step="portal"
       intro={
-        <p>
-          Choose what this service may do with your data for cloud features.
-          You can change these any time from Privacy &amp; devices.
-        </p>
+        <>
+          {/* The sign-in finish line (D-665..D-669): this screen shows right
+              after the first sign-in, so Obs lands here, once. */}
+          <div className="mb-2 flex items-center gap-2">
+            <ObsLanding size={32} />
+            <span className="font-medium text-fg-1">You are signed in.</span>
+          </div>
+          <p>
+            Choose what this service may do with your data for cloud features.
+            You can change these any time from Privacy &amp; devices.
+          </p>
+        </>
       }
     >
       {error && (

@@ -40,6 +40,9 @@ type Event struct {
 	Trust Trust
 	// At is the event time (UTC); the producer sets it.
 	At time.Time
+	// Count is a lifecycle frame's count, when it carries one (the sandbox
+	// gateway's refusals held off the tool's screen); 0 otherwise.
+	Count int
 }
 
 // Options configures a Feed. Both bounds default when non-positive.

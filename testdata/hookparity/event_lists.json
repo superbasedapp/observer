@@ -60,6 +60,10 @@
     "PreInvocation",
     "PreToolUse"
   ],
+  "registered:autohand": [
+    "pre-prompt",
+    "pre-tool"
+  ],
   "registered:claude-code": [
     "ConfigChange",
     "CwdChanged",
@@ -113,7 +117,17 @@
     "WorktreeRemove"
   ],
   "registered:cline-cli": [
-    "PreToolUse"
+    "PreToolUse",
+    "beforeModel",
+    "beforeTool"
+  ],
+  "registered:codebuddy": [
+    "PreToolUse",
+    "UserPromptSubmit"
+  ],
+  "registered:codebuddy-windows": [
+    "PreToolUse",
+    "UserPromptSubmit"
   ],
   "registered:codex": [
     "PermissionRequest",
@@ -146,7 +160,12 @@
     "transformInput"
   ],
   "registered:copilot-cli": [
-    "preToolUse"
+    "preToolUse",
+    "userPromptSubmitted"
+  ],
+  "registered:copilot-cli-windows": [
+    "preToolUse",
+    "userPromptSubmitted"
   ],
   "registered:crush": [
     "PreToolUse"
@@ -191,6 +210,14 @@
     "subagentStart",
     "subagentStop"
   ],
+  "registered:deepagents-code": [
+    "PreToolUse",
+    "UserPromptSubmit"
+  ],
+  "registered:deepagents-code-windows": [
+    "PreToolUse",
+    "UserPromptSubmit"
+  ],
   "registered:devin": [
     "PreToolUse",
     "pre_mcp_tool_use",
@@ -198,6 +225,22 @@
     "pre_run_command",
     "pre_user_prompt",
     "pre_write_code"
+  ],
+  "registered:dimcode": [
+    "PreToolUse",
+    "UserPromptSubmit"
+  ],
+  "registered:dimcode-windows": [
+    "PreToolUse",
+    "UserPromptSubmit"
+  ],
+  "registered:dirac": [
+    "PreToolUse",
+    "UserPromptSubmit"
+  ],
+  "registered:dirac-windows": [
+    "PreToolUse",
+    "UserPromptSubmit"
   ],
   "registered:droid": [
     "PreToolUse",
@@ -221,6 +264,14 @@
   "registered:grok": [
     "PreToolUse"
   ],
+  "registered:ibm-bob": [
+    "PreToolUse",
+    "UserPromptSubmit"
+  ],
+  "registered:ibm-bob-windows": [
+    "PreToolUse",
+    "UserPromptSubmit"
+  ],
   "registered:junie": [
     "PreToolUse"
   ],
@@ -228,9 +279,16 @@
     "chat.message",
     "tool.execute.before"
   ],
+  "registered:kimchi": [
+    "tool_call"
+  ],
   "registered:kimi-code": [
     "PreToolUse",
     "UserPromptSubmit"
+  ],
+  "registered:kiro-cli": [
+    "preToolUse",
+    "userPromptSubmit"
   ],
   "registered:mistral-code": [
     "pre_tool"
@@ -247,6 +305,7 @@
     "tool.execute.before"
   ],
   "registered:pi": [
+    "input",
     "tool_call"
   ],
   "registered:poolside": [
@@ -283,6 +342,14 @@
   "registered:qwen-code-windows": [
     "PreToolUse",
     "SessionStart",
+    "UserPromptSubmit"
+  ],
+  "registered:vtcode": [
+    "PreToolUse",
+    "UserPromptSubmit"
+  ],
+  "registered:vtcode-windows": [
+    "PreToolUse",
     "UserPromptSubmit"
   ],
   "registered:zcode": [

@@ -1,0 +1,8 @@
+# Every reviewer id that ever labelled this corpus, with the lane that ran it. Append, never remove:
+# `seccorpus record` refuses each of them (and every run agent of batches.tsv) as the spot-checker,
+# which is an independent AI reviewer or the operator (ruling P-064). id<TAB>lane
+agent:sec-g3-reviewer-a	SEC-G3
+agent:sec-g3-reviewer-b	SEC-G3
+agent:sec-g4-reviewer-a	SEC-G4
+agent:sec-g4-reviewer-b	SEC-G4
+agent:sec-g5-reviewer-a	SEC-G5

@@ -34,15 +34,13 @@ import (
 //     "open-interpreter" for THIS instance and stays unmapped on
 //     codex proper.
 //
-// INTERPRETER_HOME is UNVERIFIED as an actual environment-variable
-// read (docs/plans/openinterpreter-adapter-plan-2026-07-29.md §12.1):
-// `strings` on the interpreter binary shows the token exists
-// alongside ".openinterpreter", but no live smoke test has confirmed
-// the fork reads it from the environment the way CODEX_HOME is read
-// by codex. It's wired here on the CODEX_HOME precedent (fail-open —
-// an operator who sets it and is wrong just gets the default
-// ~/.openinterpreter root back, same as an unset env var); flag this
-// comment if a future session confirms or refutes it.
+// INTERPRETER_HOME is a vendor-source-confirmed environment read:
+// codex-rs/utils/home-dir/src/lib.rs selects INTERPRETER_HOME /
+// .openinterpreter for this product (location matrix Part 3 section 3,
+// surface-gap OI-1), which settles the question the adapter plan
+// (docs/plans/openinterpreter-adapter-plan-2026-07-29.md §12.1) left open.
+// The hook writer follows the same variable through the
+// open-interpreter/user-config artifact. No live smoke test has run it yet.
 func NewOpenInterpreter() *Adapter {
 	// readsServiceTier stays false: the variant never opens its root's
 	// config.toml (plaintext provider keys in the desktop codex-home —
@@ -108,6 +106,15 @@ const interpreterDesktopAppDir = "interpreter"
 // therefore treated as a fixed convention, not a value to read out of
 // config. (config.json is also never read by this adapter: it carries
 // `userName`, PII we have no reason to persist.)
+//
+// Desktop 0.0.56 (observed 2026-10-26, FU-94) MIGRATES this runtime home
+// into ~/.openinterpreter, leaving the marker
+// .workstation-runtime-home-migrated-v1 there, and writes new rollouts
+// (still originator codex_ui) to ~/.openinterpreter/sessions. That is the
+// CLI root WatchPaths already lists for every home, so a migrated install
+// needs no extra root, and the codex_ui overlay stamps it desktop because
+// the vocabulary belongs to the instance, not to the root. This rung stays
+// for unmigrated installs. The marker is never read.
 var desktopStoreSubpath = []string{"codex-home", "sessions"}
 
 // desktopStoreRoots returns the desktop app's embedded codex-home

@@ -1,0 +1,68 @@
+rules:
+  - id: csharp.ssrf-request-url
+    languages: [csharp]
+    severity: ERROR
+    message: A URL taken from a web request is fetched by the server, so a caller can make it reach internal hosts; check the host against an allow-list first.
+    metadata:
+      category: code_vuln
+      cwe: CWE-918
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: $REQ.Query[...]
+              - pattern: $REQ.Form[...]
+              - pattern: $REQ.Headers[...]
+              - pattern: $REQ.Cookies[...]
+              - pattern: $REQ.QueryString
+              - pattern: $REQ.RouteValues[...]
+              - pattern: $REQ.Params[...]
+              - pattern: $REQ.QueryString[...]
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(Request|request|req|HttpContext\.Request|context\.Request|ctx\.Request)$
+      # Pack 1.3.1: a bound action parameter that is text; a Guid, a number
+      # or a DTO is an id or a command, not a URL.
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $RT $M(..., [$ANN] $T $X, ...) { ... }
+              - pattern-inside: |
+                  $RT $M(..., [$ANN(...)] $T $X, ...) { ... }
+          - metavariable-regex:
+              metavariable: $ANN
+              regex: ^(FromQuery|FromRoute|FromBody|FromForm|FromHeader)$
+          - metavariable-regex:
+              metavariable: $T
+              regex: ^(string|string\?|String|Uri|Uri\?)$
+          - pattern: $X
+    pattern-sanitizers:
+      - pattern: Uri.EscapeDataString(...)
+      - pattern: WebUtility.UrlEncode(...)
+      - pattern: HttpUtility.UrlEncode(...)
+      - patterns:
+          - pattern: '"$LIT" + $X'
+          - metavariable-regex:
+              metavariable: $LIT
+              regex: ^https?://[^/?#]+[/?#]
+    pattern-sinks:
+      # Pack 1.3.1: the receiver is an HTTP client, by its declared type or
+      # its conventional name; a command's or a service's GetAsync and
+      # DeleteAsync fetch nothing.
+      - patterns:
+          - pattern-either:
+              - patterns:
+                  - pattern-either:
+                      - pattern: (HttpClient $C).$F($U, ...)
+                      - patterns:
+                          - pattern: $C.$F($U, ...)
+                          - metavariable-regex:
+                              metavariable: $C
+                              regex: ^(this\.)?_?([hH]ttp[cC]lient|[cC]lient|[hH]ttp|httpClient\w*|\w*HttpClient)$
+                  - metavariable-regex:
+                      metavariable: $F
+                      regex: ^(GetAsync|GetStringAsync|GetByteArrayAsync|GetStreamAsync|PostAsync|PutAsync|PatchAsync|DeleteAsync|SendAsync)$
+              - pattern: new HttpRequestMessage($M, $U)
+              - pattern: WebRequest.Create($U)
+              - pattern: (WebClient $WC).$D($U, ...)
+          - focus-metavariable: $U

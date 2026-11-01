@@ -36,6 +36,14 @@ const SumsFileName = "SHA256SUMS"
 // an update replaces the daemon binary and nothing else.
 const CompanionBridge = "antigravity-bridge.exe"
 
+// CompanionMXC are the Windows sandbox driver's bundled files
+// (terminals.sandbox.mxc; scripts/mxc-files.sh stages them as mxc/ in the
+// win32 archives of the distros that compile the driver). Undeclared, they
+// made every such archive un-appliable; declared, the update path installs
+// them beside the binary after checking each against mxc-manifest.json
+// (cmd/observer/update_bundle.go, lane SBX-P3B).
+var CompanionMXC = []string{"mxc/mxc_ffi.dll", "mxc/wxc-exec.exe", "mxc/mxc-manifest.json"}
+
 // BuildOptions is one release-manifest build.
 type BuildOptions struct {
 	// Dir holds the release assets (archives, .sig files, SHA256SUMS).
@@ -264,6 +272,9 @@ func buildArtifact(dir, name, osTok, archTok, archiveType string, sums map[strin
 // member names; this refusal is what keeps it that way.
 func deriveCompanions(archive, member, alias string, entries []update.Entry) ([]string, error) {
 	allowed := map[string]bool{alias: true, CompanionBridge: true}
+	for _, c := range CompanionMXC {
+		allowed[c] = true
+	}
 	seen := map[string]bool{}
 	var out []string
 	for _, e := range entries {

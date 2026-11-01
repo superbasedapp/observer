@@ -9,6 +9,7 @@
 import {
   AGENT_CONFIG_TABS,
   CACHE_TABS,
+  CODE_SECURITY_TABS,
   COMPRESSION_TABS,
   COST_TABS,
   POLICIES_TABS,
@@ -16,6 +17,7 @@ import {
   ROUTING_TABS,
   SECURITY_TABS,
   TERMINALS_TABS,
+  TOOLS_TABS,
   type PageTabs,
 } from "./nodePageTabs.ts";
 
@@ -30,7 +32,9 @@ export type NodeTabRoute = {
 /** NODE_TAB_ROUTES: every tabbed node page, in sidebar order. */
 export const NODE_TAB_ROUTES: readonly NodeTabRoute[] = [
   { navId: "security", path: "/security", tabs: SECURITY_TABS },
+  { navId: "code-security", path: "/code-security", tabs: CODE_SECURITY_TABS },
   { navId: "cost", path: "/cost", tabs: COST_TABS },
+  { navId: "tools", path: "/tools", tabs: TOOLS_TABS },
   { navId: "compression", path: "/compression", tabs: COMPRESSION_TABS },
   { navId: "cache", path: "/cache", tabs: CACHE_TABS },
   { navId: "routing", path: "/routing", tabs: ROUTING_TABS },
@@ -43,6 +47,7 @@ export const NODE_TAB_ROUTES: readonly NodeTabRoute[] = [
 /** Old names a palette search should also find a tab by. */
 const TAB_ALIASES: Record<string, readonly string[]> = {
   "/cost?tab=statement": ["Monthly statement", "Report"],
+  "/tools?tab=coverage": ["Detected tools", "Tool coverage", "Capture status"],
 };
 
 /** One palette jump to a tab. */

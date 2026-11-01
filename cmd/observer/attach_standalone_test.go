@@ -156,7 +156,15 @@ func TestTerminalStackSharesOneManager(t *testing.T) {
 	if !termsession.PTYSupported() {
 		t.Skip("no in-process PTY backend on this OS")
 	}
-	stack, err := buildTerminalStack(context.Background(), surfaceTestConfig(true, true), openStackTestDB(t), slog.Default(), nil)
+	// The stack's sandbox relay waiter lives as long as its context and
+	// derives its folder from the database path: a context that ends with
+	// the test and a database path in the test's own folder. With
+	// config.Default()'s "~/.observer" and context.Background() a later
+	// test's sandbox state change woke the waiter and it listened under a
+	// literal "~" folder in the package directory (RB1 gate, P-169 check).
+	cfg := surfaceTestConfig(true, true)
+	cfg.Observer.DBPath = filepath.Join(t.TempDir(), "observer.db")
+	stack, err := buildTerminalStack(t.Context(), cfg, openStackTestDB(t), slog.Default(), nil)
 	if err != nil {
 		t.Fatalf("buildTerminalStack: %v", err)
 	}

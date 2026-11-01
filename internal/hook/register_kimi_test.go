@@ -136,7 +136,7 @@ func TestKimiCodeRegisterTable(t *testing.T) {
 			if tc.absent {
 				wantMode = 0o600
 			}
-			if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != wantMode {
+			if fi, err := os.Stat(path); err != nil || posixModes && fi.Mode().Perm() != wantMode {
 				t.Errorf("mode = %v (%v), want %v", fi.Mode().Perm(), err, wantMode)
 			}
 
@@ -214,7 +214,8 @@ func TestKimiCodeRefusesShapesItCannotOwn(t *testing.T) {
 }
 
 // TestKimiCodeHonoursKimiCodeHome: an absolute $KIMI_CODE_HOME moves the
-// file (the vendor's storage-root override); a relative one is ignored.
+// file (the vendor's storage-root override); a relative one names a file
+// Observer cannot see, so nothing is written (FU-31).
 func TestKimiCodeHonoursKimiCodeHome(t *testing.T) {
 	home := t.TempDir()
 	alt := filepath.Join(t.TempDir(), "kimi")
@@ -226,8 +227,14 @@ func TestKimiCodeHonoursKimiCodeHome(t *testing.T) {
 		t.Errorf("the default home was written too: %v", err)
 	}
 	rel := kimiRegistry(t, home, map[string]string{"KIMI_CODE_HOME": "rel/kimi"})
-	if got := rel.kimiCodeConfigPath(); got != filepath.Join(home, ".kimi-code", "config.toml") {
-		t.Errorf("relative KIMI_CODE_HOME used: %s", got)
+	if res := rel.Register("kimi-code"); res.Error == nil {
+		t.Errorf("relative KIMI_CODE_HOME: Register = %+v, want an error", res)
+	}
+	if _, err := rel.kimiCodeConfigPath(); err == nil || !strings.Contains(err.Error(), "KIMI_CODE_HOME") {
+		t.Errorf("relative KIMI_CODE_HOME: kimiCodeConfigPath err = %v, want one naming the variable", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".kimi-code")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a relative KIMI_CODE_HOME wrote the default home: %v", err)
 	}
 }
 

@@ -1,0 +1,16 @@
+rules:
+  - id: js.unsafe-deserialization
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: Data is deserialized with a loader that can build functions or arbitrary objects, so crafted input can run code; use JSON.parse or a safe schema.
+    metadata:
+      category: code_vuln
+      cwe: CWE-502
+    pattern-either:
+      - pattern: $S.unserialize(...)
+      - pattern: require("node-serialize").unserialize(...)
+      - pattern: '$Y.load($X, {..., schema: $Y.DEFAULT_FULL_SCHEMA, ...})'
+      - pattern: '$Y.load($X, {..., schema: DEFAULT_FULL_SCHEMA, ...})'
+      - pattern: '$Y.loadAll($X, {..., schema: $Y.DEFAULT_FULL_SCHEMA, ...})'
+      - pattern: funcster.deepDeserialize(...)
+      - pattern: cryo.parse(...)

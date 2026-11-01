@@ -24,6 +24,20 @@ const usage = `usage:
   vendorsign sign           -key FILE ARCHIVE...
   vendorsign manifest       -key FILE -dir DIR -version vX.Y.Z -channel stable -out FILE
   vendorsign index          -key FILE -dir DIR -version vX.Y.Z
+  vendorsign secindex       -key FILE -osv DIR -out DIR -manifest-version N [-epoch N] [-popular eco=FILE]...
+  vendorsign engine         -key FILE -out DIR -manifest-version N [-epoch N] [-valid-days N] [-revocation] [-revoke SHA256]... ENTRY.json...
+  vendorsign sandboximage   -oci FILE -packages DIR -recipe FILE -repository R -version X.Y.Z -min-version X.Y.Z
+                            -commit SHA -base REF@sha256:... -source-date-epoch N -out DIR
+                            [-key FILE -manifest-version N [-epoch N] [-valid-days N] [-revoke SHA256]...]
+  vendorsign sandboximage   -from-build -oci FILE -out DIR -registry REG
+                            [-key FILE -manifest-version N [-epoch N] [-valid-days N] [-revoke SHA256]...]
+  vendorsign sandboxnative  -in mxc-manifest.json -out DIR [-arch amd64] [-min-version X.Y.Z]
+                            [-key FILE -manifest-version N [-epoch N] [-valid-days N] [-revoke SHA256]...]
+  vendorsign sandboxrootfs  -build DIR [-recipe-dir DIR] -version X.Y.Z -min-version X.Y.Z -commit SHA
+                            -source-date-epoch N -out DIR [-fetch-base URL]
+                            [-key FILE -manifest-version N [-epoch N] [-valid-days N] [-revoke SHA256]...]
+  vendorsign sandboxguest   -binary ARCH=FILE... -version X.Y.Z -commit SHA -out DIR
+                            [-key FILE -manifest-version N [-epoch N] [-valid-days N] [-revoke SHA256]...]
   vendorsign schema-version`
 
 // run dispatches a verb. Split from main so the whole tool is testable
@@ -41,6 +55,18 @@ func run(args []string, out *os.File) error {
 		return runManifest(args[1:], out)
 	case "index":
 		return runIndex(args[1:], out)
+	case "secindex":
+		return runSecIndex(args[1:], out)
+	case "engine":
+		return runEngine(args[1:], out)
+	case "sandboximage":
+		return runSandboxImage(args[1:], out)
+	case "sandboxnative":
+		return runSandboxNative(args[1:], out)
+	case "sandboxrootfs":
+		return runSandboxRootfs(args[1:], out)
+	case "sandboxguest":
+		return runSandboxGuest(args[1:], out)
 	case "schema-version":
 		return runSchemaVersion(out)
 	case "-h", "--help", "help":

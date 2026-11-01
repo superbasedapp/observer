@@ -81,6 +81,10 @@ type ArenaCandidate struct {
 	KeptCommitSHA      string
 	Error              string
 	UpdatedAt          string
+	// PermissionLane is the permission lane the candidate's drive ran in
+	// ("bypass", "edit" or "read_only", OSH-R-005); empty when not
+	// recorded (migration 210).
+	PermissionLane string
 }
 
 // JudgeScores is the fixed global rubric every judge harness must return.

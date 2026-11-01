@@ -20,6 +20,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/guard"
 	"github.com/marmutapp/superbased-observer/internal/orgclient/gen"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
+	"github.com/marmutapp/superbased-observer/internal/policyfam"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
@@ -71,7 +72,24 @@ func PolicyKeyPinPath(orgURL string) string { return orgURL + PolicyKeyPinSuffix
 // policyBundleStatePath returns the guard_policy_state path identity
 // of the fetched-bundle row (one row per verified version, distinct
 // from the load-time row guard records against the cache file path).
-func policyBundleStatePath(orgURL string) string { return orgURL + "/api/v1/policy-bundle" }
+func policyBundleStatePath(orgURL string) string { return orgURL + policyBundleStateSuffix }
+
+// policyBundleStateSuffix ends every fetched-bundle row's path identity.
+const policyBundleStateSuffix = "/api/v1/policy-bundle"
+
+// IsPolicyBundleStatePath reports whether a guard_policy_state path is a
+// fetched-bundle row: one row per verified version this node ACCEPTED. The
+// guard composition reads it to know that a missing bundle file is a
+// deletion rather than "nothing published" (T-864 gap 1).
+func IsPolicyBundleStatePath(path string) bool {
+	return strings.HasSuffix(path, policyBundleStateSuffix)
+}
+
+// PolicyBundleStateOrg returns the org server URL a fetched-bundle row's path
+// identity names (the inverse of policyBundleStatePath).
+func PolicyBundleStateOrg(path string) string {
+	return strings.TrimSuffix(path, policyBundleStateSuffix)
+}
 
 // PolicyStatus classifies one policy-bundle poll outcome.
 type PolicyStatus string
@@ -135,6 +153,65 @@ type PolicyResult struct {
 	// — and converge it without a restart (SF7), while a steady-state
 	// running==cached poll skips the reload (no re-verify churn).
 	CachedVersion int64
+	// DisplacedTo is where an Applied fetch moved a non-regular entry it
+	// found at the cache path before writing the bundle ("" when nothing
+	// was moved; D-704, displaceForeignCacheEntry). Node-local, like Detail:
+	// it MUST NOT ride the wire.
+	DisplacedTo string
+	// RepairedCache is what an Applied fetch found wrong with the cached
+	// bundle it re-materialised: CacheRepairTampered when the file no longer
+	// verified, CacheRepairMissing when it was gone (or unreadable as the
+	// bundle file) although this node had accepted a bundle, and
+	// CacheRepairNone otherwise (a clean upgrade, a first fetch, or an I/O
+	// fault that made the pre-fetch check indecisive). It lets the daemon
+	// record the tamper the poll repaired before the posture check saw it.
+	// Node-local, like Detail: it MUST NOT ride the wire.
+	RepairedCache CacheRepair
+	// RepairedCode is the typed reason a CacheRepairTampered cache failed
+	// verification (sig_invalid or key_pin_mismatch; "" otherwise).
+	// Node-local: it MUST NOT ride the wire.
+	RepairedCode PolicyRejectCode
+}
+
+// CacheRepair names what an Applied fetch repaired in the node's cached
+// org bundle (PolicyResult.RepairedCache). The empty value means nothing was
+// wrong with it.
+type CacheRepair string
+
+// CacheRepair values (a closed set; cacheRepairByIntegrity is the one
+// mapping from the on-disk check).
+const (
+	// CacheRepairNone: the cache verified, was never accepted, or the
+	// pre-fetch check could not decide (an I/O fault is never a tamper).
+	CacheRepairNone CacheRepair = ""
+	// CacheRepairTampered: the cache no longer verified (edited, re-signed
+	// with another key, corrupt) and the fetch wrote the org's bundle back.
+	CacheRepairTampered CacheRepair = "tampered"
+	// CacheRepairMissing: the cache was gone (or unreadable as the bundle
+	// file) although this node had accepted a bundle, and the fetch wrote
+	// the org's bundle back.
+	CacheRepairMissing CacheRepair = "missing"
+)
+
+// cacheRepairByIntegrity maps the pre-fetch on-disk verdict to the repair an
+// Applied fetch performs, one row per integrity value that is a tamper.
+// Every other verdict (verified, absent) is CacheRepairNone.
+var cacheRepairByIntegrity = map[string]CacheRepair{
+	orgcontract.BundleIntegrityTampered: CacheRepairTampered,
+	orgcontract.BundleIntegrityMissing:  CacheRepairMissing,
+}
+
+// cacheRepairFor classifies the pre-fetch on-disk check. A check that failed
+// (a genuine I/O or store fault) is never a tamper.
+func cacheRepairFor(check CachedBundleCheck, err error) (CacheRepair, PolicyRejectCode) {
+	if err != nil {
+		return CacheRepairNone, RejectNone
+	}
+	repair := cacheRepairByIntegrity[check.Integrity]
+	if repair == CacheRepairNone {
+		return CacheRepairNone, RejectNone
+	}
+	return repair, check.RejectCode
 }
 
 // GuardFetchOutcome is the TOTAL, typed classification of ONE guard
@@ -242,11 +319,20 @@ func (c *Client) FetchPolicyBundle(ctx context.Context, cachePath string) (Polic
 		return PolicyResult{}, fmt.Errorf("orgclient.FetchPolicyBundle: load bearer: %w: %w", errPolicyLocalPreResponse, err)
 	}
 
-	// If-None-Match only when the cache file actually exists — a stored
-	// ETag with a deleted cache must re-download, not 304 into nothing.
+	// If-None-Match only when the cache file exists AND still verifies
+	// (signature, key pin, body hash). A stored ETag with a deleted cache
+	// must re-download, not 304 into nothing; and a cache that was edited on
+	// disk must re-download too (T-846, guard tamper audit row b2): a 304
+	// would keep the tampered file, and the hooks would run without the org
+	// layer until the org next published a NEW version. The same check names
+	// what an Applied fetch repairs (RepairedCache), so the daemon records
+	// the tamper even when this poll restores the file before the posture
+	// check sees it (T-869).
 	params := &gen.GetPolicyBundleParams{}
+	check, verr := c.VerifyCachedPolicyBundle(ctx, cachePath)
+	repaired, repairedCode := cacheRepairFor(check, verr)
 	if etag, eerr := c.store.LoadOrgPolicyETag(ctx); eerr == nil && etag != "" {
-		if _, serr := os.Stat(cachePath); serr == nil {
+		if verr == nil && check.Integrity == orgcontract.BundleIntegrityVerified && projectFilesPresent(cachePath) {
 			params.IfNoneMatch = &etag
 		}
 	}
@@ -269,6 +355,9 @@ func (c *Client) FetchPolicyBundle(ctx context.Context, cachePath string) (Polic
 			if v, _, ok, _ := c.readCachedBundle(ctx, cachePath, enr.OrgServerURL); ok {
 				early.CachedVersion = v
 			}
+			// The org just confirmed the bundle it holds, and with it the
+			// project mapping's offline lifetime restarts (projectaudience.go).
+			confirmProjectMapping(cachePath, time.Now())
 		}
 		return early, nil
 	}
@@ -279,11 +368,29 @@ func (c *Client) FetchPolicyBundle(ctx context.Context, cachePath string) (Polic
 		return rej, nil
 	}
 
-	// Accepted: atomically replace the cache, record the version row,
-	// remember the ETag.
+	// Accepted: write the project half of a v3 delivery first (the bundle
+	// file that names it lands last), then atomically replace the cache,
+	// record the version row, remember the ETag. The cached bundle never
+	// carries the projects field: the hook's org layer reads it on every
+	// call, and the envelopes live in their own files.
+	if err := c.writeProjectAudience(ctx, b, cachePath, enr.OrgServerURL, time.Now()); err != nil {
+		return PolicyResult{}, fmt.Errorf("orgclient.FetchPolicyBundle: %w: %w", errPolicyLocalPreResponse, err)
+	}
+	b.Projects = nil
 	raw, err := json.Marshal(b)
 	if err != nil {
 		return PolicyResult{}, fmt.Errorf("orgclient.FetchPolicyBundle: marshal cache: %w: %w", errPolicyLocalPreResponse, err)
+	}
+	// A directory (or other non-regular entry) planted at the cache path
+	// blocks the atomic write forever; move it aside first (D-704: nothing
+	// is deleted, see displaceForeignCacheEntry).
+	aside, derr := displaceForeignCacheEntry(cachePath, time.Now())
+	if derr != nil {
+		return PolicyResult{}, fmt.Errorf("orgclient.FetchPolicyBundle: clear cache path: %w: %w", errPolicyLocalPreResponse, derr)
+	}
+	if aside != "" {
+		c.logger.Warn("org policy: the bundle cache path held something that is not the bundle file; moved it aside (nothing deleted) to restore the organization's bundle",
+			"path", cachePath, "moved_to", aside)
 	}
 	if err := writeFileAtomic(cachePath, raw); err != nil {
 		return PolicyResult{}, fmt.Errorf("orgclient.FetchPolicyBundle: write cache: %w: %w", errPolicyLocalPreResponse, err)
@@ -306,7 +413,10 @@ func (c *Client) FetchPolicyBundle(ctx context.Context, cachePath string) (Polic
 	}
 	c.logger.Info("org policy: bundle applied", "version", b.Version,
 		"effective", "next guard construction (hooks: next tool call; daemon: next start)")
-	return PolicyResult{Status: PolicyApplied, Version: b.Version}, nil
+	return PolicyResult{
+		Status: PolicyApplied, Version: b.Version, DisplacedTo: aside,
+		RepairedCache: repaired, RepairedCode: repairedCode,
+	}, nil
 }
 
 // receiveBundle performs the raw GET (gc.GetPolicyBundle — the transport-only
@@ -358,7 +468,7 @@ func (c *Client) receiveBundle(ctx context.Context, gc *gen.ClientWithResponses,
 	// A response ARRIVED (200): a body-read or decode failure past this point
 	// still PROVES the control plane answered — reached-Indeterminate, never
 	// Unreachable (Blocker 1 / R5-B3/R5-B5).
-	bodyBytes, rerr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	bodyBytes, rerr := io.ReadAll(io.LimitReader(resp.Body, policyBundleMaxBody))
 	if rerr != nil {
 		return gen.PolicyBundle{}, PolicyResult{}, false, "", fmt.Errorf("orgclient.FetchPolicyBundle: read body: %w: %w", errPolicyReachedIndeterminate, rerr)
 	}
@@ -398,13 +508,21 @@ func (c *Client) applyBundleGates(ctx context.Context, b gen.PolicyBundle, enr *
 	// which keeps an older server working. RejectSigInvalid on purpose: the
 	// reject code rides the policy-state wire, a closed set on older servers.
 	cachedBound := heldBundleBound(cachePath)
+	// Gate 1c, the v3 PROJECT AUDIENCE (projectaudience.go): a project
+	// binding must name this org and member, carry a mapping bound by digest
+	// and epoch, and envelopes of this delivery only; a lower epoch than one
+	// accepted is refused, and once a v3 delivery was held a v2 or v1 one is a
+	// downgrade.
+	if rej, rejected, err := c.projectGate(ctx, b, enr, cachePath, pub); err != nil || rejected {
+		return rej, rejected, err
+	}
 	switch {
 	case b.Binding != nil && *b.Binding != (orgcontract.PolicyBinding{OrgID: enr.OrgID, Subject: enr.UserID}):
 		return PolicyResult{
 			Status: PolicyRejected, Version: b.Version, RejectCode: RejectSigInvalid,
 			Detail: "the bundle is signed for a different org or member than this node",
 		}, true, nil
-	case b.Binding == nil && cachedBound:
+	case b.Binding == nil && b.ProjectBinding == nil && cachedBound:
 		return PolicyResult{
 			Status: PolicyRejected, Version: b.Version, RejectCode: RejectSigInvalid,
 			Detail: "an unbound (v1) bundle after this node held a bound (v2) one: refused as a signature downgrade",
@@ -503,14 +621,20 @@ func (c *Client) applyBundleGates(ctx context.Context, b gen.PolicyBundle, enr *
 					Detail: fmt.Sprintf("version replay: served version %d with content differing from the cached bundle (non-monotonic republish - bump the version to change content)", b.Version),
 				}, true, nil
 			}
-			if b.Binding == nil || cachedBound {
-				// Identical content already current → no reload (SF-B).
+			if incoming, held := bundleBindingKind(b), heldBindingKind(cachePath); incoming == bindingNone || incoming == held {
+				// Identical content already current → no reload (SF-B). A v3
+				// delivery still re-materialises its project files, which a
+				// 200 at an equal version means were missing.
+				if err := c.writeProjectAudience(ctx, b, cachePath, enr.OrgServerURL, time.Now()); err != nil {
+					return PolicyResult{}, false, fmt.Errorf("orgclient.FetchPolicyBundle: %w: %w", errPolicyLocalPreResponse, err)
+				}
 				return PolicyResult{Status: PolicyUnchanged, Version: b.Version, CachedVersion: cachedVer}, true, nil
 			}
 			// The same content now arrives BOUND over an unbound cache (the
-			// first poll after the server learned to bind, C156-15): fall
-			// through and re-cache it with its ETag, so the binding sticks and
-			// the next poll is a 304 instead of a re-download.
+			// first poll after the server learned to bind, C156-15), or
+			// project-bound (v3) over a v2 one: fall through and re-cache it
+			// with its ETag, so the binding sticks and the next poll is a 304
+			// instead of a re-download.
 		}
 		// No usable cached baseline (cache absent/corrupt/unverifiable)
 		// at an equal recorded version: fall through to accept so the
@@ -661,18 +785,21 @@ func (c *Client) lastBundleVersion(ctx context.Context, orgURL string) (int64, e
 // "no reliable baseline" — so the caller re-materialises rather than
 // rejecting on a phantom mismatch or accepting a forged baseline. That
 // failure direction is fail-safe (availability, never a false accept).
-// A genuine read error (permissions) is returned so the caller
-// classifies it as a local, non-decisive failure. The hash uses the
+// A path that holds something unreadable as the bundle file (a planted
+// directory, a file this user may not read; cacheReadUnusable, D-704) is
+// the same "no reliable baseline" as a corrupt cache, so the accept path
+// can restore the bundle; only a genuine I/O fault is returned, so the
+// caller classifies it as a local, non-decisive failure. The hash uses the
 // SAME canonical bytes ([]byte(BundleTOML)) the accept path and the
 // guard's PolicyState.ContentHash use, so equal content compares
 // byte-equal.
 func (c *Client) readCachedBundle(ctx context.Context, cachePath, orgURL string) (version int64, contentHash string, ok bool, err error) {
 	raw, rerr := os.ReadFile(cachePath)
-	switch {
-	case os.IsNotExist(rerr):
+	if rerr != nil {
+		if classifyCacheReadError(cachePath, rerr) == cacheReadIOError {
+			return 0, "", false, rerr
+		}
 		return 0, "", false, nil
-	case rerr != nil:
-		return 0, "", false, rerr
 	}
 	var cached gen.PolicyBundle
 	if uerr := json.Unmarshal(raw, &cached); uerr != nil {
@@ -700,6 +827,143 @@ func (c *Client) readCachedBundle(ctx context.Context, cachePath, orgURL string)
 	return cached.Version, hex.EncodeToString(sum[:]), true, nil
 }
 
+// CachedBundleCheck is the result of re-verifying the org policy bundle ON
+// DISK (VerifyCachedPolicyBundle). Integrity is one of
+// orgcontract.BundleIntegrity*; RejectCode is the typed reason a tampered
+// file failed (sig_invalid or key_pin_mismatch); Version is the version the
+// file claims (0 when it does not decode).
+type CachedBundleCheck struct {
+	Integrity  string
+	RejectCode PolicyRejectCode
+	Version    int64
+}
+
+// VerifyCachedPolicyBundle re-verifies the org policy bundle at cachePath the
+// way the acceptance gate verified it when it was written (T-846): the
+// envelope signature, the enrolment key pin, and the BODY HASH against the
+// content hash this node recorded for that version when it accepted it
+// (guard_policy_state, the fetched-bundle row). It is the ONE on-disk check
+// both consumers use: the policy poll (a cache that fails it is never kept
+// on a 304) and the policy-state reporter (a cache that fails it reads
+// "tampered", not "effective").
+//
+// A missing file is BundleIntegrityMissing when this node recorded an
+// accepted bundle (a deletion), BundleIntegrityAbsent otherwise. A path that
+// holds something the node cannot read as the bundle file (a directory or
+// other non-regular entry planted there, or a file this user may not read;
+// D-704) reads the same way: the hooks cannot read it either, so the org
+// layer in the hook path is the last verified copy exactly as after a
+// deletion, and the poll re-fetches at once. Reporting it as an error instead
+// made the policy-state reporter skip every snapshot while the path stayed
+// blocked, freezing the organization's view on the last good report. A file
+// that does not decode, whose signature fails, whose body does not match the
+// recorded hash, or whose key does not match the pin is
+// BundleIntegrityTampered. A genuine I/O fault or a store error (a locked DB)
+// is returned as an error so a caller never reports tamper on an I/O hiccup.
+func (c *Client) VerifyCachedPolicyBundle(ctx context.Context, cachePath string) (CachedBundleCheck, error) {
+	raw, rerr := os.ReadFile(cachePath)
+	if rerr != nil {
+		if classifyCacheReadError(cachePath, rerr) == cacheReadIOError {
+			return CachedBundleCheck{}, fmt.Errorf("orgclient.VerifyCachedPolicyBundle: read: %w", rerr)
+		}
+		return c.missingOrAbsent(ctx)
+	}
+	tampered := func(code PolicyRejectCode, version int64) (CachedBundleCheck, error) {
+		return CachedBundleCheck{Integrity: orgcontract.BundleIntegrityTampered, RejectCode: code, Version: version}, nil
+	}
+	var cached gen.PolicyBundle
+	if err := json.Unmarshal(raw, &cached); err != nil {
+		return tampered(RejectSigInvalid, 0)
+	}
+	pub, verr := orgcontract.VerifyPolicyBundle(cached)
+	if verr != nil {
+		return tampered(RejectSigInvalid, cached.Version)
+	}
+	enr, err := c.store.LoadEnrolment(ctx)
+	if err != nil {
+		return CachedBundleCheck{}, fmt.Errorf("orgclient.VerifyCachedPolicyBundle: %w", err)
+	}
+	if enr != nil {
+		pinned, perr := c.loadKeyPin(ctx, enr.OrgServerURL)
+		if perr != nil {
+			return CachedBundleCheck{}, fmt.Errorf("orgclient.VerifyCachedPolicyBundle: key pin: %w", perr)
+		}
+		if pinned != "" && pinned != orgcontract.PublicKeyPinHash(pub) {
+			return tampered(RejectKeyPinMismatch, cached.Version)
+		}
+		recVersion, recHash, herr := c.recordedBundleHash(ctx, enr.OrgServerURL)
+		if herr != nil {
+			return CachedBundleCheck{}, fmt.Errorf("orgclient.VerifyCachedPolicyBundle: recorded hash: %w", herr)
+		}
+		if recVersion == cached.Version && recHash != "" {
+			sum := sha256.Sum256([]byte(cached.BundleTOML))
+			if hex.EncodeToString(sum[:]) != recHash {
+				return tampered(RejectSigInvalid, cached.Version)
+			}
+		}
+	}
+	return CachedBundleCheck{Integrity: orgcontract.BundleIntegrityVerified, Version: cached.Version}, nil
+}
+
+// missingOrAbsent classifies a cache path with no usable file (T-864 gap 1,
+// and D-704's unreadable path): MISSING
+// when this node recorded an accepted bundle for its org (a deletion: the
+// policy poll re-downloads at once, and the report says so), ABSENT when it
+// never accepted one (nothing was published, or the node is not enrolled).
+func (c *Client) missingOrAbsent(ctx context.Context) (CachedBundleCheck, error) {
+	enr, err := c.store.LoadEnrolment(ctx)
+	if err != nil {
+		return CachedBundleCheck{}, fmt.Errorf("orgclient.VerifyCachedPolicyBundle: %w", err)
+	}
+	if enr == nil {
+		return CachedBundleCheck{Integrity: orgcontract.BundleIntegrityAbsent}, nil
+	}
+	recVersion, _, herr := c.recordedBundleHash(ctx, enr.OrgServerURL)
+	if herr != nil {
+		return CachedBundleCheck{}, fmt.Errorf("orgclient.VerifyCachedPolicyBundle: recorded hash: %w", herr)
+	}
+	if recVersion > 0 {
+		return CachedBundleCheck{Integrity: orgcontract.BundleIntegrityMissing}, nil
+	}
+	return CachedBundleCheck{Integrity: orgcontract.BundleIntegrityAbsent}, nil
+}
+
+// recordedBundleHash returns the version and content hash of the last
+// verified bundle this node recorded for orgURL (the fetched-bundle row),
+// or (0, "") when none was recorded or the version does not parse.
+func (c *Client) recordedBundleHash(ctx context.Context, orgURL string) (int64, string, error) {
+	states, err := c.store.LatestGuardPolicyStates(ctx)
+	if err != nil {
+		return 0, "", err
+	}
+	bundlePath := policyBundleStatePath(orgURL)
+	for _, st := range states {
+		if st.Layer == "org" && st.Path == bundlePath {
+			v, perr := strconv.ParseInt(st.Version, 10, 64)
+			if perr != nil {
+				return 0, "", nil
+			}
+			return v, st.ContentHash, nil
+		}
+	}
+	return 0, "", nil
+}
+
+// KickPolicyBundlePoll wakes PolicyPollLoop now instead of at the next
+// interval. Nonblocking and coalescing (the kick channel holds one). The
+// policy-state reporter calls it when the on-disk bundle no longer
+// verifies, so the repair (a re-download, T-846) does not wait up to an
+// hour for the next poll.
+func (c *Client) KickPolicyBundlePoll() {
+	if c == nil || c.policyBundleKick == nil {
+		return
+	}
+	select {
+	case c.policyBundleKick <- struct{}{}:
+	default:
+	}
+}
+
 // heldBundleBound reports whether the bundle cached at path carries a v2
 // binding. Any read or decode failure answers false (no binding to keep).
 func heldBundleBound(path string) bool {
@@ -708,9 +972,42 @@ func heldBundleBound(path string) bool {
 		return false
 	}
 	var held struct {
-		Binding *orgcontract.PolicyBinding `json:"binding"`
+		Binding        *orgcontract.PolicyBinding  `json:"binding"`
+		ProjectBinding *orgcontract.ProjectBinding `json:"project_binding"`
 	}
-	return json.Unmarshal(raw, &held) == nil && held.Binding != nil
+	return json.Unmarshal(raw, &held) == nil && (held.Binding != nil || held.ProjectBinding != nil)
+}
+
+// Binding kinds of a bundle (bundleBindingKind, heldBindingKind).
+const (
+	bindingNone = ""
+	bindingV2   = "v2"
+	bindingV3   = "v3"
+)
+
+// bundleBindingKind names b's signature binding.
+func bundleBindingKind(b orgcontract.PolicyBundle) string {
+	switch {
+	case b.ProjectBinding != nil:
+		return bindingV3
+	case b.Binding != nil:
+		return bindingV2
+	}
+	return bindingNone
+}
+
+// heldBindingKind names the binding of the bundle cached at path (none when
+// absent or unreadable).
+func heldBindingKind(path string) string {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return bindingNone
+	}
+	var held orgcontract.PolicyBundle
+	if json.Unmarshal(raw, &held) != nil {
+		return bindingNone
+	}
+	return bundleBindingKind(held)
 }
 
 // policyBindingCapsEditor asks the guard-bundle GET for a v2 (org- and
@@ -720,8 +1017,25 @@ func heldBundleBound(path string) bool {
 func policyBindingCapsEditor(_ context.Context, req *http.Request) error {
 	q := req.URL.Query()
 	q.Add("policy_caps", orgcontract.PolicyBindingCapability)
+	// binding-v3: the project audience (projectaudience.go). A server whose
+	// org has no project-scoped bundle answers exactly as for binding-v2.
+	q.Add("policy_caps", orgcontract.PolicyBindingV3Capability)
+	if projectFamiliesAdvertised() {
+		// project-families-v1 (lane sec-p3): the project envelopes may
+		// carry family sections. A server whose org has none answers
+		// exactly as for binding-v3 alone.
+		q.Add("policy_caps", orgcontract.ProjectFamiliesCapability)
+	}
 	req.URL.RawQuery = q.Encode()
 	return nil
+}
+
+// projectFamiliesAdvertised reports whether this build reads project family
+// sections: the security.scanning compiler is linked (a build without the
+// security module never asks, so it is never served a member it would drop).
+// A test swaps it.
+var projectFamiliesAdvertised = func() bool {
+	return policyfam.IsFamilyLinked(policyfam.FamilySecurityScanning)
 }
 
 // writeFileAtomic writes data to path via a same-directory temp file +

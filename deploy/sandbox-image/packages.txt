@@ -1,0 +1,28 @@
+# The default sandbox image's packages, one per line (deploy/sandbox-image).
+# A userland for the host-toolchain bind: the host's agent CLI and its
+# runtime are bound in read-only, so the image needs the glibc loader and
+# the shared libraries a host binary links against, plus the tools an agent
+# runs. NEVER an agent CLI (plan I9, ledger SBX-IMG-1); the recipe test
+# refuses one.
+bash
+ca-certificates
+coreutils
+diffutils
+file
+findutils
+git
+gzip
+jq
+less
+libgcc-s1
+libstdc++6
+openssh-client
+patch
+procps
+python3
+ripgrep
+sed
+tar
+unzip
+xz-utils
+zlib1g

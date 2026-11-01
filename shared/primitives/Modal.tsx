@@ -30,6 +30,7 @@ export function Modal({
   labelledBy,
   bodyClassName = "px-5 py-4",
   className,
+  fullOnPhone = false,
 }: {
   open: boolean;
   onClose: () => void;
@@ -49,6 +50,9 @@ export function Modal({
   labelledBy?: string;
   bodyClassName?: string;
   className?: string;
+  /** Below the sm breakpoint the card fills the whole screen (no gutter, no
+   * rounded corners), for a flow that needs the room, such as a long picker. */
+  fullOnPhone?: boolean;
 }) {
   const cardRef = useRef<HTMLDivElement>(null);
   const titleId = useRef(`sb-modal-${Math.random().toString(36).slice(2, 9)}`).current;
@@ -125,7 +129,10 @@ export function Modal({
   // edge of a phone-width window (375px).
   return (
     <div
-      className="fixed inset-0 grid grid-cols-[minmax(0,1fr)] place-items-center p-4 sm:p-6"
+      className={clsx(
+        "fixed inset-0 grid grid-cols-[minmax(0,1fr)] place-items-center",
+        fullOnPhone ? "p-0 sm:p-6" : "p-4 sm:p-6",
+      )}
       style={{ zIndex }}
     >
       <div
@@ -147,7 +154,10 @@ export function Modal({
           transition: "opacity var(--dur) var(--ease-out), transform var(--dur-slow) var(--ease-out)",
         }}
         className={clsx(
-          "relative flex max-h-[calc(100vh-2rem)] flex-col overflow-hidden rounded-4 border border-line-2 bg-bg-1 shadow-drawer focus:outline-none",
+          "relative flex flex-col overflow-hidden border-line-2 bg-bg-1 shadow-drawer focus:outline-none",
+          fullOnPhone
+            ? "h-full max-h-full sm:h-auto sm:max-h-[calc(100vh-3rem)] sm:rounded-4 sm:border"
+            : "max-h-[calc(100vh-2rem)] rounded-4 border",
           shown ? "scale-100 opacity-100" : "scale-[0.96] opacity-0",
           className,
         )}

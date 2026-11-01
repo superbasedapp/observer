@@ -1,0 +1,21 @@
+{
+  "cpus": {"boot_vcpus": 2, "max_vcpus": 2},
+  "memory": {"size": 4294967296, "shared": true},
+  "payload": {
+    "kernel": "/home/u/.observer/sandbox-vm/runs/run-1/img/vmlinuz",
+    "initramfs": "/home/u/.observer/sandbox-vm/runs/run-1/img/initrd.img",
+    "cmdline": "console=ttyS0 reboot=k panic=-1 ro quiet init=/init observer.verity=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef observer.boot=obsboot observer.run=run-1 observer.port=1024"
+  },
+  "disks": [
+    {"path": "/home/u/.observer/sandbox-vm/runs/run-1/img/rootfs.img", "readonly": true, "image_type": "Raw", "id": "rootfs"},
+    {"path": "/home/u/.observer/sandbox-vm/runs/run-1/img/rootfs.verity", "readonly": true, "image_type": "Raw", "id": "verity"}
+  ],
+  "fs": [
+    {"tag": "obsboot", "socket": "/home/u/.observer/sandbox-vm/runs/run-1/fs-obsboot.sock", "num_queues": 1, "queue_size": 1024, "id": "fs-obsboot"},
+    {"tag": "ws", "socket": "/home/u/.observer/sandbox-vm/runs/run-1/fs-ws.sock", "num_queues": 1, "queue_size": 1024, "id": "fs-ws"}
+  ],
+  "vsock": {"cid": 7, "socket": "/home/u/.observer/sandbox-vm/runs/run-1/vsock.sock", "id": "vsock0"},
+  "serial": {"mode": "File", "file": "/home/u/.observer/sandbox-vm/runs/run-1/serial.log"},
+  "console": {"mode": "Off"},
+  "rng": {"src": "/dev/urandom"}
+}

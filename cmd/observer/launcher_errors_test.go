@@ -209,3 +209,32 @@ func executeLauncherError(t *testing.T, silence bool, returned error) (*cobra.Co
 	}
 	return root, child, output
 }
+
+// TestLauncherSaysItsConfigIsUnreadable (Linux live check 2026-10-23, LIN-1
+// F3): a launcher whose config file exists but cannot be read prints one
+// line naming the file and the reason instead of exiting silently; the
+// real claude launcher's load error carries it.
+func TestLauncherSaysItsConfigIsUnreadable(t *testing.T) {
+	unreadable := t.TempDir() // a directory: it exists, and reading it fails
+	output := new(bytes.Buffer)
+	root := &cobra.Command{Use: "observer", SilenceUsage: true}
+	child := newClaudeCmd()
+	root.AddCommand(child)
+	root.SetArgs([]string{"claude", "--config", unreadable, "--", "-p", "hi"})
+	root.SetOut(output)
+	root.SetErr(output)
+	executed, err := root.ExecuteC()
+	if err == nil {
+		t.Fatal("the launcher ran with an unreadable config")
+	}
+	if output.Len() != 0 {
+		t.Fatalf("Cobra printed before the renderer: %q", output.String())
+	}
+	if !renderSuppressedLauncherError(output, root, executed, err) {
+		t.Fatalf("the unreadable config was not said (error %v)", err)
+	}
+	got := output.String()
+	if !strings.HasPrefix(got, "observer claude: cannot read its config file "+unreadable+": ") || strings.Count(got, "\n") != 1 {
+		t.Fatalf("rendered %q", got)
+	}
+}

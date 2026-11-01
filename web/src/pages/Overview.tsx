@@ -30,6 +30,7 @@ import { OnboardingCard } from "@/components/OnboardingCard";
 import { ComponentsSetupCard } from "@/components/ComponentsSetupCard";
 import { MilestonesCard } from "@/components/MilestonesCard";
 import { CommunityCard } from "@/components/CommunityCard";
+import { ToolCoverageCard } from "@/components/ToolCoverage";
 import {
   useFilters,
   windowLabel,
@@ -298,7 +299,7 @@ export function OverviewPage() {
         />
         )}
         <StatCard
-          label="Token Rows (jsonl)"
+          label="Token rows (from session logs)"
           helpId="tile.token_rows"
           icon={<MetricIcon metric="tokenRows" />}
           loading={scoped.loading}
@@ -307,11 +308,16 @@ export function OverviewPage() {
           // Token VOLUME per bucket (was the $ series by mistake).
           spark={kpis.tokenSpark}
           sparkColor="var(--tok-read)"
-          sub="plentiful but unreliable · de-duped at cost time"
+          // WINNODE2 16b: plain words on the tile, the detail in the hover.
+          sub={
+            <span title="Session-log token rows are plentiful but less exact than the proxy's; duplicates are removed when cost is computed.">
+              counted from session logs · duplicates removed before costing
+            </span>
+          }
         />
         {showTile(OVERVIEW_TILE_OWNERS.staleRereads) && (
         <StatCard
-          label="Stale re-reads"
+          label="Unchanged files read again"
           helpId="metric.stale_count"
           icon={<MetricIcon metric="staleRereads" />}
           linkTo="/discovery"
@@ -340,6 +346,9 @@ export function OverviewPage() {
         )}
       </Stagger>
     ),
+    // T-935: which AI tools are found here and how many are captured, with
+    // a link to the full list on the Tools page Coverage tab. Not windowed.
+    coverage: <ToolCoverageCard />,
     trends: (
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         <ChartShell

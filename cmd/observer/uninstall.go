@@ -41,13 +41,17 @@ func newUninstallCmd() *cobra.Command {
 		Short: "Remove observer hooks, MCP server and proxy route from AI coding tools",
 		Long: `Remove observer's hook entries, MCP server registration and proxy route
 from each selected AI coding tool's config. Only entries whose command matches
-the observer binary are removed; user-authored hooks are preserved. The proxy
+the observer binary are removed; user-authored hooks are preserved, and so is
+an entry in observer's "<bin> hook <tool> <event>" shape that runs another
+program (reported as kept, with or without --force). The proxy
 route (Claude Code env.ANTHROPIC_BASE_URL, the Codex openai-observer provider)
 is removed only when it points at this install's proxy port, and Codex's
 previous model_provider is put back. Skip it with --skip-proxy-route.
 
 By default the tool data dir (~/.observer/) is kept so a later re-install
-retains history. Pass --purge to delete it.`,
+retains history. Pass --purge to delete it. --all and --purge also remove
+this Observer home's OS keychain entries (Windows Credential Manager, macOS
+Keychain, the Secret Service); another Observer home's entries are kept.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			binary, err := absoluteBinaryPath()
 			if err != nil {
@@ -58,7 +62,6 @@ retains history. Pass --purge to delete it.`,
 			// through it, so the CLI and the dashboard cannot disagree on
 			// what an uninstall removes.
 			rem, err := clientwire.NewRemover(clientwire.RemoveOptions{
-				Getenv:     os.Getenv,
 				BinaryPath: binary,
 				ProxyPort:  uninstallProxyPort(),
 				DryRun:     flagDryRun,
@@ -69,7 +72,7 @@ retains history. Pass --purge to delete it.`,
 			}
 
 			tools := selectTools(flagAll, flagClaudeCode, flagCodex, flagCursor, flagCline, rem.Installed())
-			if len(tools) == 0 && !flagPurge {
+			if len(tools) == 0 && !flagPurge && !flagAll {
 				fmt.Fprintln(cmd.OutOrStdout(), noToolsLine("remove Observer from", flagAll,
 					"--claude-code / --cursor / --codex / --all / --purge"))
 				return nil
@@ -128,6 +131,14 @@ retains history. Pass --purge to delete it.`,
 				}
 			}
 
+			// D2: --all (and --purge) also removes this home's OS keychain
+			// entries; another Observer home's are untouched.
+			if flagAll || flagPurge {
+				if removeKeystoreEntries(out, flagDryRun) {
+					anyError = true
+				}
+			}
+
 			if anyError {
 				return fmt.Errorf("uninstall completed with errors; see above")
 			}
@@ -153,6 +164,22 @@ func printHookUnregisterResult(out io.Writer, tool string, res hook.Unregistrati
 		fmt.Fprintf(out, "%-12s hook ✗ %v\n", tool, res.Error)
 		return
 	}
+	// FU-203: an entry in Observer's command shape that runs another binary
+	// is kept, and said so whatever else the result reports.
+	// FU-213: a removal spanning several files names each one.
+	switch {
+	case len(res.HooksKeptForeignIn) > 0:
+		for _, k := range res.HooksKeptForeignIn {
+			fmt.Fprintf(out, "%-12s hook kept %v in %s (%s)\n", tool, k.Events, k.Path, hook.ForeignBinaryReason)
+		}
+	case len(res.HooksKeptForeign) > 0:
+		fmt.Fprintf(out, "%-12s hook kept %v in %s (%s)\n", tool, res.HooksKeptForeign, res.ConfigPath, hook.ForeignBinaryReason)
+	}
+	// FU-212: a whole file Observer would have deleted that is not
+	// Observer's is kept, and said so.
+	for _, p := range res.FilesKeptForeign {
+		fmt.Fprintf(out, "%-12s hook kept %s (%s)\n", tool, p, hook.ForeignFileReason)
+	}
 	if res.Skipped {
 		fmt.Fprintf(out, "%-12s hook no-op (no observer entries in %s)\n", tool, res.ConfigPath)
 		return
@@ -170,11 +197,21 @@ func printHookUnregisterResult(out io.Writer, tool string, res hook.Unregistrati
 	if len(res.HooksKept) > 0 {
 		fmt.Fprintf(out, "%-12s hook preserved user entries in: %v\n", tool, res.HooksKept)
 	}
+	if len(res.TrustRemoved) > 0 {
+		fmt.Fprintf(out, "%-12s hook removed Observer's trust records for: %v\n", tool, res.TrustRemoved)
+	}
+	if res.TrustNote != "" {
+		fmt.Fprintf(out, "%-12s hook note: %s\n", tool, res.TrustNote)
+	}
 }
 
 func printMCPUnregisterResult(out io.Writer, tool string, res mcpregister.UnregistrationResult, dryRun bool) {
 	if res.Error != nil {
 		fmt.Fprintf(out, "%-12s mcp  ✗ %v\n", tool, res.Error)
+		return
+	}
+	if res.Skipped && res.SkipReason != "" {
+		fmt.Fprintf(out, "%-12s mcp  no-op (%s)\n", tool, res.SkipReason)
 		return
 	}
 	if res.Skipped {
@@ -222,6 +259,13 @@ func uninstallProxyPort() int {
 
 // purgeDataDir removes ~/.observer/ after --purge. Best-effort: missing
 // dir is not an error; residual lock-holding processes surface as errors.
+//
+// FU-212 keeps this one os.RemoveAll on purpose: ~/.observer is Observer's
+// own home (its database, config, checksums and keys, every name in it
+// Observer's), never a tool's directory a user shares with Observer, and
+// --purge is the operator's explicit request to delete exactly it (the
+// flag's help names it). Every other uninstall path deletes only files that
+// read as Observer's and removes a directory only once it is empty.
 func purgeDataDir(out io.Writer, dryRun bool) error {
 	home, err := os.UserHomeDir()
 	if err != nil {

@@ -2,11 +2,8 @@ package zed
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -86,69 +83,28 @@ func isForeignMountPath(path string) bool {
 	return false
 }
 
+// stageMirrorIfForeign returns srcDB unchanged when it is native. A foreign-mount
+// store (a Windows-side store read by a WSL observer over /mnt/c, or
+// the reverse), which modernc.org/sqlite cannot open in place while the
+// vendor process writes its WAL, is read through a filtered local
+// mirror built by mirrorbase.Stage: only the tables in mirrorSpec are
+// kept, so the store's other tables (credentials included) never leave
+// the vendor's file.
 func stageMirrorIfForeign(srcDB string) (string, error) {
 	if !isForeignMountPath(srcDB) {
 		return srcDB, nil
 	}
-	base, err := mirrorbase.Base()
-	if err != nil || base == "" {
-		base = filepath.Join(os.TempDir(), "superbased-observer")
-	}
-	sum := sha256.Sum256([]byte(srcDB))
-	mirrorDir := filepath.Join(base, "zed-mirror", hex.EncodeToString(sum[:8]))
-	if err := os.MkdirAll(mirrorDir, 0o700); err != nil {
-		return "", fmt.Errorf("mkdir mirror: %w", err)
-	}
-	dstDB := filepath.Join(mirrorDir, dbName)
-	if mirrorUpToDate(srcDB, dstDB) {
-		return dstDB, nil
-	}
-	for _, suffix := range []string{"", "-wal", "-shm"} {
-		src, dst := srcDB+suffix, dstDB+suffix
-		data, err := os.ReadFile(src) //nolint:gosec // the watched store + its own WAL siblings
-		if err != nil {
-			if os.IsNotExist(err) {
-				_ = os.Remove(dst)
-				continue
-			}
-			return "", fmt.Errorf("read %s: %w", src, err)
-		}
-		if err := os.WriteFile(dst, data, 0o600); err != nil { //nolint:gosec // G703: dst is a private staging copy under the adapter's own temp dir
-			return "", fmt.Errorf("write %s: %w", dst, err)
-		}
-	}
-	return dstDB, nil
+	return mirrorbase.Stage(context.Background(), srcDB, mirrorSpec)
 }
 
-func mirrorUpToDate(srcDB, dstDB string) bool {
-	if !filesMatch(srcDB, dstDB) {
-		return false
-	}
-	if sw, err := os.Stat(srcDB + "-wal"); err == nil {
-		if !filesMatchInfo(sw, dstDB+"-wal") {
-			return false
-		}
-	}
-	return true
-}
-
-func filesMatch(src, dst string) bool {
-	s, err := os.Stat(src)
-	if err != nil {
-		return false
-	}
-	return filesMatchInfo(s, dst)
-}
-
-func filesMatchInfo(srcInfo os.FileInfo, dst string) bool {
-	d, err := os.Stat(dst)
-	if err != nil {
-		return false
-	}
-	if srcInfo.Size() != d.Size() {
-		return false
-	}
-	return !srcInfo.ModTime().After(d.ModTime())
+// mirrorSpec is the allow-list mirror of the Zed threads store (threads.db): every table this
+// package queries and nothing else. A query on a new table must add it
+// here, or the foreign-mount mirror silently lacks it;
+// mirrortest.AssertSpecCoversQueries pins that.
+var mirrorSpec = mirrorbase.Spec{
+	Dir:    "zed-mirror",
+	File:   dbName,
+	Tables: []string{"threads"},
 }
 
 // tableExists lets a foreign or older schema degrade gracefully instead

@@ -157,7 +157,7 @@ func (s *Store) SubmitJob(ctx context.Context, in SubmitJobInput) (JobSubmission
 		if e != nil {
 			return e
 		}
-		reservationID, e := reserveAllowanceTx(ctx, tx, in.AccountID, in.Feature, now)
+		reservationID, e := reserveAllowanceTx(ctx, tx, in.AccountID, in.Feature, now, s.spendCeilings)
 		if e != nil {
 			return e
 		}
@@ -523,7 +523,7 @@ func (s *Store) SubmitDigestJob(ctx context.Context, in SubmitDigestJobInput) (J
 			return ErrAccountClosed
 		}
 
-		reservationID, e := reserveDigestAllowanceTx(ctx, tx, in.AccountID, now)
+		reservationID, e := reserveDigestAllowanceTx(ctx, tx, in.AccountID, now, s.spendCeilings)
 		if e != nil {
 			return e
 		}

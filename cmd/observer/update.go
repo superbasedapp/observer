@@ -348,14 +348,6 @@ func methodText(rep updateStatusReport) string {
 // orDash renders an empty string as a dash.
 func orDash(s string) string { return orText(s, "—") }
 
-// orText renders an empty string as alt.
-func orText(s, alt string) string {
-	if strings.TrimSpace(s) == "" {
-		return alt
-	}
-	return s
-}
-
 // updateStatePath resolves <state_dir>/state.json.
 func updateStatePath() (string, error) {
 	if dir := strings.TrimSpace(os.Getenv(updateStateDirEnv)); dir != "" {
@@ -415,7 +407,7 @@ func pathIsReplaceable(execPath string) bool {
 	if execPath == "" {
 		return false
 	}
-	if _, err := os.Stat(execPath); err != nil {
+	if _, err := os.Stat(execPath); err != nil { //nolint:gosec // G703: a metadata read of this binary's own path
 		return false
 	}
 	return dirIsWritable(filepath.Dir(execPath))
@@ -430,7 +422,7 @@ func dirIsWritable(dir string) bool {
 	}
 	name := probe.Name()
 	_ = probe.Close()
-	return os.Remove(name) == nil
+	return os.Remove(name) == nil //nolint:gosec // G703: removes the probe file this function just created
 }
 
 // fileExistsIn is the SiblingExists seam for the install-method table's

@@ -742,3 +742,46 @@ func TestBuildManifestAcceptsPreReleaseArchives(t *testing.T) {
 		t.Errorf("selected artifact = %q", res.Artifact.Filename)
 	}
 }
+
+// TestWin32ArchiveWithMXCFilesIsDeclared (lane SBX-P3B): a win32 archive of
+// an edition that compiles the Windows sandbox driver carries mxc/ beside the
+// binary. Before CompanionMXC the manifest build refused it as an undeclared
+// entry; now the three files are declared companions, so update.SelectMember
+// accepts the archive and the node's update path installs them.
+func TestWin32ArchiveWithMXCFilesIsDeclared(t *testing.T) {
+	_, priv := testKey(t)
+	dir := t.TempDir()
+	name := "observer-" + fixtureVersion + "-win32-x64.zip"
+	writeZip(t, filepath.Join(dir, name), map[string]string{
+		"observer.exe":          "the windows daemon",
+		"superbased.exe":        "the windows daemon",
+		"mxc/mxc_ffi.dll":       "fake dll",
+		"mxc/wxc-exec.exe":      "fake exe",
+		"mxc/mxc-manifest.json": "{}",
+	})
+	writeSums(t, dir)
+	if _, err := signArchive(filepath.Join(dir, name), priv); err != nil {
+		t.Fatal(err)
+	}
+	_, m := buildFixtureManifest(t, dir, priv)
+	if len(m.Artifacts) != 1 {
+		t.Fatalf("artifacts %d", len(m.Artifacts))
+	}
+	got := strings.Join(m.Artifacts[0].AliasMembers, ",")
+	for _, c := range append([]string{"superbased.exe"}, CompanionMXC...) {
+		if !strings.Contains(got, c) {
+			t.Errorf("alias_members %q lack %s", got, c)
+		}
+	}
+	// Anything else under mxc/ is still refused.
+	writeZip(t, filepath.Join(dir, name), map[string]string{
+		"observer.exe": "the windows daemon", "superbased.exe": "the windows daemon", "mxc/extra.dll": "x",
+	})
+	writeSums(t, dir)
+	if _, err := signArchive(filepath.Join(dir, name), priv); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := buildManifest(BuildOptions{Dir: dir, Version: fixtureVersion, Channel: "stable", ReleasedAt: time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC), Key: priv}); err == nil {
+		t.Fatal("an unknown file under mxc/ was declared")
+	}
+}

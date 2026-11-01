@@ -142,6 +142,35 @@ func (s *Store) SetRouteBinding(ctx context.Context, routeID string, b RouteBind
 	})
 }
 
+// SetRoutePrice stamps a route's per-MTok price snapshot and its price version
+// (operator provisioning: `observer-cloud route bind-anthropic` copies the
+// pricing table's row for the route's model here, so the registry never carries
+// a hand-typed rate). It BUMPS the generation like every other route mutation.
+// Negative rates and an empty version are refused.
+func (s *Store) SetRoutePrice(ctx context.Context, routeID string, inputPerMTok, outputPerMTok float64, priceVersion string) error {
+	if inputPerMTok < 0 || outputPerMTok < 0 {
+		return fmt.Errorf("cloudserver/store.SetRoutePrice: negative rate (%v / %v)", inputPerMTok, outputPerMTok)
+	}
+	if priceVersion == "" {
+		return fmt.Errorf("cloudserver/store.SetRoutePrice: empty price version")
+	}
+	return s.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		ct, e := tx.Exec(ctx,
+			`UPDATE route_registry
+			    SET input_price_per_mtok = $2, output_price_per_mtok = $3, price_version = $4,
+			        generation = generation + 1
+			  WHERE route_id = $1`,
+			routeID, inputPerMTok, outputPerMTok, priceVersion)
+		if e != nil {
+			return fmt.Errorf("cloudserver/store.SetRoutePrice: %w", e)
+		}
+		if ct.RowsAffected() == 0 {
+			return ErrNotFound
+		}
+		return nil
+	})
+}
+
 // SetRouteDialect flips a route's dialect (operator action; tests use it to
 // select responses_store_false and prove the route resolver refuses it without
 // a verification record).

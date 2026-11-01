@@ -1,6 +1,10 @@
 package integration
 
-import "sort"
+import (
+	"sort"
+
+	"github.com/marmutapp/superbased-observer/internal/platform/winshim"
+)
 
 // ProxyLane is one `/up/<id>/` proxy lane a route depends on.
 type ProxyLane struct {
@@ -41,7 +45,7 @@ const (
 	RouteVSCodeSettings RouteKind = "vscode_settings"
 	// RouteManual: observer cannot safely auto-edit the client, so the
 	// `observer <tool> --setup` launcher PRINTS the base-URL settings for the
-	// operator to paste (cursor/copilot VS Code BYOK). The ProxyRoute carries
+	// operator to paste (copilot VS Code BYOK). The ProxyRoute carries
 	// the URL to print; init never auto-writes these (routeSupported excludes
 	// them). Declared in Phase 0; consumed in Phase B.
 	RouteManual RouteKind = "manual_instructions"
@@ -76,15 +80,45 @@ const (
 	RouteStatusAfterBridge RouteStatus = "after_bridge"
 	// RouteStatusProbeRequired: a BYOK / custom-base-URL path is documented
 	// but unconfirmed on a live install — confirm with a live turn before
-	// flipping the Proxy field on (cline-cli, openclaw, pi, cursor-BYOK,
+	// flipping the Proxy field on (cline-cli, openclaw, pi,
 	// copilot-cli/VS Code BYOK, cowork third-party gateway).
 	RouteStatusProbeRequired RouteStatus = "probe_required"
 	// RouteStatusNativeExempt: no routable surface found — the tool talks
 	// only to its own backend with no base-URL knob (antigravity, kilo-cli
-	// per the live 2026-06-26 finding, cowork's local microVM path). A
+	// per the live 2026-06-26 finding, cowork's local microVM path), or its
+	// only knob is relayed through the vendor's servers and so cannot reach
+	// a loopback proxy (cursor's BYOK "OpenAI Base URL"). A
 	// grounded negative, not "permanently impossible": a future version or a
 	// new BYOK surface can reclassify it.
 	RouteStatusNativeExempt RouteStatus = "native_exempt"
+	// RouteStatusSettingsIgnored: a SURFACE row value (SurfaceRoute), never
+	// a tool-level one. The tool's route lives in a settings file the CLI
+	// reads, and this surface grounded-ly ignores it, so the route Observer
+	// writes never reaches it (Claude Desktop's Code tab under a Claude
+	// account login sets its own ANTHROPIC_BASE_URL, and Claude Code ignores
+	// a settings env value the launch environment already sets; gap review
+	// CC-1a). Not exempt: the surface's traffic bypasses the proxy and is
+	// reported as such, but it never blocks Gateway Mode, because nothing
+	// Observer writes today can route it. A different knob on the surface
+	// (a desktop gateway setting) is a separate, unbuilt writer.
+	RouteStatusSettingsIgnored RouteStatus = "settings_ignored"
+)
+
+// ClientAuthCarrier names how a routed tool can carry the node proxy's
+// client token (OSH-R-009, docs/plans/proxy-client-auth-2026-10-30.md). The
+// zero value means "not grounded", never "impossible".
+type ClientAuthCarrier string
+
+const (
+	// ClientAuthNone: no grounded way to carry the token (the zero value).
+	ClientAuthNone ClientAuthCarrier = ""
+	// ClientAuthPathToken: the tool keeps a path on its base URL, so the
+	// token rides as the first path segment
+	// (http://127.0.0.1:<port>/t/<token>/v1). Declared only where the row's
+	// own grounded route already carries a path through to the request: a
+	// Suffix with a path, a lane, the codex writer's /v1, or Claude Code's
+	// documented gateway path (also the Windows relay's /r/claude-code).
+	ClientAuthPathToken ClientAuthCarrier = "path_token"
 )
 
 // ProxyRoute describes how a proxy-routable adapter is pointed at the
@@ -96,6 +130,10 @@ type ProxyRoute struct {
 	// Kind is how the route is applied (persisted config write vs launcher
 	// env var). init only writes config for the persisted kinds.
 	Kind RouteKind
+	// ClientAuth says how the tool can carry the proxy client token
+	// (ClientAuthCarrier). Zero = not grounded: a node with this tool routed
+	// in the plain form keeps [proxy].require_client_auth unenforced.
+	ClientAuth ClientAuthCarrier
 	// EnvVar is the base-URL env var that routes the tool at the proxy
 	// (e.g. ANTHROPIC_BASE_URL, OPENAI_BASE_URL), or "" when the tool
 	// routes via a config file instead (see Note).
@@ -105,6 +143,12 @@ type ProxyRoute struct {
 	Suffix string
 	// Launcher is the `observer <x>` command that wires the routing.
 	Launcher string
+	// LaunchFlag, when non-empty, is the opt-in launcher argument that turns
+	// this launcher route on (grok and goose: "--proxy"). A bare `observer
+	// <verb>` without it launches the product UNROUTED, so a wrapped form
+	// that runs the bare verb (WrappedCommandFor, the shell-wrap shims) must
+	// not claim the route. "" = the launcher routes by default.
+	LaunchFlag string
 	// Note documents config-file-routed tools (EnvVar == ""), where the
 	// base URL lives in a config file rather than an env var.
 	Note string
@@ -164,6 +208,74 @@ type ProxyRoute struct {
 	// on the proxy (T-035, PROVIDER-SWITCH-1). Nil = the route carries every
 	// turn already, or the tool has no overridable built-in providers.
 	ProviderOverrides []ProviderOverride
+	// ForeignLane, when non-nil, says this persisted route can ALSO carry a
+	// third-party OpenAI-compatible provider the developer configured (a host
+	// other than the route's fixed upstream) through a proxy `/up/<id>/` lane
+	// whose upstream is that same host, so the traffic still reaches the
+	// provider the developer chose. Only the managed daemon's route
+	// maintenance writes it (lane P1). Nil = the route only carries the fixed
+	// upstream, and a third-party host on it is never rewritten.
+	ForeignLane *ForeignProviderLane
+	// ConfigContentEnv names an environment variable whose value is a
+	// configuration document the tool merges over its own config files
+	// (opencode's OPENCODE_CONFIG_CONTENT). The launcher puts the route
+	// there too, so a project config file cannot shadow it, and the
+	// effective-layer evaluator reads it (from the injected environment
+	// only) as the config_content layer (surface-gap CLI-2, CLI-3). "" =
+	// no such variable.
+	ConfigContentEnv string
+	// DotenvOverride, when non-nil, says the tool loads .env files itself
+	// and lets them override its launch environment, so a base-URL
+	// variable in one of them shadows the launcher route (aider's
+	// load_dotenv(override=True), CLI-7). Nil = no such loading.
+	DotenvOverride *DotenvOverride
+	// LiveGate, when set, switches this route's writer off until the named
+	// live check passes (DEC-12, livegate.go): init, the dashboard and route
+	// maintenance refuse to run it and doctor says "built, waiting on live
+	// check <id>". Zero = the writer runs as its callers decide.
+	LiveGate LiveGate
+	// SharesCredentialFile declares the D-268 / D-270 credential-file
+	// exception for this route's writer (surface-gap FU-33, D9), mirroring
+	// MCPTarget.SharesCredentialFile: the file the writer read-modify-writes
+	// also holds plaintext credentials, so only a row carrying this flag may
+	// write it, and the writer then follows the probe-writer credential-file
+	// rules (internal/proxyroute probe_write.go): only the route keys
+	// change, every other byte stays, the mode is kept, no backup is left,
+	// and no error quotes the file. Pinned by tests/invariant
+	// TestRouteWritersIntoCredentialFilesAreDeclared.
+	SharesCredentialFile bool
+	// CredentialFileReason names the file and the credential it holds, for
+	// a route with SharesCredentialFile set. Empty otherwise.
+	CredentialFileReason string
+	// PersistedDefault, when non-nil, declares a writer that makes this
+	// route the tool's PERSISTED default, so a bare binary (no launcher)
+	// uses it too (surface-gap CLI-1a): it selects the provider entry the
+	// launcher writes as the default provider, or persists the base URL the
+	// launcher would inject. Nil = only the launcher applies the route.
+	PersistedDefault *PersistedDefault
+}
+
+// PersistedDefault is a route's default-provider writer
+// (ProxyRoute.PersistedDefault).
+type PersistedDefault struct {
+	// Note names the file and the key the writer sets, and what it
+	// requires to be there first.
+	Note string
+	// LiveGate switches the writer off until its live check passes
+	// (DEC-12). Every default-provider writer is gated on LC25 until the
+	// vendor keys that select the default provider are grounded live.
+	LiveGate LiveGate
+}
+
+// ForeignProviderLane describes a route's third-party-provider lane writer
+// (ProxyRoute.ForeignLane).
+type ForeignProviderLane struct {
+	// LiveVerified is true once a live turn through the lane landed an
+	// api_turns row on a real install. False = written by the managed
+	// daemon but still awaiting that confirmation (the honest state).
+	LiveVerified bool
+	// Note grounds the writer: which key it rewrites and what it keeps.
+	Note string
 }
 
 // Capability is one adapter's row in the registry: everything observer
@@ -211,10 +323,21 @@ type Capability struct {
 	Hook        HookSpec
 	MCP         *MCPTarget
 	Native      NativeRails
+	// RouteSurfaces refines Routability per capture surface (CLI, IDE,
+	// desktop, SDK, web; models.Surface*) and says whether a proxied turn
+	// of that surface can be joined back to its session. Owned by the
+	// routeSurfaces table in routesurface.go; nil = no per-surface facts,
+	// and every lookup falls back to the tool-level fields
+	// (Capability.RouteSurfaceFor).
+	RouteSurfaces []SurfaceRoute
 	// OTLP declares the tool's own OpenTelemetry export (where it is sent
 	// from, how to enable it, whether internal/otlpvendor maps it). Owned
 	// by the otlpExports table in otlpexport.go; zero value = none grounded.
 	OTLP OTLPExport
+	// StatusLine declares the tool's own status-line command (where it is
+	// set, its payload shape, whether Observer writes it). Owned by the
+	// statusLines table in statusline.go; zero value = none grounded.
+	StatusLine StatusLineSpec
 	// Enterprise is the tool's vendor enterprise-plane answer: the vendor
 	// surface catalog rows that cover it, a parent it inherits from, or an
 	// honest none (enterprise vendor API plan 4.2). Owned by the
@@ -255,6 +378,13 @@ type Capability struct {
 	// the dashboard install endpoint, the doctor) dispatch on the SHAPE of
 	// this field, never on tool name (CLAUDE.md #3).
 	Binary *BinaryResolveSpec
+	// InstallSignals are the extra evidence that the tool is installed on
+	// this machine before its own config home exists (installsignal.go,
+	// WINNODE item 5): a VS Code-family extension directory, or this row's
+	// own Binary resolving. Auto-wiring (`observer enroll`, `observer init`
+	// with no tool flag) treats a row whose signal holds as installed. Empty
+	// keeps the config-home probe alone.
+	InstallSignals []InstallSignal
 	// AuthEnv lists the environment-variable NAMES (never values) a tool reads
 	// its provider credentials from at runtime. The attach client forwards the
 	// caller's values for these keys claude-style — presence-forwarded (an
@@ -345,13 +475,27 @@ var registry = map[string]Capability{
 	"claude-code": {
 		Tool:       "claude-code",
 		PromptLane: PromptLaneHook,
-		Vocabulary: Vocabulary{InTaxonomy: true},
-		// ANTHROPIC_BASE_URL is the whole route: the Anthropic client has no
-		// second provider selector to fall back to, so an invocation that
-		// carries the injected base URL reaches the Observer proxy.
+		// The VS Code extension alone (no `claude` on PATH, no ~/.claude
+		// before its first session) reads the same ~/.claude settings and
+		// hooks (Windows Server 2025 demo, 2026-10-28: `observer init
+		// --claude-code` wired it, 24 hooks, while auto-detect saw nothing).
+		InstallSignals: []InstallSignal{{Kind: InstallSignalEditorExtension, ExtensionID: "anthropic.claude-code"}},
+		Vocabulary:     Vocabulary{InTaxonomy: true},
+		// ANTHROPIC_BASE_URL is the route for the first-party Anthropic
+		// provider. Claude Code also has provider selectors
+		// (CLAUDE_CODE_USE_ANTHROPIC_AWS / _BEDROCK / _FOUNDRY / _MANTLE /
+		// _VERTEX, the table in providerselectors.go); a session with one of
+		// them set goes to that provider instead and is not proxy-proven
+		// (surface-gap CC-10).
 		Proxy: &ProxyRoute{
+			ClientAuth:           ClientAuthPathToken,
+			SharesCredentialFile: true, CredentialFileReason: routeCredClaudeCode,
 			Kind: RouteEnvSettings, EnvVar: "ANTHROPIC_BASE_URL", Suffix: "",
 			Launcher: "observer claude", CrossOSBridge: true, Proof: RouteProofLauncherRoute,
+			// OBS-4: the route is per surface (routeSurfaces): proven for the
+			// CLI, ignored by Claude Desktop's Code tab, unproven in the IDE
+			// extensions and Agent SDK embeddings.
+			PromptScope: "Only Claude Code CLI sessions are proven to go through the proxy; Claude Desktop's Code tab ignores the settings route, and the IDE extensions and Agent SDK embeddings can override it, so their prompts are judged by the hooks or flagged after send.",
 		},
 		Routability: RouteStatusRoutableNow,
 		Hook:        HookSpec{Mechanism: HookClaudeSettings, CrossOSBridge: true, AutoWired: true, Bindings: hookBindingsClaudeCode, HooksShareCredentialFile: true, CredentialFileReason: credFileClaudeCode},
@@ -360,7 +504,14 @@ var registry = map[string]Capability{
 		// type is a configuration ERROR Claude Code skips, so the writer
 		// always emits `type`. Written by internal/mcp's shared JSON remote
 		// writer (W4a).
-		MCP: &MCPTarget{Format: MCPServersJSON, PathHint: ".claude.json", Implemented: true, SharesCredentialFile: true, CredentialFileReason: mcpCredClaudeCode, Remote: &MCPRemoteTarget{
+		// WindowsStdio grounded live 2026-10-20 on native Windows 11 (lane
+		// NPXMCP, T-923) with a throwaway stdio server and an isolated
+		// CLAUDE_CONFIG_DIR: the Node build 1.0.51 failed both a bare `npx`
+		// and `npx.cmd` (spawn ENOENT) and started `cmd /c npx`; the native
+		// build 2.1.304 started all three. `cmd /c` is the one form every
+		// tested build starts, and it is the wrapper Anthropic's MCP docs
+		// told native Windows users to use.
+		MCP: &MCPTarget{Format: MCPServersJSON, PathHint: ".claude.json", Implemented: true, SharesCredentialFile: true, CredentialFileReason: mcpCredClaudeCode, WindowsStdio: winshim.LaunchCmdShell, Remote: &MCPRemoteTarget{
 			Transports:   []MCPRemoteTransport{MCPRemoteStreamableHTTP, MCPRemoteSSE},
 			Headers:      true,
 			TransportKey: "type",
@@ -442,20 +593,78 @@ var registry = map[string]Capability{
 		// config); ~/.local/share/claude holds the versioned install and is
 		// read-only from the sandbox's perspective.
 		Sandbox: SandboxSpec{
-			StateRW: []string{".claude", ".claude.json", ".claude.json.backup"},
-			StateRO: []string{".local/share/claude"},
+			NeedsWin32k: true,
+			ProviderEnv: []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CONFIG_DIR"},
+			StateRW:     []string{".claude", ".claude.json", ".claude.json.backup"},
+			StateRO:     []string{".local/share/claude"},
 			// settings.json carries the hooks observer registers
 			// (internal/hook/register.go registerClaudeCode).
 			ProtectRO: []string{".claude/settings.json"},
+			// Windows 11 Pro rerun 2026-10-25, D3: Claude Code reads
+			// $CLAUDE_CONFIG_DIR/.claude.json when the variable is set,
+			// else ~/.claude.json; a first start shows the onboarding
+			// screens (they call api.anthropic.com and platform.claude.com
+			// directly, which the box refuses, and the tool exits 1), and
+			// with hasCompletedOnboarding true it starts without them.
+			// Sign-in seeding (lane BOXSIGNIN): the vendor's credential
+			// management docs name the file on Linux and Windows and the
+			// keychain on macOS.
+			SignIn: &SandboxSignIn{
+				Files: []string{".claude/.credentials.json"}, KeychainOn: []string{"darwin"}, Artifacts: []string{"claude-code/credentials"},
+				Grounding: "code.claude.com/docs/en/authentication, Credential management (read 2026-10-27): on Linux ~/.claude/.credentials.json (mode 0600), on Windows .claude/.credentials.json under %USERPROFILE%, on macOS the encrypted macOS Keychain (a file only when the Keychain rejects the write); CLAUDE_CONFIG_DIR moves the file",
+				DocURL:    "https://code.claude.com/docs/en/authentication",
+			},
+			ConfigHome: &SandboxConfigHome{
+				Env: "CLAUDE_CONFIG_DIR", Dir: ".claude", StateFile: ".claude.json", RelocatedStateFile: ".claude.json",
+				OnboardedKey: "hasCompletedOnboarding", SeedKeys: []string{"hasCompletedOnboarding", "theme"},
+				Grounding: "Windows 11 Pro rerun 2026-10-25 D3 debug logs (raw win8b-diag-debug2/3): exit 1 at showSetupScreens without the flag, a running session with it",
+			},
+			// A call that ran has a tool_result block (keyed by the call's
+			// tool_use_id) in a user line; PreToolUse names the same id.
+			// An errored result is not counted (an interrupted or refused
+			// call may never have reached the gate).
+			GateDrift: TranscriptGateSpec{
+				PayloadCallID: "tool_use_id",
+				Ran: []TranscriptBlockRule{{
+					LineKey: "type", LineValue: "user", Path: []string{"message", "content"},
+					BlockKey: "type", BlockValue: "tool_result", IDKey: "tool_use_id", SkipIfTrue: "is_error",
+				}},
+				// The call is a tool_use block (keyed by id) in an
+				// assistant line; every line carries an RFC 3339
+				// timestamp, which a resumed or forked session's copied
+				// history keeps.
+				Called: []TranscriptBlockRule{{
+					LineKey: "type", LineValue: "assistant", Path: []string{"message", "content"},
+					BlockKey: "type", BlockValue: "tool_use", IDKey: "id",
+				}},
+				TimestampKey: "timestamp",
+				Grounding:    "testdata/claudecode/multi-tool-turn.jsonl (tool_use id == tool_result tool_use_id) and the PreToolUse payload's tool_use_id (internal/hook/toolaccount.go)",
+			},
 		},
 		// Headless one-shot, grounded by the live benchmark drives
 		// (cmd/observer/benchmark_driver.go claudeCodeDriver): `claude -p
 		// <prompt> --output-format json` prints a result JSON envelope on
 		// stdout. Arena arena runner reuses the same argv shape.
+		//
+		// Permission lanes (OSH-R-005): bypass is the benchmark drive's
+		// --dangerously-skip-permissions; edit is acceptEdits (file edits
+		// inside the working directory run, anything else asks, and under -p
+		// an ask is a denial, askhost.go); read_only is the default mode with
+		// the writing and network tools disallowed. An explicit
+		// --permission-mode also overrides a defaultMode the copied
+		// settings.json may carry.
 		Headless: &HeadlessSpec{
 			PromptFlag: "-p",
 			OutputArgs: []string{"--output-format", "json"},
 			Result:     HeadlessResultStdoutJSON,
+			Permissions: map[HeadlessPermLane][]string{
+				HeadlessPermBypass: {"--dangerously-skip-permissions"},
+				HeadlessPermEdit:   {"--permission-mode", "acceptEdits"},
+				HeadlessPermReadOnly: {
+					"--permission-mode", "default",
+					"--disallowedTools", "Bash,Edit,Write,MultiEdit,NotebookEdit,WebFetch,WebSearch",
+				},
+			},
 		},
 	},
 	"codex": {
@@ -466,6 +675,8 @@ var registry = map[string]Capability{
 		// refuses to claim it when the invocation supplies its own config
 		// override, so an un-overridden launch reaches the Observer proxy.
 		Proxy: &ProxyRoute{
+			ClientAuth:           ClientAuthPathToken,
+			SharesCredentialFile: true, CredentialFileReason: routeCredCodex,
 			Kind: RouteConfigFile, EnvVar: "", Launcher: "observer codex",
 			Note:          "codex routes through ~/.codex/config.toml (model_provider=openai-observer base_url, or openai_base_url for the built-in openai provider; not an env var); a selected provider that resolves its own endpoint (amazon-bedrock, SigV4 to AWS) bypasses the proxy - `observer doctor codex` reports it",
 			CrossOSBridge: true, Proof: RouteProofLauncherRoute,
@@ -489,7 +700,15 @@ var registry = map[string]Capability{
 		// the discriminator), `http_headers` = static headers,
 		// `bearer_token_env_var`/`env_http_headers` = secret-by-reference
 		// (never written by the relay writer). No SSE spelling exists.
-		MCP: &MCPTarget{Format: MCPCodexTOML, PathHint: ".codex/config.toml", Implemented: true, SharesCredentialFile: true, CredentialFileReason: mcpCredCodex, Remote: &MCPRemoteTarget{
+		// WindowsStdio grounded 2026-10-20 (lane NPXMCP, T-923): codex-rs
+		// spawns an MCP command with Rust's std Command (no shell, no
+		// %PATHEXT%); rmcp-client/src/program_resolver.rs (openai/codex PR
+		// #3828, commit f828cd2897, first in rust-v0.59.0) resolves a bare
+		// name through PATHEXT on Windows. Live on native Windows 11 with an
+		// isolated CODEX_HOME: 0.58.0 failed a bare `npx` ("program not
+		// found") and started `npx.cmd` and `cmd /c npx`; 0.163.0 started
+		// all three. `npx.cmd` is the form every tested build starts.
+		MCP: &MCPTarget{Format: MCPCodexTOML, PathHint: ".codex/config.toml", Implemented: true, SharesCredentialFile: true, CredentialFileReason: mcpCredCodex, WindowsStdio: winshim.LaunchCmdExtension, Remote: &MCPRemoteTarget{
 			Transports:  []MCPRemoteTransport{MCPRemoteStreamableHTTP},
 			Headers:     true,
 			Implemented: true,
@@ -573,16 +792,38 @@ var registry = map[string]Capability{
 		// of the filesystem, not about this tool's own state.
 		// hooks.json = register.go codexHooksFile; config.toml carries
 		// mcp_servers (internal/mcp/locate) and the hooks feature flag.
-		Sandbox: SandboxSpec{StateRW: []string{".codex"}, ProtectRO: []string{".codex/hooks.json", ".codex/config.toml"}},
+		// SignIn (lane BOXSIGNIN): the Codex auth docs name auth.json under
+		// CODEX_HOME (default ~/.codex) for the file store; the keyring and
+		// auto stores keep it in the OS credential store, where no file
+		// exists and nothing is copied (config.toml, which says which, is
+		// never read: it holds provider keys).
+		Sandbox: SandboxSpec{
+			NeedsWin32k: true, ProviderEnv: []string{"OPENAI_API_KEY", "CODEX_HOME"}, StateRW: []string{".codex"}, ProtectRO: []string{".codex/hooks.json", ".codex/config.toml"},
+			SignIn: &SandboxSignIn{
+				Files:     []string{".codex/auth.json"},
+				Artifacts: []string{"codex/auth"}, MayUseKeychain: true,
+				Grounding: "learn.chatgpt.com/docs/auth (the developers.openai.com/codex/auth redirect, read 2026-10-27): Codex caches login details in a plaintext file at ~/.codex/auth.json or in the OS credential store; cli_auth_credentials_store file keeps auth.json under CODEX_HOME (default ~/.codex), keyring and auto use the OS store",
+				DocURL:    "https://developers.openai.com/codex/auth",
+			},
+		},
 		// Headless one-shot, grounded by the live benchmark drives
 		// (cmd/observer/benchmark_driver.go codexDriver): `codex exec
 		// <prompt> --json -o <file>` writes the final message to the -o
 		// file and thread ids to stdout JSON.
+		//
+		// Permission lanes (OSH-R-005): codex exec runs inside its own
+		// sandbox, so edit is -s workspace-write (the benchmark drive's
+		// shape) and read_only is -s read-only. No bypass lane: codex's
+		// --dangerously-bypass-approvals-and-sandbox is never driven.
 		Headless: &HeadlessSpec{
 			Lead:       []string{"exec"},
 			OutputArgs: []string{"--json"},
 			Result:     HeadlessResultOutputFile,
 			ResultFlag: "-o",
+			Permissions: map[HeadlessPermLane][]string{
+				HeadlessPermEdit:     {"--skip-git-repo-check", "-s", "workspace-write"},
+				HeadlessPermReadOnly: {"--skip-git-repo-check", "-s", "read-only"},
+			},
 		},
 	},
 
@@ -608,8 +849,16 @@ var registry = map[string]Capability{
 		// (demo node 1: a Zen session had bypassed the proxy and with it
 		// the only prompt lane OpenCode has).
 		Proxy: &ProxyRoute{
-			Kind: RouteLauncher, EnvVar: "OPENAI_BASE_URL", Suffix: "/v1",
+			ClientAuth: ClientAuthPathToken,
+			Kind:       RouteLauncher, EnvVar: "OPENAI_BASE_URL", Suffix: "/v1",
 			Launcher: "observer opencode", Proof: RouteProofLauncherRoute,
+			// CLI-2: a project opencode.json provider.openai.options.baseURL
+			// beats OPENAI_BASE_URL, so since Wave 4 the launcher also puts
+			// the openai route in OPENCODE_CONFIG_CONTENT, which opencode
+			// merges over every file but the managed one. That is what keeps
+			// RouteProofLauncherRoute honest; a caller-set
+			// OPENCODE_CONFIG_CONTENT leaves the proof unproven.
+			ConfigContentEnv: "OPENCODE_CONFIG_CONTENT",
 		},
 		Routability: RouteStatusRoutableNow,
 		Hook:        HookSpec{Mechanism: HookPluginShimTS, AutoWired: true, Bindings: hookBindingsOpenCode}, // plugin shim (Lane D)
@@ -630,7 +879,8 @@ var registry = map[string]Capability{
 		}},
 		Native:    NativeRails{},
 		TokenTier: TokenTier{Best: "sqlite", ReportsCost: true},
-		// P0.1 FULL: opencode.db message+part tables (reader = P2 tranche).
+		// P0.1 FULL: opencode.db message+part tables (reader = P2 tranche);
+		// OpenCode 2.x session_message read the same way (opencode/v2.go).
 		Handoff: HandoffCapability{Transcript: TranscriptFull, Inject: []InjectKind{InjectFile, InjectMCP, InjectPrompt}, Launch: &LaunchSpec{Subcommand: "opencode"}},
 		// Attach grounded 2026-07-24 (attach-all-launchers); PTY handoff only
 		// — no prompt seeding, token capture path unchanged.
@@ -697,6 +947,10 @@ var registry = map[string]Capability{
 			Result:            HeadlessResultOpenCodeEvents,
 			ProxyModelPrefix:  "openrouter/",
 			ProxyDefaultModel: "openrouter/stealth/ox-alpha",
+			// opencode run asks nothing: its default permission set lets
+			// every tool run, with no flag to say so. That is a bypass with
+			// no tokens (OSH-R-005); no other lane is grounded.
+			Permissions: map[HeadlessPermLane][]string{HeadlessPermBypass: {}},
 		},
 		// Sandbox filesystem-isolation row (B9). GROUNDED against
 		// internal/adapter/opencode/adapter.go defaultRoots (~/.opencode and
@@ -706,6 +960,12 @@ var registry = map[string]Capability{
 		// whole state tree is bound rw: the tool needs its own credentials.
 		Sandbox: SandboxSpec{
 			StateRW: []string{".local/share/opencode", ".config/opencode", ".opencode"},
+			// macOS (live user install 2026-10-29, D-MU6): opencode also
+			// writes its XDG state dir (prompt history, model memory) and
+			// failed under Seatbelt without it, and its XDG cache dir
+			// (~/.cache/opencode/bin, re-check 2026-10-29: EEXIST on mkdir
+			// in the blinded home, N2). Linux is not grounded yet.
+			StateRWByOS: map[string][]string{"darwin": {".local/state/opencode", ".cache/opencode"}},
 			// opencode.json carries the MCP servers (internal/mcp/locate).
 			ProtectRO: []string{".config/opencode/opencode.json"},
 		},
@@ -772,12 +1032,17 @@ var registry = map[string]Capability{
 		PromptLane: PromptLaneHook,
 		Vocabulary: Vocabulary{InTaxonomy: true},
 		// Surface-split (2026-06-26): the NATIVE Cursor backend has no base-URL
-		// knob (exempt), but Cursor's custom "OpenAI Base URL" / BYOK model
-		// setting MAY route through observer — unconfirmed on a live install,
-		// so probe before flipping Proxy on. Proxy stays nil (observer drives
-		// no route today); the surface is recorded in Routability, not faked.
+		// knob. RECLASSIFIED native_exempt 2026-10-25 (surface-gap arc IDE-4,
+		// lane w2-c): the one BYOK knob, the custom "OpenAI Base URL", cannot
+		// reach a loopback proxy, because Cursor relays even BYOK requests
+		// through its own servers ("all requests are routed through Cursor's
+		// servers", cursor.com/docs/settings/api-keys), which cannot reach
+		// 127.0.0.1 on the developer's machine. cursor-agent documents no
+		// base-URL knob either. Only a publicly reachable org gateway could
+		// sit behind that knob, which is an org-plane design question, not a
+		// node route. Proxy stays nil.
 		Proxy:       nil,
-		Routability: RouteStatusProbeRequired,
+		Routability: RouteStatusNativeExempt,
 		Hook:        HookSpec{Mechanism: HookCursor, CrossOSBridge: true, AutoWired: true, Bindings: hookBindingsCursor},
 		// Remote grounded 2026-09-24 against cursor.com/docs/context/mcp:
 		// `{"url":…,"headers":{…}}` — NO type key on a remote entry (type is
@@ -965,11 +1230,10 @@ var registry = map[string]Capability{
 			Wrap: WrapSpec{
 				Kind: WrapNone,
 				Reason: "the in-IDE agent's backend is hard-wired to Cursor's own service - no base-URL env " +
-					"var exists. The one BYOK knob (\"OpenAI Base URL\") is a VS Code setting persisted in the " +
-					"live `state.vscdb`, which Observer will not write; it is a manual paste, which is why this " +
-					"row's Routability is probe_required with RouteManual rather than a driven route " +
-					"(inventory §2.5 / §4.2). Launch yes, wrap no; capture rides the agent-transcripts + " +
-					"store.db watcher path.",
+					"var exists. The one BYOK knob (\"OpenAI Base URL\") cannot point at a loopback proxy: " +
+					"Cursor relays even BYOK requests through its own servers (cursor.com/docs/settings/api-keys), " +
+					"which cannot reach 127.0.0.1, so this row's Routability is native_exempt (surface-gap IDE-4). " +
+					"Launch yes, wrap no; capture rides the agent-transcripts + store.db watcher path.",
 			},
 			Hosts:    []string{"cursor"},
 			Grounded: true,
@@ -1005,34 +1269,51 @@ var registry = map[string]Capability{
 			"those rows Tool=\"roo-code\" per file. No roo-code registry row exists by design (every cell " +
 			"would be zero or copied) - see productLifecycles[\"roo-code\"] for that product's lifecycle. " +
 			"Cline itself is active.",
-		// VS Code extension → backend. The "OpenAI Compatible" Base URL surface
-		// is routable, but it is a MANUAL-PASTE route, not an auto-writer:
-		// live-grounded 2026-06-27, Cline stores its provider/base-URL config
-		// in VS Code's globalState (state.vscdb) + SecretStorage, NOT a JSON
-		// file (the globalStorage settings dir holds only cline_mcp_settings
-		// .json; the claude-dev globalState key held only welcomeViewCompleted,
-		// no openAiBaseUrl anywhere). Writing state.vscdb while VS Code runs is
-		// unsafe — its in-memory cache overwrites external writes on exit. So
-		// the route is `observer`-printed instructions to paste into the
-		// extension UI (RouteManual), surfaced via proxyroute.VSCodeBaseURLHint.
-		Proxy:       nil,
-		Routability: RouteStatusRoutableNow,
+		// VS Code extension → backend. Current builds (cline/cline main,
+		// re-fetched 2026-10-25, surface-gap lane w2-d) resolve each
+		// provider's base URL from ~/.cline/data/globalState.json
+		// <provider>BaseUrl (CLINE_DATA_DIR > CLINE_DIR), which beats
+		// providers.json (resolveBaseUrl). The 2026-06-27 grounding (VS Code
+		// state.vscdb only, a manual paste) predates that store.
+		// proxyroute.RegisterCline writes the active provider's member as a
+		// probe writer (OpenAI Compatible and Anthropic only; a foreign
+		// endpoint, an unroutable provider or split Act/Plan endpoints are
+		// refused). The extension reads globalState.json once at start and
+		// rewrites its whole copy on every state change, so the route applies
+		// at its next start. Proxy stays nil and the row probe_required until a
+		// live routed turn lands an api_turns row (IDE-8; the old
+		// routable_now with no writer was an overclaim).
+		Proxy: nil,
+		ProxyProbe: &ProxyRoute{
+			SharesCredentialFile: true, CredentialFileReason: routeCredCline,
+			Kind:    RouteConfigFile,
+			Setting: "openAiBaseUrl",
+			Note:    "proxyroute.RegisterCline sets the active provider's base-URL member (openAiBaseUrl or anthropicBaseUrl) in ~/.cline/data/globalState.json (CLINE_DATA_DIR > CLINE_DIR); never a key; applies at the extension's next start; credential-adjacent file, probe-writer rules (D9)",
+		},
+		Routability: RouteStatusProbeRequired,
 		// T-342 (2026-10-04): the ~/.cline/hooks tool-gate registration lives
 		// on the cline-cli row (the CLI reads that directory, live); whether
 		// this extension does is unconfirmed, so its bindings are vendor-only.
 		Hook: HookSpec{Mechanism: HookNone, Bindings: hookBindingsCline},
-		// Cline (saoudrizwan.claude-dev) hosts MCP in VS Code globalStorage
-		// cline_mcp_settings.json (standard {"mcpServers":{…}} shape, live-
-		// confirmed 2026-06-26: {"mcpServers":{}}). Written natively on the
-		// daemon OS (locate "cline") AND cross-OS into a Windows VS Code from
-		// a WSL daemon via the cline-windows wsl.exe bridge (CrossOSBridge).
+		// Current Cline builds (the VS Code extension, the Cline CLI and Cline
+		// for JetBrains) read ONE shared MCP file,
+		// ~/.cline/data/settings/cline_mcp_settings.json, relocated by
+		// CLINE_MCP_SETTINGS_PATH > CLINE_DATA_DIR > CLINE_DIR (agentconfig
+		// cline/mcp-settings). The old VS Code globalStorage copy
+		// (saoudrizwan.claude-dev/settings/cline_mcp_settings.json,
+		// cline/mcp-settings-legacy) is migrated once and never re-read
+		// (cline/cline main, 2026-10-25, lane w2-d). Observer writes the
+		// shared file natively (locate "cline") and cross-OS into the Windows
+		// home from a WSL daemon via the cline-windows wsl.exe bridge
+		// (CrossOSBridge); unregister also removes an entry an older build
+		// left in the legacy file. Standard {"mcpServers":{…}} shape.
 		// Remote grounded 2026-09-24 against docs.cline.bot/mcp/configuring-
 		// mcp-servers: `{"type":"streamableHttp"|"sse","url":…,"headers":{…},
 		// "disabled":false,"autoApprove":[]}` — an OMITTED type defaults to
 		// the legacy sse transport, so the writer always emits it. autoApprove
 		// is left unset (its absence = no auto-approval, the safe default).
 		// Same writer natively AND through the cline-windows bridge path.
-		MCP: &MCPTarget{Format: MCPServersJSON, PathHint: "<vscode>/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json", Implemented: true, SharesCredentialFile: true, CredentialFileReason: mcpCredCline, CrossOSBridge: true, Remote: &MCPRemoteTarget{
+		MCP: &MCPTarget{Format: MCPServersJSON, PathHint: ".cline/data/settings/cline_mcp_settings.json", Implemented: true, SharesCredentialFile: true, CredentialFileReason: mcpCredCline, CrossOSBridge: true, Remote: &MCPRemoteTarget{
 			Transports:   []MCPRemoteTransport{MCPRemoteStreamableHTTP, MCPRemoteSSE},
 			Headers:      true,
 			TransportKey: "type",
@@ -1075,12 +1356,15 @@ var registry = map[string]Capability{
 	"copilot-cli": {
 		Tool:       "copilot-cli",
 		Vocabulary: Vocabulary{InTaxonomy: true},
-		// FIX-7 (phase-2 review): Copilot CLI/SDK's userPromptSubmitted
-		// is REDACT-capable but explicitly cannot block ("This hook
-		// cannot reject a prompt or enforce policy" — GitHub docs,
-		// contract §2.2) and no writer exists for it yet; the proxy
-		// lane (already routed today) is the only real coverage.
-		PromptLane: PromptLaneProxyOnly,
+		// Guard-fix lane B (live 2026-10-15, copilot 1.0.96): the
+		// userPromptSubmitted COMMAND hook blocks ({handled:true,
+		// responseContent} plus modifiedPrompt, zero model requests),
+		// redacts (modifiedPrompt) and warns the model (additionalContext),
+		// superseding FIX-7's reading of the docs ("cannot reject a
+		// prompt"; "command hooks have their output dropped"). Observer
+		// writes it beside preToolUse; the proxy lane still covers BYOK
+		// sessions as well.
+		PromptLane: PromptLaneHook,
 		// BYOK path: COPILOT_PROVIDER_BASE_URL/_TYPE/_API_KEY + COPILOT_MODEL →
 		// OpenAI-compatible endpoint (GitHub Docs); native GitHub-hosted
 		// routing stays exempt.
@@ -1095,7 +1379,8 @@ var registry = map[string]Capability{
 		// provider TYPE alongside the base URL; the argv keys below are the
 		// grounded ways an invocation can pick a different backend anyway.
 		Proxy: &ProxyRoute{
-			Kind: RouteLauncher, EnvVar: "COPILOT_PROVIDER_BASE_URL", Suffix: "/v1",
+			ClientAuth: ClientAuthPathToken,
+			Kind:       RouteLauncher, EnvVar: "COPILOT_PROVIDER_BASE_URL", Suffix: "/v1",
 			Launcher: "observer copilot-cli", Proof: RouteProofLauncherRoute,
 			SelectorArguments: []string{
 				"--provider-type", "--provider_type", "--provider-base-url",
@@ -1133,9 +1418,12 @@ var registry = map[string]Capability{
 			PromptScope: "Only BYOK sessions (your own COPILOT_PROVIDER_API_KEY plus a model) go through the proxy; a session on your GitHub Copilot sign-in cannot be routed and launches unrouted, captured from Copilot's own session files.",
 		},
 		Routability: RouteStatusRoutableNow,
-		Hook:        HookSpec{Mechanism: HookCopilotCLIHooks, AutoWired: true, Bindings: hookBindingsCopilotCLI},
-		MCP:         nil,
-		Native:      NativeRails{}, // shares Copilot's GitHub governance but no separate node rail grounded.
+		// CrossOSBridge: true - internal/hook's copilot-cli-windows target
+		// (live check 2026-10-20: a WSL daemon never wired the Windows
+		// Copilot CLI, so its tool gate did not exist there).
+		Hook:   HookSpec{Mechanism: HookCopilotCLIHooks, CrossOSBridge: true, AutoWired: true, Bindings: hookBindingsCopilotCLI},
+		MCP:    nil,
+		Native: NativeRails{}, // shares Copilot's GitHub governance but no separate node rail grounded.
 		// Captures cache read + creation and nets input (log.go). Live
 		// 2026-06-26 grounding: session.shutdown carries the FULL
 		// session-aggregate input/cache/cost WITHOUT --log-level debug
@@ -1206,18 +1494,28 @@ var registry = map[string]Capability{
 		// session-state and <home>/.copilot/logs). ~/.copilot is the CLI's whole
 		// state dir and is bound rw as one dir; it holds this tool's own GitHub
 		// auth state.
-		Sandbox: SandboxSpec{StateRW: []string{".copilot"}},
+		// macOS (live user install 2026-10-29, D-MU6): the CLI also writes
+		// ~/Library/Caches/copilot and failed under Seatbelt without it.
+		Sandbox: SandboxSpec{ProviderEnv: []string{"COPILOT_PROVIDER_API_KEY", "COPILOT_PROVIDER_API_KEY_COMMAND", "COPILOT_PROVIDER_BEARER_TOKEN", "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"}, StateRW: []string{".copilot"}, StateRWByOS: map[string][]string{"darwin": {"Library/Caches/copilot"}}},
 	},
 	"kilo-code": {
 		Tool:       "kilo-code",
 		Vocabulary: Vocabulary{InTaxonomy: true},
-		// Legacy IDE extension (wraps cline). Same "OpenAI Compatible" Base URL
-		// surface as cline VS Code, and the same MANUAL-PASTE reality: the
-		// base URL lives in live VS Code globalState (state.vscdb), not a
-		// writable JSON, so the route is operator-pasted instructions
-		// (RouteManual / proxyroute.VSCodeBaseURLHint), not an auto-writer.
+		// Legacy IDE extension (Kilo Code < 7, wraps cline). Its "OpenAI
+		// Compatible" base URL lives in live VS Code globalState
+		// (state.vscdb), which Observer never writes, and the manual-paste
+		// hint it once cited (proxyroute.VSCodeBaseURLHint) has no caller
+		// (gap review IDE-8). Kilo Code 7.x is a different product shape: it
+		// embeds the Kilo runtime, shares ~/.config/kilo/kilo.jsonc with the
+		// CLI and Kilo Code for JetBrains v7, and its sessions land in
+		// kilo.db, so they belong to the kilo-code-cli row (gap review IDE-9,
+		// inventory 2026-10-25 section 2.4). So this row describes only the
+		// legacy extension, and its route claim is probe_required, not
+		// routable_now: a knob exists, no writer reaches it and no routed
+		// turn was ever seen. Whether 7.x loads the global plugin shim is
+		// live check LC16.
 		Proxy:       nil,
-		Routability: RouteStatusRoutableNow,
+		Routability: RouteStatusProbeRequired,
 		Hook:        HookSpec{Mechanism: HookNone, Bindings: kiloBindings(false)},
 		MCP:         nil,
 		Native:      NativeRails{},
@@ -1235,13 +1533,20 @@ var registry = map[string]Capability{
 	"kilo-code-cli": {
 		Tool:       "kilo-code-cli",
 		Vocabulary: Vocabulary{InTaxonomy: true},
-		// Native-exempt per the live 2026-06-26 finding: @kilocode/cli has no
-		// base-URL env handling and talks to the api.kilo.ai gateway directly
-		// (docs/kilo-code-adapter.md). A grounded negative, not "permanently
-		// impossible" — a future @kilocode/cli custom-provider knob would
-		// reclassify it; a re-probe is optional/low-priority.
+		// probe_required (gap review CLI-9, surface-gap lane w8-registry,
+		// 2026-10-28). The live 2026-06-26 finding stands for the env: the
+		// CLI reads no base-URL variable and talks to the api.kilo.ai gateway
+		// by default (docs/kilo-code-adapter.md). But Kilo now documents a
+		// custom OpenAI-compatible provider, provider.<id>.options.baseURL in
+		// kilo.jsonc (Kilo-Org/kilocode packages/kilo-docs/pages/ai-providers/
+		// openai-compatible.md, re-fetched 2026-10-25, inventory X8), and the
+		// generated catalogue carries that key, so native_exempt was stale.
+		// No writer exists and no routed turn was seen: whether a request
+		// through that provider reaches the proxy is live check LC24. The
+		// same kilo.jsonc is read by Kilo Code 7.x for VS Code and Kilo Code
+		// for JetBrains v7 (IDE-9); routeSurfaces carries that IDE row.
 		Proxy:       nil,
-		Routability: RouteStatusNativeExempt,
+		Routability: RouteStatusProbeRequired,
 		Hook:        HookSpec{Mechanism: HookPluginShimTS, AutoWired: true, Bindings: kiloBindings(true)}, // plugin shim (Lane D)
 		MCP:         nil,
 		Native:      NativeRails{},
@@ -1307,13 +1612,14 @@ var registry = map[string]Capability{
 	"cline-cli": {
 		Tool:       "cline-cli",
 		Vocabulary: Vocabulary{InTaxonomy: true},
-		// FIX-7 (phase-2 review): no prompt-submit hook lane for
-		// cline-cli — it is already proxy-routed today, which is its
-		// only realistic path to prompt-submit intervention (Cline's
-		// UserPromptSubmit hook exists for the VS Code extension, a
-		// DIFFERENT tool row, `cline`, with its own POSIX-only
-		// registration caveat).
-		PromptLane: PromptLaneProxyOnly,
+		// Guard-fix lane B (live 2026-10-15, cline 3.0.68): the file
+		// UserPromptSubmit hook is detached and never fired for the
+		// initial prompt, but the Cline Plugin API's beforeModel is awaited
+		// before every model call and can stop the turn or rewrite the
+		// messages. Observer's plugin (internal/hook/pluginshim "cline"
+		// shape) is that prompt gate: block and redact, no developer-visible
+		// warning or resend message (a stop reason is shown nowhere).
+		PromptLane: PromptLaneHook,
 		// ROUTABLE via the openai-compatible provider's persisted baseUrl —
 		// VERIFIED LIVE 2026-06-27. The NATIVE `openai` provider hardcodes
 		// api.openai.com and ignores OPENAI_BASE_URL (confirmed: `-P openai -k …`
@@ -1332,27 +1638,28 @@ var registry = map[string]Capability{
 		// a forwarded `-P` / `--provider` of the operator's own takes the
 		// proof away for that invocation.
 		Proxy: &ProxyRoute{
+			ClientAuth:           ClientAuthPathToken,
+			SharesCredentialFile: true, CredentialFileReason: routeCredClineCLI,
 			Kind: RouteProviderJSON, EnvVar: "", Suffix: "/v1", Launcher: "observer cline-cli",
 			Note:              "routes via the openai-compatible provider's settings.baseUrl in ~/.cline/data/settings/providers.json; launcher writes baseUrl, never a key",
 			Proof:             RouteProofLauncherRoute,
 			SelectorArguments: []string{"-P"},
 		},
 		Routability: RouteStatusRoutableNow,
-		// T-342 (2026-10-04): Observer writes ~/.cline/hooks/PreToolUse (the
-		// tool gate, `observer hook cline-cli PreToolUse`); the lifecycle and
-		// tool-result bindings stay the hooks.jsonl tailer (clinecli/hook.go),
-		// which writing a hook in that directory also switches on.
+		// Guard-fix lane B (2026-10-15): Observer writes the guard PLUGIN
+		// ($CLINE_DIR/plugins/superbased-observer-guard.js: beforeModel
+		// prompt gate + beforeTool per-call gate) and replaces the T-342
+		// ~/.cline/hooks/PreToolUse gate script with a no-op keep-alive; the
+		// lifecycle and tool-result bindings stay the hooks.jsonl tailer
+		// (clinecli/hook.go), which a hook file in that directory keeps on.
 		Hook: HookSpec{Mechanism: HookClineHookFiles, AutoWired: true, Bindings: hookBindingsClineCLI},
-		// MCP: nil here means "no WRITER", not "not capable" — re-grounded
-		// 2026-08-01 against cline 3.0.48. There is still NO
-		// cline_mcp_settings.json on the live install (the settings dir holds
-		// only providers.json + cli-notices.json), but Cline CLI IS
-		// MCP-capable via a command: `cline mcp install|add <name>
-		// [targetArgs...] --transport stdio --yes`. MCPTarget cannot express
-		// that today — every MCPFormat names a FILE and PathHint assumes one —
-		// so wiring it needs a command-mediated MCPFormat plus a writer in
-		// internal/mcp, not a row edit. Left nil deliberately rather than
-		// fabricating a target we cannot write (docs/clinecli-adapter.md).
+		// MCP: nil means "served by the cline row's writer", not "not
+		// capable". The Cline CLI reads the same shared
+		// ~/.cline/data/settings/cline_mcp_settings.json the cline row's
+		// MCPTarget writes (cline/cline main, 2026-10-25, lane w2-d), so one
+		// writer fills it for every Cline client; a second target here would
+		// be a second writer of one file (CLAUDE.md #4). `cline mcp
+		// install|add` is the vendor's own command path.
 		MCP:       nil,
 		Native:    NativeRails{},
 		TokenTier: TokenTier{Best: "sqlite", ReportsCost: true}, // sessions.db + per-session messages.json; full.
@@ -1516,7 +1823,10 @@ var registry = map[string]Capability{
 		// The openrouter lane is the live-verified host root above
 		// (docs/proxy-routing.md, docs/hermes-adapter.md); built in so the
 		// default --upstream resolves without a [proxy.upstreams] entry.
-		Proxy:       &ProxyRoute{Kind: RouteProviderJSON, EnvVar: "", Suffix: "/up/openrouter/api/v1", Launcher: "observer hermes", Note: "routes via a user-config `observer` provider (providers: section) in ~/.hermes/config.yaml with key_env (secret-free); launcher writes the provider additively, never a key; the default openrouter lane is built in (a [proxy.upstreams] openrouter entry overrides it); another --upstream needs its own [proxy.upstreams] entry", Lane: &ProxyLane{ID: "openrouter", DefaultUpstream: "https://openrouter.ai"}},
+		Proxy: &ProxyRoute{ClientAuth: ClientAuthPathToken, Kind: RouteProviderJSON, EnvVar: "", Suffix: "/up/openrouter/api/v1", Launcher: "observer hermes", Note: "routes via a user-config `observer` provider (providers: section) in ~/.hermes/config.yaml with key_env (secret-free); launcher writes the provider additively, never a key; the default openrouter lane is built in (a [proxy.upstreams] openrouter entry overrides it); another --upstream needs its own [proxy.upstreams] entry", Lane: &ProxyLane{ID: "openrouter", DefaultUpstream: "https://openrouter.ai"}, SharesCredentialFile: true, CredentialFileReason: routeCredHermes, PersistedDefault: &PersistedDefault{
+			Note:     "CLI-1a: proxyroute.RegisterDefaultProvider(hermes) sets model.provider = observer in ~/.hermes/config.yaml once the launcher's providers.observer entry is there, so a bare hermes routes; YAML member edit, never a key",
+			LiveGate: "LC25",
+		}},
 		Routability: RouteStatusRoutableNow,
 		Hook:        HookSpec{Mechanism: HookHermesPlugin, AutoWired: true, Bindings: hookBindingsHermes, HooksShareCredentialFile: true, CredentialFileReason: credFileHermes}, // embedded plugin via `observer init --hermes`.
 		// Remote grounded 2026-09-24 against hermes-agent.nousresearch.com/
@@ -1624,7 +1934,7 @@ var registry = map[string]Capability{
 		// store and the OpenRouter credentials the agent needs — bound rw as one
 		// dir.
 		// plugins/ is auto-discovered Python (internal/hook/hermesplugin).
-		Sandbox: SandboxSpec{StateRW: []string{".hermes"}, ProtectRODirs: []string{".hermes/plugins"}},
+		Sandbox: SandboxSpec{ProviderEnv: []string{"OPENROUTER_API_KEY"}, StateRW: []string{".hermes"}, ProtectRODirs: []string{".hermes/plugins"}},
 		// GUI launch row (plan §2.2): Hermes Desktop shares ~/.hermes with
 		// this row's CLI ("one agent, one memory, every surface"). UNVERIFIED
 		// layout ⇒ Grounded=false, empty Binary, never launchable.
@@ -1770,6 +2080,21 @@ var registry = map[string]Capability{
 				CredentialEnv:   []string{"GEMINI_API_KEY"},
 				UnroutedBecause: "Gemini CLI has no GEMINI_API_KEY in this environment, so it uses your Google sign-in (or Vertex AI), which talks to Google directly",
 				RoutedCaveat:    "if Gemini CLI is set to sign in with Google or to use Vertex AI (/auth, GOOGLE_GENAI_USE_GCA or GOOGLE_GENAI_USE_VERTEXAI), it ignores this and talks to Google directly",
+				// CLI-6 (surface-gap review): the saved sign-in mode
+				// (security.auth.selectedType, which /auth writes) and an
+				// administrator's enforcedType decide the host before
+				// GOOGLE_GEMINI_BASE_URL is read; a .env in a trusted folder
+				// can flip it with GOOGLE_GENAI_USE_GCA / _VERTEXAI. Key
+				// presence only (google-gemini/gemini-cli
+				// packages/cli/src/config/settings.ts).
+				AuthSettingKeys: []AuthSettingKey{
+					{File: "gemini-cli/user-settings", Key: "security.auth.selectedType"},
+					{File: "gemini-cli/project-settings", Key: "security.auth.selectedType"},
+					{File: "gemini-cli/system-settings", Key: "security.auth.selectedType"},
+					{File: "gemini-cli/system-settings", Key: "security.auth.enforcedType"},
+				},
+				DotenvKeys:  []string{"GOOGLE_GENAI_USE_GCA", "GOOGLE_GENAI_USE_VERTEXAI"},
+				DotenvFiles: []string{"<project>/.gemini/.env", "<project>/.env", "~/.gemini/.env", "~/.env"},
 			},
 			PromptScope: "Only Gemini API-key sessions (GEMINI_API_KEY exported where you launch) go through the proxy; a session signed in with Google, or on Vertex AI, talks to Google directly and is captured from Gemini's own session files.",
 		},
@@ -1837,7 +2162,16 @@ var registry = map[string]Capability{
 		// internal/adapter/gemini/adapter.go defaultRoots (<home>/.gemini/tmp) —
 		// ~/.gemini is the whole CLI state dir (settings, oauth creds, per-project
 		// tmp/ chats). Bound rw as one dir; it holds this tool's own credentials.
-		Sandbox: SandboxSpec{StateRW: []string{".gemini"}, ProtectRO: []string{".gemini/settings.json"}},
+		// macOS (live user install 2026-10-29, D-MU6): gemini-cli runs
+		// /bin/ps at start and exits when it is refused in the Seatbelt box.
+		// /bin/ps is setuid root: letting it run would hand the box a root
+		// program that lists every process of every user with their command
+		// lines, which the profile's same-sandbox process-info rule exists to
+		// prevent, so the box is not widened and the limitation is recorded.
+		Sandbox: SandboxSpec{
+			NeedsWin32k: true, ProviderEnv: []string{"GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_PROJECT_ID", "GOOGLE_CLOUD_LOCATION"}, StateRW: []string{".gemini"}, ProtectRO: []string{".gemini/settings.json"},
+			OSNotes: map[string]string{"darwin": "gemini-cli runs /bin/ps (setuid root) at start; a Seatbelt box refuses it, so gemini-cli exits in a macOS Seatbelt box; run it with another driver or unsandboxed"},
+		},
 	},
 	"openclaw": {
 		Tool:       "openclaw",
@@ -1960,7 +2294,7 @@ var registry = map[string]Capability{
 		// and <home>/.openclaw/agents). ~/.openclaw is the whole state dir
 		// (sessions.json, per-agent sqlite stores, auth) and is bound rw as one
 		// dir.
-		Sandbox: SandboxSpec{StateRW: []string{".openclaw"}},
+		Sandbox: SandboxSpec{NeedsWin32k: true, StateRW: []string{".openclaw"}},
 		// GUI launch row (plan §2.2): the OpenClaw desktop companion. It is
 		// Gateway-scoped, not project-scoped — there is no project argv and
 		// no per-workspace launch semantics.
@@ -2034,6 +2368,12 @@ var registry = map[string]Capability{
 		// the compression benefit is small by pi's architecture, not a gate.
 		// (docs/proxy-routing-blockers.md)
 		Proxy: &ProxyRoute{
+			ClientAuth:           ClientAuthPathToken,
+			SharesCredentialFile: true, CredentialFileReason: routeCredPi,
+			PersistedDefault: &PersistedDefault{
+				Note:     "CLI-1a: proxyroute.RegisterDefaultProvider(pi) sets defaultProvider = observer in ~/.pi/agent/settings.json once the launcher's observer provider is in models.json, so a bare pi routes; member edit, never a key; defaultModel must name a model of that provider (part of the live check)",
+				LiveGate: "LC25",
+			},
 			Kind: RouteProviderJSON, EnvVar: "", Suffix: "/v1", Launcher: "observer pi", Note: "routes via ~/.pi/agent/models.json custom 'observer' provider baseUrl (not an env var); launcher writes it, never a key",
 			// Demo node 1, 2026-10-02: a pi session on another provider
 			// (baseten) never reached the proxy.
@@ -2102,7 +2442,7 @@ var registry = map[string]Capability{
 		// Sandbox filesystem-isolation row (B9). GROUNDED against
 		// internal/adapter/pi/adapter.go defaultRoots (<home>/.pi/agent/sessions).
 		// ~/.pi is the CLI's whole state dir and is bound rw as one dir.
-		Sandbox: SandboxSpec{StateRW: []string{".pi"}},
+		Sandbox: SandboxSpec{NeedsWin32k: true, ProviderEnv: []string{"OPENAI_API_KEY"}, StateRW: []string{".pi"}},
 	},
 	"antigravity": {
 		Tool:       "antigravity",
@@ -2125,11 +2465,16 @@ var registry = map[string]Capability{
 		// CLI's exact schema (clidb.go, live-grounded 2026-09-03) — and
 		// ABSENT for the standalone IDE build, which wrote only the
 		// encrypted .pb + the transcript that day (no usage anywhere; the
-		// .pb cipher stays parked, IDE-12).
-		TokenTier: TokenTier{Best: "sqlite", Gap: "standalone-IDE conversations (no .db) carry no usage: transcript.jsonl has none, .pb still decrypt-gated", SynthesizedTimestamps: true},
+		// .pb cipher stays parked, IDE-12). RE-GROUNDED 2026-10-28 (the
+		// Windows demo node, WINNODE2 item 9): the standalone Antigravity
+		// IDE 2.6.0 (bundled agy 1.4.9) writes conversations/<uuid>.db too,
+		// and Observer captured real per-turn tokens, cache reads and the
+		// model for every IDE session, so only pre-2.6 IDE builds keep the
+		// .pb-only store.
+		TokenTier: TokenTier{Best: "sqlite", Gap: "pre-2.6 standalone-IDE builds write only the encrypted .pb + transcript.jsonl, so their conversations carry no usage; IDE 2.6+ (bundled agy, live 2026-10-28) writes conversations/<uuid>.db with real tokens", SynthesizedTimestamps: true},
 		// Desktop transcript.jsonl is readable plaintext → text + actions
 		// present; tokens only for agy-backed (.db) conversations → partial.
-		Handoff: HandoffCapability{Transcript: TranscriptPartial, Inject: []InjectKind{InjectFile}, Note: "desktop transcript.jsonl plaintext (text + actions); tokens only when an agy .db exists (VS Code extension), absent for the standalone IDE"},
+		Handoff: HandoffCapability{Transcript: TranscriptPartial, Inject: []InjectKind{InjectFile}, Note: "desktop transcript.jsonl plaintext (text + actions); tokens whenever an agy .db exists (VS Code extension, standalone IDE 2.6+), absent for pre-2.6 standalone IDE builds"},
 		// Active row, but the lifecycle context is worth carrying: this is
 		// Google's SUCCESSOR family after the 2026-06-18 retirement of
 		// Gemini CLI + Gemini Code Assist for individual / AI Pro / AI Ultra
@@ -2158,17 +2503,24 @@ var registry = map[string]Capability{
 				},
 				Installs: []InstallHint{
 					{OS: "windows", Channel: "winget", Argv: []string{"winget", "install", "--id", "Google.Antigravity", "-e", "--source", "winget"}, Display: "winget install --id Google.Antigravity -e --source winget"},
-					{OS: "darwin", Channel: "brew", Argv: []string{"brew", "install", "--cask", "antigravity"}, Display: "brew install --cask antigravity"},
+					// MAC-4 (docs/handovers/surface-gap-mac4-report.md): the
+					// cask `antigravity` now installs the separate Antigravity 2
+					// agent app; the IDE is the cask `antigravity-ide`.
+					{OS: "darwin", Channel: "brew", Argv: []string{"brew", "install", "--cask", "antigravity-ide"}, Display: "brew install --cask antigravity-ide"},
 				},
 				InstallNote: "no grounded Linux channel: antigravity.google ships a direct download, not a " +
 					"scriptable one-liner.",
 			},
-			DarwinApp: "Antigravity",
-			// FALSE, grounded negative: unlike every other VS Code fork on
-			// this box (Kiro, Qoder, Windsurf, Cursor), the antigravity
+			DarwinApp: "Antigravity IDE",
+			// FALSE, grounded negative on Windows: unlike every other VS Code
+			// fork on this box (Kiro, Qoder, Windsurf, Cursor), the antigravity
 			// install dir has NO bin\ directory at all — no `antigravity`
 			// shim, so no grounded `<app> <dir>` argv form. Assuming one
-			// from the fork lineage would be a fabricated capability.
+			// from the fork lineage would be a fabricated capability. The
+			// macOS IDE DOES ship a shim (Contents/Resources/app/bin/
+			// antigravity-ide, linked by the cask as antigravity-ide and
+			// agy-ide; MAC-4), but its `<shim> <dir>` form was not run, and
+			// the flag is one value for every OS, so it stays false.
 			ProjectDirArgv: false,
 			Wrap: WrapSpec{
 				Kind: WrapNone,
@@ -2176,14 +2528,17 @@ var registry = map[string]Capability{
 					"sibling `agy` CLI documents GOOGLE_GEMINI_BASE_URL but the antigravity-cli row records " +
 					"that as an UNVERIFIED contradiction, inventory §2.3). Launch yes, wrap no; capture " +
 					"rides the IDE's plaintext brain/<uuid>/.system_generated/logs/transcript.jsonl " +
-					"(text + tool actions + model + surface; tokens absent - the .pb cipher stays parked).",
+					"(text + tool actions + model + surface); tokens from conversations/<uuid>.db on IDE " +
+					"2.6+ (live 2026-10-28), absent on older builds (the .pb cipher stays parked).",
 			},
 			Hosts:    []string{"antigravity"},
 			Grounded: true,
 			Note: "Windows layout grounded on this box 2026-09-03: " +
 				"%LOCALAPPDATA%\\Programs\\antigravity\\Antigravity.exe - and NO bin\\ dir, hence " +
 				"ProjectDirArgv=false and no unix shim name (the inventory left both \"to ground\"). macOS " +
-				"bundle \"Antigravity.app\" grounded from the Homebrew cask `antigravity`; winget id " +
+				"bundle \"Antigravity IDE.app\" (bundle id com.google.antigravity-ide, 2.6.0) and its cask " +
+				"`antigravity-ide` grounded on the MAC-4 macOS run 2026-10-27; the cask `antigravity` now installs " +
+				"the separate Antigravity 2 agent app (com.google.antigravity). winget id " +
 				"`Google.Antigravity` grounded from a live `winget search --exact` the same day. This row is " +
 				"the IDE; the `agy` CLI is the separate antigravity-cli registry row.",
 		},
@@ -2194,6 +2549,10 @@ var registry = map[string]Capability{
 	"antigravity-cli": {
 		Tool:       "antigravity-cli",
 		Vocabulary: Vocabulary{InTaxonomy: true},
+		// A fresh install puts agy.exe in %LOCALAPPDATA%\agy\bin (Binary's
+		// probe dir) and only the registry user Path; ~/.gemini appears at
+		// the first run (Windows Server 2025 demo, 2026-10-28).
+		InstallSignals: []InstallSignal{{Kind: InstallSignalBinary}},
 		// Active; lifecycle context as on the antigravity row — agy is the
 		// named successor of Gemini CLI for individual tiers (retired
 		// 2026-06-18). No `agy login` subcommand exists: first interactive
@@ -2208,20 +2567,30 @@ var registry = map[string]Capability{
 		// "gemini" + GEMINI_API_KEY) honours GOOGLE_GEMINI_BASE_URL per
 		// the vendor install doc (antigravity.google/docs/cli/install),
 		// which `observer antigravity-cli` now sets in that mode onto the
-		// proxy's Gemini generateContent lane. No API-key install has been
-		// probed yet, so Proxy stays nil (flip only after a live api_turns
-		// row) and Routability says probe_required.
+		// proxy's Gemini generateContent lane. API-key mode routing is
+		// proven to a LOOPBACK (agy 1.3.5, demo node 1, 2026-10-15: every
+		// request, the title request included, went to
+		// GOOGLE_GEMINI_BASE_URL), but no api_turns row has landed through
+		// :8820 yet, so Proxy stays nil (flip only after a live api_turns
+		// row) and Routability says probe_required. Sign-in mode routing is
+		// unproven.
 		Proxy:       nil,
 		Routability: RouteStatusProbeRequired,
-		// Prompt coverage WARNS before the model call (PromptWarnOnly).
-		// The PreInvocation warn hook (audit P1, 2026-10-02) was retired
-		// by the node 1 live test of agy 1.2.16 (2026-10-03: the
-		// transcript held the prompt only after the reply) and restored by
-		// T-476 after agy 1.3.0 (node 1, 2026-10-06) wrote the USER_INPUT
-		// step before invocationNum 0 and the injected notice reached the
-		// model. It can never block, so a prompt rule is also flagged after
-		// send by the capture lane. The mechanism also registers the
-		// PreToolUse tool gate (hook-parity Lane A6).
+		// Prompt coverage acts before the MAIN model call (PromptWarnOnly:
+		// the prompt has already left the machine in agy's title request,
+		// which no hook sees). The PreInvocation hook (audit P1,
+		// 2026-10-02) was retired by the node 1 live test of agy 1.2.16
+		// (2026-10-03: the transcript held the prompt only after the
+		// reply), restored by T-476 after agy 1.3.0 (node 1, 2026-10-06)
+		// wrote the USER_INPUT step before invocationNum 0, and since the
+		// guard-enforcement fix (agy 1.3.5, 2026-10-15) it warns the
+		// developer (an injected userMessage) and BLOCKS by aborting the
+		// turn ({"injectSteps":[{}]}, an undocumented error path, offered
+		// only to agy >= 1.3.5), tainting the conversation because agy
+		// resends the stopped prompt with every later turn. A prompt rule is
+		// still flagged after send by the capture lane. The mechanism also
+		// registers the PreToolUse tool gate (hook-parity Lane A6; an ask is
+		// agy's native force_ask under an interactive agy).
 		Hook:   HookSpec{Mechanism: HookAntigravityJSON, AutoWired: true, PromptWarnOnly: true, Bindings: hookBindingsAntigravityCLI},
 		MCP:    nil,
 		Native: NativeRails{},
@@ -2309,17 +2678,24 @@ var registry = map[string]Capability{
 		// working route. Proxy now drives it; init applies it via the
 		// RegisterQwenCode writer (dispatched on Kind).
 		Proxy: &ProxyRoute{
+			ClientAuth:           ClientAuthPathToken,
+			SharesCredentialFile: true, CredentialFileReason: routeCredQwenCode,
 			Kind:     RouteConfigFile,
 			EnvVar:   "",
 			Suffix:   "/v1",
 			Launcher: "observer qwen",
 			Note:     "routes via model.baseUrl + a matching modelProviders openai entry in ~/.qwen/settings.json (proxyroute.RegisterQwenCode, retargets the openai-default provider, keeps id + envKey); implicit host was api.openai.com so the fixed OpenAI upstream applies. Live-verified 2026-07-09 (api_turns 23728-23730, gpt-4o-2024-08-06)",
+			ForeignLane: &ForeignProviderLane{
+				LiveVerified: true,
+				Note:         "the managed daemon can route a model.baseUrl at a third-party https host (OpenRouter, ...) through a proxy /up/<id> lane, keeping that host as the lane upstream and retargeting the modelProviders entries on it (proxyroute.RegisterQwenCodeLane). Live-verified 2026-10-18 on demo node 1 (RETEST5 F3): one qwen prompt through the route-openrouter-ai lane landed 2 api_turns rows whose request ids carry OpenRouter's gen- prefix (api_turns has no lane column, so the lane itself is proven by the config URL, the proxy's lane set and the rows existing at all)",
+			},
 		},
 		// ProxyProbe PERSISTS after promotion: it is the config-lane WRITER
 		// BINDING init uses to apply the (now verified) route on a machine whose
 		// ~/.qwen/settings.json is not yet routed. Proxy above is the verified
 		// route; this is how init writes it.
 		ProxyProbe: &ProxyRoute{
+			SharesCredentialFile: true, CredentialFileReason: routeCredQwenCode,
 			Kind:     RouteConfigFile,
 			Launcher: "observer qwen",
 			Note:     "proxyroute.RegisterQwenCode rewrites model.baseUrl AND retargets the matching openai-lane modelProviders entry in ~/.qwen/settings.json (from the known default only; keeps id + envKey; .bak)",
@@ -2401,19 +2777,24 @@ var registry = map[string]Capability{
 		// internal/adapter/qwencode/adapter.go defaultRoots (<home>/.qwen/projects,
 		// or $QWEN_HOME). ~/.qwen is the CLI's whole state dir (settings, oauth
 		// creds, per-project transcripts) and is bound rw as one dir.
-		Sandbox: SandboxSpec{StateRW: []string{".qwen"}, ProtectRO: []string{".qwen/settings.json"}},
+		Sandbox: SandboxSpec{NeedsWin32k: true, StateRW: []string{".qwen"}, ProtectRO: []string{".qwen/settings.json"}},
 	},
 	"kiro-cli": {
-		Tool:       "kiro-cli",
-		PromptLane: PromptLaneProbeRequired,
+		Tool: "kiro-cli",
+		// The userPromptSubmit probe is settled (gfiD research, kiro-cli
+		// 2.28.0 live on demo node 1, 2026-10-15): the hook cannot block
+		// (exit 1 and exit 2 both let the prompt through), so the seam only
+		// warns the model (PromptWarnOnly) and the lane is not "hook".
 		Vocabulary: Vocabulary{InTaxonomy: true},
 		// SigV4-signed AWS endpoints (CodeWhisperer lineage); no base-URL /
 		// BYOK surface exists on a live install — grounded negative.
 		Proxy:       nil,
 		Routability: RouteStatusNativeExempt,
-		// Kiro has first-class agent hooks (~/.kiro/hooks) upstream, but no
-		// observer receiver is wired — honest none.
-		Hook: HookSpec{Mechanism: HookNone, Bindings: hookBindingsKiroCLI},
+		// Agent-JSON hooks (HookKiroAgentJSON): Observer's own agent, the
+		// same entries merged into the user's global agents, and the CLI V3
+		// standalone hooks file. `observer init` only until Observer's own
+		// writer has a live run (the bindings are vendor-research grounded).
+		Hook: HookSpec{Mechanism: HookKiroAgentJSON, AutoWired: true, PromptWarnOnly: true, Bindings: hookBindingsKiroCLI},
 		// ~/.kiro/settings/mcp.json is the documented MCP surface; absent on
 		// this install, shape unconfirmed — no writer until grounded.
 		MCP:    nil,
@@ -2564,11 +2945,13 @@ var registry = map[string]Capability{
 		// the flag (provider=openai, model grok-4.6-build, 12155/24 tokens,
 		// HTTP 200) — the checklist §10.1f bar.
 		Proxy: &ProxyRoute{
-			Kind:     RouteLauncher,
-			EnvVar:   "GROK_CLI_CHAT_PROXY_BASE_URL",
-			Suffix:   "/up/grok/v1",
-			Launcher: "observer grok --proxy",
-			Note:     "Opt-in via the --proxy launcher flag; routes at the grok lane (cli-chat-proxy.grok.com, built in; a [proxy.upstreams] grok entry overrides it), not the default lane.",
+			ClientAuth: ClientAuthPathToken,
+			Kind:       RouteLauncher,
+			EnvVar:     "GROK_CLI_CHAT_PROXY_BASE_URL",
+			Suffix:     "/up/grok/v1",
+			Launcher:   "observer grok --proxy",
+			LaunchFlag: "--proxy",
+			Note:       "Opt-in via the --proxy launcher flag; routes at the grok lane (cli-chat-proxy.grok.com, built in; a [proxy.upstreams] grok entry overrides it), not the default lane.",
 			// The live-verified lane above (api_turns 23025, then the
 			// launcher's own turn 2026-08-21): host root, the /v1 rides the
 			// client's base URL. Built in so `--proxy` never depends on a
@@ -2652,13 +3035,16 @@ var registry = map[string]Capability{
 		// sessionId + full usage without any proxy lane.
 		Headless: &HeadlessSpec{
 			PromptFlag: "-p",
-			OutputArgs: []string{"--output-format", "json", "--always-approve"},
+			OutputArgs: []string{"--output-format", "json"},
 			Result:     HeadlessResultGrokJSON,
+			// --always-approve is the grounded drive's bypass (OSH-R-005);
+			// no lane that keeps grok's own checks on has been driven.
+			Permissions: map[HeadlessPermLane][]string{HeadlessPermBypass: {"--always-approve"}},
 		},
 		// Sandbox filesystem-isolation row (B9). GROUNDED against
 		// internal/adapter/grok/adapter.go defaultRoots (<home>/.grok/sessions and
 		// <home>/.grok/logs). ~/.grok is bound rw as one dir.
-		Sandbox: SandboxSpec{StateRW: []string{".grok"}},
+		Sandbox: SandboxSpec{NeedsWin32k: true, ProviderEnv: []string{"XAI_API_KEY"}, StateRW: []string{".grok"}},
 	},
 	"kimi-code": {
 		Tool: "kimi-code",
@@ -2681,17 +3067,24 @@ var registry = map[string]Capability{
 		// HTTP 200). Proxy now drives the config-lane route; init applies it via
 		// the RegisterKimiCode writer (dispatched on Kind).
 		Proxy: &ProxyRoute{
+			ClientAuth:           ClientAuthPathToken,
+			SharesCredentialFile: true, CredentialFileReason: routeCredKimiCode,
 			Kind:     RouteConfigFile,
 			EnvVar:   "",
 			Suffix:   "/v1",
 			Launcher: "observer kimi",
 			Note:     "routes via base_url under [providers.openai] in ~/.kimi-code/config.toml (proxyroute.RegisterKimiCode, additive, never a key); implicit host was api.openai.com so the fixed OpenAI upstream applies. Live-verified 2026-07-09 (api_turns 23075, gpt-4o-2024-08-06)",
+			ForeignLane: &ForeignProviderLane{
+				LiveVerified: true,
+				Note:         "the managed daemon can route the ACTIVE provider entry (default_model's provider, type openai, e.g. [providers.baseten]) at a third-party https host through a proxy /up/<id> lane, keeping that host as the lane upstream (proxyroute.RegisterKimiCodeLane). Live-verified 2026-10-18 on demo node 1 (RETEST5 F3): `kimi -p` through the route-inference-baseten-co lane landed 1 api_turns row with a Baseten chatcmpl request id (api_turns has no lane column, so the lane itself is proven by the config URL, the proxy's lane set and the row existing at all)",
+			},
 		},
 		// ProxyProbe PERSISTS after promotion: it is the config-lane WRITER
 		// BINDING init uses to apply the (now verified) route on a machine
 		// whose ~/.kimi-code/config.toml is not yet routed. Proxy above is
 		// the verified route; this is how init writes it.
 		ProxyProbe: &ProxyRoute{
+			SharesCredentialFile: true, CredentialFileReason: routeCredKimiCode,
 			Kind:     RouteConfigFile,
 			Launcher: "observer kimi",
 			Note:     "proxyroute.RegisterKimiCode adds base_url under [providers.openai] in ~/.kimi-code/config.toml (additive, never a key)",
@@ -2792,7 +3185,7 @@ var registry = map[string]Capability{
 		// Windows. ~/.kimi-code also holds config.toml (the openai-compat provider
 		// credentials the adapter NEVER reads but kimi itself needs), so the whole
 		// dir is bound rw.
-		Sandbox: SandboxSpec{StateRW: []string{".kimi-code"}},
+		Sandbox: SandboxSpec{NeedsWin32k: true, StateRW: []string{".kimi-code"}},
 	},
 	"crush": {
 		Tool:       "crush",
@@ -2814,12 +3207,17 @@ var registry = map[string]Capability{
 		// refuse-foreign + never a key) in the live Windows-side config
 		// (/mnt/c/Users/.../AppData/Local/crush/crush.json, via CRUSH_CONFIG —
 		// the Linux crush binary ignores CRUSH_CONFIG and has no config here).
+		// Since surface-gap S-17 (lane w2-g) the route writer resolves the
+		// file the way Crush does, $CRUSH_GLOBAL_CONFIG/crush.json, and no
+		// longer reads CRUSH_CONFIG, which Crush itself never read.
 		// A `crush run` turn driven from the Windows crush.cmd reached WSL's
 		// :8820 over localhost forwarding and landed api_turns rows (id 23081
 		// gpt-5.4-mini 6613/20 + id 23080 gpt-5.4-nano title call,
 		// provider=openai, HTTP 200). Proxy now drives the config-lane route;
 		// init applies it via the RegisterCrush writer (dispatched on Kind).
 		Proxy: &ProxyRoute{
+			ClientAuth:           ClientAuthPathToken,
+			SharesCredentialFile: true, CredentialFileReason: routeCredCrush,
 			Kind:   RouteProviderJSON,
 			EnvVar: "",
 			Suffix: "/v1",
@@ -2830,6 +3228,7 @@ var registry = map[string]Capability{
 		// whose crush.json is not yet routed. Proxy above is the verified
 		// route; this is how init writes it.
 		ProxyProbe: &ProxyRoute{
+			SharesCredentialFile: true, CredentialFileReason: routeCredCrush,
 			Kind: RouteProviderJSON,
 			Note: "proxyroute.RegisterCrush sets providers.openai.base_url in crush.json (additive, never a key)",
 		},
@@ -3170,7 +3569,7 @@ var registry = map[string]Capability{
 		// and <home>/.qoder/logs/sessions). ~/.qoder is the CLI's whole state dir
 		// — including the credential tables the adapter NEVER reads — and is
 		// bound rw as one dir.
-		Sandbox: SandboxSpec{StateRW: []string{".qoder"}, ProtectRO: []string{".qoder/settings.json"}},
+		Sandbox: SandboxSpec{NeedsWin32k: true, StateRW: []string{".qoder"}, ProtectRO: []string{".qoder/settings.json"}},
 		// GUI launch row (plan §2.2). Launch is buildable today; CAPTURE for
 		// the IDE is not — its store schema is unknown (inventory §2.13,
 		// §3.1 #15) — so this row installs and launches honestly without
@@ -3245,8 +3644,20 @@ var registry = map[string]Capability{
 		// lane only, and Aider's own model/provider selectors below can send
 		// the same run to Anthropic or Bedrock with that variable still set.
 		Proxy: &ProxyRoute{
-			Kind: RouteLauncher, EnvVar: "OPENAI_API_BASE", Suffix: "/v1",
+			ClientAuth: ClientAuthPathToken,
+			Kind:       RouteLauncher, EnvVar: "OPENAI_API_BASE", Suffix: "/v1",
 			Launcher: "observer aider",
+			// CLI-7: aider calls load_dotenv(override=True) over these files
+			// (and --env-file), so a base-URL variable in one beats the
+			// launcher's OPENAI_API_BASE; `openai-api-base` in a
+			// .aider.conf.yml beats both (the agentconfig family
+			// aider/openai-api-base). The launcher checks key presence.
+			DotenvOverride: &DotenvOverride{
+				Files:         []string{"~/.aider/oauth-keys.env", "~/.env", "<project>/.env"},
+				Keys:          []string{"OPENAI_API_BASE", "AIDER_OPENAI_API_BASE"},
+				FileArguments: []string{"--env-file"},
+				Grounding:     "Aider-AI/aider aider/main.py load_dotenv_files (override=True; oauth-keys.env, ~/.env, <git root>/.env, ./.env, --env-file); surface-gap review CLI-7",
+			},
 			SelectorArguments: []string{
 				"-m", "--model", "--env-file", "--model-settings-file",
 				"--openai-api-base", "--openai-api-type", "--api-type",
@@ -3312,9 +3723,12 @@ var registry = map[string]Capability{
 		}},
 		Headless: &HeadlessSpec{
 			PromptFlag:  "--message",
-			OutputArgs:  []string{"--yes", "--no-auto-commits"},
+			OutputArgs:  []string{"--no-auto-commits"},
 			Result:      HeadlessResultStdoutText,
 			ContextMode: HeadlessContextPositional,
+			// --yes answers every confirmation, shell commands included: the
+			// grounded drive's bypass (OSH-R-005). No other lane is driven.
+			Permissions: map[HeadlessPermLane][]string{HeadlessPermBypass: {"--yes"}},
 		},
 		// Binary resolution + grounded install. Unix launcher resolves
 		// "aider"; official install is the aider.chat uv-based script
@@ -3355,12 +3769,15 @@ var registry = map[string]Capability{
 		Vocabulary: Vocabulary{InTaxonomy: true},
 		// DeepSeek Harness (`npx @deepseek-ai/dsh web`) is a web-only local
 		// GUI (http://127.0.0.1:3080, no separate terminal/TUI mode) with
-		// no documented BYOK / custom-base-URL surface. This adapter's
-		// scope is deliberately usage-capture only (no proxy launcher work
-		// was performed), so this is the honest default bucket rather than
-		// a confirmed negative — reclassify if a base-URL knob surfaces.
+		// no proxy launcher. Surface-gap S-16 (2026-10-25): the vendor config
+		// catalogue documents a provider baseURL (plugin
+		// @deepseek-ai/dsh-llm-pi-ai, providers.<id>.baseURL, in the profile
+		// cordis.yml), a base-URL knob, so the row is probe_required (was
+		// native_exempt). No writer: the key's placement inside the profile
+		// YAML is itself unverified (catalog_deepseek.go), and no routed turn
+		// has been seen.
 		Proxy:       nil,
-		Routability: RouteStatusNativeExempt,
+		Routability: RouteStatusProbeRequired,
 		// No pre/post-tool hook surface is documented; none registered.
 		Hook: HookSpec{Mechanism: HookPluginShimTS, Bindings: hookBindingsDeepSeek}, // shim renders; no grounded install location (Lane D)
 		// Not an MCP client host observer writes into.
@@ -3376,7 +3793,7 @@ var registry = map[string]Capability{
 			Best: "events_jsonl",
 			Gap:  "no cache-write field; sub-agent token rollup ungrounded; no cost field in the on-disk store (rows always $0)",
 		},
-		// session.jsonl.zstd is fully re-readable (whole-file rewrite on
+		// the session[.v<N>].jsonl.zstd log is fully re-readable (whole-file rewrite on
 		// every flush, re-decoded in full by ParseSessionFile), but there
 		// is no launcher in this adapter's scope (web-only GUI, no CLI
 		// seed lane) — file-lane carry only.
@@ -3421,7 +3838,10 @@ var registry = map[string]Capability{
 		// model gpt-4o-mini; 401 upstream on a throwaway key = wire proven).
 		// OPERATOR NOTE: unset your ambient OPENAI_HOST (shell profile) when
 		// using `observer goose --proxy`, or accept that yours wins.
-		Proxy:       &ProxyRoute{Kind: RouteLauncher, EnvVar: "OPENAI_HOST", Suffix: "", Launcher: "observer goose --proxy", Note: "Opt-in --proxy flag injects OPENAI_HOST at the proxy ROOT (goose appends /v1). Requires GOOSE_PROVIDER=openai (or another OPENAI_HOST-honoring provider); an ambient OPENAI_HOST in the operator env wins over the injection by design."},
+		Proxy: &ProxyRoute{Kind: RouteLauncher, EnvVar: "OPENAI_HOST", Suffix: "", Launcher: "observer goose --proxy", LaunchFlag: "--proxy", Note: "Opt-in --proxy flag injects OPENAI_HOST at the proxy ROOT (goose appends /v1). Requires GOOSE_PROVIDER=openai (or another OPENAI_HOST-honoring provider); an ambient OPENAI_HOST in the operator env wins over the injection by design.", SharesCredentialFile: true, CredentialFileReason: routeCredGoose, PersistedDefault: &PersistedDefault{
+			Note:     "CLI-1a: proxyroute.RegisterDefaultProvider(goose) persists OPENAI_HOST = proxy root in ~/.config/goose/config.yaml when the active provider is openai (active_provider or GOOSE_PROVIDER), so a bare goose routes; YAML member edit, never a key",
+			LiveGate: "LC25",
+		}},
 		Routability: RouteStatusRoutableNow,
 		// No pre/post-tool hook surface exists (extensions are MCP servers,
 		// not hooks).
@@ -3545,6 +3965,9 @@ var registry = map[string]Capability{
 		// adapter NEVER reads secrets.yaml, but goose itself must.
 		Sandbox: SandboxSpec{
 			StateRW: []string{".config/goose", ".local/share/goose"},
+			// macOS (live user install 2026-10-29, D-MU6): goose writes its
+			// logs under the XDG state dir and failed under Seatbelt without it.
+			StateRWByOS: map[string][]string{"darwin": {".local/state/goose"}},
 		},
 		// GUI launch row (plan §2.2): Goose Desktop shares this row's
 		// sessions.db (inventory §2.11). NOT installed on this box, so the
@@ -3870,7 +4293,7 @@ var registry = map[string]Capability{
 		// internal/adapter/droid/adapter.go defaultRoots (<home>/.factory/
 		// sessions). ~/.factory is Factory's whole state dir (sessions, per-session
 		// settings sidecars, auth) and is bound rw as one dir.
-		Sandbox: SandboxSpec{StateRW: []string{".factory"}, ProtectRO: []string{".factory/hooks.json", ".factory/mcp.json"}},
+		Sandbox: SandboxSpec{NeedsWin32k: true, StateRW: []string{".factory"}, ProtectRO: []string{".factory/hooks.json", ".factory/mcp.json"}},
 	},
 	// Rebadged OpenAI Codex CLI Rust build, installed under
 	// ~/.openinterpreter (docs/plans/openinterpreter-adapter-plan-2026-07-29.md).
@@ -3896,7 +4319,20 @@ var registry = map[string]Capability{
 			"install hints below deliberately exclude the pip channel.",
 		// config schema present (base_url/wire_api strings confirmed in
 		// the binary) but not live-verified on this fork.
-		Proxy:       nil,
+		Proxy: nil,
+		// OI-1 (D16): the writer is built (proxyroute memberroute.go), the
+		// same [model_providers.openai-observer] provider Codex's writer
+		// adds, surgically, in the CLI's user config.toml (INTERPRETER_HOME),
+		// a file that holds plaintext provider keys. Switched off until live
+		// check LC11 shows the route honoured.
+		ProxyProbe: &ProxyRoute{
+			Kind:                 RouteConfigFile,
+			Suffix:               "/v1",
+			Setting:              "model_provider and [model_providers.openai-observer]",
+			Note:                 "proxyroute.RegisterMemberRoute(open-interpreter) adds [model_providers.openai-observer] (base_url = proxy /v1, wire_api responses) and sets model_provider in ~/.openinterpreter/config.toml (INTERPRETER_HOME); member edits only, never a key; refuses a reserved [model_providers.openai] or another selected provider",
+			LiveGate:             "LC11",
+			SharesCredentialFile: true, CredentialFileReason: routeCredOpenInterpreter,
+		},
 		Routability: RouteStatusProbeRequired,
 		// Codex's hook mechanism (HookCodexConfig) may port, but this
 		// fork's config.toml has no [hooks] observed live — unverified.
@@ -3945,9 +4381,9 @@ var registry = map[string]Capability{
 			Wrap: WrapSpec{
 				Kind: WrapNone,
 				Reason: "the desktop's provider base URLs live per profile in its own codex-home/config.toml " +
-					"(alongside plaintext API keys - a file Observer never reads), and this row carries " +
-					"neither a verified Proxy nor a ProxyProbe writer binding, so config_write would name a " +
-					"writer that does not exist. Launch yes, wrap no.",
+					"(alongside plaintext API keys - a file Observer never reads); the row's ProxyProbe writer " +
+					"targets the CLI's user config.toml instead and is switched off until live check LC11, " +
+					"so config_write would name no writer for the desktop. Launch yes, wrap no.",
 			},
 			Hosts:    []string{"open-interpreter"},
 			Grounded: true,
@@ -4054,11 +4490,15 @@ var registry = map[string]Capability{
 		PromptLane: PromptLaneHook,
 		Vocabulary: Vocabulary{InTaxonomy: true},
 		// COMMANDCODE_API_URL / COMMAND_CODE_API_KEY / COMMANDCODE_API_ENV
-		// point at Command Code's OWN closed gateway (not a BYOK
-		// Anthropic/OpenAI-shaped endpoint) — a knob exists but it isn't
-		// routable_now-shaped, so after_bridge rather than native_exempt.
+		// point at Command Code's OWN closed gateway. Surface-gap S-16
+		// (2026-10-25, https://commandcode.ai/docs/byok): BYOK
+		// ~/.commandcode/providers.json provider.<id>.baseURL takes
+		// openai-completions, openai-responses and anthropic-messages
+		// endpoints, a real base-URL knob, so the row is probe_required (was
+		// after_bridge). No writer yet: no routed turn has been seen, and
+		// which provider entry a session uses is not grounded.
 		Proxy:       nil,
-		Routability: RouteStatusAfterBridge,
+		Routability: RouteStatusProbeRequired,
 		// CrossOSBridge: true — internal/hook's command-code-windows
 		// target (registerCommandCodeWindows) bakes the wsl.exe bridge
 		// into the go:embed'd TS mod's own runtime (resolveExec()),
@@ -4162,7 +4602,7 @@ var registry = map[string]Capability{
 		// (<home>/.commandcode/projects). ~/.commandcode is the CLI's whole state
 		// dir (per-project transcripts + config.json) and is bound rw as one dir.
 		// mods/ is jiti-loaded TypeScript (register.go HookCommandCodeMod).
-		Sandbox: SandboxSpec{StateRW: []string{".commandcode"}, ProtectRO: []string{".commandcode/mcp.json"}, ProtectRODirs: []string{".commandcode/mods"}},
+		Sandbox: SandboxSpec{NeedsWin32k: true, StateRW: []string{".commandcode"}, ProtectRO: []string{".commandcode/mcp.json"}, ProtectRODirs: []string{".commandcode/mods"}},
 	},
 	// Meta's Muse Code CLI (docs/muse-adapter.md). Phase-0 grounded
 	// 2026-08-06 against a live `Muse Code 0.1.0 (0.1.0-R708.1)` install on
@@ -4194,7 +4634,10 @@ var registry = map[string]Capability{
 		// NOT grounded and which has never been driven live. That is exactly
 		// probe_required: a documented-in-binary BYOK-ish path, unconfirmed on
 		// a live install. Proxy stays nil until a live turn lands an api_turns
-		// row (checklist §10.1f).
+		// row (checklist §10.1f). Surface-gap S-16: `muse --help` lists a
+		// --base-url flag, contradicting AP-036's "not grounded"; whether it
+		// exists and routes is live check LC35, and no launcher flag is
+		// written until it passes.
 		Proxy:       nil,
 		Routability: RouteStatusProbeRequired,
 		// The binary carries a Claude-Code-derived hook vocabulary in
@@ -4347,6 +4790,12 @@ var registry = map[string]Capability{
 		// captured (id 166806, provider openai, gpt-4o-mini, 4119/2 tokens,
 		// valid key) — checklist §10.1f fully met.
 		Proxy: &ProxyRoute{
+			ClientAuth:           ClientAuthPathToken,
+			SharesCredentialFile: true, CredentialFileReason: routeCredPrimeAgent,
+			PersistedDefault: &PersistedDefault{
+				Note:     "CLI-1a: proxyroute.RegisterDefaultProvider(prime-agent) sets defaultProvider = observer in ~/.prime/agent/settings.json once the launcher's observer provider is in models.json, so a bare prime-agent routes; member edit, never a key; defaultModel must name a model of that provider (part of the live check)",
+				LiveGate: "LC25",
+			},
 			Kind: RouteLauncher, EnvVar: "", Suffix: "/v1", Launcher: "observer prime-agent", Note: "Routes via the 'observer' provider entry the launcher writes into ~/.prime/agent/models.json (baseUrl = proxy /v1); exec with --provider observer.",
 			// Demo node 1, 2026-10-02: the session started on the observer
 			// provider (2 proxied turns), then switched to openrouter, and
@@ -4585,8 +5034,10 @@ var registry = map[string]Capability{
 		// the ~/.local/bin/junie shim execs, which the CLI only reads. The
 		// IDE-plugin surface is still never spawned by observer.
 		Sandbox: SandboxSpec{
-			StateRW: []string{".junie"},
-			StateRO: []string{".local/share/junie"},
+			NeedsWin32k: true,
+			ProviderEnv: []string{"JUNIE_API_KEY", "JUNIE_ANTHROPIC_API_KEY", "JUNIE_OPENAI_API_KEY", "JUNIE_GOOGLE_API_KEY", "JUNIE_GROK_API_KEY", "JUNIE_OPENROUTER_API_KEY", "JUNIE_META_API_KEY"},
+			StateRW:     []string{".junie"},
+			StateRO:     []string{".local/share/junie"},
 		},
 	},
 	// Poolside (docs/poolside-adapter.md). Phase-0 grounded 2026-09-05
@@ -4627,7 +5078,22 @@ var registry = map[string]Capability{
 		// an alternative-provider mode, not a pass-through of the Poolside
 		// platform lane, and no routed turn has been observed, so this stays
 		// probe_required rather than a fabricated route.
-		Proxy:       nil,
+		Proxy: nil,
+		// S-16 (D9): the writer is built (proxyroute memberroute.go):
+		// pool.api_url at the proxy's /up/poolside/ lane, whose upstream is
+		// the same hosted inference host. settings.yaml holds web_search
+		// api_key and agent_servers credentials. Switched off until live
+		// check LCR-1 (proposed: does pool.api_url at the proxy route the
+		// agent's traffic, and in which protocol).
+		ProxyProbe: &ProxyRoute{
+			Kind:                 RouteConfigFile,
+			Suffix:               "/up/poolside/v1",
+			Setting:              "pool.api_url",
+			Note:                 "proxyroute.RegisterMemberRoute(poolside) adds pool.api_url = proxy /up/poolside/v1 to ~/.config/poolside/settings.yaml (personal file only); YAML member edit, never a key; refuses a non-observer api_url",
+			Lane:                 &ProxyLane{ID: "poolside", DefaultUpstream: "https://inference.poolside.ai"},
+			LiveGate:             "LCR-1",
+			SharesCredentialFile: true, CredentialFileReason: credFilePoolside,
+		},
 		Routability: RouteStatusProbeRequired,
 		// No hook mechanism is documented or grounded for the JetBrains
 		// ACP agent surface specifically; the mechanism below targets
@@ -4742,7 +5208,12 @@ var registry = map[string]Capability{
 		Vocabulary: Vocabulary{InTaxonomy: true},
 		// zcode authenticates model access via Z.AI OAuth (`zcode login`)
 		// and exposes no OpenAI-style base-URL env knob (`zcode --help`,
-		// zcode 0.16.3) — routing it through the proxy would be a guess.
+		// zcode 0.16.3). Surface-gap S-16 (2026-10-25,
+		// https://zcode.z.ai/en/docs/configuration): the desktop's model
+		// providers in ~/.zcode/v2/config.json carry
+		// provider.<id>.options.baseURL beside a plaintext apiKey. No writer:
+		// which provider id a session uses is not grounded, and no routed
+		// turn has been seen.
 		Proxy:       nil,
 		Routability: RouteStatusProbeRequired,
 		// AutoWired since hook-parity Lane A4 (2026-10-03): the writer
@@ -4945,8 +5416,13 @@ var registry = map[string]Capability{
 		// honest-zero reasoning as junie's typed block kinds.
 		Vocabulary: Vocabulary{InTaxonomy: true},
 		// freebuff authenticates to the CodebuffAI backend (`freebuff
-		// login`) with no grounded base-URL override — routing it through
-		// the proxy would be a guess.
+		// login`). Surface-gap S-16 (2026-10-25, vendor sdk/src/byok.ts): a
+		// BYOK openai-compatible connection in
+		// ~/.config/freebuff/byok/connections.json (FREEBUFF_BYOK_CONFIG_DIR,
+		// shared by CLI and Desktop; http allowed on loopback only) carries a
+		// base URL, and settings.byokConnection selects it. No writer: the
+		// connection entry's shape is not grounded, and no routed turn has
+		// been seen.
 		Proxy:       nil,
 		Routability: RouteStatusProbeRequired,
 		Hook:        HookSpec{Mechanism: HookNone, Note: hookNoteFreebuf},
@@ -5277,9 +5753,14 @@ var registry = map[string]Capability{
 		Proxy:       nil,
 		Routability: RouteStatusProbeRequired,
 		Hook:        HookSpec{Mechanism: HookNone, Note: hookNoteZed},
-		// No {"mcpServers":{…}}-shaped (or any other known-format) MCP
-		// config surface has been grounded for Zed's own settings.json.
-		MCP:    nil,
+		// CORRECTED 2026-10-25 (surface-gap arc S-12, lane w2-c): Zed DOES
+		// document an MCP surface, the "context_servers" object in its
+		// settings.json (zed.dev/docs/ai/mcp; the agentconfig catalogue maps
+		// it, catalog_zed.go), and offers those servers to the ACP agents it
+		// hosts. Linux and macOS read ~/.config/zed/settings.json, Windows
+		// %APPDATA%\Zed\settings.json. Observer has no writer for it yet
+		// (part of S-1), so the target is a candidate, never written.
+		MCP:    &MCPTarget{Format: MCPZedContextServers, PathHint: ".config/zed/settings.json", Implemented: false},
 		Native: NativeRails{},
 		// Per-request tokens come straight off request_token_usage in the
 		// decompressed thread JSON — a SQLite-store capture tier, same
@@ -5383,6 +5864,702 @@ var registry = map[string]Capability{
 				"the binary to zedit or zeditor, so no single spelling is grounded.",
 		},
 	},
+	// --- 2026-10-21 capture-only wave -----------------------------------
+	// Ten CLI agents grounded 2026-10-21 (WSL Ubuntu + Windows 11). Each is
+	// a watcher-path capture adapter ONLY: no `observer <tool>` launcher, no
+	// hook writer or receiver, no MCP writer and no proxy route was built,
+	// so Launch / Attach / Resume / Model stay zero and every hook binding
+	// is vendor-only. The launcher facts each vendor's --help grounds are
+	// recorded in the row comments for the follow-up that builds one.
+	// Status line, native OTLP and plan/limit sources were audited
+	// 2026-10-22: the StatusLine column (statusline.go), the OTLP column
+	// (otlpexport.go), and for plans the per-tool findings in
+	// docs/plans/native-console-wave-2026-10-21-phase0.md (no internal/planlimits
+	// source was added: every plan endpoint found is undocumented and was
+	// never answered live).
+
+	// autohand (Autohand Code CLI, docs/autohand-adapter.md). Phase-0 grounded
+	// 2026-10-21 on WSL + Windows, autohand-cli 0.9.8.
+	"autohand": {
+		Tool: "autohand",
+		// pre-prompt is a prompt gate grounded live 2026-10-21 (the autohand
+		// prompt dialect reads "instruction"); registered by `observer init`
+		// only (device sync, see the Hook row).
+		PromptLane: PromptLaneHook,
+		Vocabulary: Vocabulary{InTaxonomy: true},
+		// Base-URL knobs exist but none was routed live: config.json
+		// <provider>.baseUrl for 17 providers + customProviders,
+		// AUTOHAND_PROVIDER, AUTOHAND_AI_BASE_URL / AUTOHAND_AI_API_KEY (the
+		// hosted `autohandai` provider: fantail at https://api.autohand.ai/v1,
+		// openai-completions shape). Cheapest first probe: a launcher
+		// exporting AUTOHAND_AI_BASE_URL. Flip only after a LIVE turn lands
+		// an api_turns row (checklist 10.1f).
+		Proxy:       nil,
+		Routability: RouteStatusProbeRequired,
+		// hooks.hooks[] of ~/.autohand/config.json, the file that also holds
+		// provider keys and the account token (credential-file exception).
+		// No cross-OS bridge: Autohand's device sync mirrors the hooks key
+		// between devices (the binding note), so a Windows-side bridge
+		// command would reach the other OS.
+		Hook: HookSpec{
+			Mechanism: HookAutohandConfig, AutoWired: true, Bindings: hookBindingsAutohand,
+			HooksShareCredentialFile: true, CredentialFileReason: credFileAutohand,
+		},
+		// config.json -> mcp.servers[] is an ARRAY of {name, transport:
+		// stdio|sse|http, command|url, ...} (`autohand mcp add|remove|list`).
+		// Not MCPServersJSON's {"mcpServers":{}} map and no writer emits it.
+		MCP:    nil,
+		Native: NativeRails{},
+		// Session-cumulative usage in metadata.json; promptTokens GROSS of
+		// cache read+write (netted at emit); completion includes reasoning.
+		TokenTier: TokenTier{Best: "jsonl", Gap: "session-cumulative only (no per-turn rows or cache observation); totals are a lower bound once tokenUsageStatus is \"unavailable\"", SessionCumulative: true},
+		// Transcript is full. No observer launcher. Native resume GROUNDED
+		// (`autohand resume <id|title|prefix|path>` takes the stored id
+		// verbatim); when a launcher lands:
+		//   Resume: ResumeSpec{Kind: ResumeNative, Subcommand: "autohand", IDMechanism: "subcommand:resume"},
+		//   Model: ModelSpec{Kind: ModelArg, Flag: "--model"} (autohand --help 0.9.8).
+		Handoff: HandoffCapability{
+			Transcript: TranscriptFull, Inject: []InjectKind{InjectFile},
+			Note: "no `observer autohand` launcher yet; native resume is `autohand resume <id>`",
+		},
+		Binary: &BinaryResolveSpec{
+			// The npm package installs four bin aliases for one entry point
+			// (autohand, autohand-code, agent, ah); `agent` and `ah` are too
+			// generic to resolve safely and are omitted (the command-code
+			// cmd/cmdc exclusion precedent). Windows npm shims are
+			// <name>.cmd; the vendor's native build is
+			// %LOCALAPPDATA%\autohand\autohand.exe.
+			Names: BinaryNames{
+				Unix:    []string{"autohand", "autohand-code"},
+				Windows: []string{"autohand.exe", "autohand.cmd", "autohand", "autohand-code.cmd", "autohand-code"},
+			},
+			Runtime: &RuntimeRequirement{Runtime: RuntimeNode, MinVersion: "22", Product: "Autohand Code", Source: "autohand-cli 0.9.8 package.json engines.node >=22.0.0 (npm install only; the native build bundles its runtime), read 2026-10-21"},
+			Installs: []InstallHint{
+				{OS: "", Channel: "npm", Argv: []string{"npm", "install", "-g", "autohand-cli"}, Display: "npm install -g autohand-cli"},
+			},
+			InstallNote: "operator-verified 2026-10-21: the vendor curl / irm installers failed on this box, npm worked on both WSL and Windows",
+		},
+		Model:   ModelSpec{Kind: ModelNone},
+		Sandbox: SandboxSpec{Note: "not sandbox-launchable: no observer launcher for autohand; ~/.autohand holds config.json secrets"},
+	},
+	// IBM Bob Shell (docs/ibmbob-adapter.md). Grounded 2026-10-21 against
+	// bobshell 2.0.6 on WSL + Windows live installs.
+	"ibm-bob": {
+		Tool: "ibm-bob",
+		// Claude-Code-shaped UserPromptSubmit, exit 2 + stderr blocks (live
+		// 2026-10-21, the claude-code prompt dialect).
+		PromptLane: PromptLaneHook,
+		// 19 built-in tool ids grounded from the 2.0.6 tool classes and the
+		// user message's availableTools (4 observed live).
+		Vocabulary: Vocabulary{InTaxonomy: true},
+		// Inference goes to IBM's own gateway https://api.us-east.bob.ibm.com
+		// (/inference/v1/chat/completions, OpenAI-chat shaped + `credits`),
+		// overridable via BOB_GATEWAY_URL or the hidden --gateway-url flag.
+		// The same base also serves /admin/v1 (profile/auth), so a route
+		// needs an /up/<id> upstream that passes those through. Not
+		// live-verified.
+		Proxy:       nil,
+		Routability: RouteStatusProbeRequired,
+		// The "hooks" key of ~/.bob/settings/settings.json, which does NOT
+		// hold credentials (those live in auth-secrets.json). Windows Bob runs
+		// hooks under cmd.exe, so the WSL bridge is a plain wsl.exe prefix.
+		Hook: HookSpec{Mechanism: HookIBMBobSettings, CrossOSBridge: true, AutoWired: true, Bindings: hookBindingsIBMBob},
+		// ~/.bob/settings/mcp.json: {"mcpServers":{name:{type:"stdio",...}}}.
+		// `type` is a REQUIRED discriminator, so the generic writer must be
+		// checked to emit "type":"stdio" before this is flipped Implemented.
+		// Grounded shape, no writer: stays nil until one exists (the
+		// MCP row is non-nil only for an implemented writer).
+		MCP:    nil,
+		Native: NativeRails{},
+		TokenTier: TokenTier{
+			Best: "none",
+			Gap:  "the vendor strips input/output/cache/reasoning before persisting; on disk only per-call spend {cost (Bobcoins, not USD), contextTokens (input+output unsplit)} survives, which cannot be priced, so no token rows and no Tier-2 cache observation",
+		},
+		// bob.db is fully re-readable. When a launcher lands:
+		//   Resume: ResumeSpec{Kind: ResumeNative, Subcommand: "ibm-bob", IDMechanism: "flag:--resume"}
+		// (`-r, --resume [task-id]`, an OPTIONAL-value flag). `bob --help`
+		// exposes no model flag (the model is a server-side tier).
+		Handoff: HandoffCapability{
+			Transcript: TranscriptFull,
+			Inject:     []InjectKind{InjectFile},
+			Note:       "no `observer ibm-bob` launcher yet; native resume is `bob --resume <task-id>` (or `bob chat --resume <task-id>`), id = tasks.id = our SessionID verbatim",
+		},
+		Binary: &BinaryResolveSpec{
+			// npm global install: Unix bin `bob`; Windows npm shims bob.cmd /
+			// bob (no .exe). .ps1 is excluded (not directly execable).
+			Names: BinaryNames{
+				Unix:    []string{"bob"},
+				Windows: []string{"bob.cmd", "bob"},
+			},
+			Runtime: &RuntimeRequirement{Runtime: RuntimeNode, MinVersion: "22", Product: "IBM Bob Shell", Source: "bobshell 2.0.6 package.json engines.node, read 2026-10-21"},
+			Installs: []InstallHint{
+				{OS: "linux", Channel: "script", Argv: []string{"bash", "-lc", "curl -fsSL https://bob.ibm.com/download/bobshell.sh | bash"}, Display: "curl -fsSL https://bob.ibm.com/download/bobshell.sh | bash", Requires: []string{"curl"}},
+				{OS: "darwin", Channel: "script", Argv: []string{"bash", "-lc", "curl -fsSL https://bob.ibm.com/download/bobshell.sh | bash"}, Display: "curl -fsSL https://bob.ibm.com/download/bobshell.sh | bash", Requires: []string{"curl"}},
+				{OS: "windows", Channel: "script", Argv: []string{"powershell", "-ExecutionPolicy", "Bypass", "-Command", "iwr https://bob.ibm.com/download/bobshell.ps1 -OutFile $env:TMP\\bob.ps1; & $env:TMP\\bob.ps1"}, Display: "powershell -ep Bypass \"iwr https://bob.ibm.com/download/bobshell.ps1 -OutFile $env:TMP\\bob.ps1; &$env:TMP\\bob.ps1\""},
+			},
+			InstallNote: "the installer runs a global npm install of `bobshell` with whichever npm is first on PATH. darwin is the same shell script, not separately grounded.",
+		},
+		Model:   ModelSpec{Kind: ModelNone},
+		Sandbox: SandboxSpec{Note: "not sandbox-launchable: no observer launcher verb for bob yet"},
+		// GUI row (FU-148, vendor docs only, no live check): IBM Bob IDE is a
+		// desktop IDE beside Bob Shell. bob.ibm.com/docs/ide/getting-started/
+		// install (fetched 2026-10-29): "macOS, Linux, or Windows", a .pkg on
+		// macOS and an .exe installer on Windows, opened "from your
+		// applications menu or desktop shortcut"; bob.ibm.com/download lists
+		// the IDE builds. No executable or bundle name is documented, so the
+		// row is ungrounded: listed, never launchable.
+		GUI: &GUILaunchSpec{
+			ID:      "bob-ide",
+			Label:   "IBM Bob IDE",
+			Surface: "ide",
+			Wrap: WrapSpec{
+				Reason: "not grounded: no base-URL setting of the IDE has been checked (coding surface bob-ide, LCR-75)",
+			},
+			Hosts:    []string{"ibm-bob"},
+			Grounded: false,
+			Note: "Vendor docs only (bob.ibm.com/docs/ide/getting-started/install, 2026-10-29): a desktop IDE for " +
+				"macOS (.pkg), Windows (.exe) and Linux. The executable and bundle names are not documented and " +
+				"no install was read, so the row is not launchable; the LCR-75 grounding run gives the path.",
+		},
+	},
+	// Snowflake Cortex Code (`cortex`, docs/cortexcode-adapter.md). Phase-0
+	// grounded 2026-10-21 against v1.2.18 on WSL Ubuntu and Windows 11.
+	"cortex-code": {
+		Tool: "cortex-code",
+		// 20 native names (bash/write/edit live; the rest off the v1.2.18
+		// bundle's native->Claude hook-name table and the live cron system
+		// reminder). sql_execute stays unknown on purpose.
+		Vocabulary: Vocabulary{InTaxonomy: true},
+		// UserPromptSubmit reaches the claude-code receiver through the
+		// Claude Code settings replay and is judged as cortex-code.
+		PromptLane: PromptLaneHook,
+		// Inference is Snowflake's Cortex REST threads API on the account
+		// host (https://<account>.snowflakecomputing.com/api/v2/cortex/
+		// threads/<id>), the same host that carries auth and SQL. No
+		// Anthropic/OpenAI base-URL knob: routing needs a Snowflake-shaped
+		// provider lane.
+		Proxy:       nil,
+		Routability: RouteStatusAfterBridge,
+		// Cortex RUNS Claude Code's ~/.claude/settings.json hooks; the
+		// claude-code receiver recognises its payload (transcript_path under
+		// ~/.snowflake/cortex/conversations) and gates it as cortex-code
+		// (internal/hook foreignhost.go, operator ruling 2026-10-21). That is
+		// the live path today. Surface-gap W-2a: Observer's own writer for
+		// Cortex's hooks.json (`observer hook cortex-code <event>` commands,
+		// FU-141: while it is registered the Claude settings replay of the
+		// same call answers neutral) is built, CLI only, and switched off
+		// until live check LC18 (does Cortex run that file). The Cortex Code IDE runs
+		// neither file (LC18 partial, 2026-10-26; W-7 records it ungated).
+		Hook: HookSpec{Mechanism: HookCortexHooksJSON, AutoWired: true, Bindings: hookBindingsCortexCode, LiveGate: "LC18"},
+		// Cortex loads ~/.claude.json mcpServers plus its own user mcp.json
+		// managed by `cortex mcp add`; no writer targets the latter.
+		MCP:    nil,
+		Native: NativeRails{},
+		TokenTier: TokenTier{
+			Best:              "session_meta",
+			Gap:               "no per-message usage: one session-cumulative row per model from conversations/<id>.json, MAX-upgraded; no per-turn cache observation; billed in Snowflake credits, so cost is a list-price estimate; token_usage is a process-wide per-model running total written when cortex quits (bundle-read): a parent likely includes in-process subagent spend, and a second session in the same process (/new, resume) may inherit earlier totals",
+			SessionCumulative: true,
+		},
+		// history.jsonl re-reads the full turn. When a launcher lands:
+		//   Resume: ResumeSpec{Kind: ResumeNative, Subcommand: "cortex", IDMechanism: "flag:--resume"}
+		//   Model: ModelSpec{Kind: ModelArg, Flag: "--model"} (`-m, --model`)
+		// and the positional [message] is the interactive seed.
+		Handoff: HandoffCapability{
+			Transcript: TranscriptFull,
+			Inject:     []InjectKind{InjectFile},
+			Note:       "no observer launcher yet; native resume `cortex --resume <id>` grounded, positional [message] seed not live-verified",
+		},
+		Binary: &BinaryResolveSpec{
+			Names: BinaryNames{
+				Unix:    []string{"cortex"},
+				Windows: []string{"cortex.cmd", "cortex.exe"},
+			},
+			ProbeDirs: []ProbeDir{
+				{OS: ProbeUnix, Rel: ".local/bin"},
+				{OS: ProbeWindows, Rel: "AppData/Local/cortex/bin"},
+			},
+			Installs: []InstallHint{
+				{OS: "linux", Channel: "script", Argv: []string{"sh", "-lc", "curl -LsS https://ai.snowflake.com/static/cc-scripts/install.sh | sh"}, Display: "curl -LsS https://ai.snowflake.com/static/cc-scripts/install.sh | sh", Requires: []string{"curl"}},
+				{OS: "windows", Channel: "script", Argv: []string{"powershell", "-ExecutionPolicy", "ByPass", "-c", "irm https://ai.snowflake.com/static/cc-scripts/install.ps1 | iex"}, Display: "irm https://ai.snowflake.com/static/cc-scripts/install.ps1 | iex"},
+			},
+			InstallNote: "macOS not grounded: the same install.sh is expected to work but was not run",
+		},
+		Model:   ModelSpec{Kind: ModelNone},
+		Sandbox: SandboxSpec{Note: "not sandbox-launchable: no observer launcher; state lives in ~/.snowflake (connections.toml credentials + cortex/)"},
+		// GUI row (FU-148, vendor docs only, no live check): Cortex Code
+		// Desktop. docs.snowflake.com/en/user-guide/cortex-code/
+		// cortex-code-desktop/index (fetched 2026-10-29): "a native
+		// macOS/Windows desktop application", "Available for macOS and
+		// Windows". No executable or bundle name is documented, so the row is
+		// ungrounded: listed, never launchable.
+		GUI: &GUILaunchSpec{
+			ID:      "cortex-code-desktop",
+			Label:   "Cortex Code Desktop",
+			Surface: "desktop",
+			Wrap: WrapSpec{
+				Reason: "cortex-code is after_bridge: inference is Snowflake's Cortex REST API on the account host, with no Anthropic or OpenAI base-URL knob to inject",
+			},
+			Hosts:    []string{"cortex-code"},
+			Grounded: false,
+			Note: "Vendor docs only (docs.snowflake.com Cortex Code Desktop page, 2026-10-29): a native desktop app " +
+				"for macOS and Windows. The executable and bundle names are not documented and no install was " +
+				"read, so the row is not launchable; the LC18 grounding run gives the path.",
+		},
+	},
+	// Tencent CodeBuddy Code (docs/codebuddy-adapter.md). Grounded
+	// 2026-10-21 against v2.171.0 on WSL + Windows; the operator could not
+	// log in, so the store shape is real but tool/token lines are grounded
+	// on the vendor bundle only.
+	"codebuddy": {
+		Tool: "codebuddy",
+		// 41 native names from the CLI's built-in tool enum (bundle
+		// 2.171.0), Claude-Code-compatible spellings; none observed in a
+		// real transcript yet.
+		Vocabulary: Vocabulary{
+			InTaxonomy: true,
+			Note:       "tool names grounded on the vendor bundle's built-in tool enum; Read/Bash/Edit live",
+		},
+		// Claude-Code-compatible UserPromptSubmit; decision block + exit 2
+		// blocked live 2026-10-21 (the top-level-block dialect).
+		PromptLane: PromptLaneHook,
+		// CODEBUDDY_BASE_URL overrides the model endpoint; the CLI then
+		// POSTs <base>/v2/chat/completions (OpenAI chat-completions shape)
+		// to CodeBuddy's OWN authenticated gateway. Never driven live.
+		Proxy:       nil,
+		Routability: RouteStatusProbeRequired,
+		// The "hooks" key of ~/.codebuddy/settings.json. Its Claude-shaped
+		// env block can carry CODEBUDDY_API_KEY (credential-file exception).
+		// Windows runs hooks under Git Bash (the bridge is gitBashWrapper).
+		Hook: HookSpec{
+			Mechanism: HookCodeBuddySettings, CrossOSBridge: true, AutoWired: true, Bindings: hookBindingsCodeBuddy,
+			HooksShareCredentialFile: true, CredentialFileReason: credFileCodeBuddy,
+			WindowsRunner: windowsRunnerCodeBuddy,
+		},
+		// `codebuddy mcp add -s local|project|user`; {"mcpServers":{}} shape;
+		// user scope ~/.codebuddy/.mcp.json. No writer.
+		MCP:    nil,
+		Native: NativeRails{},
+		TokenTier: TokenTier{
+			Best: "jsonl",
+			Gap:  "usage shape live (hook-probe mock model, numbers unproven); no cost field; sub-agent transcripts not ingested",
+			// The vendor log's agent.model_call.completed duration_ms.
+			GenerationTiming: GenTimingNative,
+		},
+		// When a launcher lands: Resume ResumeNative "flag:--resume" joined
+		// (`codebuddy --resume=<id>`) and Model ModelArg "--model".
+		Handoff: HandoffCapability{
+			Transcript: TranscriptFull,
+			Inject:     []InjectKind{InjectFile},
+			Note:       "no observer launcher yet; native resume is `codebuddy --resume=<id>` (optional-value flag, joined form)",
+		},
+		Binary: &BinaryResolveSpec{
+			// npm package bins: codebuddy / cbc / codebuddy-code (one entry
+			// point). `cbc` omitted as too short/ambiguous. Windows forms are
+			// the npm .cmd shims (no .exe exists).
+			Names: BinaryNames{
+				Unix:    []string{"codebuddy", "codebuddy-code"},
+				Windows: []string{"codebuddy.cmd", "codebuddy", "codebuddy-code.cmd", "codebuddy-code"},
+			},
+			Installs: []InstallHint{
+				{OS: "", Channel: "npm", Argv: []string{"npm", "install", "-g", "@tencent-ai/codebuddy-code"}, Display: "npm install -g @tencent-ai/codebuddy-code"},
+			},
+		},
+		Model:   ModelSpec{Kind: ModelNone},
+		Sandbox: SandboxSpec{Note: "not sandbox-launchable: no observer launcher for codebuddy; ~/.codebuddy holds settings.json and MCP config"},
+		// GUI row (FU-148, vendor docs only, no live check): the CodeBuddy
+		// IDE, one of the product's three forms beside the plugin and the CLI.
+		// Tencent Cloud's getting-started guide (tencentcloud.com/document/
+		// product/1256/77266 and 77277, fetched 2026-10-29) lists "Windows,
+		// macOS, Linux", a download from the CodeBuddy site, a drag into
+		// Applications on macOS and a per-user installer on Windows. No
+		// executable or bundle name is documented, so the row is ungrounded:
+		// listed, never launchable.
+		GUI: &GUILaunchSpec{
+			ID:      "codebuddy-ide",
+			Label:   "CodeBuddy IDE",
+			Surface: "ide",
+			Wrap: WrapSpec{
+				Reason: "not grounded: no base-URL setting of the IDE has been checked (coding surface codebuddy-ide, LCR-76)",
+			},
+			Hosts:    []string{"codebuddy"},
+			Grounded: false,
+			Note: "Vendor docs only (Tencent Cloud CodeBuddy getting-started guide, 2026-10-29): an IDE for Windows, " +
+				"macOS and Linux. The executable and bundle names are not documented and no install was read, so the " +
+				"row is not launchable; the LCR-76 grounding run gives the path.",
+		},
+	},
+	// Deep Agents Code (`dcode`, docs/deepagents-adapter.md). Phase-0
+	// grounded 2026-10-21 against deepagents-code 0.1.87 (WSL live session).
+	"deepagents-code": {
+		Tool: "deepagents-code",
+		// Hooks v2 UserPromptSubmit: exit 2 / decision block blocked live
+		// 2026-10-21 (the claude-code prompt dialect).
+		PromptLane: PromptLaneHook,
+		// 15 native tool names grounded off mapTool: the SDK FsToolName set
+		// plus the harness tools. MCP tools are exported as <server>_<tool>
+		// with NO marker, so they stay unknown.
+		Vocabulary: Vocabulary{InTaxonomy: true},
+		// Upstream is whatever LangChain provider the user picked
+		// (OpenRouter live). Per provider the base URL resolves from
+		// config.toml [models.providers.<p>] base_url, then the provider env
+		// var with DEEPAGENTS_CODE_<VAR> beating <VAR>. Read from source,
+		// never live-verified; no single route fits every provider.
+		Proxy:       nil,
+		Routability: RouteStatusProbeRequired,
+		// Hooks v2 (Claude-compatible), the user-level
+		// ~/.deepagents/hooks.json ($DEEPAGENTS_HOME); Windows dcode runs
+		// hooks under cmd.exe.
+		Hook: HookSpec{Mechanism: HookDeepAgentsJSON, CrossOSBridge: true, AutoWired: true, Bindings: hookBindingsDeepAgents},
+		// ~/.deepagents/.mcp.json {"mcpServers": {...}}: the shared JSON
+		// shape; no writer wired.
+		MCP:    nil,
+		Native: NativeRails{},
+		TokenTier: TokenTier{
+			Best: "sqlite",
+			Gap:  "thread-naming and /btw spend is one cumulative row with no model (attributed to the thread's last model); sub-agent calls carry no GenMs and no Tier-2 observation",
+			// Both ends of each model call are in the checkpoint stream.
+			GenerationTiming: GenTimingNative,
+			// output = output - reasoning, reasoning carried separately
+			// (internal/adapter/deepagents doc.go).
+			ReasoningDisjoint: true,
+			// response_metadata.cost (OpenRouter-reported dollars) rides as
+			// EstimatedCostUSD (internal/adapter/deepagents/parse.go).
+			ReportsCost: true,
+		},
+		// No launcher in v1. Grounded for that follow-up: `dcode -r [ID]`
+		// (IDMechanism "flag:-r" / --resume), `-M, --model MODEL`,
+		// `-m/--message` seeds an initial prompt.
+		Handoff: HandoffCapability{
+			Transcript: TranscriptFull,
+			Inject:     []InjectKind{InjectFile},
+			Note:       "no launcher in this adapter's v1 scope; resume would be `dcode -r <thread_id>`",
+		},
+		Binary: &BinaryResolveSpec{
+			Names: BinaryNames{
+				Unix:    []string{"dcode", "deepagents-code"},
+				Windows: []string{"dcode.exe", "deepagents-code.exe"},
+			},
+			// `uv tool install` puts the bins in ~/.local/bin on both OSes.
+			ProbeDirs: []ProbeDir{
+				{OS: ProbeUnix, Rel: ".local/bin"},
+				{OS: ProbeWindows, Rel: ".local/bin"},
+			},
+			Installs: []InstallHint{
+				{OS: "linux", Channel: "script", Argv: []string{"bash", "-lc", "curl -LsSf https://langch.in/dcode | bash"}, Display: "curl -LsSf https://langch.in/dcode | bash", Requires: []string{"curl"}},
+				{OS: "darwin", Channel: "script", Argv: []string{"bash", "-lc", "curl -LsSf https://langch.in/dcode | bash"}, Display: "curl -LsSf https://langch.in/dcode | bash", Requires: []string{"curl"}},
+			},
+			InstallNote: "operator-grounded: the same `curl -LsSf https://langch.in/dcode | bash` run from Git Bash on Windows 11 installed dcode.exe via `uv tool install`; no PowerShell variant was observed, so no windows InstallHint is claimed. dcode's self-update is broken on Windows (see docs/deepagents-adapter.md)",
+		},
+		Model:   ModelSpec{Kind: ModelNone},
+		Sandbox: SandboxSpec{Note: "not sandbox-launchable: no observer launcher for dcode; ~/.deepagents holds the store, config.toml and auth.json / chatgpt-auth.json credentials"},
+	},
+	// DimCode (`dim` / `dimcode`, npm dimcode; docs/dimcode-adapter.md).
+	// Capture-only v1, grounded 2026-10-21 on dimcode 0.5.21 (WSL Ubuntu +
+	// Windows 11, one real session each).
+	"dimcode": {
+		Tool: "dimcode",
+		// hooks.json UserPromptSubmit: exit 2 + stderr blocked live
+		// 2026-10-21 (the kimi-code prompt dialect). No trust step.
+		PromptLane: PromptLaneHook,
+		// 20 native tool names: live = todowrite/write/edit/exec, the rest
+		// from the tool registry in the vendor binary. MCP/dynamic tool
+		// names are not grounded and land as unknown.
+		Vocabulary: Vocabulary{InTaxonomy: true},
+		// The base URL is per provider (`dim provider update <id>
+		// --base-url <url>`, persisted with credentials). Surface-gap S-16
+		// (2026-10-25, https://dimcode.dev/docs/config) corrects "no global
+		// env knob": OPENAI_BASE_URL / DIMCODE_OPENAI_BASE_URL,
+		// DIMCODE_ANTHROPIC_BASE_URL and DIMCODE_GEMINI_BASE_URL exist and
+		// the runtime env overrides saved files. No launcher yet. No route
+		// driven live (the live provider was OpenRouter).
+		Proxy:       nil,
+		Routability: RouteStatusProbeRequired,
+		// Claude-Code-style ~/.dimcode/v2/hooks.json. There is NO trust step
+		// (live 2026-10-21; `dim hooks` only manages a disable list).
+		// Windows dim runs hooks under cmd.exe.
+		Hook: HookSpec{Mechanism: HookDimCodeJSON, CrossOSBridge: true, AutoWired: true, Bindings: hookBindingsDimCode},
+		// <home>/mcp.json, {"mcpServers":{...}}; the file does not exist on
+		// either grounding box, so no writer is claimed.
+		MCP:    nil,
+		Native: NativeRails{},
+		TokenTier: TokenTier{
+			Best: "sqlite",
+			Gap:  "tokens are per-run totals (usage_run_stats), one row per user prompt, plus standalone ledger calls; no per-call or per-turn cache split",
+			// reasoning is never stamped (completionTokens includes it and
+			// bills through OutputTokens), which counts as disjoint.
+			ReasoningDisjoint: true,
+			// The vendor cost rides as EstimatedCostUSD only when its quality
+			// is "exact" (internal/adapter/dimcode/tokens.go exactCost).
+			ReportsCost: true,
+		},
+		// Resume grounded (`dim --session <id>`, `dim exec resume <id>`)
+		// but no `observer dimcode` launcher exists.
+		Handoff: HandoffCapability{
+			Transcript: TranscriptFull,
+			Inject:     []InjectKind{InjectFile},
+			Note:       "no `observer dimcode` launcher yet; native resume is `dim --session <id>`",
+		},
+		Binary: &BinaryResolveSpec{
+			// npm global shims; the real executable is a platform binary
+			// the node wrapper spawns, not on PATH itself.
+			Names: BinaryNames{
+				Unix:    []string{"dim", "dimcode"},
+				Windows: []string{"dim.cmd", "dimcode.cmd", "dim", "dimcode"},
+			},
+			Installs: []InstallHint{
+				{OS: "", Channel: "npm", Argv: []string{"npm", "install", "-g", "dimcode@latest"}, Display: "npm install -g dimcode@latest", Requires: []string{"npm"}},
+			},
+		},
+		Model:   ModelSpec{Kind: ModelNone},
+		Sandbox: SandboxSpec{Note: "not sandbox-launchable: no sandboxed dim launch has been built or run; ~/.dimcode holds the store and provider credentials under v2/"},
+	},
+	// Dirac CLI (docs/dirac-adapter.md). Phase-0 grounded 2026-10-21
+	// against dirac-cli 0.5.22 on Windows 11 + WSL Ubuntu and the shipped
+	// bundle.
+	"dirac": {
+		Tool:       "dirac",
+		Vocabulary: Vocabulary{InTaxonomy: true},
+		// UserPromptSubmit is awaited before the model call and its cancel
+		// stops it (live 2026-10-21, the dirac prompt dialect).
+		PromptLane: PromptLaneHook,
+		// Base-URL surface EXISTS: DIRAC_PROVIDER + DIRAC_BASE_URL (README +
+		// bundle) for openai / anthropic / gemini / litellm / ..., and
+		// OPENAI_API_BASE. The operator's openai-codex (ChatGPT subscription)
+		// provider has NO base-URL key. Not live-verified, so Proxy stays nil
+		// (cline row precedent: routable_now with no writer).
+		Proxy:       nil,
+		Routability: RouteStatusRoutableNow,
+		// Nine legacy Cline-lineage file-per-event hooks; Observer writes
+		// the PreToolUse and UserPromptSubmit files in ~/.dirac/Hooks
+		// (<Event>.ps1 on Windows, where the WSL bridge is a PowerShell
+		// `& wsl.exe` line).
+		Hook: HookSpec{
+			Mechanism: HookDiracHookFiles, CrossOSBridge: true, AutoWired: true, Bindings: hookBindingsDirac,
+			WindowsRunner: windowsRunnerDirac,
+		},
+		// No MCP client config file and no MCP tool in 0.5.22.
+		MCP:    nil,
+		Native: NativeRails{},
+		TokenTier: TokenTier{
+			Best: "events_jsonl",
+			Gap:  "reasoning stamped only for providers with a grounded output/reasoning relation (OpenAI family netted, Gemini disjoint); input netting verified for openai-codex only; no Tier-1 proxy path",
+			// The adapter carries Dirac's own per-call cost.
+			ReportsCost:       true,
+			ReasoningDisjoint: true,
+			// Both ends of each model call are in the task events.
+			GenerationTiming: GenTimingNative,
+		},
+		// When a launcher lands: `dirac --taskId <id>` resumes (a new
+		// "flag:--taskId" mechanism), `-m, --model <model>`.
+		Handoff: HandoffCapability{
+			Transcript: TranscriptFull,
+			Inject:     []InjectKind{InjectFile},
+			Note:       "no `observer dirac` launcher yet; `dirac \"<prompt>\"` (positional) seeds a task and `dirac --taskId <id>` / `-T` resumes (grounded from --help 0.5.22)",
+		},
+		Binary: &BinaryResolveSpec{
+			// npm JS bin: `.cmd` shim on Windows, never an .exe.
+			Names: BinaryNames{
+				Unix:    []string{"dirac"},
+				Windows: []string{"dirac.cmd", "dirac"},
+			},
+			Runtime: &RuntimeRequirement{Runtime: RuntimeNode, MinVersion: "22.13.0", Range: ">=22.13.0 <25.0.0", Product: "Dirac CLI", Source: "dirac-cli 0.5.22 package.json engines.node >=22.13.0 <25.0.0, read 2026-10-21"},
+			Installs: []InstallHint{
+				{OS: "", Channel: "npm", Argv: []string{"npm", "install", "-g", "dirac-cli"}, Display: "npm install -g dirac-cli"},
+			},
+		},
+		Model:   ModelSpec{Kind: ModelNone},
+		Sandbox: SandboxSpec{Note: "not sandbox-launchable: no observer launcher for dirac yet; ~/.dirac holds data/ (tasks, secrets.json) and the Hooks dir"},
+	},
+	// Kimchi (Cast AI, docs/kimchi-adapter.md). Phase-0 grounded 2026-10-21
+	// against kimchi 1.17.0 on WSL2 Ubuntu + Windows 11 and the installed
+	// bundle. pi-mono derivative, own parser.
+	"kimchi": {
+		Tool: "kimchi",
+		// The Claude-dialect UserPromptSubmit is project-scoped natively; it
+		// reaches Observer only through the claude-code-hook-adapter replay
+		// (default off), routed by the claude-code receiver.
+		PromptLane: PromptLaneHook,
+		// 25 tool names registered live + mcp / skill / ask_user from the
+		// bundle's tool tables; DAP debug_* and ferment lifecycle verbs
+		// deliberately unmapped.
+		Vocabulary: Vocabulary{InTaxonomy: true},
+		// ROUTABLE surface, route NOT DRIVEN: harness/models.json accepts
+		// pi-mono custom providers and the default kimchi-dev provider's
+		// baseUrl is overridable by env KIMCHI_BASE_URL. Neither
+		// live-verified; a non-default host needs a /up/<id> upstream.
+		Proxy:       nil,
+		Routability: RouteStatusProbeRequired,
+		// Native command hooks exist only in <project>/.kimchi/hooks.json.
+		// Observer writes the one user-level hook Kimchi runs, the bash
+		// pre-gate script (HookKimchiBashHook, Linux / macOS). A default-OFF
+		// extensions.claude-code-hook-adapter makes kimchi run
+		// ~/.claude/settings.json hooks; the claude-code receiver routes
+		// those payloads to kimchi (internal/hook foreignhost.go).
+		Hook: HookSpec{Mechanism: HookKimchiBashHook, AutoWired: true, Bindings: hookBindingsKimchi},
+		// MCP client exists but no user-level file/schema grounded on disk.
+		MCP:    nil,
+		Native: NativeRails{},
+		TokenTier: TokenTier{
+			Best: "transcript",
+			Gap: "per-call usage is NET input + output incl. reasoning (split at the boundary) + cacheRead/cacheWrite + " +
+				"provider cost; reconciles exactly with the vendor's cache_summary cumulative. No pricing entry for " +
+				"kimchi-dev/gemma-4-31b; the openai-codex lane's cost is a list-price estimate of a ChatGPT subscription",
+			ReportsCost: true,
+			// output is netted of reasoning at the boundary (84 live usage
+			// rows), and both ends of the model call's stream are in the
+			// record (GenBasisNative).
+			ReasoningDisjoint: true,
+			GenerationTiming:  GenTimingNative,
+		},
+		// No `observer kimchi` launcher. Grounded for it: `kimchi --session
+		// <id>` / `--resume <id>`, positional prompt seeding, `--model`.
+		Handoff: HandoffCapability{
+			Transcript: TranscriptFull,
+			Inject:     []InjectKind{InjectFile},
+			Note:       "no `observer kimchi` launcher yet; native resume is `kimchi --session <id>`",
+		},
+		Binary: &BinaryResolveSpec{
+			Names: BinaryNames{Unix: []string{"kimchi"}, Windows: []string{"kimchi.exe"}},
+			ProbeDirs: []ProbeDir{
+				{OS: ProbeUnix, Rel: ".local/bin"},
+				{OS: ProbeWindows, Rel: "AppData/Local/Kimchi/bin"},
+			},
+			Installs: []InstallHint{
+				{OS: "linux", Channel: "script", Argv: []string{"bash", "-lc", "curl -fsSL https://github.com/getkimchi/kimchi/releases/latest/download/install.sh | bash"}, Display: "curl -fsSL https://github.com/getkimchi/kimchi/releases/latest/download/install.sh | bash", Requires: []string{"curl"}},
+				{OS: "darwin", Channel: "script", Argv: []string{"bash", "-lc", "curl -fsSL https://github.com/getkimchi/kimchi/releases/latest/download/install.sh | bash"}, Display: "curl -fsSL https://github.com/getkimchi/kimchi/releases/latest/download/install.sh | bash", Requires: []string{"curl"}},
+				{OS: "windows", Channel: "script", Argv: []string{"powershell", "-Command", "irm https://github.com/getkimchi/kimchi/releases/latest/download/install.ps1 | iex"}, Display: "irm https://github.com/getkimchi/kimchi/releases/latest/download/install.ps1 | iex"},
+			},
+			InstallNote: "operator-run on WSL (install.sh) and Windows (install.ps1) 2026-10-21; darwin reuses install.sh (not run on macOS); scripts' prompt behaviour under a PTY not verified",
+		},
+		Model:   ModelSpec{Kind: ModelNone},
+		Sandbox: SandboxSpec{Note: "not sandbox-launchable: no observer launcher for kimchi; ~/.config/kimchi holds config.json / auth.json / models.json keys"},
+	},
+	// Stakpak (`stakpak`, docs/stakpak-adapter.md). Phase-0 grounded
+	// 2026-10-21 on stakpak 0.3.88, WSL Ubuntu + Windows 11.
+	"stakpak": {
+		Tool: "stakpak",
+		// 8 live-seen native tool names + 5 binary-string names, off mapTool.
+		// The `stakpak__` tool-server namespace is stripped by the adapter.
+		Vocabulary: Vocabulary{InTaxonomy: true},
+		// No base-URL env knob: the model provider is a
+		// [profiles.<p>.providers.<name>] block in ~/.stakpak/config.toml,
+		// the same file that holds the profile api_key. Not live-probed.
+		Proxy: nil,
+		// S-22 (D9): the writer is built (proxyroute memberroute.go): the
+		// default profile's openai provider api_endpoint, a member edit in a
+		// file holding the profile api_key. Switched off until live check
+		// LC37 shows a profile api_endpoint at the proxy routes traffic (and
+		// which profile a bare run picks).
+		ProxyProbe: &ProxyRoute{
+			Kind:                 RouteConfigFile,
+			Suffix:               "/v1",
+			Setting:              "[profiles.default.providers.openai] api_endpoint",
+			Note:                 "proxyroute.RegisterMemberRoute(stakpak) adds api_endpoint = proxy /v1 to an existing [profiles.default.providers.openai] in ~/.stakpak/config.toml; member edit only, never the api_key; the profile a run without --profile / STAKPAK_PROFILE uses is not grounded",
+			LiveGate:             "LC37",
+			SharesCredentialFile: true, CredentialFileReason: routeCredStakpak,
+		},
+		Routability: RouteStatusProbeRequired,
+		Hook:        HookSpec{Mechanism: HookNone, Note: hookNoteStakpak},
+		// `stakpak mcp add|remove|list` manages ~/.stakpak/mcp.toml or
+		// mcp.json (names from the binary; on-disk format never observed).
+		MCP:    nil,
+		Native: NativeRails{},
+		// local.db: per-call usage on the assistant message. No cache split,
+		// no model recorded anywhere in the store.
+		TokenTier: TokenTier{Best: "sqlite", Gap: "no model recorded in the store (cost not estimated); no cache tokens (cachetrack Tier-2 not fed); keyed Stakpak-account profiles keep sessions server-side"},
+		// When a launcher lands: `stakpak -s <session-uuid>` (flag:--session),
+		// `--model <MODEL>`, positional [PROMPT] seed.
+		Handoff: HandoffCapability{
+			Transcript: TranscriptFull,
+			Inject:     []InjectKind{InjectFile},
+			Note:       "no `observer stakpak` launcher yet; native resume is `stakpak -s <session-uuid>`",
+		},
+		Binary: &BinaryResolveSpec{
+			Names: BinaryNames{
+				Unix:    []string{"stakpak"},
+				Windows: []string{"stakpak.exe"},
+			},
+			// install.sh lands ~/.local/bin/stakpak(.exe), often off PATH
+			// on Windows.
+			ProbeDirs: []ProbeDir{
+				{OS: ProbeUnix, Rel: ".local/bin"},
+				{OS: ProbeWindows, Rel: ".local/bin"},
+			},
+			Installs: []InstallHint{
+				{OS: "linux", Channel: "script", Argv: []string{"bash", "-lc", "curl -sSL https://stakpak.dev/install.sh | sh"}, Display: "curl -sSL https://stakpak.dev/install.sh | sh", Requires: []string{"curl"}},
+				{OS: "darwin", Channel: "script", Argv: []string{"bash", "-lc", "curl -sSL https://stakpak.dev/install.sh | sh"}, Display: "curl -sSL https://stakpak.dev/install.sh | sh", Requires: []string{"curl"}},
+				{OS: "windows", Channel: "script", Argv: []string{"bash", "-lc", "curl -sSL https://stakpak.dev/install.sh | sh"}, Display: "curl -sSL https://stakpak.dev/install.sh | sh (run from Git Bash)", Requires: []string{"bash", "curl"}},
+			},
+		},
+		Model:   ModelSpec{Kind: ModelNone},
+		Sandbox: SandboxSpec{Note: "not sandbox-launchable: no observer launcher for stakpak; ~/.stakpak holds the store and config.toml (api_key)"},
+	},
+	// VT Code (docs/vtcode-adapter.md). Grounded 2026-10-21 against
+	// vtcode-core 0.180.2 on WSL Ubuntu + Windows 11 (operator sessions via
+	// OpenRouter).
+	"vtcode": {
+		Tool:       "vtcode",
+		Vocabulary: Vocabulary{InTaxonomy: true},
+		// UserPromptSubmit blocks before the model call (live 2026-10-21,
+		// TUI sessions only; exec runs fire no hook).
+		PromptLane: PromptLaneHook,
+		// Base-URL knobs exist but no live turn has been routed:
+		// OPENROUTER_BASE_URL / OPENAI_BASE_URL / ANTHROPIC_BASE_URL / ...
+		// and vtcode.toml provider_overrides.<p>.base_url. Candidate route
+		// when verified: RouteLauncher, EnvVar "OPENROUTER_BASE_URL", Suffix
+		// "/up/openrouter/api/v1".
+		Proxy:       nil,
+		Routability: RouteStatusProbeRequired,
+		// [[hooks.lifecycle.<event>]] in the user-level vtcode.toml (live
+		// 2026-10-21; interactive TUI sessions only). Windows runs hooks
+		// under Git for Windows' sh, so the bridge is gitBashWrapper.
+		Hook: HookSpec{
+			Mechanism: HookVTCodeTOML, CrossOSBridge: true, AutoWired: true, Bindings: hookBindingsVTCode,
+			// Every hook command runs as `sh -c <command>`; Git for Windows
+			// puts only Git\cmd (no sh.exe) on PATH, and a spawn failure
+			// fails OPEN (live 2026-10-24, docs/vtcode-adapter.md "Hooks").
+			WindowsHookShell: HookShellRequirement{
+				Shell:      "sh",
+				ProvidedBy: "Git Bash",
+				Fix:        `add C:\Program Files\Git\bin to the Windows PATH`,
+				Grounding:  `vtcode-core 0.180.2 crates/codegen/vtcode-core/src/hooks/lifecycle/engine.rs: Command::new("sh"); "failed to spawn lifecycle hook" observed on Windows 11 2026-10-24`,
+			},
+		},
+		// vtcode.toml [[mcp.providers]]: no observer MCPFormat matches.
+		MCP:    nil,
+		Native: NativeRails{},
+		TokenTier: TokenTier{
+			Best: "events_jsonl",
+			Gap:  "one usage row per TURN by design (per-request trajectory rows would double-count against re-parses); GenMs = sum of the requests' elapsed_ms when they cover the turn; per-request implicit-cache Tier-2 observations; model from the trajectory, else the archive's session-start model; no reasoning split; archive-only sessions (deleted workspace) carry no tokens",
+			// GenMs is the sum of the turn's requests' elapsed_ms.
+			GenerationTiming: GenTimingNative,
+		},
+		// When a launcher lands: Resume ResumeNative "flag:--resume" and
+		// Model ModelArg "--model".
+		Handoff: HandoffCapability{
+			Transcript: TranscriptFull,
+			Inject:     []InjectKind{InjectFile},
+			Note:       "capture-only adapter: no observer launcher yet (vtcode --resume <id>, --model <id>, --provider <p> are grounded from --help)",
+		},
+		Binary: &BinaryResolveSpec{
+			Names: BinaryNames{
+				Unix:    []string{"vtcode"},
+				Windows: []string{"vtcode.exe", "vtcode"},
+			},
+			// Both vendor installers land ~/.local/bin/vtcode(.exe).
+			ProbeDirs: []ProbeDir{
+				{OS: ProbeUnix, Rel: ".local/bin"},
+				{OS: ProbeWindows, Rel: ".local/bin"},
+			},
+			Installs: []InstallHint{
+				{OS: "linux", Channel: "script", Argv: []string{"bash", "-lc", "curl -fsSL https://raw.githubusercontent.com/vinhnx/VTCode/main/scripts/install.sh | bash"}, Display: "curl -fsSL https://raw.githubusercontent.com/vinhnx/VTCode/main/scripts/install.sh | bash", Requires: []string{"curl"}},
+				{OS: "windows", Channel: "script", Argv: []string{"powershell", "-Command", "irm https://raw.githubusercontent.com/vinhnx/VTCode/main/scripts/install.ps1 | iex"}, Display: "irm https://raw.githubusercontent.com/vinhnx/VTCode/main/scripts/install.ps1 | iex"},
+			},
+			InstallNote: "macOS not run: install.sh is the vendor's documented Unix path but was only operator-run on Linux",
+		},
+		Model:   ModelSpec{Kind: ModelNone},
+		Sandbox: SandboxSpec{Note: "not sandbox-launchable: no observer launcher (capture-only)"},
+	},
 }
 
 // RegistryVersion is the version of the adapter capability registry's
@@ -5401,8 +6578,10 @@ var registry = map[string]Capability{
 // 2026-09-03 (kiro-crew, AWS Kiro Crew, joined the vocabulary). Bumped
 // 4 -> 5 on 2026-09-05 (poolside joined the vocabulary). Bumped 5 -> 6
 // on 2026-09-06 (zed, Zed's own native coding agent, joined the
-// vocabulary).
-const RegistryVersion = 6
+// vocabulary). Bumped 6 -> 7 on 2026-10-21 (the capture-only wave:
+// autohand, ibm-bob, cortex-code, codebuddy, deepagents-code, dimcode,
+// dirac, kimchi, stakpak and vtcode joined the vocabulary).
+const RegistryVersion = 7
 
 // Tools returns every registered tool name, sorted. It is the canonical,
 // closed tool vocabulary (NOT config.EnabledAdapters, which is a

@@ -3,6 +3,7 @@ package git
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -137,5 +138,67 @@ func TestFindRootWalksUp(t *testing.T) {
 	want, _ := filepath.EvalSymlinks(dir)
 	if got != want {
 		t.Errorf("FindRoot: got %q want %q", got, want)
+	}
+}
+
+// TestReadGitFileDirHostFlavor pins the linked-worktree pointer read: a
+// Git-for-Windows pointer (`gitdir: D:/repo/...`) read on a POSIX host is
+// translated to the host flavor, so the main-repo root derived from it is
+// a usable path rather than `D:/repo` (live 2026-10-22: every Windows
+// worktree session's transcript actions landed on a `D:/...` project).
+// Merged onto the F0-14 reader (readGitFileDir); the traversal and
+// relative-pointer rules are resolveGitPointer's and are pinned there.
+func TestReadGitFileDirHostFlavor(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, body, want string
+		ok               bool
+	}{
+		{"posix pointer", "gitdir: /home/u/repo/.git/worktrees/wt\n", "/home/u/repo/.git/worktrees/wt", true},
+		{"relative pointer kept relative", "gitdir: ../repo/.git/worktrees/wt\n", "../repo/.git/worktrees/wt", true},
+		{"empty rejected", "gitdir:\n", "", false},
+		{"no gitdir line", "something else\n", "", false},
+	}
+	if runtime.GOOS != "windows" {
+		tests = append(tests, struct {
+			name, body, want string
+			ok               bool
+		}{"windows pointer", "gitdir: D:/repo/.git/worktrees/wt\n", "/mnt/d/repo/.git/worktrees/wt", true})
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), ".git")
+			if err := os.WriteFile(p, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got, ok := readGitFileDir(p)
+			if got != tc.want || ok != tc.ok {
+				t.Errorf("readGitFileDir = (%q, %v), want (%q, %v)", got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
+// TestHasLinkedWorktreesNeverResolvesAgainstTheWorkingDirectory (audit row 8,
+// FU-193): a stored project root that is not rooted on this host is never
+// joined against the daemon's working directory, even when the working
+// directory holds a folder of that name with a linked-worktree admin dir.
+func TestHasLinkedWorktreesNeverResolvesAgainstTheWorkingDirectory(t *testing.T) {
+	const unknown = "Xcode (project unknown)"
+	cwd := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cwd, unknown, ".git", "worktrees"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(cwd)
+	if HasLinkedWorktrees(unknown) {
+		t.Error("HasLinkedWorktrees resolved a relative root against the working directory")
+	}
+	if !HasLinkedWorktrees(filepath.Join(cwd, unknown)) {
+		t.Error("an absolute root with linked worktrees is not reported")
+	}
+	for p, want := range map[string]bool{unknown: false, "rel/dir": false, "": false, filepath.Join(cwd, "x"): true} {
+		if got := HostRooted(p); got != want {
+			t.Errorf("HostRooted(%q) = %v, want %v", p, got, want)
+		}
 	}
 }

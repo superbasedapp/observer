@@ -122,6 +122,11 @@ var enterpriseDefaultShares = []enterpriseDefaultShare{
 		Key: "tool_account_detail", Authority: "extract.tool_accounts",
 		Why: "which vendor account a tool is logged in as — the licence-compliance read",
 	},
+	{
+		Key: "hook_activity", Authority: "extract.hook_activity",
+		Why: "which AI tool hooks fired in each session (counts and coarse classes). " +
+			"Without it the org Guard tab cannot tell a hook capability from a hook that ran",
+	},
 }
 
 // authorityUmbrella is the legacy alias that stands in for every per-tier

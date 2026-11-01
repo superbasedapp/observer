@@ -83,17 +83,28 @@ func spanFor(t *testing.T, r Result, key, session string) Span {
 
 func TestPathspecsAndToolsReading(t *testing.T) {
 	rules := guidance.Rules()
-	if got := Pathspecs(rules); !reflect.DeepEqual(got, []string{".claude/skills"}) {
-		t.Errorf("Pathspecs = %v, want [.claude/skills]", got)
+	wantSpecs := []string{
+		".agents/skills", ".ai/skills", ".autohand/skills", ".bob/skills",
+		".claude/skills", ".codebuddy/skills", ".codex/skills", ".cortex/skills", ".deepagents/skills", ".dirac/skills",
+		".diracrules/skills", ".gemini/skills", ".kimchi/skills", ".pi/agent/skills", ".qwen/skills", ".vtcode/skills",
 	}
+	if got := Pathspecs(rules); !reflect.DeepEqual(got, wantSpecs) {
+		t.Errorf("Pathspecs = %v, want %v", got, wantSpecs)
+	}
+	// .claude/skills is read by every tool whose discovery row names it
+	// (the 2026-10-21 wave added dimcode, dirac, ibm-bob and kimchi).
+	claudeReaders := []string{cc, "dimcode", "dirac", "ibm-bob", "kimchi"}
 	cases := []struct {
 		rel       string
 		wantTools []string
 		isSkill   bool
 	}{
-		{skMD, []string{cc}, true},
-		{".claude/skills/deploy/scripts/run.sh", []string{cc}, true},
-		{"~/.claude/skills/x/SKILL.md", []string{cc}, false},
+		{skMD, claudeReaders, true},
+		{".claude/skills/deploy/scripts/run.sh", claudeReaders, true},
+		{"~/.claude/skills/x/SKILL.md", []string{cc, "ibm-bob"}, false},
+		// Codex reads the repository's .agents/skills (its documented
+		// repo scope, learn.chatgpt.com/docs/build-skills).
+		{".agents/skills/x/SKILL.md", []string{"codex", "deepagents-code", "dimcode", "dirac", "ibm-bob", "vtcode"}, true},
 		{".claude/skills/SKILL.md", nil, false},
 		{"src/main.go", nil, false},
 	}

@@ -26,6 +26,30 @@ const (
 	// auto-resume spawn, so it must never be offered again across a later
 	// restart.
 	EndReasonResumed = "resumed"
+	// EndReasonOrgFloorHooksDrifted - the daemon ended a live sandboxed run
+	// because its hooks drifted (its gate events stopped arriving) while the
+	// org's require_full_capture floor was in force (sandbox plan section
+	// 13.12 A10, lane sbx-p2e). Stamped before the PTY is closed, so the
+	// natural exit that follows keeps it; NOT resumable-by-restart.
+	EndReasonOrgFloorHooksDrifted = "org_floor_require_full_capture_hooks_drifted"
+	// EndReasonProcessGone - the daemon found a sandboxed CLI launch's host
+	// helper gone (killed, its liveness lock free and its record left
+	// behind) while the row still read as running, and ended the row (live
+	// check 2026-10-22, D7). Its exit code is unknown and stays NULL; NOT
+	// resumable-by-restart.
+	EndReasonProcessGone = "process_gone"
+	// EndReasonConsoleClosed - the console window a run lived in was
+	// closed (a sandboxed CLI launch's window X, a log off or a shutdown;
+	// or the tool's own STATUS_CONTROL_C_EXIT). Windows 11 Pro run 4, N3.
+	// NOT resumable-by-restart.
+	EndReasonConsoleClosed = "console_closed"
+	// EndReasonDashboardStop - the dashboard's Stop & close ended the run
+	// (marked before the PTY is closed). NOT resumable-by-restart.
+	EndReasonDashboardStop = "dashboard_stop"
+	// EndReasonStoppedOutside - something outside Observer stopped the
+	// process (exit code 0xFFFFFFFF / -1: Stop-Process, taskkill /F, a
+	// POSIX kill signal). NOT resumable-by-restart.
+	EndReasonStoppedOutside = "stopped_outside"
 )
 
 // TerminalRun is one row of the NODE-LOCAL terminal-run identity table
@@ -61,8 +85,11 @@ type TerminalRun struct {
 	// ExitCode is the run's exit code; nil while running.
 	ExitCode *int
 	// EndReason is the durable end-state discriminator (migration 072): one of
-	// "" (running/crashed), EndReasonChildExit, EndReasonDaemonShutdown, or
-	// EndReasonResumed.
+	// "" (running/crashed), EndReasonChildExit, EndReasonDaemonShutdown,
+	// EndReasonResumed, EndReasonOrgFloorHooksDrifted, EndReasonProcessGone,
+	// EndReasonConsoleClosed, EndReasonDashboardStop or
+	// EndReasonStoppedOutside (the vocabulary and its named lines:
+	// internal/termrun/endreason.go).
 	EndReason string
 	// PID is the DETACHED child's process id (migration 108), recorded only for
 	// a GUI run and only once its spawn returned. nil is the honest "no pid
@@ -77,6 +104,33 @@ type TerminalRun struct {
 	// qualifies an applied wrap (migration 108). Server-composed metadata: no
 	// argv, no environment values, no path.
 	WrapNote string
+	// Isolation is the G19 isolation evidence (migration 179).
+	Isolation TerminalRunIsolation
+}
+
+// TerminalRunIsolation is the G19 isolation evidence of one run (sandbox
+// plan v2 section 8.4, migration 179): closed-vocabulary strings
+// (internal/sandboxvocab), the empty string meaning "not recorded", plus the
+// digest of the run's execution evidence envelope (internal/execevidence,
+// roadmap F0-13) and the producer inputs it was sealed over (migration 181),
+// so the digest can be recomputed from the row.
+type TerminalRunIsolation struct {
+	Class              string
+	Stack              []string
+	EgressTier         string
+	CaptureLevel       string
+	CaptureRule        string
+	CaptureOrigin      string
+	CaptureDegraded    bool
+	NativeSandboxState string
+	Verification       string
+	KeyCustody         string
+	EvidenceDigest     string
+	// EvidenceProducer, EvidenceComponent and EvidenceComponentVersion are
+	// the envelope's producer kind, catalog component and Observer build.
+	EvidenceProducer         string
+	EvidenceComponent        string
+	EvidenceComponentVersion string
 }
 
 // TerminalCorrelation is one scored link from a run to an observed agent
@@ -104,19 +158,31 @@ func (s *Store) InsertTerminalRun(ctx context.Context, run TerminalRun) error {
 	if run.EndedAt != nil {
 		endedArg = run.EndedAt.UTC().Format(time.RFC3339Nano)
 	}
+	iso := run.Isolation
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO terminal_run
 		   (run_id, tool, kind, source_session_id, project_root_hash,
 		    correlation_token_hash, launched_at, ended_at, exit_code,
-		    pid, wrap_applied, wrap_note)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		    pid, wrap_applied, wrap_note,
+		    isolation_class, stack, egress_tier, capture_level, capture_rule,
+		    capture_origin, capture_degraded, native_sandbox_state,
+		    verification, key_custody, evidence_digest,
+		    evidence_producer, evidence_component, evidence_component_version)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		run.RunID, run.Tool, run.Kind, run.SourceSessionID, run.ProjectRootHash,
 		run.CorrelationTokenHash, launched.UTC().Format(time.RFC3339Nano),
 		endedArg, nullIntPtr(run.ExitCode),
-		nullIntPtr(run.PID), boolToInt(run.WrapApplied), run.WrapNote)
+		nullIntPtr(run.PID), boolToInt(run.WrapApplied), run.WrapNote,
+		iso.Class, strings.Join(iso.Stack, ","), iso.EgressTier, iso.CaptureLevel, iso.CaptureRule,
+		iso.CaptureOrigin, boolToInt(iso.CaptureDegraded), iso.NativeSandboxState,
+		iso.Verification, iso.KeyCustody, iso.EvidenceDigest,
+		iso.EvidenceProducer, iso.EvidenceComponent, iso.EvidenceComponentVersion)
 	if err != nil {
 		return fmt.Errorf("store.InsertTerminalRun: %w", err)
 	}
+	// isolation.seal (termrun_seal.go); nil sealer: nothing. The row is
+	// committed, so a failed seal is retried and logged, never returned.
+	s.sealInsertedRun(ctx, run.RunID, iso.EvidenceDigest)
 	return nil
 }
 
@@ -150,6 +216,108 @@ func (s *Store) StampTerminalRunSpawn(ctx context.Context, runID string, pid int
 	return nil
 }
 
+// TerminalRunCaptureHealth is what lowered a run's capture after launch
+// (migration 186): the causes (a comma list of sandboxrelayd's closed
+// DegradedCause vocabulary) and the heartbeats the capture relay missed.
+type TerminalRunCaptureHealth struct {
+	Causes           string
+	MissedHeartbeats int
+}
+
+// LowerTerminalRunCapture records that a run's capture was lowered after
+// launch (sandbox plan v2 sections 5.2 and 8.4, plans decision log P-032):
+// capture_degraded becomes 1, the causes are added to the recorded ones
+// (each once, the recorded ones first) and the missed-heartbeat count only
+// rises. A lowering is never undone. When the run recorded evidence, its
+// digest is resealed over the lowered facts by reseal (the execution
+// evidence seam, cmd/observer/terminal_launch.go); reseal returning ""
+// (an envelope that no longer validates) leaves the row with no digest, so
+// nothing cites evidence that was never valid. One transaction, so two
+// lowerings never lose each other's causes. ok=false: no such run.
+func (s *Store) LowerTerminalRunCapture(ctx context.Context, runID string, h TerminalRunCaptureHealth, reseal func(runID string, iso TerminalRunIsolation) string) (bool, error) {
+	if runID == "" {
+		return false, nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("store.LowerTerminalRunCapture: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var iso TerminalRunIsolation
+	var stack, causes string
+	var degraded, missed int
+	err = tx.QueryRowContext(ctx,
+		`SELECT isolation_class, stack, egress_tier, capture_level, capture_rule,
+		        capture_origin, capture_degraded, native_sandbox_state,
+		        verification, key_custody, evidence_digest,
+		        evidence_producer, evidence_component, evidence_component_version,
+		        capture_degraded_causes, missed_heartbeats
+		   FROM terminal_run WHERE run_id = ?`, runID).
+		Scan(&iso.Class, &stack, &iso.EgressTier, &iso.CaptureLevel, &iso.CaptureRule,
+			&iso.CaptureOrigin, &degraded, &iso.NativeSandboxState,
+			&iso.Verification, &iso.KeyCustody, &iso.EvidenceDigest,
+			&iso.EvidenceProducer, &iso.EvidenceComponent, &iso.EvidenceComponentVersion,
+			&causes, &missed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("store.LowerTerminalRunCapture: %w", err)
+	}
+	if stack != "" {
+		iso.Stack = strings.Split(stack, ",")
+	}
+	iso.CaptureDegraded = true
+	causes = unionCommaList(causes, h.Causes)
+	missed = max(missed, h.MissedHeartbeats)
+	digest := iso.EvidenceDigest
+	if digest != "" && reseal != nil {
+		digest = reseal(runID, iso)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE terminal_run
+		    SET capture_degraded = 1, capture_degraded_causes = ?,
+		        missed_heartbeats = ?, evidence_digest = ?
+		  WHERE run_id = ?`, causes, missed, digest, runID); err != nil {
+		return false, fmt.Errorf("store.LowerTerminalRunCapture: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("store.LowerTerminalRunCapture: %w", err)
+	}
+	return true, s.resealTerminalRun(ctx, runID, digest) // isolation.seal: the digest moved
+}
+
+// LoadTerminalRunCaptureHealth reads what lowered a run's capture
+// (migration 186); ok=false: no such run.
+func (s *Store) LoadTerminalRunCaptureHealth(ctx context.Context, runID string) (TerminalRunCaptureHealth, bool, error) {
+	var h TerminalRunCaptureHealth
+	err := s.db.QueryRowContext(ctx,
+		`SELECT capture_degraded_causes, missed_heartbeats FROM terminal_run WHERE run_id = ?`, runID).
+		Scan(&h.Causes, &h.MissedHeartbeats)
+	if errors.Is(err, sql.ErrNoRows) {
+		return TerminalRunCaptureHealth{}, false, nil
+	}
+	if err != nil {
+		return TerminalRunCaptureHealth{}, false, fmt.Errorf("store.LoadTerminalRunCaptureHealth: %w", err)
+	}
+	return h, true, nil
+}
+
+// unionCommaList joins two comma lists, each item once, a's items first.
+func unionCommaList(a, b string) string {
+	var out []string
+	seen := map[string]bool{}
+	for _, list := range []string{a, b} {
+		for _, it := range strings.Split(list, ",") {
+			if it = strings.TrimSpace(it); it != "" && !seen[it] {
+				seen[it] = true
+				out = append(out, it)
+			}
+		}
+	}
+	return strings.Join(out, ",")
+}
+
 // EndTerminalRun records a run's exit (ended_at + exit_code) and, when the run
 // has no durable end-reason yet, stamps `reason` (typically EndReasonChildExit
 // for a natural exit). Idempotent-safe for ended_at/exit_code (a re-reported
@@ -176,6 +344,74 @@ func (s *Store) EndTerminalRun(ctx context.Context, runID string, endedAt time.T
 		return fmt.Errorf("store.EndTerminalRun: %w", err)
 	}
 	return nil
+}
+
+// EndTerminalRunOwned records the end a run's OWN process observed, for a
+// run whose process is not the daemon's child (a sandboxed CLI launch, which
+// keeps running across a daemon stop). Like EndTerminalRun it records
+// ended_at and the exit code and keeps a reason already stamped, except
+// daemon_shutdown: the graceful-stop sweep stamps that on every live
+// non-attach run, but a process that outlived the stop saw its real end,
+// so reason replaces it (P-074, lane SHR-FOLLOWUPS). Any other stamped
+// reason (an org floor ending the run, process_gone) is kept.
+func (s *Store) EndTerminalRunOwned(ctx context.Context, runID string, endedAt time.Time, exitCode int, reason string) error {
+	if endedAt.IsZero() {
+		endedAt = time.Now().UTC()
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE terminal_run
+		    SET ended_at = ?, exit_code = ?,
+		        end_reason = CASE WHEN end_reason IN ('', ?) THEN ? ELSE end_reason END
+		  WHERE run_id = ?`,
+		endedAt.UTC().Format(time.RFC3339Nano), exitCode, EndReasonDaemonShutdown, reason, runID)
+	if err != nil {
+		return fmt.Errorf("store.EndTerminalRunOwned: %w", err)
+	}
+	return nil
+}
+
+// EndTerminalRunGone ends a run whose process is gone: it records ended_at
+// (at, or now) and, when the row has no reason yet, reason, leaving
+// exit_code NULL because nobody saw the exit. Only a row with no recorded
+// end is touched, so it acts once; a later EndTerminalRun from a process
+// that was in fact alive still records its exit code and keeps the reason.
+// Reports whether the row was ended here.
+func (s *Store) EndTerminalRunGone(ctx context.Context, runID, reason string, at time.Time) (bool, error) {
+	if runID == "" {
+		return false, nil
+	}
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE terminal_run
+		    SET ended_at = ?,
+		        end_reason = CASE WHEN end_reason = '' THEN ? ELSE end_reason END
+		  WHERE run_id = ? AND ended_at IS NULL`,
+		at.UTC().Format(time.RFC3339Nano), reason, runID)
+	if err != nil {
+		return false, fmt.Errorf("store.EndTerminalRunGone: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// StampTerminalRunEndReason stamps reason on a LIVE run (no exit recorded,
+// no reason yet) before the daemon ends it, so the exit that follows keeps
+// the reason (EndTerminalRun's guarded write) and the row records why the run
+// ended. A run already ended or already carrying a reason is left as it is;
+// reports whether the row was stamped.
+func (s *Store) StampTerminalRunEndReason(ctx context.Context, runID, reason string) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE terminal_run
+		    SET end_reason = ?
+		  WHERE run_id = ? AND ended_at IS NULL AND end_reason = ''`,
+		reason, runID)
+	if err != nil {
+		return false, fmt.Errorf("store.StampTerminalRunEndReason: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
 }
 
 // StampLiveAttachRunsShutdown stamps end_reason='daemon_shutdown' on every LIVE
@@ -709,4 +945,23 @@ func (s *Store) CandidateSessionsForTerminalRun(ctx context.Context, tool, gitRo
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// TerminalRunStack returns a run's isolation stack (the backend ids
+// recorded at launch, migration 179), ok false when the run is not
+// recorded. The security module reads it to tell whether a copy run's tree
+// lives on the host (lane sec-box).
+func (s *Store) TerminalRunStack(ctx context.Context, runID string) ([]string, bool, error) {
+	var stack string
+	err := s.db.QueryRowContext(ctx, `SELECT stack FROM terminal_run WHERE run_id = ?`, runID).Scan(&stack)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("store.TerminalRunStack: %w", err)
+	}
+	if stack == "" {
+		return nil, true, nil
+	}
+	return strings.Split(stack, ","), true, nil
 }

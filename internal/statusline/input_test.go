@@ -177,3 +177,116 @@ func TestParseInputMalformedJSON(t *testing.T) {
 		})
 	}
 }
+
+// TestParsePayloadShapes is the table of host payload shapes: each row is
+// an anonymized payload in the shape its host's source builds (Claude
+// Code, CodeBuddy 2.171.0 collectStatusLineData, Kimchi 1.17.0
+// buildScriptPayload, VT Code 0.180.2 StatusLineCommandPayload) and what
+// the normalized Input must carry. An absent datum stays nil.
+func TestParsePayloadShapes(t *testing.T) {
+	type want struct {
+		shape      Shape
+		session    *string
+		transcript *string
+		cost       *float64
+		model      *string // display name
+		modelID    *string
+		cwd        *string
+		style      *string
+	}
+	cases := []struct {
+		name string
+		data string
+		want want
+	}{
+		{
+			name: "claude code, output_style object",
+			data: `{"hook_event_name":"Status","session_id":"s-1","transcript_path":"/home/u/.claude/projects/p/s-1.jsonl","cwd":"/home/u/p",
+				"model":{"id":"claude-opus-4-5","display_name":"Opus"},"workspace":{"current_dir":"/home/u/p","project_dir":"/home/u/p"},
+				"version":"2.1.0","output_style":{"name":"default"},"cost":{"total_cost_usd":0.5,"total_duration_ms":10},
+				"rate_limits":{"five_hour":{"used_percentage":12}}}`,
+			want: want{shape: ShapeClaude, session: strPtr("s-1"), transcript: strPtr("/home/u/.claude/projects/p/s-1.jsonl"), cost: f64Ptr(0.5), model: strPtr("Opus"), modelID: strPtr("claude-opus-4-5"), cwd: strPtr("/home/u/p"), style: strPtr("default")},
+		},
+		{
+			name: "codebuddy",
+			data: `{"hook_event_name":"Status","session_id":"cb-1","session_name":"x","transcript_path":"/home/u/.codebuddy/projects/p/cb-1.jsonl","cwd":"/home/u/p",
+				"permission_mode":"default","model":{"id":"hy4-preview","display_name":"HY4"},"workspace":{"current_dir":"/home/u/p","project_dir":"/home/u/p","added_dirs":[]},
+				"version":"2.171.0","output_style":{"name":"default"},"cost":{"total_cost_usd":0.25},"context_window":{"context_window_size":200000},"exceeds_200k_tokens":false}`,
+			want: want{shape: ShapeClaude, session: strPtr("cb-1"), transcript: strPtr("/home/u/.codebuddy/projects/p/cb-1.jsonl"), cost: f64Ptr(0.25), model: strPtr("HY4"), modelID: strPtr("hy4-preview"), cwd: strPtr("/home/u/p"), style: strPtr("default")},
+		},
+		{
+			name: "codebuddy with no session: the unknown placeholder is not an id",
+			data: `{"hook_event_name":"Status","session_id":"unknown","cwd":"/home/u/p","model":{"id":"hy4-preview","display_name":"HY4"}}`,
+			want: want{shape: ShapeClaude, model: strPtr("HY4"), modelID: strPtr("hy4-preview"), cwd: strPtr("/home/u/p")},
+		},
+		{
+			name: "kimchi nested session",
+			data: `{"model":{"id":"kimi-k2.5","name":"Kimi K2.5"},"context":{"used":100,"limit":1000,"percent":10},"credits":"$4.20","budget":"$10.00",
+				"workspace":{"cwd":"/home/u/p","current_dir":"/home/u/p"},"status":"idle",
+				"session":{"cost_usd":0.75,"last_turn":null,"id":"019a0000-0000-7000-8000-000000000001","name":null,"transcript_path":"/home/u/.config/kimchi/harness/sessions/p/s.jsonl"},
+				"cost":{"total_cost_usd":0.75,"total_duration_ms":1000,"total_lines_added":0,"total_lines_removed":0},"phase":"build"}`,
+			want: want{shape: ShapeNestedSession, session: strPtr("019a0000-0000-7000-8000-000000000001"), transcript: strPtr("/home/u/.config/kimchi/harness/sessions/p/s.jsonl"), cost: f64Ptr(0.75), model: strPtr("Kimi K2.5"), modelID: strPtr("kimi-k2.5")},
+		},
+		{
+			name: "kimchi before a model is chosen",
+			data: `{"model":{"id":null,"name":null},"workspace":{"cwd":"/home/u/p","current_dir":"/home/u/p"},"session":{"cost_usd":0,"id":"s-k"},"cost":{"total_cost_usd":0}}`,
+			want: want{shape: ShapeNestedSession, session: strPtr("s-k"), cost: f64Ptr(0)},
+		},
+		{
+			name: "vtcode no session, no cost",
+			data: `{"hook_event_name":"Status","cwd":"/home/u/p","workspace":{"current_dir":"/home/u/p","project_dir":"/home/u/p","dominant_language":"Go","active_language":"Go"},
+				"model":{"id":"gpt-5.5","display_name":"GPT-5.5"},"runtime":{"reasoning_effort":"medium"},"git":{"branch":"main","dirty":false},"version":"0.180.2"}`,
+			want: want{shape: ShapeNoSession, model: strPtr("GPT-5.5"), modelID: strPtr("gpt-5.5"), cwd: strPtr("/home/u/p")},
+		},
+		{
+			name: "a mistyped field is dropped alone",
+			data: `{"session_id":"s-2","cost":"not-an-object","model":{"id":"m"},"output_style":42}`,
+			want: want{shape: ShapeClaude, session: strPtr("s-2"), modelID: strPtr("m")},
+		},
+	}
+	eq := func(a, b *string) bool { return (a == nil) == (b == nil) && (a == nil || *a == *b) }
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			in, shape, err := ParsePayload([]byte(c.data))
+			if err != nil {
+				t.Fatalf("ParsePayload: %v", err)
+			}
+			if shape != c.want.shape {
+				t.Errorf("shape = %q, want %q", shape, c.want.shape)
+			}
+			if !eq(in.SessionID, c.want.session) {
+				t.Errorf("SessionID = %v, want %v", deref(in.SessionID), deref(c.want.session))
+			}
+			if !eq(in.TranscriptPath, c.want.transcript) {
+				t.Errorf("TranscriptPath = %v, want %v", deref(in.TranscriptPath), deref(c.want.transcript))
+			}
+			var cost *float64
+			if in.Cost != nil {
+				cost = in.Cost.TotalCostUSD
+			}
+			if (cost == nil) != (c.want.cost == nil) || (cost != nil && *cost != *c.want.cost) {
+				t.Errorf("cost = %v, want %v", cost, c.want.cost)
+			}
+			var dn, id *string
+			if in.Model != nil {
+				dn, id = in.Model.DisplayName, in.Model.ID
+			}
+			if !eq(dn, c.want.model) || !eq(id, c.want.modelID) {
+				t.Errorf("model = %v/%v, want %v/%v", deref(dn), deref(id), deref(c.want.model), deref(c.want.modelID))
+			}
+			if !eq(in.CWD, c.want.cwd) {
+				t.Errorf("CWD = %v, want %v", deref(in.CWD), deref(c.want.cwd))
+			}
+			if !eq(in.OutputStyle, c.want.style) {
+				t.Errorf("OutputStyle = %v, want %v", deref(in.OutputStyle), deref(c.want.style))
+			}
+		})
+	}
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return "<nil>"
+	}
+	return *s
+}

@@ -306,7 +306,7 @@ func (g *Guard) promptSoftenGrant(es *engineSet, v policy.Verdict, ev *policy.Ev
 	if !g.grantEligible(v, OrgGrantLanePrompt) {
 		return OrgGrantResult{}, false
 	}
-	locked := orgLockedVerdict(v, g.orgLocksVerdictRule(es, v.RuleID))
+	locked := orgLockedVerdict(v, g.orgLocksVerdictRule(es, v.RuleID, eventProjectRoot(ev)))
 	r := g.orgGrants(g.orgGrantQuery(es, v, ev, OrgGrantLanePrompt, locked))
 	return r, r.OK && r.Effect == OrgGrantEffectSoften
 }
@@ -316,7 +316,7 @@ func (g *Guard) promptSoftenGrant(es *engineSet, v policy.Verdict, ev *policy.Ev
 // ORIGINAL deny decision (the one the grant softens). ok=false: the grant
 // was spent meanwhile, so the confirmation does not stand.
 func (g *Guard) claimPromptSoftenConfirm(es *engineSet, deny policy.Verdict, ev *policy.Event) (OrgGrantResult, bool) {
-	locked := orgLockedVerdict(deny, g.orgLocksVerdictRule(es, deny.RuleID))
+	locked := orgLockedVerdict(deny, g.orgLocksVerdictRule(es, deny.RuleID, eventProjectRoot(ev)))
 	q := g.orgGrantQuery(es, deny, ev, OrgGrantLanePrompt, locked)
 	q.Consume = true
 	r := g.orgGrants(q)

@@ -36,6 +36,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/proxyroute"
+	"github.com/marmutapp/superbased-observer/internal/regularfile"
 )
 
 // newClaudeCmd implements `observer claude` — sets ANTHROPIC_BASE_URL
@@ -226,7 +227,9 @@ func runClaudeLauncher(ctx context.Context, opts claudeLauncherOptions) error {
 		attachEnv: func(u string, npr bool) []string {
 			var e []string
 			if !npr {
-				e = append(e, "ANTHROPIC_BASE_URL="+u)
+				// OSH-R-009: the token form when the node wants it; the
+				// attach socket is owner-only.
+				e = append(e, "ANTHROPIC_BASE_URL="+launchProxyURLAt(opts.configPath, "claude-code", u, opts.proxyURL != ""))
 			}
 			return append(e, claudeAttachEnv(os.Environ())...)
 		},
@@ -287,7 +290,7 @@ func runClaudeLauncher(ctx context.Context, opts claudeLauncherOptions) error {
 	// It runs the same pre-flight checks (proxy reachability + credentials.json
 	// + OAuth token) regardless of the routing escape hatch, then exits.
 	if opts.verify {
-		credPath := claudeCredentialsPath()
+		credPath, refusedEnv := claudeCredentialsLookup()
 		_, info, perr := prepareClaudeEnv(os.Environ(), proxyURL, credPath)
 		if perr != nil {
 			return perr
@@ -297,6 +300,7 @@ func runClaudeLauncher(ctx context.Context, opts claudeLauncherOptions) error {
 			ProxyURL:        proxyURL,
 			ProxyReachable:  proxyUp,
 			CredentialsPath: credPath,
+			RefusedEnv:      refusedEnv,
 			Info:            info,
 		})
 	}
@@ -356,6 +360,13 @@ func runClaudeLauncher(ctx context.Context, opts claudeLauncherOptions) error {
 		fmt.Fprintf(opts.stderr,
 			"observer claude: refusing to launch - your --settings value (%s) could not be read or parsed as a settings object, so observer cannot tell whether it routes claude to the observer proxy. Fix or drop --settings (pass a readable file path or valid inline JSON) and re-run.\n",
 			route.file)
+		return exitErr(1)
+	}
+	// FU-131: the user-scope settings.json is named by a RELATIVE
+	// CLAUDE_CONFIG_DIR / ANTHROPIC_CONFIG_DIR, which claude resolves against
+	// its own working directory, so observer cannot tell what it routes to.
+	if route.userUnreadable != "" {
+		fmt.Fprintf(opts.stderr, "observer claude: refusing to launch - %s\n", claudeRelativeConfigDirMsg(route.userUnreadable))
 		return exitErr(1)
 	}
 
@@ -424,6 +435,9 @@ func runClaudeLauncher(ctx context.Context, opts claudeLauncherOptions) error {
 // (proxy reachable, no baked-in route into a dead proxy).
 func runClaudeRoutedLaunch(opts claudeLauncherOptions, bin, proxyURL string, route claudeRouteResolution, launchArgs []string, continueDir string) error {
 	credPath := claudeCredentialsPath()
+	// OSH-R-009: the child's ANTHROPIC_BASE_URL carries the proxy client
+	// token when the node wants it (an environment variable, never argv).
+	proxyURL = launchProxyURLAt(opts.configPath, "claude-code", proxyURL, opts.proxyURL != "")
 	env, info, err := prepareClaudeEnv(os.Environ(), proxyURL, credPath)
 	if err != nil {
 		return err
@@ -467,11 +481,11 @@ func runClaudeRoutedLaunch(opts claudeLauncherOptions, bin, proxyURL string, rou
 	if info.OAuthInjected {
 		fmt.Fprintf(opts.stderr,
 			"observer claude: routing via %s (Pro/Max OAuth token re-exported as ANTHROPIC_AUTH_TOKEN)\n",
-			proxyURL)
+			redactRouteURL(proxyURL))
 	} else {
 		fmt.Fprintf(opts.stderr,
 			"observer claude: routing via %s (ANTHROPIC_BASE_URL only - using existing API-key auth)\n",
-			proxyURL)
+			redactRouteURL(proxyURL))
 	}
 
 	// --continue-from was resolved upfront (finding N2); launchArgs already carries
@@ -905,29 +919,49 @@ func appendIfMissing(keys []string, k string) []string {
 // claudeCredentialsPath resolves where Claude Code's `.credentials.json`
 // lives, honoring CLAUDE_CONFIG_DIR / ANTHROPIC_CONFIG_DIR overrides
 // before falling back to ~/.claude/. Matches the binary's own lookup
-// order (both env-var names appear in the 2.1.x strings table).
+// order (both env-var names appear in the 2.1.x strings table). It shares
+// the settings.json resolver (claudeUserConfigDir, FU-138), so a relative
+// relocation value names no file here either ("": the launch then reads no
+// sign-in file, as with a missing one; --verify reports the refusal through
+// claudeCredentialsLookup).
 func claudeCredentialsPath() string {
-	for _, env := range []string{"CLAUDE_CONFIG_DIR", "ANTHROPIC_CONFIG_DIR"} {
-		if dir := os.Getenv(env); dir != "" {
-			return filepath.Join(dir, ".credentials.json")
-		}
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".claude", ".credentials.json")
+	p, _ := claudeCredentialsLookup()
+	return p
 }
+
+// claudeCredentialsLookup is claudeCredentialsPath with the refusal: when a
+// relative CLAUDE_CONFIG_DIR / ANTHROPIC_CONFIG_DIR names no file, path is
+// "" and refusedEnv names the variable.
+func claudeCredentialsLookup() (path, refusedEnv string) {
+	dir, refusedEnv := claudeUserConfigDir(os.Getenv, os.UserHomeDir)
+	if dir == "" {
+		return "", refusedEnv
+	}
+	return filepath.Join(dir, ".credentials.json"), ""
+}
+
+// claudeRelativeConfigDirMsg is the one wording of the FU-131 refusal (a
+// relative relocation variable names a settings.json observer cannot find),
+// shared by the launch refusal and --verify.
+func claudeRelativeConfigDirMsg(env string) string {
+	return fmt.Sprintf("%s is set to a relative path, which claude reads against its own working directory, so observer cannot tell which settings.json it loads or whether that file routes claude elsewhere. Set %s to an absolute path and re-run.", env, env)
+}
+
+// claudeCredentialsMaxBytes caps the credentials file read: Claude Code's
+// .credentials.json is a few hundred bytes of OAuth tokens.
+const claudeCredentialsMaxBytes int64 = 1 << 20
 
 // readOAuthAccessToken returns claudeAiOauth.accessToken from path, or
 // "" if the file is missing. Returns a non-nil error only when the file
-// exists but can't be parsed as the expected JSON shape — those are
-// worth surfacing to the user.
+// exists but can't be read as a capped regular file (regularfile.Read: a
+// FIFO, a device or an over-cap file is refused without being read, FU-172)
+// or parsed as the expected JSON shape; those are worth surfacing to the
+// user. The file holds credentials: no error carries its bytes.
 func readOAuthAccessToken(path string) (token string, stale bool, err error) {
 	if path == "" {
 		return "", false, nil
 	}
-	body, err := os.ReadFile(path)
+	body, err := regularfile.Read(path, claudeCredentialsMaxBytes)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return "", false, nil
@@ -966,7 +1000,7 @@ func credentialsFileExists(path string) bool {
 	if path == "" {
 		return false
 	}
-	_, err := os.Stat(path)
+	_, err := os.Stat(path) //nolint:gosec // G703: a metadata read of the user's own local path; no privilege boundary is crossed
 	return err == nil
 }
 
@@ -977,7 +1011,10 @@ type claudeVerifyResult struct {
 	ProxyURL        string
 	ProxyReachable  bool
 	CredentialsPath string
-	Info            claudeEnvInfo
+	// RefusedEnv names the relocation variable whose relative value names
+	// no sign-in file (FU-131): the launch refuses, so --verify FAILs.
+	RefusedEnv string
+	Info       claudeEnvInfo
 }
 
 // runClaudeVerify prints a PASS/FAIL line per pre-flight check and
@@ -996,6 +1033,11 @@ func runClaudeVerify(stderr interface{ Write([]byte) (int, error) }, r claudeVer
 	}
 
 	switch {
+	case r.RefusedEnv != "":
+		// The launch refuses here (FU-131), so no credentials verdict is
+		// meaningful: name the variable, never an empty path.
+		fmt.Fprintf(stderr, "  FAIL  %s\n", claudeRelativeConfigDirMsg(r.RefusedEnv))
+		failed++
 	case r.Info.CredentialsErr != nil:
 		fmt.Fprintf(stderr, "  FAIL  credentials file %s unparseable: %v\n", r.CredentialsPath, r.Info.CredentialsErr)
 		failed++

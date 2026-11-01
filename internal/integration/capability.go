@@ -1,5 +1,7 @@
 package integration
 
+import "github.com/marmutapp/superbased-observer/internal/platform/winshim"
+
 // This file holds the Phase-0-discovery capability vocabulary added on top
 // of the proxy-route seed in integration.go. Every type here is DATA: a
 // named-constant enum or a small value struct. No behaviour, no I/O — the
@@ -114,9 +116,11 @@ const (
 	// HookAntigravityJSON (audit P1, 2026-10-02): Antigravity CLI's
 	// ~/.gemini/config/hooks.json, a map of hook NAME -> event lists
 	// (antigravity.google/docs/hooks). Observer owns one hook name and
-	// registers only PreInvocation, a WARN-ONLY prompt seam: agy hooks
-	// cannot see or block the user's prompt, so the receiver reads it from
-	// the transcript and can only tell the model (HookSpec.PromptWarnOnly).
+	// registers PreToolUse (the tool gate) and PreInvocation, a
+	// pre-model-call prompt seam: agy hooks never receive the prompt text,
+	// so the receiver reads it from the transcript, warns the developer and
+	// can abort the turn before the main model call (HookSpec.PromptWarnOnly
+	// records that the prompt has already left the machine by then).
 	HookAntigravityJSON HookMechanism = "antigravity_hooks_json"
 	// The hook-parity Lane A6 tool-gate mechanisms (2026-10-03), one per
 	// vendor config FORMAT. Each registers the vendor's pre-tool event only
@@ -158,6 +162,18 @@ const (
 	// exception: it edits only Observer's own [[hooks]] tables, line by
 	// line, and never reads a value out of the file.
 	HookKimiCodeTOML HookMechanism = "kimi_code_config_toml"
+	// HookKiroAgentJSON (guard-enforcement fix gfiD, 2026-10-15): Kiro
+	// CLI 2.x reads hooks ONLY from the "hooks" object of the agent in use
+	// (~/.kiro/agents/<name>.json; camelCase events, flat {command,
+	// matcher?, timeout_ms} entries). Observer writes its own agent
+	// ~/.kiro/agents/superbased-observer.json, makes it chat.defaultAgent
+	// in ~/.kiro/settings/cli.json only when no default is set, merges the
+	// same entries into every other global agent JSON, and writes the CLI
+	// V3 standalone ~/.kiro/hooks/superbased-observer.json (PascalCase
+	// triggers) that 2.28 does not read yet. The V3 file invokes Observer
+	// with the PascalCase event, which the receiver folds onto the
+	// binding's camelCase native event.
+	HookKiroAgentJSON HookMechanism = "kiro_agent_json"
 	// HookPluginShimTS (hook-parity Lane D, 2026-10-03): the ONE embedded
 	// TypeScript plugin shim (internal/hook/pluginshim) placed into an
 	// in-process plugin host's plugin directory (OpenCode, Kilo CLI, pi;
@@ -166,6 +182,49 @@ const (
 	// (this row's Registered bindings) to `observer hook <tool> <event>` in
 	// the plugin dialect and maps the reply onto the host's own contract.
 	HookPluginShimTS HookMechanism = "plugin_shim_ts"
+	// The 2026-10-21 wave writers (internal/hook register_wave1021.go), one
+	// per vendor config FORMAT, each grounded by a live hook probe on WSL
+	// Ubuntu and Windows 11 (docs/guard.md "Live grounding: 2026-10-21
+	// wave"):
+	//
+	//   - HookIBMBobSettings: the "hooks" key of IBM Bob's user settings,
+	//     ~/.bob/settings/settings.json (Claude-shaped matcher groups; user
+	//     hooks need no folder trust; disableGlobalHooks is honoured).
+	//   - HookCodeBuddySettings: the "hooks" key of CodeBuddy Code's
+	//     ~/.codebuddy/settings.json (Claude-shaped; Windows runs hooks under
+	//     Git Bash).
+	//   - HookDeepAgentsJSON: Deep Agents Code's user-level hooks file
+	//     ~/.deepagents/hooks.json ($DEEPAGENTS_HOME); the project file is
+	//     trust-gated and never written.
+	//   - HookDimCodeJSON: DimCode's ~/.dimcode/v2/hooks.json
+	//     ($DIMCODE_HOME, with v2 appended unless it already ends in v2);
+	//     an unknown event name makes the whole file
+	//     unloadable, so only supported names are written.
+	//   - HookDiracHookFiles: Dirac's file-per-event hooks directory
+	//     ~/.dirac/Hooks (an executable per event; <Event>.ps1 on Windows).
+	//   - HookAutohandConfig: the hooks.hooks[] ARRAY of Autohand's
+	//     ~/.autohand/config.json, a file that also holds provider keys and
+	//     the account token (credential-file exception).
+	//   - HookVTCodeTOML: VT Code's user-level vtcode.toml
+	//     [[hooks.lifecycle.<event>]] tables (edited line by line).
+	//   - HookKimchiBashHook: Kimchi's user-level bash pre-gate directory
+	//     ~/.config/kimchi/harness/hooks/bash/ (a script per hook; the only
+	//     user-level hook Kimchi runs, bash tool only).
+	HookIBMBobSettings    HookMechanism = "ibm_bob_settings_json"
+	HookCodeBuddySettings HookMechanism = "codebuddy_settings_json"
+	HookDeepAgentsJSON    HookMechanism = "deepagents_hooks_json"
+	HookDimCodeJSON       HookMechanism = "dimcode_hooks_json"
+	HookDiracHookFiles    HookMechanism = "dirac_hook_files"
+	HookAutohandConfig    HookMechanism = "autohand_config_json"
+	HookVTCodeTOML        HookMechanism = "vtcode_config_toml"
+	HookKimchiBashHook    HookMechanism = "kimchi_bash_hook"
+	// HookCortexHooksJSON is Cortex Code's own global hooks file,
+	// ~/.snowflake/cortex/hooks.json ({"hooks": {...}}, the settings shape;
+	// CORTEX_HOME / SNOWFLAKE_HOME relocate it), which Cortex merges with
+	// Claude Code's settings hooks (surface-gap W-2a). Its writer
+	// (internal/hook register_cortex.go) writes Observer's Claude Code
+	// commands there and is switched off until live check LC18.
+	HookCortexHooksJSON HookMechanism = "cortex_hooks_json"
 )
 
 // HookSpec describes a tool's hook-registration capability. A zero-value
@@ -208,11 +267,15 @@ type HookSpec struct {
 	// to HookSpec.WiredPromptOnly). The registration decision itself is the
 	// capability-shaped HookSpec.WantsRegistration (hook-parity Lane C2).
 	PromptLaneOnly bool
-	// PromptWarnOnly is true for a prompt seam that runs before the model
-	// sees a new prompt but can only WARN, never confirm or block
-	// (Antigravity CLI PreInvocation). It is not a pre-send seam in the
-	// controlcoverage sense: the prompt was already submitted. Coverage
-	// surfaces report it as "warns before the model call".
+	// PromptWarnOnly is true for a prompt seam that runs before the MAIN
+	// model call but after the prompt has already left the machine
+	// (Antigravity CLI PreInvocation: agy's title request carrying the
+	// prompt is sent before any hook). It is not a pre-send seam in the
+	// controlcoverage sense, whatever its dialect can do there: agy's seam
+	// warns the developer and, since the 2026-10-15 guard-enforcement fix,
+	// can also abort the main model call (the dialect row's caps, not this
+	// flag, say so). Coverage surfaces report it as "warns before the model
+	// call", the floor it always reaches.
 	PromptWarnOnly bool
 	// PromptShadowsTranscript is true when the tool's prompt-submit hook
 	// writes a user_prompt row ("<tool>:hook" source_file) for a prompt the
@@ -229,6 +292,11 @@ type HookSpec struct {
 	// admin is not told a prompt rule acts before send on a surface
 	// whose prompts it never sees.
 	PromptScope string
+	// Surfaces says, per capture surface, whether the hooks Observer
+	// registers run there (CLI yes, Codex Desktop no, ...). Owned by the
+	// hookSurfaces table in hooksurface.go; nil = no per-surface facts, and
+	// the tool-level fields answer (HookSpec.SurfaceFor).
+	Surfaces []HookSurface
 	// Bindings lists the tool's hook surface event by event (hookcaps.go):
 	// every native event the vendor provides, the capability it maps to,
 	// and whether Observer registers and wires it today. Additive: every
@@ -259,6 +327,27 @@ type HookSpec struct {
 	// a row with HooksShareCredentialFile set (the grounding of the
 	// exception). Empty otherwise.
 	CredentialFileReason string
+	// LiveGate, when set, switches this row's hook writer off until the
+	// named live check passes (DEC-12, livegate.go): `observer start`,
+	// `observer init` and the dashboard refuse to run it, the writer itself
+	// refuses, and doctor says "built, waiting on live check <id>". Zero =
+	// not gated.
+	LiveGate LiveGate
+	// WindowsHookShell declares that the host's Windows hook runner spawns
+	// every hook command through a shell it resolves BY NAME on the Windows
+	// PATH (windowshookshell.go). When that shell is missing the host cannot
+	// run any hook, Observer's included. Zero value: no such requirement is
+	// grounded (the runner is cmd.exe, PowerShell, a script interpreter it
+	// locates itself, or not grounded at all). Registration and `observer
+	// doctor` warn, never block, when the shell does not resolve.
+	WindowsHookShell HookShellRequirement
+	// WindowsRunner declares a precondition of the host's Windows hook
+	// runner that is not a shell on PATH: an interpreter the host locates
+	// itself (Git Bash), or a script runner the PowerShell execution policy
+	// can refuse (windowshookshell.go). The doctor checks it, never blocks
+	// on it. Zero value (Kind empty): none grounded. A row carries at most
+	// one of WindowsHookShell and WindowsRunner.
+	WindowsRunner WindowsHookRunner
 }
 
 // EnforcementChannel classifies HOW an org guard policy can actually STOP a
@@ -508,6 +597,11 @@ const (
 	// ({"type":"local","command":[…],"enabled":true}), NOT the shared
 	// {"mcpServers":{…}} shape. Has its own writer (registerOpenCodeJSON).
 	MCPOpenCodeJSON MCPFormat = "opencode_json"
+	// MCPZedContextServers: Zed's "context_servers" object in its JSONC
+	// settings.json ({"<name>": {command, args, env}} or {url}), which Zed
+	// also offers to the ACP agents it hosts (zed.dev/docs/ai/mcp). Not the
+	// shared {"mcpServers":{…}} shape; no Observer writer yet (S-12).
+	MCPZedContextServers MCPFormat = "zed_context_servers"
 )
 
 // MCPTarget records where/how a client stores MCP server config. A nil
@@ -556,6 +650,16 @@ type MCPTarget struct {
 	// CredentialFileReason names the credential the file can hold, for a
 	// row with SharesCredentialFile set. Empty otherwise.
 	CredentialFileReason string
+	// WindowsStdio is how this client starts a stdio MCP server command on
+	// native Windows, which decides the form an entry that launches an npm
+	// shim (`npx`, `npm`) must take there (internal/platform/winshim.
+	// StdioLaunch). The zero value winshim.LaunchAsIs means "not grounded":
+	// the command is written as given. Only a writer that emits a bare npm
+	// shim reads it today (the managed-settings MCP pins); the registrar's
+	// own entries launch an absolute observer binary or a wsl.exe bridge,
+	// which every spawner starts. Grounding (source + date) lives in the
+	// row comment.
+	WindowsStdio winshim.Launch
 }
 
 // MCPRemoteTransport is the client-agnostic transport vocabulary for a
@@ -965,6 +1069,33 @@ const (
 	HeadlessContextPositional HeadlessContextMode = "positional"
 )
 
+// HeadlessPermLane names one way an unattended headless drive handles the
+// harness's OWN permission prompts (OSH-R-005). Nobody is at the keyboard
+// during a drive, so every lane is a standing answer to "may the agent do
+// this without asking": the lanes differ in how much the harness itself
+// still refuses. The Agent Arena picks the lane per drive (internal/arena
+// permlane.go); a registry row only says what each lane is on argv.
+type HeadlessPermLane string
+
+const (
+	// HeadlessPermBypass turns the harness's own permission checks off
+	// entirely (claude-code --dangerously-skip-permissions, grok
+	// --always-approve, aider --yes). A row whose headless mode runs every
+	// tool unasked with no flag at all declares this lane with no tokens,
+	// because that is what it is. Driven only where the operator's own
+	// config allows it and a managed node's org policy does not forbid it.
+	HeadlessPermBypass HeadlessPermLane = "bypass"
+	// HeadlessPermEdit keeps the harness's own checks on while letting the
+	// agent edit inside its working directory without asking
+	// (claude-code --permission-mode acceptEdits, codex -s workspace-write).
+	// Anything else the harness would ask about is refused headless.
+	HeadlessPermEdit HeadlessPermLane = "edit"
+	// HeadlessPermReadOnly lets the agent read and answer, nothing else
+	// (codex -s read-only). The lane the Arena judge runs in: the judge
+	// reads a patch from its prompt and needs no tools.
+	HeadlessPermReadOnly HeadlessPermLane = "read_only"
+)
+
 // HeadlessSpec declares that a tool has a GROUNDED headless one-shot form:
 // prompt in on argv, final answer out somewhere parseable, no interactive
 // TUI involved. It is the capability the Agent Arena dispatches on (plan:
@@ -1001,6 +1132,12 @@ type HeadlessSpec struct {
 	// operator leaves the candidate model blank. It must include that prefix
 	// and must be grounded by a live routed drive.
 	ProxyDefaultModel string
+	// Permissions maps each GROUNDED permission lane to the argv tokens that
+	// select it, placed after Lead and before the prompt. A lane absent from
+	// the map is not grounded for the tool and is never guessed; a lane
+	// present with no tokens is grounded and needs none. Nil means no lane
+	// is grounded, which leaves the harness undrivable unattended.
+	Permissions map[HeadlessPermLane][]string
 }
 
 // ResumeSpec declares the native-resume contract for a tool. It is
@@ -1370,6 +1507,17 @@ type SandboxSpec struct {
 	// StateRO lists dirs the tool only READS: versioned installs, shared
 	// caches. Bound read-only (ro-bind-try) inside the sandbox.
 	StateRO []string
+	// StateRWByOS adds, per GOOS value, state the tool writes only on that
+	// OS (a cache under ~/Library on macOS), or that was grounded on that
+	// OS alone. Same path rules as StateRW. ForOS folds the row for one OS
+	// into StateRW; nil adds nothing (macOS live install 2026-10-29,
+	// D-MU6).
+	StateRWByOS map[string][]string
+	// OSNotes records, per GOOS value, a known limitation of the tool inside
+	// a box on that OS that the row cannot fix (a program the profile
+	// deliberately refuses). Shown with the launch and in
+	// docs/sandboxed-terminals.md; it never makes a tool unlaunchable.
+	OSNotes map[string]string
 	// ProtectRO lists HOME-relative files/dirs INSIDE a StateRW entry that
 	// a later UNSANDBOXED session of the tool executes: hook config, MCP
 	// server config, auto-discovered plugins/mods. The sandbox re-binds
@@ -1394,6 +1542,115 @@ type SandboxSpec struct {
 	// honest zero) — it must say why the row is unmapped, never left
 	// silently blank.
 	Note string
+	// GateDrift is how a sandboxed run's transcript is compared with the
+	// gate events its capture relay saw (sandbox plan v2 section 5.2 (2)).
+	// The zero value means no grounded comparison: the run is not checked
+	// this way (its hook registration is still verified).
+	GateDrift TranscriptGateSpec
+	// ConfigHome, when set, is where the tool keeps its config and
+	// first-run state: a sandboxed launch of a tool whose first run was
+	// never finished is refused, and a run whose home has no config folder
+	// gets a run-local writable one seeded with non-secret state (Windows 11
+	// Pro rerun 2026-10-25, D3). Nil means no grounded config home.
+	ConfigHome *SandboxConfigHome
+	// SignIn, when set, names the tool's sign-in files (sandboxsignin.go,
+	// lane BOXSIGNIN): a run whose tool state is projected may get a copy
+	// of them, only with the user's consent for the tool. Nil means no
+	// grounded sign-in file (seeding is refused for the tool).
+	SignIn *SandboxSignIn
+	// ProviderEnv lists the environment-variable NAMES (never values) of
+	// the tool's own provider settings that a sandboxed run may receive
+	// from the launching environment: its credential variables (every
+	// AuthEnv name, pinned by TestSandboxProviderEnvCoversAuthEnv) and its
+	// own config-location variables. Every backend builds the box's
+	// environment from an allow-list (internal/sandboxenv): the OS table,
+	// these names, the user's [terminal.sandbox].pass_env and Observer's own
+	// variables, nothing else (WINFIX2 audit finding 1, ledger
+	// SBX-WIN-ENV-1). Empty means the box gets no provider variable of the
+	// tool from the environment (a tool that signs in through its own state
+	// files needs none).
+	ProviderEnv []string
+	// NeedsWin32k says the tool's own program needs user32.dll, so a
+	// Windows mxc-process box runs it with MXC's Win32k system-call
+	// mitigation dropped (the document's ui.disable false). Without it the
+	// mitigation is kept and a program that imports user32.dll fails to
+	// start with STATUS_DLL_INIT_FAILED (Windows 11 Pro rerun 2026-10-25,
+	// D1). Decided from the PE import tables of the tool's launch binaries
+	// (WINFIX2 audit finding 4, read 2026-10-25 on Windows 11 26200):
+	// node.exe (20.19.1 and the Program Files install) imports USER32.dll
+	// statically, the native claude.exe delay-loads it and Claude Code's
+	// Bash tool runs Git Bash, whose bash.exe imports it; codex.exe imports
+	// it. Every row whose launcher runs on node is marked
+	// (TestSandboxNeedsWin32kGrounded); every other row keeps the mitigation.
+	NeedsWin32k bool
+}
+
+// ForOS returns s with StateRWByOS[goos] appended to StateRW (no
+// duplicates) and the OS-keyed tables dropped, for a backend that runs on
+// goos. The receiver is not changed.
+func (s SandboxSpec) ForOS(goos string) SandboxSpec {
+	out := s
+	out.StateRW = append([]string(nil), s.StateRW...)
+	for _, p := range s.StateRWByOS[goos] {
+		dup := false
+		for _, q := range out.StateRW {
+			if q == p {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			out.StateRW = append(out.StateRW, p)
+		}
+	}
+	out.StateRWByOS = nil
+	out.OSNotes = nil
+	return out
+}
+
+// OSNote returns the row's limitation note for goos ("" for none).
+func (s SandboxSpec) OSNote(goos string) string { return s.OSNotes[goos] }
+
+// TranscriptGateSpec declares, for one tool, how its transcript shows the
+// tool calls that ran and how its gate event names the call (sandbox plan v2
+// section 5.2 (2), lane sbx-p2d): a call the transcript shows as run whose
+// gate event the relay never saw is drift. Which hook events are gate events
+// is not repeated here: it is the tool's HookCapToolGate binding.
+type TranscriptGateSpec struct {
+	// PayloadCallID is the top-level gate payload key that carries the
+	// tool call's id.
+	PayloadCallID string
+	// Ran selects, from one JSONL transcript line, the ids of tool calls
+	// that ran; any matching rule yields ids.
+	Ran []TranscriptBlockRule
+	// Called selects, from one line, the ids of tool calls the agent made
+	// (the call itself, before its result). A transcript read from its
+	// start counts a result with no timestamp only when its call was read
+	// in the same transcript, so copied history never counts.
+	Called []TranscriptBlockRule
+	// TimestampKey is the top-level line key holding the line's RFC 3339
+	// time ("" when the transcript has none). A transcript read from its
+	// start counts a timestamped result only when it is newer than the run.
+	TimestampKey string
+	// Grounding names the evidence the rules were read from.
+	Grounding string
+}
+
+// Compared reports whether the spec declares a comparison at all.
+func (s TranscriptGateSpec) Compared() bool { return s.PayloadCallID != "" && len(s.Ran) > 0 }
+
+// TranscriptBlockRule selects call ids from one JSON transcript line: the
+// line's top-level LineKey must equal LineValue, Path walks object keys to
+// a block or an array of blocks, and each block whose BlockKey equals
+// BlockValue yields its IDKey, unless the block's SkipIfTrue key is true (a
+// result that says the call failed or never ran: it is not counted, so an
+// interrupted call is never drift).
+type TranscriptBlockRule struct {
+	LineKey, LineValue   string
+	Path                 []string
+	BlockKey, BlockValue string
+	IDKey                string
+	SkipIfTrue           string
 }
 
 // Declared reports whether the vocabulary cell has been filled in at all.

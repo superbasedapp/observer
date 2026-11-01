@@ -76,7 +76,11 @@ func LoadVerifiedAccessGrants(ctx context.Context, s *store.Store) (VerifiedAcce
 	// The subject is compared EXACTLY with this node's live member|machine
 	// subject (C156-27 / M3-02): a machine-scoped document copied from
 	// another machine of the same member does not verify here.
-	if want, _ := grantSubjectFor(enr); st.Subject != want {
+	managed, err := NodeManagedFor(ctx, s, enr)
+	if err != nil {
+		return unverified("the node's managed state cannot be read: " + err.Error())
+	}
+	if want, _ := grantSubjectFor(enr, managed); st.Subject != want {
 		return unverified(fmt.Sprintf("the document is for subject %q, this node is %q", st.Subject, want))
 	}
 	states, err := s.LatestGuardPolicyStates(ctx)
@@ -125,13 +129,16 @@ func LoadVerifiedAccessGrants(ctx context.Context, s *store.Store) (VerifiedAcce
 
 // grantSubjectFor is the subject this node fetches and verifies grants under,
 // right now: the member, plus the org-salted machine identity on a managed
-// enrolment (the same identity BindMachine and the fetch present). It is the
-// one owner of that subject for the fetch and for every read.
-func grantSubjectFor(enr *store.Enrolment) (subject, machine string) {
+// node (the same identity BindMachine and the fetch present). managed is
+// NodeManagedFor: a managed enrolment, or one whose org switched it to
+// enterprise (operator rulings P-204 and P-205), whose access requests
+// declare managed and name this machine. It is the one owner of that subject
+// for the fetch and for every read.
+func grantSubjectFor(enr *store.Enrolment, managed bool) (subject, machine string) {
 	if enr == nil {
 		return orgcontract.AccessGrantSubject("", ""), ""
 	}
-	if enr.IsManaged() {
+	if managed {
 		if mid, err := machineid.ForOrg(enr.OrgID); err == nil {
 			machine = orgcontract.SanitizeMachineHeader(mid)
 		}

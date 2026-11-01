@@ -278,6 +278,10 @@ func BaseSet(d components.Distro) []string {
 // know answers true: a gate that names a component the catalog dropped must
 // fail open to today's behaviour, never switch a feature off. Tests pin
 // every id the wiring tables use to a catalog row.
+//
+// Active is for gates in front of behaviour that already ships. A gate in
+// front of an OPTIONAL MODULE's surface (security, terminals.sandbox and
+// their drivers) uses ModuleActive, which fails the other way (module.go).
 func (s Snapshot) Active(id string) bool {
 	d, ok := s.decisions[id]
 	if !ok {
@@ -302,9 +306,19 @@ func (s Snapshot) AnyActive(ids ...string) bool {
 }
 
 // AdapterActive reports whether the adapter row of a registry tool is
-// active. A cross-OS "<tool>-windows" target resolves to its base tool.
+// active. A cross-OS "<tool>-windows" target, an Xcode agent-home
+// "<tool>-xcode" target (internal/hook's XcodeTargetBase, FU-145) and a
+// Windows to WSL "<tool>-wsl" twin (WSLTwinBase, FU-197) resolve to their
+// base tool (the suffixes are those tables' naming, pinned by a test), so a
+// removed adapter keeps every target of it off.
 func (s Snapshot) AdapterActive(tool string) bool {
-	base := strings.TrimSuffix(tool, "-windows")
+	base := tool
+	for _, suffix := range []string{"-windows", "-xcode", "-wsl"} {
+		if b, ok := strings.CutSuffix(tool, suffix); ok {
+			base = b
+			break
+		}
+	}
 	return s.Active(components.AdapterID(base))
 }
 

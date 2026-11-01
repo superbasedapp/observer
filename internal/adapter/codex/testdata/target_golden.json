@@ -1,0 +1,97 @@
+{
+  "rollout-gen-timing-real.jsonl": [
+    "sysprompt:base:b68919aff001d836:L1\tredacted",
+    "sysprompt:developer:81c9e85c0924efa2:L3\tredacted\nredacted\nredacted",
+    "call_IkCoWcPCQbjXXRnfTdKy1jTB\t",
+    "ratelimit:rollout-gen-timing-real.jsonl:L19\tcodex",
+    "call_LdIxlXbX4R1wYoXh5vOiA4gW\t",
+    "call_XAl0e1j07iyQgjWnsvmXnINh\t",
+    "call_cWIGNP8JXw5yIdbySJb8fN6C\t",
+    "call_Jv7TYaMDO3V7zaYYFcj90X9q\t",
+    "call_pdYd4p9Y2GsB6jnXP1HVYSQr\t",
+    "ratelimit:rollout-gen-timing-real.jsonl:L58\tcodex",
+    "call_mUgX00nZs2VhoHGV083j8dRx\t",
+    "call_i9KUi76HOz8x0xQBU6iE8azt\t",
+    "call_57CMzhzBIGnkWpvwkERfchxa\t"
+  ],
+  "rollout-gen-timing.jsonl": [
+    "sysprompt:developer:ef260e9aa3c673af:L3\tdev",
+    "call_1\t",
+    "sysprompt:developer:0230c6b1d833c51c:L13\tctx",
+    "call_2\t",
+    "call_3\t"
+  ],
+  "rollout-patch-apply-exec-namespace.jsonl": [
+    "call_ExecRunsApplyPatch01\tmain.go",
+    "exec-13ec0715-713d-4942-9fe1-e4541968b8ab\tmain.go|notes.txt"
+  ],
+  "rollout-patch-pairing-doubleclaim.jsonl": [
+    "call_HashD\td.go",
+    "exec-dddddddd-0000-0000-0000-000000000001\td.go"
+  ],
+  "rollout-patch-pairing-mismatch.jsonl": [
+    "call_HashNine\tc.go",
+    "exec-bbbbbbbb-0000-0000-0000-000000000001\tother.go"
+  ],
+  "rollout-patch-pairing-reverseclaim.jsonl": [
+    "call_HashE\te.go",
+    "call_HashE\te.go"
+  ],
+  "rollout-patch-pairing.jsonl": [
+    "call_HashOne\ta.go",
+    "call_HashTwo\tb.go",
+    "call_HashThree\tb.go"
+  ],
+  "rollout-response-item.jsonl": [
+    "user:rollout-response-item.jsonl:L4:c022951d09e449e6\tRun tests and update the plan.",
+    "agent:rollout-response-item.jsonl:L5:a46694299c994f86\tRunning the test suite first, then updating the plan.",
+    "call_paired\tbash -lc go test ./...",
+    "call_orphan\tbash -lc echo interrupted",
+    "call_plan\t",
+    "call_search\tgo testing patterns",
+    "call_patch_paired\thello.go",
+    "call_patch_orphan\tlone.go",
+    "call_patch_endonly\trecovered.go",
+    "call_mcp_paired\tcodex:list_mcp_resources",
+    "call_mcp_standalone\tdocs:search",
+    "error:rollout-response-item.jsonl:L20:68b224dcab481754\tusage_limit_exceeded",
+    "call_view_paired\tcaptures/screen.png",
+    "call_view_orphan\tcaptures/orphan.png",
+    "call_dyn\t",
+    "aborted:turn-A:26\tinterrupted",
+    "complete:turn-A:27\ttask_complete"
+  ],
+  "rollout-session.jsonl": [
+    "call_01\tmain.go",
+    "call_02\tbash -lc go test ./...",
+    "call_03\tgo testing best practices"
+  ],
+  "rollout-surface-attribution.jsonl": [
+    "user:rollout-surface-attribution.jsonl:L3:0f592561e1c7855a\thello from a codex exec run",
+    "complete:turn-surface-A:4\ttask_complete"
+  ],
+  "rollout-surface-codex-desktop.jsonl": [
+    "sysprompt:base:62adb4fd50605c90:L1\tYou are Codex, an agent based on GPT-5.\n[truncated for fixture]",
+    "user:rollout-surface-codex-desktop.jsonl:L3:731a00eca1dea76f\thello from the standalone Codex desktop app",
+    "complete:turn-desktop-A:4\ttask_complete"
+  ],
+  "rollout-surface-jetbrains.jsonl": [
+    "sysprompt:base:62adb4fd50605c90:L1\tYou are Codex, an agent based on GPT-5.\n[truncated for fixture]",
+    "user:rollout-surface-jetbrains.jsonl:L3:e6607d4fd48acee2\thello from IntelliJ IDEA's AI Assistant",
+    "complete:turn-jb-A:4\ttask_complete"
+  ],
+  "rollout-unified-exec.jsonl": [
+    "user:rollout-unified-exec.jsonl:L4:9a7b07df691fb0e9\tRead the plan file, patch it, and run the tests.",
+    "call_uexec_cmd\tsed -n '1,240p' PROGRESS.md \u0026\u0026 rg -n \"probe\" docs",
+    "call_uexec_mixed\tgo test ./internal/adapter/codex/...",
+    "call_uexec_patch\tplan.md",
+    "call_uexec_patch_raw\traw.go",
+    "call_uexec_plan\tReading is done; tests are next.",
+    "call_uexec_stdin\t",
+    "call_uexec_hoisted\t",
+    "call_uexec_residual\t",
+    "call_uexec_bracket\t",
+    "call_uexec_template\t",
+    "call_uexec_rebound\treal.md"
+  ]
+}

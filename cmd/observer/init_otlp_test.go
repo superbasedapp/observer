@@ -19,8 +19,7 @@ import (
 // (and the Remover `observer uninstall` runs) restores the original bytes.
 func TestInitOTLPExport(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("CODEX_HOME", "")
+	pinToolHomesAt(t, home)
 	cfgOff := filepath.Join(home, "off.toml")
 	cfgOn := filepath.Join(home, "on.toml")
 	if err := os.WriteFile(cfgOff, []byte("[observer]\nlog_level = \"warn\"\n"), 0o600); err != nil {

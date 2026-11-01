@@ -592,13 +592,18 @@ func TestAssemble_MapsNodeMCPRelayPointToItsFamily(t *testing.T) {
 }
 
 // TestOptionalPoints_NodeMCPRelayIsNewestNotCore pins node-mcp-relay as the
-// FOURTH (newest) OptionalPoints member: the ladder drops it first when a
-// pre-v5 server refuses the snapshot, and it is never one of the core four.
+// FOURTH OptionalPoints member, followed by the v6 node-sandbox-isolation
+// point (lane SBX-P1B) and the v7 node-security point (lane SEC-E) as the
+// newest: the ladder drops the newest first when an older server refuses
+// the snapshot, and none of the three is one of the core four.
 func TestOptionalPoints_NodeMCPRelayIsNewestNotCore(t *testing.T) {
-	if len(OptionalPoints) == 0 || OptionalPoints[len(OptionalPoints)-1] != PointNodeMCPRelay {
-		t.Fatalf("OptionalPoints = %v, want node-mcp-relay LAST (ORDER IS THE CONTRACT)", OptionalPoints)
+	n := len(OptionalPoints)
+	if n < 3 || OptionalPoints[n-3] != PointNodeMCPRelay || OptionalPoints[n-2] != PointNodeSandboxIsolation || OptionalPoints[n-1] != PointNodeSecurity {
+		t.Fatalf("OptionalPoints = %v, want node-mcp-relay, node-sandbox-isolation, then node-security LAST (ORDER IS THE CONTRACT)", OptionalPoints)
 	}
-	if IsCorePoint(PointNodeMCPRelay) || !IsOptionalPoint(PointNodeMCPRelay) {
-		t.Fatal("node-mcp-relay must be optional, not core")
+	for _, p := range []string{PointNodeMCPRelay, PointNodeSandboxIsolation, PointNodeSecurity} {
+		if IsCorePoint(p) || !IsOptionalPoint(p) {
+			t.Fatalf("%s must be optional, not core", p)
+		}
 	}
 }

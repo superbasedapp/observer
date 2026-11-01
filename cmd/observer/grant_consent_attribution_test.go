@@ -83,7 +83,7 @@ func TestStoredGrantConsentEvidence(t *testing.T) {
 			if tc.wantLine == "" {
 				return
 			}
-			g := grantFromStore(r)
+			g := grantFromStore(r, nil)
 			g.Integrity, g.ConsentEvidence = integrity, ev
 			if got := grantConsentLine(g); got != tc.wantLine {
 				t.Fatalf("consent line = %q, want %q", got, tc.wantLine)

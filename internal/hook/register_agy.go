@@ -22,8 +22,10 @@ import (
 //
 // Observer owns exactly one hook name, agyObserverHookName; every other
 // top-level key round-trips byte for byte. It registers PreToolUse, the
-// tool gate (hook-parity Lane A6), and PreInvocation, the warn-only prompt
-// seam. PreInvocation was retired on 2026-10-03 (agy 1.2.16: the transcript
+// tool gate (hook-parity Lane A6), and PreInvocation, the pre-model-call
+// prompt seam (warns, and blocks by aborting the turn since the 2026-10-15
+// guard-enforcement fix). Both handlers carry a 30 s timeout; Observer's
+// own hook watchdog answers below it. PreInvocation was retired on 2026-10-03 (agy 1.2.16: the transcript
 // held the prompt only after the model replied) and restored by T-476: on
 // agy 1.3.0 (demo node 1, 2026-10-06) the payload's transcript already
 // holds the USER_INPUT step at invocationNum 0, and the injected
@@ -55,10 +57,30 @@ type agyHookGroup struct {
 	Hooks   []agyHookHandler `json:"hooks"`
 }
 
-// agyHooksPath is ~/.gemini/config/hooks.json under the registry's home.
-func (r *Registry) agyHooksPath() (dir, path string) {
-	dir = filepath.Join(r.opts.HomeDir, ".gemini", "config")
-	return dir, filepath.Join(dir, "hooks.json")
+// agyHookFileReaderDirs are the ~/.gemini data directories of the products
+// that run ~/.gemini/config/hooks.json, each an install signal for the
+// antigravity-cli target (Registry.Installed): the vendor's app_data_dir of
+// the CLI, the Antigravity App and the Antigravity IDE
+// (https://antigravity.google/docs/hooks?tab=ide, fetched 2026-10-26;
+// surface-gap W-2c). The App's directory is also the antigravity adapter's
+// desktop capture root. ~/.gemini/antigravity-acp (the JetBrains ACP agent)
+// is not here: nothing grounds it running the file.
+var agyHookFileReaderDirs = []string{"antigravity-cli", "antigravity", "antigravity-ide"}
+
+// agyHooksDirUnder is the directory of .gemini/config/hooks.json under home
+// for goos, from the catalogue (antigravity-cli/user-hooks).
+func agyHooksDirUnder(home, goos string) string {
+	return filepath.Join(home, artifactSubdir("antigravity-cli/user-hooks", goos))
+}
+
+// agyGeminiSubdir is the Gemini home under a user home for goos (the hooks
+// file's grandparent), "" when the artifact does not resolve.
+func agyGeminiSubdir(goos string) string {
+	sub := artifactSubdir("antigravity-cli/user-hooks", goos)
+	if sub == "" {
+		return ""
+	}
+	return filepath.Dir(sub)
 }
 
 // readAgyHooksFile reads the hooks.json top-level object; a missing or
@@ -133,16 +155,40 @@ func agyEntryIsObservers(raw json.RawMessage) bool {
 	return handlers > 0
 }
 
-// agyObserverDef is the value Observer writes under agyObserverHookName for
-// the events it registers (skip filters events `observer start` holds back).
-func (r *Registry) agyObserverDef(skip func(string) bool) (map[string]any, []string) {
+// agyTarget is one ~/.gemini/config/hooks.json Observer writes: the
+// daemon OS's own, or a Windows-side one a WSL daemon bridges
+// (antigravity-cli-windows, surface-gap IDE-10).
+type agyTarget struct {
+	label string
+	// goos is the OS whose layout the hooks file follows under home.
+	goos string
+	// home is the user home holding .gemini/config/hooks.json.
+	home string
+	// command builds Observer's command for event.
+	command func(event string) string
+}
+
+// nativeAgyTarget is the daemon OS's own hooks file.
+func (r *Registry) nativeAgyTarget() agyTarget {
+	return agyTarget{label: "antigravity-cli", home: r.opts.HomeDir, goos: r.hostGOOS(), command: r.nativeAgyCommand}
+}
+
+// nativeAgyCommand is the daemon-OS command for event.
+func (r *Registry) nativeAgyCommand(event string) string {
+	return shellQuoteIfNeeded(forwardSlashPath(r.opts.BinaryPath)) + " hook antigravity-cli " + event + r.configFlagSuffixForwardSlash()
+}
+
+// agyObserverDefWith is the value Observer writes under agyObserverHookName
+// for the events it registers (skip filters events `observer start` holds
+// back), each handler running command(event).
+func agyObserverDefWith(skip func(string) bool, command func(string) string) (map[string]any, []string) {
 	def := map[string]any{"enabled": true}
 	var events []string
 	for _, event := range agyEvents {
 		if skip(event) {
 			continue
 		}
-		cmd := shellQuoteIfNeeded(forwardSlashPath(r.opts.BinaryPath)) + " hook antigravity-cli " + event + r.configFlagSuffixForwardSlash()
+		cmd := command(event)
 		h := agyHookHandler{Type: "command", Command: cmd, Timeout: agyToolGateTimeoutSeconds}
 		if agyGroupedEvents[event] {
 			def[event] = []agyHookGroup{{Matcher: "*", Hooks: []agyHookHandler{h}}}
@@ -157,8 +203,14 @@ func (r *Registry) agyObserverDef(skip func(string) bool) (map[string]any, []str
 // registerAntigravityCLI installs observer's hook name into
 // ~/.gemini/config/hooks.json.
 func (r *Registry) registerAntigravityCLI() RegistrationResult {
-	res := RegistrationResult{Tool: "antigravity-cli", DryRun: r.opts.DryRun}
-	dir, path := r.agyHooksPath()
+	return r.registerAgyAt(r.nativeAgyTarget())
+}
+
+// registerAgyAt installs observer's hook name into t's hooks.json.
+func (r *Registry) registerAgyAt(t agyTarget) RegistrationResult {
+	res := RegistrationResult{Tool: t.label, DryRun: r.opts.DryRun}
+	dir := agyHooksDirUnder(t.home, t.goos)
+	path := filepath.Join(dir, "hooks.json")
 	res.ConfigPath = path
 
 	unlock, err := r.lockSettings(path)
@@ -174,7 +226,12 @@ func (r *Registry) registerAntigravityCLI() RegistrationResult {
 		res.Error = err
 		return res
 	}
-	want, events := r.agyObserverDef(func(e string) bool { return r.skipEvent("antigravity-cli", e) })
+	// FU-192: an entry in Observer's shape running another binary is kept
+	// (the entry name is Observer's own).
+	if r.refusesForeignBinaryInFile(&res, "hook.registerAntigravityCLI", path, "antigravity-cli", identityOwnedName) {
+		return res
+	}
+	want, events := agyObserverDefWith(func(e string) bool { return r.skipEvent(t.label, e) }, t.command)
 	if len(events) == 0 {
 		return res
 	}
@@ -183,7 +240,7 @@ func (r *Registry) registerAntigravityCLI() RegistrationResult {
 		res.Error = fmt.Errorf("hook.registerAntigravityCLI: marshal: %w", err)
 		return res
 	}
-	foreign := false
+	foreign, repair := false, false
 	if cur, ok := top[agyObserverHookName]; ok {
 		if jsonEqual(cur, defJSON) {
 			res.AlreadySet = append(res.AlreadySet, events...)
@@ -192,12 +249,18 @@ func (r *Registry) registerAntigravityCLI() RegistrationResult {
 		// Sol A2-09: the key is occupied by something other than the
 		// exact desired entry. Refresh it only when it is positively
 		// observer's own (a stale command or timeout, or the retired
-		// PreInvocation entry); anything else is the user's and is a
-		// conflict without --force.
+		// PreInvocation entry); anything else is a conflict without
+		// --force, except on a managed repair pass when Observer installed
+		// this hook name before (T-872: the name is Observer's own,
+		// identityOwnedName, so a stubbed entry under it is a neutralised
+		// Observer hook, not the user's).
 		if !agyEntryIsObservers(cur) {
-			if !r.opts.Force {
+			switch r.resolveConflict(path, identityOwnedName) {
+			case conflictRefuse:
 				res.Error = fmt.Errorf("hook.registerAntigravityCLI: %s already has a non-observer hook named %q; pass --force to overwrite", path, agyObserverHookName)
 				return res
+			case conflictRepair:
+				repair = true
 			}
 			foreign = true
 		}
@@ -208,11 +271,12 @@ func (r *Registry) registerAntigravityCLI() RegistrationResult {
 		return res
 	}
 	if foreign {
-		// --force over a user's entry: keep the pre-overwrite file
-		// recoverable (the writeYAMLMap / Command Code takeover
-		// discipline).
+		// --force over a user's entry, or a managed repair of Observer's
+		// neutralised one: keep the pre-overwrite file recoverable (the
+		// writeYAMLMap / Command Code takeover discipline; a repair keeps
+		// a displaced copy, T-884).
 		if raw, rerr := os.ReadFile(path); rerr == nil {
-			if err := backupForeignCommandCodeMod(path, raw); err != nil {
+			if err := keepReplacedBytes(&res, path, raw, repair); err != nil {
 				res.Error = fmt.Errorf("hook.registerAntigravityCLI: %w", err)
 				return res
 			}
@@ -222,8 +286,12 @@ func (r *Registry) registerAntigravityCLI() RegistrationResult {
 		res.Error = err
 		return res
 	}
-	if err := r.recordChecksum(path); err != nil {
+	if err := r.recordChecksum(res.Tool, path); err != nil {
 		res.Error = err
+		return res
+	}
+	if repair {
+		noteOwnedRepair(&res, path, events)
 	}
 	return res
 }
@@ -231,8 +299,15 @@ func (r *Registry) registerAntigravityCLI() RegistrationResult {
 // unregisterAntigravityCLI removes ONLY observer's hook name from
 // ~/.gemini/config/hooks.json.
 func (r *Registry) unregisterAntigravityCLI() UnregistrationResult {
-	res := UnregistrationResult{Tool: "antigravity-cli", DryRun: r.opts.DryRun}
-	dir, path := r.agyHooksPath()
+	return r.unregisterAgyAt("antigravity-cli", r.opts.HomeDir, r.hostGOOS())
+}
+
+// unregisterAgyAt removes observer's hook name from home's hooks.json (the
+// layout of goos).
+func (r *Registry) unregisterAgyAt(label, home, goos string) UnregistrationResult {
+	res := UnregistrationResult{Tool: label, DryRun: r.opts.DryRun}
+	dir := agyHooksDirUnder(home, goos)
+	path := filepath.Join(dir, "hooks.json")
 	res.ConfigPath = path
 
 	unlock, err := r.lockSettings(path)
@@ -287,4 +362,12 @@ func agyEntryEvents(raw json.RawMessage) []string {
 		}
 	}
 	return events
+}
+
+// agyInstalled reports the install signals of the shared Antigravity hooks
+// file: a data directory of a product that reads it (agyHookFileReaderDirs)
+// or the file's own directory, resolved from the catalogued artifact so a
+// pinned home and the vendor's relocation hold (WINNODE2 item 5b).
+func (r *Registry) agyInstalled() bool {
+	return r.anyGeminiDirExists(agyHookFileReaderDirs) || r.homeArtifactExists("antigravity-cli")
 }

@@ -29,8 +29,10 @@ func TestCatalogLoadsAndValidates(t *testing.T) {
 	if len(rows) < 1478+20 {
 		t.Fatalf("catalog has %d rows, want at least %d", len(rows), 1478+20)
 	}
-	if n := len(c.Groups()); n != 30 {
-		t.Fatalf("catalog has %d vendor groups, want 30 (research/v5)", n)
+	// 30 research/v5 groups plus the three AP-135 groups (snowflake, ibm,
+	// castai; docs/plans/native-console-wave-2026-10-21-phase0.md).
+	if n := len(c.Groups()); n != 33 {
+		t.Fatalf("catalog has %d vendor groups, want 33 (research/v5 + AP-135)", n)
 	}
 	for _, g := range c.Groups() {
 		if len(c.GroupSurfaces(g)) == 0 {

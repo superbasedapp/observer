@@ -15,6 +15,8 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/archive"
 	"github.com/marmutapp/superbased-observer/internal/archivestore/migrations"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/migplan"
+	"github.com/marmutapp/superbased-observer/internal/migplan/sqliteledger"
 	"github.com/marmutapp/superbased-observer/internal/platform/sqlitedsn"
 
 	_ "modernc.org/sqlite" // pure-Go sqlite driver registration (no CGO).
@@ -586,9 +588,44 @@ func (s *Store) streamMinhash(ctx context.Context, project string, batchRows int
 // agent, org-server and edge-WAL runners, over this package's OWN embed.FS and
 // schema_meta.
 func runMigrations(ctx context.Context, db *sql.DB) error {
-	entries, err := readMigrationEntries()
+	return runMigrationsFrom(ctx, db, migrations.Files, lateSteps)
+}
+
+// lateSteps is the closed table of this lineage's migrations known to have
+// landed on a parallel line under a number below a step another line already
+// shipped in a build (migplan.LateStep). It is EMPTY: no step of this lineage
+// interleaves today.
+//
+// A database that has a ledger never needs a row: its missing step simply has
+// no per-step record and runs. Add a row only when a PRE-LEDGER database (one
+// last migrated by a binary older than T-979) may already hold a version
+// record above the step without having run it. Name a column the step adds,
+// so the probe adopts the step where it really ran and runs it where it did
+// not, and add a test that stages such a database. See
+// docs/migration-numbering.md.
+var lateSteps = []migplan.LateStep{}
+
+// runMigrationsFrom is the runner over an explicit lineage and late-step
+// table, so tests can drive it with synthetic lineages.
+//
+// "Pending" is per step (internal/migplan, T-979): every embedded step
+// without a migration:<n> record in schema_meta runs in ascending order,
+// including one numbered below the highest applied version, so a step that
+// landed late from a parallel line is never skipped. The 'version' record
+// still holds the highest applied step. A database written before the ledger
+// existed has its steps up to 'version' adopted (recorded without running),
+// the old behaviour, unless lateSteps lists one. The whole pass, steps and
+// bookkeeping, is one transaction: a failing step rolls everything back.
+func runMigrationsFrom(ctx context.Context, db *sql.DB, source fs.FS, late []migplan.LateStep) error {
+	entries, err := readMigrationEntries(source)
 	if err != nil {
 		return err
+	}
+	embedded := make([]int, 0, len(entries))
+	byVersion := make(map[int]migrationEntry, len(entries))
+	for _, e := range entries {
+		embedded = append(embedded, e.version)
+		byVersion[e.version] = e
 	}
 	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_meta (
 		key TEXT PRIMARY KEY, value TEXT NOT NULL
@@ -611,40 +648,22 @@ func runMigrations(ctx context.Context, db *sql.DB) error {
 		}
 	}()
 
-	var applied int
-	var v sql.NullString
-	row := conn.QueryRowContext(ctx, `SELECT value FROM schema_meta WHERE key = 'version'`)
-	switch err := row.Scan(&v); {
-	case errors.Is(err, sql.ErrNoRows):
-		applied = 0
-	case err != nil:
-		return fmt.Errorf("archivestore.runMigrations: read applied version: %w", err)
-	default:
-		if v.Valid {
-			applied, err = strconv.Atoi(v.String)
-			if err != nil {
-				return fmt.Errorf("archivestore.runMigrations: parse applied version %q: %w", v.String, err)
-			}
-		}
+	plan, err := sqliteledger.Plan(ctx, conn, embedded, late)
+	if err != nil {
+		return fmt.Errorf("archivestore.runMigrations: %w", err)
 	}
-
-	for _, e := range entries {
-		if e.version <= applied {
-			continue
-		}
-		body, readErr := fs.ReadFile(migrations.Files, e.filename)
+	if err := sqliteledger.Apply(ctx, conn, plan, func(version int) error {
+		e := byVersion[version]
+		body, readErr := fs.ReadFile(source, e.filename)
 		if readErr != nil {
-			return fmt.Errorf("archivestore.runMigrations: read %s: %w", e.filename, readErr)
+			return fmt.Errorf("read %s: %w", e.filename, readErr)
 		}
 		if _, err := conn.ExecContext(ctx, string(body)); err != nil {
-			return fmt.Errorf("archivestore.runMigrations: exec %s: %w", e.filename, err)
+			return fmt.Errorf("exec %s: %w", e.filename, err)
 		}
-		if _, err := conn.ExecContext(ctx,
-			`INSERT INTO schema_meta(key, value) VALUES ('version', ?)
-			 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-			strconv.Itoa(e.version)); err != nil {
-			return fmt.Errorf("archivestore.runMigrations: record version %d: %w", e.version, err)
-		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("archivestore.runMigrations: %w", err)
 	}
 
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
@@ -659,8 +678,9 @@ type migrationEntry struct {
 	filename string
 }
 
-func readMigrationEntries() ([]migrationEntry, error) {
-	dirEntries, err := fs.ReadDir(migrations.Files, ".")
+// readMigrationEntries lists source's NNN_name.sql files, ascending.
+func readMigrationEntries(source fs.FS) ([]migrationEntry, error) {
+	dirEntries, err := fs.ReadDir(source, ".")
 	if err != nil {
 		return nil, fmt.Errorf("archivestore.readMigrationEntries: %w", err)
 	}

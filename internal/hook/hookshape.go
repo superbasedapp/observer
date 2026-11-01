@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/marmutapp/superbased-observer/internal/hookctx"
 )
 
 // Hook payload SHAPE log for live grounding (hook-parity audit section 6,
@@ -52,7 +54,7 @@ var hookShapeMu sync.Mutex
 // OBSERVER_HOOK_SHAPE_LOG (a no-op when it is unset or body is not a JSON
 // object).
 func DumpHookShape(tool, event string, body []byte) {
-	path := strings.TrimSpace(os.Getenv(HookShapeLogEnv))
+	path := strings.TrimSpace(hookctx.Process().Getenv(HookShapeLogEnv))
 	if path == "" {
 		return
 	}

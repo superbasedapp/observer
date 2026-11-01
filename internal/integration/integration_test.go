@@ -119,6 +119,52 @@ func TestRoutabilityClassifiedForEveryAdapter(t *testing.T) {
 	}
 }
 
+// TestRouteStatusGroundedReclassifications pins the routability buckets the
+// surface-gap arc reclassified on vendor evidence, one row per finding, so a
+// later edit cannot quietly restore the old claim.
+func TestRouteStatusGroundedReclassifications(t *testing.T) {
+	tests := []struct {
+		tool, finding string
+		want          RouteStatus
+		wantHostedGUI HostedRoute // the tool's own GUI row, "" when it has none
+	}{
+		// IDE-4: Cursor relays even BYOK requests through its own servers
+		// (cursor.com/docs/settings/api-keys), so its "OpenAI Base URL"
+		// cannot reach a loopback proxy.
+		{"cursor", "IDE-4", RouteStatusNativeExempt, HostedRouteNotRoutable},
+		// S-13: Junie's endpoint knobs are documented but no live api_turns
+		// proof exists, so probe_required stands.
+		{"junie", "S-13", RouteStatusProbeRequired, ""},
+		// CLI-9: Kilo documents a custom provider baseURL in kilo.jsonc, so
+		// the CLI is no longer native_exempt; LC24 decides whether it routes.
+		{"kilo-code-cli", "CLI-9", RouteStatusProbeRequired, ""},
+		// IDE-9: the legacy extension's base URL lives in state.vscdb,
+		// which no writer reaches, so routable_now was an overclaim.
+		{"kilo-code", "IDE-9", RouteStatusProbeRequired, ""},
+	}
+	for _, tt := range tests {
+		c, ok := For(tt.tool)
+		if !ok {
+			t.Fatalf("%s: no registry row", tt.tool)
+		}
+		if c.Routability != tt.want || c.Proxy != nil {
+			t.Errorf("%s (%s): Routability = %q Proxy = %v, want %q and no route", tt.tool, tt.finding, c.Routability, c.Proxy, tt.want)
+		}
+		if tt.wantHostedGUI == "" {
+			continue
+		}
+		g, ok := GUIRowForID(tt.tool)
+		if !ok {
+			t.Fatalf("%s: no GUI row", tt.tool)
+		}
+		for _, r := range HostedRoutes(g) {
+			if r.Tool == tt.tool && r.Outcome != tt.wantHostedGUI {
+				t.Errorf("%s (%s): wrapped %s outcome = %q, want %q", tt.tool, tt.finding, g.Spec.ID, r.Outcome, tt.wantHostedGUI)
+			}
+		}
+	}
+}
+
 // TestProxyProbeRouteKinds pins the config-lane WRITER BINDINGS: each tool
 // with a guarded, additive proxyroute writer carries a ProxyProbe recording
 // the RouteKind init writes it with. ProxyProbe PERSISTS after promotion —
@@ -133,11 +179,15 @@ func TestProxyProbeRouteKinds(t *testing.T) {
 		"kimi-code": RouteConfigFile,   // ~/.kimi-code/config.toml [providers.openai].base_url (promoted; probe binding kept)
 		"crush":     RouteProviderJSON, // crush.json providers.openai.base_url (promoted; probe binding kept)
 		"qwen-code": RouteConfigFile,   // ~/.qwen/settings.json model.baseUrl + matching modelProviders entry (promoted 2026-07-10; probe binding kept)
+		"cline":     RouteConfigFile,   // ~/.cline/data/globalState.json <provider>BaseUrl (IDE-8, 2026-10-25; not live-verified yet)
+		// Lane w6-routes member writers, built switched off (DEC-12).
+		"open-interpreter": RouteConfigFile, // OI-1: config.toml [model_providers.openai-observer] + model_provider (LC11)
+		"stakpak":          RouteConfigFile, // S-22: [profiles.default.providers.openai] api_endpoint (LC37)
+		"poolside":         RouteConfigFile, // S-16: settings.yaml pool.api_url (LCR-1)
 	}
-	// No un-promoted probe writers remain: every tool with a ProxyProbe was
-	// live-verified and carries a Proxy. (Kept as a map so re-adding an
-	// un-promoted probe writer is a one-line change with the invariant intact.)
-	unpromoted := map[string]bool{}
+	// The un-promoted probe writers: a guarded writer but no live routed
+	// turn yet, so none may carry a Proxy.
+	unpromoted := map[string]bool{"cline": true, "open-interpreter": true, "stakpak": true, "poolside": true}
 	for tool, kind := range want {
 		c, ok := For(tool)
 		if !ok || c.ProxyProbe == nil {
@@ -156,7 +206,7 @@ func TestProxyProbeRouteKinds(t *testing.T) {
 			}
 		}
 	}
-	// Only these three tools carry a ProxyProbe today.
+	// Only these tools carry a ProxyProbe today.
 	for _, c := range Capabilities() {
 		if _, expected := want[c.Tool]; expected {
 			continue
@@ -246,7 +296,7 @@ func TestHookCapabilities(t *testing.T) {
 // TestMCPTargets pins the five clients with a grounded, implemented MCP
 // writer today (claude-code/cursor/codex/hermes/opencode). Every other
 // adapter must carry MCP == nil so init only writes config where a writer
-// exists.
+// exists, except a grounded candidate (Implemented false), which init skips.
 func TestMCPTargets(t *testing.T) {
 	wantImplemented := map[string]struct {
 		format   MCPFormat
@@ -257,12 +307,26 @@ func TestMCPTargets(t *testing.T) {
 		"codex":        {MCPCodexTOML, ".codex/config.toml"},
 		"hermes":       {MCPHermesYAML, ".hermes/config.yaml"},
 		"opencode":     {MCPOpenCodeJSON, ".config/opencode/opencode.json"},
-		"cline":        {MCPServersJSON, "<vscode>/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json"},
+		"cline":        {MCPServersJSON, ".cline/data/settings/cline_mcp_settings.json"},
 		"droid":        {MCPServersJSON, ".factory/mcp.json"},
 		"command-code": {MCPServersJSON, ".commandcode/mcp.json"},
 	}
+	// Grounded MCP surfaces with NO writer: the target is a candidate
+	// (Implemented false), so init and the registrar never write it.
+	wantCandidate := map[string]struct {
+		format   MCPFormat
+		pathHint string
+	}{
+		"zed": {MCPZedContextServers, ".config/zed/settings.json"}, // S-12, zed.dev/docs/ai/mcp
+	}
 	for _, c := range Capabilities() {
 		want, expect := wantImplemented[c.Tool]
+		if cand, ok := wantCandidate[c.Tool]; ok {
+			if c.MCP == nil || c.MCP.Implemented || c.MCP.Format != cand.format || c.MCP.PathHint != cand.pathHint {
+				t.Errorf("%s: MCP target = %+v, want candidate %s at %s", c.Tool, c.MCP, cand.format, cand.pathHint)
+			}
+			continue
+		}
 		switch {
 		case expect:
 			if c.MCP == nil {
@@ -359,8 +423,8 @@ func TestPromptLaneClassifiedForEveryAdapter(t *testing.T) {
 		// lane (internal/guard/proxyguard.go's scanPrompt, built and
 		// wired) is the only realistic path.
 		"opencode":    PromptLaneProxyOnly,
-		"copilot-cli": PromptLaneProxyOnly,
-		"cline-cli":   PromptLaneProxyOnly,
+		"copilot-cli": PromptLaneHook,
+		"cline-cli":   PromptLaneHook,
 		"hermes":      PromptLaneProxyOnly,
 		"pi":          PromptLaneProxyOnly,
 		"grok":        PromptLaneProxyOnly,
@@ -375,10 +439,25 @@ func TestPromptLaneClassifiedForEveryAdapter(t *testing.T) {
 		// genuinely UNVERIFIED or contested in the vendor's own
 		// tracker — a live `observer doctor --probe-hook` run, not a
 		// docs re-read, is what would resolve it.
-		"kimi-code":        PromptLaneHook,
-		"kiro-cli":         PromptLaneProbeRequired,
+		"kimi-code": PromptLaneHook,
+		// kiro-cli: settled 2026-10-15 (gfiD): userPromptSubmit cannot block;
+		// the seam only warns the model (Hook.PromptWarnOnly).
+		"kiro-cli":         PromptLaneNone,
 		"cline":            PromptLaneProbeRequired,
 		"open-interpreter": PromptLaneProbeRequired,
+		// The 2026-10-21 wave: each prompt dialect was fired live by the
+		// hook probe; Observer's receiver and writer exist.
+		"autohand":        PromptLaneHook,
+		"ibm-bob":         PromptLaneHook,
+		"codebuddy":       PromptLaneHook,
+		"deepagents-code": PromptLaneHook,
+		"dimcode":         PromptLaneHook,
+		"dirac":           PromptLaneHook,
+		"vtcode":          PromptLaneHook,
+		// kimchi and cortex-code run Claude Code's own hooks, which
+		// Observer recognises and re-routes (foreignhost.go).
+		"kimchi":      PromptLaneHook,
+		"cortex-code": PromptLaneHook,
 
 		// --- PromptLaneNone: no grounded prompt-submit intervention
 		// capability at all today, for one of three honest reasons —
@@ -414,6 +493,8 @@ func TestPromptLaneClassifiedForEveryAdapter(t *testing.T) {
 		"grokbot":         PromptLaneNone,
 		"kiro-crew":       PromptLaneNone,
 		"zed":             PromptLaneNone,
+		// 2026-10-21 wave: stakpak has no hook surface.
+		"stakpak": PromptLaneNone,
 	}
 	byTool := map[string]Capability{}
 	for _, c := range Capabilities() {

@@ -432,3 +432,106 @@ func containsStr(xs []string, x string) bool {
 	}
 	return false
 }
+
+// TestComponentsStateListsSelectedSecurity: GET /api/components/state lists
+// the security components the daemon's opt-in rule selects. An install with
+// no [components] block lists no opt-in child even though each is compiled
+// and resolves active, so the Settings card shows none of their rows; a
+// block naming one lists it. No rule wired lists none.
+func TestComponentsStateListsSelectedSecurity(t *testing.T) {
+	// A stand-in for cmd/observer securitySelected with the same shape.
+	optIn := map[string]bool{
+		"security.trust": true, "security.deps": true, "security.scan.custom": true,
+		"security.githooks": true, "security.scan.scalibr": true, "security.scan.osv": true,
+	}
+	rule := func(snap componentstate.Snapshot, id string) bool {
+		if optIn[id] && !snap.Configured {
+			return false
+		}
+		return snap.ModuleActive(id)
+	}
+	read := func(t *testing.T, block string, sel func(componentstate.Snapshot, string) bool) []string {
+		t.Helper()
+		svc, _ := componentsTestService(t, block)
+		s := newRemoteTestServer(t, Options{Components: svc, SecuritySelected: sel})
+		rec := httptest.NewRecorder()
+		s.guardedHandler("127.0.0.1:8081").ServeHTTP(rec, loopbackRequest(http.MethodGet, "/api/components/state"))
+		var st componentsStateResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &st); err != nil {
+			t.Fatal(err)
+		}
+		if st.SecuritySelected == nil {
+			t.Fatal("security_selected is null, want a list")
+		}
+		return st.SecuritySelected
+	}
+	legacy := read(t, "", rule)
+	for id := range optIn {
+		if containsStr(legacy, id) {
+			t.Errorf("no [components] block: %s listed as selected (%v)", id, legacy)
+		}
+	}
+	if snap := componentstate.Legacy(); snap.ModuleActive("security") && !containsStr(legacy, "security") {
+		t.Errorf("the security root is active but not listed: %v", legacy)
+	}
+	named := read(t, "[components]\nadd = [\"security.scan.custom\"]\n", rule)
+	if snap := componentstate.Legacy(); snap.ModuleActive("security.scan.custom") && !containsStr(named, "security.scan.custom") {
+		t.Errorf("a block naming security.scan.custom: not listed (%v)", named)
+	}
+	if none := read(t, "", nil); len(none) != 0 {
+		t.Errorf("no rule wired lists %v, want none", none)
+	}
+}
+
+// TestComponentsStateUsesTheDaemonView: GET /api/components/state serves the
+// daemon's component view (Options.ComponentStateView) when it is wired, so a
+// module root its own rule switches off (the sandbox root under
+// `remove = ["terminals.sandbox"]`, plans decision log P-057) reads as off on
+// the Components page as in `observer components status`, and the routes of
+// such a component are listed inactive. Unwired, the page keeps core's view.
+func TestComponentsStateUsesTheDaemonView(t *testing.T) {
+	read := func(t *testing.T, view func(componentstate.Snapshot) componentstate.View) componentsStateResponse {
+		t.Helper()
+		svc, _ := componentsTestService(t, "")
+		s := newRemoteTestServer(t, Options{Components: svc, ComponentStateView: view})
+		s.registerRoutes(nil)
+		rec := httptest.NewRecorder()
+		s.guardedHandler("127.0.0.1:8081").ServeHTTP(rec, loopbackRequest(http.MethodGet, "/api/components/state"))
+		var st componentsStateResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &st); err != nil {
+			t.Fatal(err)
+		}
+		return st
+	}
+	core := read(t, nil)
+	var target string
+	for _, r := range core.View.Components {
+		if r.State == components.StateActive && r.ID != coreComponent {
+			target = r.ID
+			break
+		}
+	}
+	if target == "" {
+		t.Skip("no active component in this build to switch off")
+	}
+	off := func(snap componentstate.Snapshot) componentstate.View {
+		v := snap.View()
+		for i, r := range v.Components {
+			if r.ID == target {
+				v.Components[i].State = components.StateAvailable
+				v.Components[i].Reason = components.ReasonNotSelected
+				v.ActiveCount--
+			}
+		}
+		return v
+	}
+	got := read(t, off)
+	for _, r := range got.View.Components {
+		if r.ID == target && r.State == components.StateActive {
+			t.Fatalf("%s still active with the daemon view wired", target)
+		}
+	}
+	if got.View.ActiveCount != core.View.ActiveCount-1 {
+		t.Errorf("active count %d, want %d", got.View.ActiveCount, core.View.ActiveCount-1)
+	}
+}

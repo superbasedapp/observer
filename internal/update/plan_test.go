@@ -307,6 +307,36 @@ func TestDecideRollback(t *testing.T) {
 			want: RollbackDecision{Refuse: true, State: StateFailed, ErrorClass: ErrorHealthcheck},
 		},
 		{
+			name: "a late step ran, version unchanged, with a snapshot: restore both",
+			in: RollbackInput{
+				State: StateApplying, HasPreviousBinary: true,
+				PreviousSchemaVersion: 176, CurrentSchemaVersion: 176,
+				PreviousAppliedSteps: 40, CurrentAppliedSteps: 41, HasDBBackup: true,
+			},
+			want: RollbackDecision{
+				RestoreBinary: true, RestoreDB: true, DiscardsDataWindow: true,
+				State: StateRolledBack, ErrorClass: ErrorHealthcheck,
+			},
+		},
+		{
+			name: "a late step ran with NO snapshot: refuse rather than corrupt",
+			in: RollbackInput{
+				State: StateApplying, HasPreviousBinary: true,
+				PreviousSchemaVersion: 176, CurrentSchemaVersion: 176,
+				PreviousAppliedSteps: 40, CurrentAppliedSteps: 41,
+			},
+			want: RollbackDecision{Refuse: true, State: StateFailed, ErrorClass: ErrorHealthcheck},
+		},
+		{
+			name: "the target only adopted (ledger recorded, nothing ran): binary only",
+			in: RollbackInput{
+				State: StateApplying, HasPreviousBinary: true,
+				PreviousSchemaVersion: 176, CurrentSchemaVersion: 176,
+				PreviousAppliedSteps: 0, CurrentAppliedSteps: 0, HasDBBackup: true,
+			},
+			want: RollbackDecision{RestoreBinary: true, State: StateRolledBack, ErrorClass: ErrorHealthcheck},
+		},
+		{
 			name: "same schema: restore the binary only, database untouched",
 			in: RollbackInput{
 				State: StateApplying, HasPreviousBinary: true,

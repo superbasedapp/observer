@@ -553,6 +553,7 @@ func runCodexChild(ctx context.Context, opts codexLauncherOptions, proxyURL stri
 	// comparison is monotonic.
 	cmdStart := time.Now()
 	if err := child.Start(); err != nil {
+		noteBoxToolLaunch(opts.stderr, "codex", bin, args, err)
 		return fmt.Errorf("exec codex: start: %w", err)
 	}
 	// Direct process attribution (migration 086): record the child pid now
@@ -607,6 +608,7 @@ func runCodexChild(ctx context.Context, opts codexLauncherOptions, proxyURL stri
 	}
 
 	if runErr != nil {
+		noteBoxToolLaunch(opts.stderr, "codex", bin, args, runErr)
 		var ee *exec.ExitError
 		if errors.As(runErr, &ee) {
 			return exitErr(ee.ExitCode())
@@ -637,13 +639,23 @@ func codexLaunchArgs(opts codexLauncherOptions, codexArgs []string, proxyURL str
 		return args
 	}
 	args, info := prepareCodexArgs(codexArgs, proxyURL)
+	if cliSandboxedEnv() {
+		// D-MU5: inside an Observer box chatgpt.com is on the gateway's
+		// provider block list, so a ChatGPT-signed-in codex's account and
+		// workspace-routing calls go through the forwarded proxy too.
+		var added bool
+		args, added = withCodexBoxChatGPTBase(args, proxyURL)
+		if added {
+			fmt.Fprintf(opts.stderr, "observer codex: ChatGPT account calls via %s (sandbox; -c chatgpt_base_url injected)\n", redactRouteURL(proxyURL))
+		}
+	}
 	if info.OverrideAlreadyPresent {
 		fmt.Fprintf(opts.stderr,
 			"observer codex: routing via existing -c openai_base_url override (no inject; user-provided)\n")
 	} else {
 		fmt.Fprintf(opts.stderr,
 			"observer codex: routing via %s (-c openai_base_url injected; auth shape detected by proxy)\n",
-			proxyURL)
+			redactRouteURL(proxyURL))
 	}
 	return args
 }
@@ -955,6 +967,52 @@ func prepareCodexArgs(parent []string, proxyURL string) ([]string, codexArgsInfo
 	out = append(out, parent...)
 	info.OverrideInjected = true
 	return out, info
+}
+
+// withCodexBoxChatGPTBase prepends `-c chatgpt_base_url="<proxy>/backend-api/"`
+// for a codex launched inside an Observer sandbox box (D-MU5). Codex sends
+// its ChatGPT-plan account and workspace-routing calls (account/read,
+// routing discovery) to chatgpt_base_url, not to openai_base_url, and the
+// box's egress gateway refuses chatgpt.com, a model-provider host, so a
+// ChatGPT-signed-in codex exited at TUI bootstrap. The proxy already sends
+// every /backend-api/ path to its ChatGPT upstream, so routing the base
+// there keeps the provider block whole (chatgpt.com is never opened in the
+// gateway) and every call goes through Observer. A user's own
+// chatgpt_base_url override wins.
+func withCodexBoxChatGPTBase(args []string, proxyURL string) ([]string, bool) {
+	if hasCodexConfigKey(args, "chatgpt_base_url") {
+		return args, false
+	}
+	base := strings.TrimRight(proxyURL, "/")
+	out := make([]string, 0, len(args)+2)
+	out = append(out, "-c", "chatgpt_base_url=\""+base+"/backend-api/\"")
+	return append(out, args...), true
+}
+
+// hasCodexConfigKey reports whether argv carries a `-c key=...` /
+// `--config key=...` override for key, in any of codex's spellings.
+func hasCodexConfigKey(args []string, key string) bool {
+	match := func(kv string) bool {
+		k, _, ok := strings.Cut(kv, "=")
+		return ok && strings.TrimSpace(k) == key
+	}
+	for i, a := range args {
+		switch {
+		case strings.HasPrefix(a, "-c="):
+			if match(a[len("-c="):]) {
+				return true
+			}
+		case strings.HasPrefix(a, "--config="):
+			if match(a[len("--config="):]) {
+				return true
+			}
+		case a == "-c" || a == "--config":
+			if i+1 < len(args) && match(args[i+1]) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // hasUserCodexConfigOverride detects whether the user passed their own

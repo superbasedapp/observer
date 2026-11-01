@@ -183,6 +183,7 @@ func TestRejectIncompatibleCodexResumeFlags(t *testing.T) {
 // resume/continue-from conflict and asserts it errors BEFORE any exec, with a
 // message naming both flags.
 func TestRunClaudeLauncherResumeRejectsContinueFrom(t *testing.T) {
+	pinToolHomes(t) // the launcher loads <home>/.observer/config.toml (FU-20)
 	var stderr bytes.Buffer
 	err := runClaudeLauncher(context.Background(), claudeLauncherOptions{
 		resume:       "s1",
@@ -199,6 +200,7 @@ func TestRunClaudeLauncherResumeRejectsContinueFrom(t *testing.T) {
 
 // TestRunCodexLauncherResumeRejectsContinueFrom is the codex sibling.
 func TestRunCodexLauncherResumeRejectsContinueFrom(t *testing.T) {
+	pinToolHomes(t) // the launcher loads <home>/.observer/config.toml (FU-20)
 	var stderr bytes.Buffer
 	err := runCodexLauncher(context.Background(), codexLauncherOptions{
 		resume:       "s1",

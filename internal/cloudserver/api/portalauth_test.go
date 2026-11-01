@@ -1,9 +1,11 @@
 package api_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
@@ -79,13 +81,24 @@ func newFakeWorkOS(t *testing.T, secret string) *fakeWorkOS {
 		f.mu.Unlock()
 
 		switch {
+		case strings.HasPrefix(code, "code-wrongenv"):
+			// The 2026-10-23 live answer for a test-environment key presented
+			// with the production client id (T-964).
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"invalid_client","error_description":"You may be using a client secret from a different environment."}`))
+			return
 		case r.PostForm.Get("grant_type") != "authorization_code",
 			r.PostForm.Get("client_secret") != f.requireSecret,
 			r.PostForm.Get("code_verifier") == "",
 			!strings.HasPrefix(code, "code-"),
 			already:
+			// WorkOS's real invalid_grant answer echoes the code verbatim.
 			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
+			body, _ := json.Marshal(map[string]string{
+				"error":             "invalid_grant",
+				"error_description": "The code '" + code + "' has expired or is invalid.",
+			})
+			_, _ = w.Write(body)
 			return
 		}
 		// The code encodes the subject: "code-<subject>[@<nonce>]". The optional
@@ -136,6 +149,13 @@ const testWorkOSSecret = "sk_test_secret"
 // off so the dark-by-default 501s can be asserted.
 func newWorkOSHarness(t *testing.T, enabled bool) *workosHarness {
 	t.Helper()
+	return newWorkOSHarnessWithLogger(t, enabled, nil)
+}
+
+// newWorkOSHarnessWithLogger is newWorkOSHarness with the server's logger
+// injected, for tests that assert what the server logs.
+func newWorkOSHarnessWithLogger(t *testing.T, enabled bool, logger *slog.Logger) *workosHarness {
+	t.Helper()
 	pool := cloudtestpg.NewDB(t)
 	s := store.New(pool)
 	apiStore := mustAPIStore(t, pool)
@@ -152,6 +172,7 @@ func newWorkOSHarness(t *testing.T, enabled bool) *workosHarness {
 		Store:               apiStore,
 		Queue:               jobs.NewPGQueue(apiStore),
 		Verifier:            fakeWorkOSVerifier{},
+		Logger:              logger,
 		ExternalBaseURL:     base,
 		RateLimit:           &api.RateLimitConfig{},
 		Attestor:            admAttestor{verified: true},
@@ -886,4 +907,57 @@ func TestWorkOSSessionEndpointRejectsBearerOnly(t *testing.T) {
 	}
 	var eb json.RawMessage
 	decode(t, resp, &eb)
+}
+
+// TestWorkOSCallbackMisconfiguredIsOurFault pins T-964: when WorkOS refuses
+// this server's own client credentials (live 2026-10-23: a test-environment key
+// with the production client id answered 400 invalid_client), the user must
+// not be told their code was rejected. The answer is a 5xx naming a
+// server-side misconfiguration, and the log names WorkOS's own error code and
+// description, never the key or the authorization code.
+func TestWorkOSCallbackMisconfiguredIsOurFault(t *testing.T) {
+	var logs bytes.Buffer
+	h := newWorkOSHarnessWithLogger(t, true, slog.New(slog.NewTextHandler(&logs, nil)))
+
+	hc := newBrowser(t)
+	state, _ := h.startFlow(t, hc, "")
+	code := newCode("wrongenv")
+	cb := h.callback(t, hc, code, state)
+	if cb.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s, want 503", cb.StatusCode, readAll(cb))
+	}
+	assertCode(t, cb, "signin_misconfigured")
+	if cookieNamed(cb, devCookieName) != nil {
+		t.Fatal("a misconfigured exchange minted a session")
+	}
+	out := logs.String()
+	for _, want := range []string{"level=ERROR", "invalid_client", "different environment"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log lacks %q:\n%s", want, out)
+		}
+	}
+	for _, leak := range []string{testWorkOSSecret, code} {
+		if strings.Contains(out, leak) {
+			t.Fatalf("log leaked %q:\n%s", leak, out)
+		}
+	}
+
+	// A genuinely bad code still reads as the user's code being rejected, and
+	// its provider reason is now logged (it was not before).
+	hc2 := newBrowser(t)
+	state2, _ := h.startFlow(t, hc2, "")
+	const badCode = "not-a-valid-code-01HZX9K2M3N4P5Q6R7S8T9V0W1"
+	cb2 := h.callback(t, hc2, badCode, state2)
+	if cb2.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad code status=%d body=%s, want 400", cb2.StatusCode, readAll(cb2))
+	}
+	assertCode(t, cb2, "code_rejected")
+	if !strings.Contains(logs.String(), "invalid_grant") || !strings.Contains(logs.String(), "has expired or is invalid") {
+		t.Errorf("the rejected code's provider reason was not logged:\n%s", logs.String())
+	}
+	// The fake echoes the code in its description, as WorkOS does; the log
+	// must carry the reason with the code redacted.
+	if strings.Contains(logs.String(), badCode) || strings.Contains(logs.String(), "01HZX9K2M3N4P5Q6R7S8T9V0W1") {
+		t.Fatalf("the authorization code reached the log:\n%s", logs.String())
+	}
 }

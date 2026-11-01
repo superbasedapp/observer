@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/marmutapp/superbased-observer/internal/integration"
+	"github.com/marmutapp/superbased-observer/internal/platform/winshim"
 )
 
 // Verdict is the classified outcome of a resolution. The five values are a
@@ -842,11 +843,15 @@ func underMnt(p string) bool {
 }
 
 // filterInstalls keeps hints matching the daemon OS (or OS-agnostic hints).
+// Each kept hint's Display is the command the operator types on that OS: on
+// Windows a bare npm/npx names its `.cmd` shim, because PowerShell's default
+// execution policy refuses the `.ps1` one (winshim). Argv is left as is.
 func filterInstalls(hints []integration.InstallHint, goos string) []integration.InstallHint {
 	want := goosToInstallOS(goos)
 	var out []integration.InstallHint
 	for _, h := range hints {
 		if h.OS == "" || h.OS == want {
+			h.Display = winshim.CommandFor(h.Display, goos)
 			out = append(out, h)
 		}
 	}

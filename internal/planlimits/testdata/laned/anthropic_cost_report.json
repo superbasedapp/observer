@@ -1,0 +1,7 @@
+{"data":[
+ {"starting_at":"2025-10-01T00:00:00Z","ending_at":"2025-10-02T00:00:00Z","results":[
+  {"currency":"USD","amount":"12345.00","description":"Input tokens","workspace_id":"wrk_fixture"},
+  {"currency":"USD","amount":"2500","description":"Output tokens","workspace_id":null}]},
+ {"starting_at":"2025-10-09T00:00:00Z","ending_at":"2025-10-10T00:00:00Z","results":[
+  {"currency":"USD","amount":"5000","description":"Input tokens","workspace_id":null}]}
+],"has_more":false,"next_page":null}

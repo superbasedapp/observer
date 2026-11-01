@@ -26,6 +26,7 @@ type planCatalogSource struct {
 	Kind         planlimits.SourceKind  `json:"kind"`
 	Rung         planlimits.Rung        `json:"rung"`
 	Experimental bool                   `json:"experimental"`
+	Auth         planlimits.AuthMethod  `json:"auth"`
 	Passive      bool                   `json:"passive"`
 	Secrets      []planCatalogSecret    `json:"secrets"`
 	Params       []planCatalogParam     `json:"params"`
@@ -56,20 +57,32 @@ type planCatalogLocalRead struct {
 
 // planCatalogProvider is one provider with its sources in ladder order.
 type planCatalogProvider struct {
-	ID              string              `json:"id"`
-	Group           string              `json:"group"`
-	HasExperimental bool                `json:"has_experimental"`
-	Sources         []planCatalogSource `json:"sources"`
+	ID              string                  `json:"id"`
+	Group           string                  `json:"group"`
+	HasExperimental bool                    `json:"has_experimental"`
+	Coverage        planlimits.Coverage     `json:"coverage"`
+	Auth            []planlimits.AuthMethod `json:"auth"`
+	Shows           []string                `json:"shows"`
+	Gap             string                  `json:"gap,omitempty"`
+	Tools           []string                `json:"tools,omitempty"`
+	Sources         []planCatalogSource     `json:"sources"`
 }
 
 // planCatalog projects the pure registry for the add flow.
 func planCatalog() []planCatalogProvider {
 	out := make([]planCatalogProvider, 0, len(planlimits.Providers))
 	for _, p := range planlimits.Providers {
-		cp := planCatalogProvider{ID: p.ID, Group: p.Group, HasExperimental: planlimitssvc.HasExperimental(p.ID), Sources: []planCatalogSource{}}
+		cp := planCatalogProvider{
+			ID: p.ID, Group: p.Group, HasExperimental: planlimitssvc.HasExperimental(p.ID),
+			Coverage: planlimits.CoverageOf(p.ID), Auth: planlimits.AuthMethodsOf(p.ID),
+			Shows: append([]string{}, p.Shows...), Gap: p.Gap, Tools: p.Tools, Sources: []planCatalogSource{},
+		}
+		if cp.Auth == nil {
+			cp.Auth = []planlimits.AuthMethod{}
+		}
 		for _, src := range planlimits.SourcesFor(p.ID) {
 			cs := planCatalogSource{
-				ID: src.ID, Kind: src.Kind, Rung: src.Rung(), Experimental: src.Experimental(),
+				ID: src.ID, Kind: src.Kind, Rung: src.Rung(), Experimental: src.Experimental(), Auth: planlimits.AuthOf(src.Kind),
 				Passive: src.Passive, Command: src.Command, DocURL: src.DocURL,
 				Secrets: []planCatalogSecret{}, Params: []planCatalogParam{},
 			}

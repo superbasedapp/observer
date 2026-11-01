@@ -48,6 +48,15 @@ const (
 	IdentityDocBudget         IdentityBoundDoc = "budget"
 	IdentityDocGuardETag      IdentityBoundDoc = "guard_bundle_etag"
 	IdentityDocUpdateManifest IdentityBoundDoc = "update_manifest"
+	IdentityDocMessages       IdentityBoundDoc = "org_messages"
+	// IdentityDocProjectAudience is the index of the org-signed project
+	// mapping (agent migration 190, lane sec-p).
+	IdentityDocProjectAudience IdentityBoundDoc = "project_audience"
+	// IdentityDocSecurityPurpose is the org's stated purpose for its Code
+	// security views and what they show (schema_meta, lane SEC-E3 and ruling
+	// P-089): a departed org's purpose and settings must not keep describing
+	// it in the affected-worker notice.
+	IdentityDocSecurityPurpose IdentityBoundDoc = "security_purpose"
 )
 
 // identityBoundDoc is one row of the clearing table.
@@ -128,6 +137,35 @@ UPDATE org_pricing_cache
 	{IdentityDocUpdateManifest, []string{"update_state"}, func(ctx context.Context, s *Store, _ *Enrolment) error {
 		return s.forgetOrgUpdateManifest(ctx)
 	}},
+	// Admin and developer messaging (agent migrations 173 to 176): the
+	// messages were signed for one member of one org, the cursor and version
+	// belong to that org's lineage, and the outbox holds words meant for it.
+	// The project audience's mapping index (agent migration 190): the
+	// departed org's projects must not keep matching this node's directories.
+	// The mapping and envelope files beside the bundle cache are the
+	// caller's, like the bundle file, and are inert without a v3 bundle.
+	// The downgrade fence (the guard_policy_state `#project-audience` rows,
+	// audit finding 9) goes with it: a new enrolment identity starts a new
+	// fence, so a different org at the same server URL, or a server restored
+	// to a lower epoch for a re-enrolled node, is not refused forever.
+	{IdentityDocProjectAudience, []string{"org_project_mapping_index", "guard_policy_state"}, func(ctx context.Context, s *Store, _ *Enrolment) error {
+		if err := s.ClearOrgProjectMappingIndex(ctx); err != nil {
+			return err
+		}
+		return s.ClearProjectAudienceFence(ctx)
+	}},
+	{
+		IdentityDocSecurityPurpose,
+		[]string{"schema_meta:" + securityOrgPurposeKey, "schema_meta:" + securityOrgVisibilityKey},
+		execClear(`DELETE FROM schema_meta WHERE key IN ('` + securityOrgPurposeKey + `', '` + securityOrgVisibilityKey + `')`),
+	},
+	{
+		IdentityDocMessages,
+		[]string{"org_message_rail", "org_message_threads_local", "org_messages_inbox", "org_message_outbox"},
+		func(ctx context.Context, s *Store, _ *Enrolment) error {
+			return s.clearOrgMessages(ctx)
+		},
+	},
 }
 
 // IdentityBoundDocs lists every identity-bound document ClearIdentityBoundDocs

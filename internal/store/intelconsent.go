@@ -301,7 +301,10 @@ SELECT id, kind, org_id, count, detail, created_at FROM org_intel_receipts ORDER
 // individual-tenancy enrolment this removes every cached result the developer
 // never consented to: all of them when there is no active consent, and those
 // pulled before the active consent's acceptance otherwise. A MANAGED enrolment
-// keeps its cache (the org is the controller there). A sweep that removed
+// keeps its cache (the org is the controller there); a node its org switched
+// to enterprise is managed too (P-205), which this store cannot verify, so
+// its callers (orgclient's consent cycle, the withdraw action) skip the sweep
+// for one. A sweep that removed
 // anything writes one org_intel_receipts row (local audit) in the same
 // transaction. Not enrolled is a no-op: DeleteEnrolment already cleared the
 // cache. Returns how many rows were removed.

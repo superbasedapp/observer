@@ -16,12 +16,21 @@ var NavTabs = []NavTabPage{
 		{ID: "mcp", Label: "MCP"},
 		{ID: "coverage", Label: "Coverage & evidence"},
 	}},
+	{Page: "code-security", Tabs: []NavTab{
+		{ID: "findings", Label: "Findings"},
+		{ID: "exceptions", Label: "Exceptions"},
+		{ID: "baselines", Label: "Baselines"},
+	}},
 	{Page: "cost", Tabs: []NavTab{
 		{ID: "overview", Label: "Overview"},
 		{ID: "by-model", Label: "By model"},
 		{ID: "budgets", Label: "Budgets"},
 		{ID: "statement", Label: "Statement"},
 		{ID: "reconciliation", Label: "Reconciliation"},
+	}},
+	{Page: "tools", Tabs: []NavTab{
+		{ID: "activity", Label: "Activity"},
+		{ID: "coverage", Label: "Coverage"},
 	}},
 	{Page: "compression", Tabs: []NavTab{
 		{ID: "savings", Label: "Savings"},

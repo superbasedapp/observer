@@ -71,12 +71,18 @@ export type TourProviderProps = {
   steps: TourStep[];
   /** localStorage key recording that this viewer finished or skipped. */
   storageKey: string;
+  /**
+   * Called when the viewer finishes or skips the tour, beside the
+   * localStorage mark: an app that also keeps the mark elsewhere (the node
+   * dashboard keeps it on its daemon, WINNODE2 16b) records it there.
+   */
+  onComplete?: () => void;
   /** Start on first visit (desktop only). Default true. */
   autoStart?: boolean;
   children: ReactNode;
 };
 
-export function TourProvider({ steps, storageKey, autoStart = true, children }: TourProviderProps) {
+export function TourProvider({ steps, storageKey, autoStart = true, onComplete, children }: TourProviderProps) {
   const [active, setActive] = useState(false);
   const [stepIndex, setStepIndex] = useState(0);
   const stepCountRef = useRef(steps.length);
@@ -125,10 +131,13 @@ export function TourProvider({ steps, storageKey, autoStart = true, children }: 
     (completed: boolean) => {
       setActive(false);
       setStepIndex(0);
-      if (completed) markCompleted(storageKey);
+      if (completed) {
+        markCompleted(storageKey);
+        onComplete?.();
+      }
       restoreFocus();
     },
-    [restoreFocus, storageKey],
+    [restoreFocus, storageKey, onComplete],
   );
 
   const next = useCallback(() => {

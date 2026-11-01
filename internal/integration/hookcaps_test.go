@@ -1,9 +1,51 @@
 package integration
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"strconv"
 	"testing"
 	"time"
 )
+
+// declaredHookCapConsts reads hookcaps.go and returns the value of every
+// constant declared with type HookCap.
+func declaredHookCapConsts(t *testing.T) []HookCap {
+	t.Helper()
+	f, err := parser.ParseFile(token.NewFileSet(), "hookcaps.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse hookcaps.go: %v", err)
+	}
+	var out []HookCap
+	for _, d := range f.Decls {
+		gd, ok := d.(*ast.GenDecl)
+		if !ok || gd.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			if id, ok := vs.Type.(*ast.Ident); !ok || id.Name != "HookCap" {
+				continue
+			}
+			for _, v := range vs.Values {
+				lit, ok := v.(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
+					t.Fatalf("HookCap constant with a non-literal value: %T", v)
+				}
+				s, err := strconv.Unquote(lit.Value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				out = append(out, HookCap(s))
+			}
+		}
+	}
+	return out
+}
 
 // eachBinding walks every binding of every registry row.
 func eachBinding(t *testing.T, fn func(c Capability, b HookBinding)) {
@@ -16,12 +58,27 @@ func eachBinding(t *testing.T, fn func(c Capability, b HookBinding)) {
 }
 
 // TestHookCapVocabularyIsClosed pins the capability vocabulary itself: the
-// eighteen capabilities of the hook-parity audit section 2 (StatusDisplay is
-// not a hook on any vendor but Claude Code's statusLine, so it is not one).
+// capabilities of the hook-parity audit section 2 (StatusDisplay is not a
+// hook on any vendor but Claude Code's statusLine, so it is not one). The
+// closed set is structural rather than a literal count: every HookCap
+// constant declared in hookcaps.go is in HookCaps(), and nothing else is.
 func TestHookCapVocabularyIsClosed(t *testing.T) {
 	caps := HookCaps()
-	if len(caps) != 18 {
-		t.Fatalf("HookCaps() = %d capabilities, want 18: %v", len(caps), caps)
+	declared := declaredHookCapConsts(t)
+	if len(declared) == 0 {
+		t.Fatal("found no HookCap constants in hookcaps.go")
+	}
+	inSet := map[HookCap]bool{}
+	for _, c := range caps {
+		inSet[c] = true
+	}
+	for _, c := range declared {
+		if !inSet[c] {
+			t.Errorf("HookCap constant %q is declared but not in the closed set (hookCapPhases)", c)
+		}
+	}
+	if len(caps) != len(declared) {
+		t.Errorf("HookCaps() has %d capabilities but hookcaps.go declares %d HookCap constants: %v", len(caps), len(declared), caps)
 	}
 	for i := 1; i < len(caps); i++ {
 		if caps[i-1] >= caps[i] {
@@ -156,6 +213,53 @@ func TestHookSpecAccessors(t *testing.T) {
 	}
 	if !HookClaudeSettings.PerEventConfig() || HookHermesPlugin.PerEventConfig() || HookNone.PerEventConfig() {
 		t.Error("PerEventConfig wrong")
+	}
+}
+
+// TestReplayFallback: one case per rule of HookSpec.ReplayFallback, plus
+// the registry facts it exists for (copilot-cli's Claude replay stands in
+// for its own preToolUse; cortex-code's and kimchi's replays do not).
+func TestReplayFallback(t *testing.T) {
+	own := HookBinding{Cap: HookCapToolGate, NativeEvent: "preToolUse", Registered: true, Wired: true}
+	replay := HookBinding{Cap: HookCapToolGate, NativeEvent: "PreToolUse", Wired: true, ReplayedVia: "claude-code", StandsInFor: "preToolUse"}
+	sole := HookBinding{Cap: HookCapToolGate, NativeEvent: "PreToolUse", Wired: true, ReplayedVia: "claude-code"}
+	prompt := HookBinding{Cap: HookCapPromptGate, NativeEvent: "userPromptSubmitted", Registered: true, Wired: true}
+	for _, tc := range []struct {
+		name string
+		spec []HookBinding
+		b    HookBinding
+		want bool
+	}{
+		{"not a replay", []HookBinding{own}, own, false},
+		{"replay standing in for a registered gate", []HookBinding{own, replay}, replay, true},
+		{"replay that stands in for nothing", []HookBinding{own, sole}, sole, false},
+		{"stand-in event missing", []HookBinding{replay}, replay, false},
+		{"stand-in event of another capability", []HookBinding{{Cap: HookCapPromptGate, NativeEvent: "preToolUse", Registered: true, Wired: true}, replay}, replay, false},
+		{"own gate of another capability only", []HookBinding{prompt, replay}, replay, false},
+		{"own gate documented, not registered", []HookBinding{{Cap: HookCapToolGate, NativeEvent: "preToolUse", Wired: true}, replay}, replay, false},
+		{"own gate registered, not wired", []HookBinding{{Cap: HookCapToolGate, NativeEvent: "preToolUse", Registered: true}, replay}, replay, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := (HookSpec{Bindings: tc.spec}).ReplayFallback(tc.b); got != tc.want {
+				t.Fatalf("ReplayFallback = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		tool string
+		want bool
+	}{{"copilot-cli", true}, {"cortex-code", false}, {"kimchi", false}, {"deepseek", false}} {
+		c, ok := For(tc.tool)
+		if !ok {
+			t.Fatalf("%s: no registry row", tc.tool)
+		}
+		b, ok := c.Hook.Binding("PreToolUse")
+		if !ok || b.ReplayedVia != "claude-code" {
+			t.Fatalf("%s: no PreToolUse binding replayed through claude-code: %+v", tc.tool, b)
+		}
+		if got := c.Hook.ReplayFallback(b); got != tc.want {
+			t.Errorf("%s: ReplayFallback = %v, want %v", tc.tool, got, tc.want)
+		}
 	}
 }
 

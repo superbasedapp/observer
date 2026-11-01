@@ -54,6 +54,28 @@ appear once per row.
 | R-160 | boundary | critical | flag | deny | interpreter one-liner or inline script deleting observer/guard/hook configuration |
 | R-161 | boundary | high | flag | flag | agent modifying the project guard policy file |
 | R-161 | boundary | high | flag | flag | shell command modifying the project guard policy file |
+| R-162 | boundary | critical | flag | deny | agent write or edit that turns a coding agent's hooks off (disableAllHooks and its siblings) in a hook-bearing settings file |
+| R-162 | boundary | critical | flag | deny | shell command or inline script that turns a coding agent's hooks off in a hook-bearing settings file |
+| R-163 | boundary | high | flag | flag | shell command writing a hook-bearing settings file with content the guard cannot see (recorded; the hook-disable watch reports a switch that turns on) |
+| R-112 | boundary | critical | flag | deny | git command that skips the repository's hooks (--no-verify, -n, core.hooksPath for one command, injected git config, or an alias that does so) |
+| R-113 | boundary | high | flag | deny | git command run with a hook manager's skip switch in its environment (HUSKY=0, SKIP=, LEFTHOOK=0 and their siblings) |
+| R-113 | boundary | high | flag | ask | export of a hook manager's skip switch for later commands (HUSKY=0, SKIP=, LEFTHOOK=0 and their siblings) |
+| R-114 | boundary | high | flag | deny | git config change to where or whether hooks run (core.hooksPath, core.fsmonitor) |
+| R-114 | boundary | high | flag | deny | agent write to git's own config, attributes, refs or objects, or the global git config |
+| R-114 | boundary | high | flag | deny | shell command writing git's own config, attributes, refs or objects, or the global git config |
+| R-114 | boundary | high | flag | ask | agent edit of a git hook manager's config (.husky/, .pre-commit-config.yaml, lefthook.yml and their siblings) |
+| R-114 | boundary | high | flag | ask | shell command writing a git hook manager's config |
+| R-114 | boundary | high | flag | ask | agent edit of .gitattributes adding a custom filter, diff or merge driver (a program the git config runs) |
+| R-114 | boundary | high | flag | ask | shell command writing .gitattributes with a custom filter, diff or merge driver |
+| R-165 | boundary | high | flag | deny | agent approving its own guard exception or loosening the guard (observer guard approve, guard disable and their siblings) |
+| R-165 | boundary | high | flag | deny | agent calling the local dashboard's guard approval or policy routes |
+| R-165 | boundary | high | flag | deny | agent writing a grant into the guard's approvals table |
+| R-165 | boundary | high | flag | flag | agent requesting a guard exception (recorded; a human decides it) |
+| R-165 | boundary | high | flag | deny | agent writing the developer's consent record (the scanner database accept or the online checks' disclosure) |
+| R-165 | boundary | high | flag | deny | shell command writing the developer's consent record (redirect, tee, cp, mv and their kin) |
+| R-165 | boundary | high | flag | deny | interpreter one-liner or inline script naming the developer's consent record |
+| R-166 | boundary | high | flag | deny | agent write to a protected test, CI or coverage path (opt-in path classes) |
+| R-166 | boundary | high | flag | deny | shell command writing a protected test, CI or coverage path (opt-in path classes) |
 | R-170 | exfil | critical | flag | deny | remote content piped into an interpreter (curl\|sh-class remote-code execution) |
 | R-171 | exfil | high | flag | ask | shell command uploading file contents to a remote destination |
 | R-172 | exfil | critical | flag | deny | secret-shaped value in the arguments of a network-touching command |
@@ -99,8 +121,88 @@ appear once per row.
 | B-612 | limit | warn | flag | flag | weekly usage window utilization reached [guard.budget.window].util_weekly_warn |
 | B-613 | limit | high | flag | deny | weekly usage window utilization reached [guard.budget.window].util_weekly_deny |
 | A-610 | anomaly | warn | flag | flag | identical tool call repeated consecutively past the stuck-loop threshold |
+| A-613 | anomaly | high | flag | flag | repeated attempts at a denied action in different shapes (policy evasion, opt-in) |
+
+## Code security: package checks (pack `security.deps`)
+
+These rows fire only while the security module and its `security.deps`
+child are active (see `docs/package-checks.md`). S-741 is the only
+row that denies by default; S-744 and S-748 deny only in the variant a
+node's `[security.deps]` unknown_action or online_unknown_action chooses.
+S-746 is reserved (the `--ignore-scripts` rewrite).
+
+| ID | Category | Severity | Observe | Enforce | Trigger |
+|---|---|---|---|---|---|
+| S-741 | code_security | critical | ask | deny | agent install of a package an authenticated source lists as malicious |
+| S-742 | code_security | high | ask | ask | agent install of a package one edit from a popular name (a possible typosquat) |
+| S-743 | code_security | warn | flag | flag | agent install of a package published more recently than the minimum package age |
+| S-744 | code_security | warn | flag | flag | agent install of a package the registry does not know, or that no usable index could check; also the once-per-session note that package checks are not set up |
+| S-744 | code_security | warn | ask | ask | agent install of a package the registry does not know, or that no usable index could check ([security.deps] unknown_action = ask) |
+| S-744 | code_security | warn | ask | deny | agent install of a package the registry does not know, or that no usable index could check ([security.deps] unknown_action = deny) |
+| S-745 | code_security | warn | flag | flag | agent install that names a custom registry or package index (dependency confusion) |
+| S-747 | code_security | warn | flag | flag | agent manifest edit that adds a dependency the install gate flags (a commit that adds one is recorded as finding deps.s-747) |
+| S-748 | code_security | warn | flag | ask | agent install the online package check could not answer in time |
+| S-748 | code_security | warn | ask | ask | agent install the online package check could not answer in time ([security.deps] online_unknown_action = ask) |
+| S-748 | code_security | warn | ask | deny | agent install the online package check could not answer in time ([security.deps] online_unknown_action = deny) |
+| S-749 | code_security | high | flag | flag | agent install of a package some of whose versions are listed as malicious, without a pin outside them |
+
+## Code security: commit gate
+
+These rows fire only while the security module is active (see
+`docs/code-security.md`). S-792 holds a push while a commit the push's
+remote does not have yet adds a secret, also after the secret is removed
+from the files. Amending, rebasing or resetting does not release that
+hold until the reflog no longer reaches the old commit (30 days by
+default). The hold is released by a push the developer approves (which
+sends the commit, so rotate the secret afterwards), or, after dropping
+the secret from the commit, by `git reflog expire --expire-unreachable=now --all`, then `git gc --prune=now`.
+
+| ID | Category | Severity | Observe | Enforce | Trigger |
+|---|---|---|---|---|---|
+| S-791 | code_security | high | ask | deny | agent commit while a new high-confidence finding is open in this project |
+| S-792 | code_security | high | ask | deny | agent push while a new high-confidence finding is open in this project, or held by a commit the push's remote does not have yet |
+| S-792 | code_security | high | ask | ask | agent push of a commit held only past a reflog cap (no longer held for a deny; asked, never allowed) |
+| S-793 | code_security | warn | ask | ask | agent commit with agent changes that the quick scan did not find clean |
+| S-794 | code_security | warn | ask | ask | agent commit while this project's security state is unknown |
+| S-791 | code_security | high | deny | deny | agent commit while a new high-confidence finding is open in this project (the org's commit gate floor) |
+| S-792 | code_security | high | deny | deny | agent push while a new high-confidence finding is open in this project, or held by a commit the push's remote does not have yet (the org's commit gate floor) |
+| S-792 | code_security | high | deny | deny | agent push of a commit held only past a reflog cap (no longer held for a deny; asked, never allowed) (the org's commit gate floor) |
+| S-793 | code_security | warn | deny | deny | agent commit with agent changes that the quick scan did not find clean (the org's commit gate floor) |
+| S-794 | code_security | warn | deny | deny | agent commit while this project's security state is unknown (the org's commit gate floor) |
+| S-792 | code_security | high | ask | deny | agent write to the remote-tracking refs or the remote configuration while a new high-confidence finding is open in this project |
 
 Tune rules without redefining them via `[[override]]` entries in
 `~/.observer/guard-policy.toml` (guard spec §4.4); disable IDs via
 `[guard.rules] disable`. Project policy files may only escalate
 (§4.6 one-way layering).
+
+## Shell dialects
+
+Shell rules read a command the way the shell that runs it reads it.
+A shell tool named PowerShell or pwsh (Claude Code's PowerShell tool on
+Windows, for one) is read as PowerShell. A shell tool with a generic
+name (Bash, shell) whose working directory is a Windows one (a drive
+letter or UNC path) is read both ways, POSIX and PowerShell, and a hit
+in either reading counts: Codex and Copilot CLI ran every command
+through Windows PowerShell 5.1 on Windows. The PowerShell reading knows
+single, double and here-string (`@'...'@`, `@"..."@`) quoting,
+backtick escapes and line continuations, comments (`#`, `<# #>`), `;`
+and pipelines, the `&` call operator, environment changes (`$env:NAME =`,
+`Set-Item env:`, `New-Item -Path Env:`,
+`[Environment]::SetEnvironmentVariable`) and `NUL` as the null device.
+Nested `cmd /c`, `powershell -Command` / `-EncodedCommand`, `pwsh -c`,
+`Invoke-Expression`, script blocks and `Start-Process -ArgumentList`
+payloads are read too, to a bounded depth. A line past the parser's
+bounds is marked unanalyzed and held by R-157, as on the POSIX path;
+it is never silently allowed. R-112, R-113, R-114 and R-165 carry
+PowerShell rows, including the commands captured live on Windows, in
+their test corpus.
+
+When a command is read both ways, a rule's reason quotes the PowerShell
+reading, which keeps a Windows path's backslashes (the POSIX reading of
+`C:\Users\dev` is `C:Usersdev`); a hit in either reading still counts.
+`observer guard test` reads a command the same way: on a Windows
+directory both ways, and `--shell posix|powershell|cmd` names one shell.
+A UNC path (`\\server\share\x`) is a Windows path of its own: it is
+outside every drive or POSIX project, a bare share is a filesystem root,
+and it compares case-sensitively with another UNC path.

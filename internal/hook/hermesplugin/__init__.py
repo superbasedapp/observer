@@ -9,6 +9,14 @@ Design constraints:
 - Capture events are fire-and-forget: 0.5 s subprocess timeout
   (TIMEOUT_SECONDS below), every exception swallowed, stdout ignored.
   Observer being absent / down / slow never affects a capture event.
+  The first capture after the observer binary changed (an update: its
+  size or modification time differs from the one this plugin last saw
+  answer in time, kept in hermes-plugin-seen beside the config) gets
+  FIRST_CAPTURE_TIMEOUT_SECONDS instead, so the event is not dropped while
+  the new binary warms up (SHR-2); once it answers in time the steady 0.5 s
+  bound returns. A slow first answer is retried with the longer bound on
+  the next event, at most FIRST_CAPTURE_TRIES times per binary, so a
+  binary that never answers costs the steady bound again after that.
 - pre_tool_call is a GATE (hook-parity audit 2026-10-02, Lane A7; operator
   decision 2026-10-02 reversed the old "never block" invariant for this one
   hook). Observer answers in its plugin dialect ({"decision": "allow" |
@@ -65,6 +73,7 @@ docs/hermes-adapter-plan.md §17.1.F for the rationale on each pick):
 import json
 import os
 import re
+import shutil
 import subprocess
 import time
 from datetime import datetime, timedelta, timezone
@@ -72,6 +81,12 @@ from datetime import datetime, timedelta, timezone
 OBSERVER_BIN = os.environ.get("OBSERVER_BIN", "{{OBSERVER_BIN_DEFAULT}}")
 OBSERVER_CONFIG = os.environ.get("OBSERVER_CONFIG", "")
 TIMEOUT_SECONDS = 0.5
+# The bound for the first capture after the observer binary changed (SHR-2).
+FIRST_CAPTURE_TIMEOUT_SECONDS = 5.0
+SEEN_FILE = "hermes-plugin-seen"
+FIRST_CAPTURE_TRIES = 3
+_SEEN = [None]  # the binary identity last seen answering in time, loaded lazily
+_FIRST_TRIES = {}  # identity -> first-capture attempts made in this process
 
 # pre_tool_call gate budget: the plugin's own deadline, and the margin
 # observer is told to finish inside (--max-runtime).
@@ -213,20 +228,68 @@ def _gate(event, cap, payload):
     return {"decision": "allow"}
 
 
+def _bin_identity():
+    """The observer binary's size and modification time ("" when it cannot
+    be read): a change means an update, whose first run may be slow."""
+    path = OBSERVER_BIN
+    if not os.path.isabs(path):
+        path = shutil.which(path) or ""
+    try:
+        st = os.stat(path)
+    except (OSError, ValueError):
+        return ""
+    return "%d:%d" % (st.st_size, st.st_mtime_ns)
+
+
+def _seen_identity():
+    if _SEEN[0] is None:
+        try:
+            with open(os.path.join(_observer_dir(), SEEN_FILE), encoding="utf-8") as f:
+                _SEEN[0] = f.read(128).strip()
+        except (OSError, ValueError):
+            _SEEN[0] = ""
+    return _SEEN[0]
+
+
+def _note_seen(ident):
+    _SEEN[0] = ident
+    try:
+        fd = os.open(os.path.join(_observer_dir(), SEEN_FILE), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, (ident + "\n").encode("utf-8"))
+        finally:
+            os.close(fd)
+    except (OSError, ValueError):
+        pass
+
+
+def _capture_timeout():
+    """(bound, identity): the steady bound while the binary is the one last
+    seen answering in time, else the first-capture bound (SHR-2)."""
+    ident = _bin_identity()
+    if not ident or ident == _seen_identity() or _FIRST_TRIES.get(ident, 0) >= FIRST_CAPTURE_TRIES:
+        return TIMEOUT_SECONDS, ident
+    _FIRST_TRIES[ident] = _FIRST_TRIES.get(ident, 0) + 1
+    return FIRST_CAPTURE_TIMEOUT_SECONDS, ident
+
+
 def _fire(event_name, payload):
     """Run `observer hook hermes <event>` with payload on stdin. Fire-and-forget."""
     cmd = [OBSERVER_BIN, "hook", "hermes", event_name]
     if OBSERVER_CONFIG:
         cmd.extend(["--config", OBSERVER_CONFIG])
+    bound, ident = _capture_timeout()
     try:
         subprocess.run(
             cmd,
             input=json.dumps(payload),
             capture_output=True,
             text=True,
-            timeout=TIMEOUT_SECONDS,
+            timeout=bound,
             check=False,
         )
+        if ident and ident != _seen_identity():
+            _note_seen(ident)
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError, ValueError):
         # ValueError covers json.dumps failures on non-serialisable payload
         # parts (rare but possible for tool args that wrap third-party

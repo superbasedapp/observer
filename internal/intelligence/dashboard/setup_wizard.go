@@ -181,6 +181,12 @@ func (s *Server) handleSetupHooks(w http.ResponseWriter, r *http.Request) {
 		resp["skipped"] = true
 		resp["skip_reason"] = res.SkipReason
 	}
+	// Non-fatal: the hooks are (or would be) in place, but the host may not
+	// run them as launched today (e.g. VT Code on Windows without sh.exe on
+	// PATH). Omitted when there is nothing to say, so the shape is additive.
+	if len(res.Warnings) > 0 {
+		resp["warnings"] = res.Warnings
+	}
 	if res.Error != nil {
 		resp["error"] = res.Error.Error()
 		w.Header().Set("Content-Type", "application/json")
@@ -247,7 +253,8 @@ func (s *Server) handleSetupMCP(w http.ResponseWriter, r *http.Request) {
 // wizardRemoveResponse is a removal step's reply: the exact change to one
 // file, entry by entry. Removed names what goes (hook events, or the
 // observer MCP server); Kept names the user-authored entries the same file
-// keeps. A dry run reports the change and writes nothing.
+// keeps, and the path of each whole file kept because it is not Observer's
+// (FU-212). A dry run reports the change and writes nothing.
 type wizardRemoveResponse struct {
 	Tool          string   `json:"tool"`
 	Undo          bool     `json:"undo"`
@@ -296,6 +303,9 @@ func (s *Server) wizardRemove(w http.ResponseWriter, r *http.Request, req setupW
 		resp.ConfigPath = m.Hooks.ConfigPath
 		resp.Removed = append(resp.Removed, m.Hooks.HooksRemoved...)
 		resp.Kept = append(resp.Kept, m.Hooks.HooksKept...)
+		// FU-212: a whole file kept because it is not Observer's is named
+		// by its path.
+		resp.Kept = append(resp.Kept, m.Hooks.FilesKeptForeign...)
 		resp.Skipped = m.Hooks.Skipped
 		resp.ChecksumMatch = m.Hooks.ChecksumMatch
 		rerr = m.Hooks.Error

@@ -111,7 +111,7 @@ func TestUnregisterClaudeCodeMixedGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Seed checksum so uninstall doesn't trip the mismatch guard.
-	if err := r.recordChecksum(path); err != nil {
+	if err := r.recordChecksum("", path); err != nil {
 		t.Fatal(err)
 	}
 

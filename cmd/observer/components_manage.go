@@ -106,7 +106,7 @@ func newComponentsStatusCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			snap := componentSnapshotFor(configPath)
-			v := snap.View()
+			v := componentStateView(snap)
 			if jsonOut {
 				enc := json.NewEncoder(cmd.OutOrStdout())
 				enc.SetIndent("", "  ")
@@ -177,6 +177,7 @@ func newComponentsChangeCmd(verb, short string, isSelect bool) *cobra.Command {
 		yes          bool
 		skipTeardown bool
 		jsonOut      bool
+		endRuns      bool
 	)
 	use := verb + " <id>..."
 	args := cobra.MinimumNArgs(1)
@@ -201,9 +202,10 @@ func newComponentsChangeCmd(verb, short string, isSelect bool) *cobra.Command {
 			case "remove":
 				ch.Remove = a
 			}
-			return runComponentsChange(cmd, configPath, ch, yes, skipTeardown, jsonOut)
+			return runComponentsChange(cmd, configPath, ch, yes, skipTeardown, jsonOut, endRuns)
 		},
 	}
+	cmd.Flags().BoolVar(&endRuns, "end-sandboxed-runs", false, "When the change deactivates the sandbox (isolation, terminals.sandbox or a driver) while sandboxed runs are live, end them first")
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml)")
 	cmd.Flags().BoolVar(&yes, "yes", false, "Apply the change (without it, only preview)")
 	cmd.Flags().BoolVar(&skipTeardown, "skip-teardown", false, "Write the selection but leave what inactive components wrote in place")
@@ -211,7 +213,7 @@ func newComponentsChangeCmd(verb, short string, isSelect bool) *cobra.Command {
 	return cmd
 }
 
-func runComponentsChange(cmd *cobra.Command, configPath string, ch componentsvc.Change, yes, skipTeardown, jsonOut bool) error {
+func runComponentsChange(cmd *cobra.Command, configPath string, ch componentsvc.Change, yes, skipTeardown, jsonOut, endRuns bool) error {
 	ctx := cmd.Context()
 	var database *sql.DB
 	if yes {
@@ -234,10 +236,26 @@ func runComponentsChange(cmd *cobra.Command, configPath string, ch componentsvc.
 			return writeComponentsResultJSON(out, p)
 		}
 		renderComponentsPreview(out, p)
+		if held := liveRunHeldIDs(p.Deactivated, p.Cascade); len(held) > 0 {
+			componentsLiveRunPreviewNote(ctx, out, configPath, held)
+		}
 		if !p.NoChange {
 			fmt.Fprintln(out, "Preview only. Re-run with --yes to apply.")
 		}
 		return nil
+	}
+	// A change that deactivates the sandbox while sandboxed runs are live is
+	// refused naming them, unless --end-sandboxed-runs (sandbox plan v2
+	// sections 5.5 and 11.2, SBX-UPD-1).
+	if p, perr := svc.Preview(ctx, ch); perr == nil {
+		if held := liveRunHeldIDs(p.Deactivated, p.Cascade); len(held) > 0 {
+			// The gate's lines go to stderr: with --json, stdout carries
+			// only the result (SBX-UPD audit finding 4).
+			if err := cliLiveRunCheck(ctx, cmd.ErrOrStderr(), liveRunTriggerDeactivation, newDaemonLiveRunsClient(configPath),
+				cliLiveRunChoice{endRuns: endRuns, flagHint: "--end-sandboxed-runs (this deactivates " + strings.Join(held, ", ") + ")"}); err != nil {
+				return err
+			}
+		}
 	}
 	res, err := svc.Apply(ctx, ch, componentsvc.ApplyOptions{SkipTeardown: skipTeardown, Principal: "cli"})
 	if err != nil {
@@ -252,6 +270,78 @@ func runComponentsChange(cmd *cobra.Command, configPath string, ch componentsvc.
 		fmt.Fprintln(out, "Applied. "+componentstate.RestartNote)
 	}
 	return nil
+}
+
+// componentsLiveRunPreviewNote says, in a preview, that applying the change
+// would end live sandboxed runs (only when the daemon reports some).
+func componentsLiveRunPreviewNote(ctx context.Context, w io.Writer, configPath string, held []string) {
+	rep, err := newDaemonLiveRunsClient(configPath).query(ctx)
+	if err != nil || !rep.Answered || len(rep.Runs) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "WARN %s live (%s); deactivating %s ends them, so --yes refuses unless --end-sandboxed-runs\n",
+		liveRunsAreLabel(len(rep.Runs)), describeLiveRuns(rep.Runs), strings.Join(held, ", "))
+}
+
+// liveRunHoldComponents is the dashboard's components service with the
+// live-run hold (SBX-UPD-1): a change that deactivates the sandbox while
+// sandboxed runs are live says so in its preview and is refused naming the
+// runs; the owner ends them first (the restart dialog's "End", or each
+// terminal) and applies again. With no live run it is the service itself.
+type liveRunHoldComponents struct {
+	*componentsvc.Service
+	count func() int
+	runs  func() []string
+}
+
+// withLiveRunHold wraps the dashboard's components service.
+func withLiveRunHold(svc *componentsvc.Service) *liveRunHoldComponents {
+	return &liveRunHoldComponents{Service: svc, count: liveSandboxedNow, runs: func() []string {
+		if src := currentLiveRunSource(); src != nil {
+			var out []string
+			for _, r := range src.liveRuns(time.Now()) {
+				out = append(out, r.Tool+" on "+r.Backend)
+			}
+			return out
+		}
+		return nil
+	}}
+}
+
+// errDeactivationHeld refuses a deactivation while sandboxed runs are live.
+var errDeactivationHeld = errors.New("components: the change deactivates the sandbox while sandboxed runs are live")
+
+func (h *liveRunHoldComponents) held(p componentsvc.Preview) ([]string, int) {
+	ids := liveRunHeldIDs(p.Deactivated, p.Cascade)
+	if len(ids) == 0 {
+		return nil, 0
+	}
+	return ids, h.count()
+}
+
+// Preview adds the live-run note when it applies.
+func (h *liveRunHoldComponents) Preview(ctx context.Context, ch componentsvc.Change) (componentsvc.Preview, error) {
+	p, err := h.Service.Preview(ctx, ch)
+	if err != nil {
+		return p, err
+	}
+	if ids, n := h.held(p); n > 0 {
+		p.Issues = append(p.Issues, fmt.Sprintf("%s live (%s); deactivating %s ends them: end them first, then apply",
+			liveRunsAreLabel(n), strings.Join(h.runs(), "; "), strings.Join(ids, ", ")))
+	}
+	return p, nil
+}
+
+// Apply refuses a held deactivation, naming the runs.
+func (h *liveRunHoldComponents) Apply(ctx context.Context, ch componentsvc.Change, ao componentsvc.ApplyOptions) (componentsvc.ApplyResult, error) {
+	p, err := h.Service.Preview(ctx, ch)
+	if err == nil {
+		if ids, n := h.held(p); n > 0 && !ao.DryRun {
+			return componentsvc.ApplyResult{}, fmt.Errorf("%w: %s (%s) would end when %s goes inactive; end them first",
+				errDeactivationHeld, liveRunCountLabel(n), strings.Join(h.runs(), "; "), strings.Join(ids, ", "))
+		}
+	}
+	return h.Service.Apply(ctx, ch, ao)
 }
 
 func renderComponentsPreview(w io.Writer, p componentsvc.Preview) {

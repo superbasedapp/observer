@@ -6,6 +6,8 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/components"
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/hook"
+	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/testsupport/importpin"
 )
 
@@ -181,6 +183,56 @@ func TestAdapterActiveStripsWindowsSuffix(t *testing.T) {
 	}
 	if !s.AdapterActive("codex-windows") {
 		t.Fatal("codex is active")
+	}
+}
+
+// TestAdapterActiveResolvesXcodeTargets (FU-145): every Xcode agent-home
+// hook target answers for its base tool's adapter, the base hook's own
+// table deciding the base (the "-xcode" suffix is pinned to it here).
+func TestAdapterActiveResolvesXcodeTargets(t *testing.T) {
+	s := Resolve(config.ComponentsConfig{Remove: []string{"adapter.claude-code"}}, fullCompiled())
+	found := 0
+	for _, tool := range integration.Tools() {
+		for _, target := range hook.XcodeTargetsFor(tool) {
+			found++
+			if base, ok := hook.XcodeTargetBase(target); !ok || base != tool || strings.TrimSuffix(target, "-xcode") != tool {
+				t.Errorf("%s: base %q, %v; the -xcode suffix no longer names the base %s", target, base, ok, tool)
+			}
+			if got, want := s.AdapterActive(target), s.AdapterActive(tool); got != want {
+				t.Errorf("AdapterActive(%s) = %v, its base %s = %v", target, got, tool, want)
+			}
+		}
+	}
+	if found == 0 {
+		t.Fatal("no Xcode agent-home target found")
+	}
+	if s.AdapterActive("claude-code-xcode") {
+		t.Error("claude-code removed but claude-code-xcode reports active")
+	}
+}
+
+// TestAdapterActiveResolvesWSLTwins (FU-197): every Windows to WSL "-wsl"
+// twin answers for its base tool's adapter (the suffix is pinned to the
+// twin table here), so a removed adapter keeps its twin off.
+func TestAdapterActiveResolvesWSLTwins(t *testing.T) {
+	s := Resolve(config.ComponentsConfig{Remove: []string{"adapter.cursor"}}, fullCompiled())
+	found := 0
+	for _, tool := range integration.Tools() {
+		for _, target := range hook.WSLTwinsFor(tool) {
+			found++
+			if base, ok := hook.WSLTwinBase(target); !ok || base != tool || strings.TrimSuffix(target, "-wsl") != tool {
+				t.Errorf("%s: base %q, %v; the -wsl suffix no longer names the base %s", target, base, ok, tool)
+			}
+			if got, want := s.AdapterActive(target), s.AdapterActive(tool); got != want {
+				t.Errorf("AdapterActive(%s) = %v, its base %s = %v", target, got, tool, want)
+			}
+		}
+	}
+	if found == 0 {
+		t.Fatal("no WSL twin found")
+	}
+	if s.AdapterActive("cursor-wsl") {
+		t.Error("cursor removed but cursor-wsl reports active")
 	}
 }
 

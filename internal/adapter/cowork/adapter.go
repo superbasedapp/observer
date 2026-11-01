@@ -1223,7 +1223,7 @@ func extractTarget(toolName string, rawInput []byte, projectRoot string) string 
 	case "Read", "Write", "Edit", "NotebookEdit":
 		if fp := pick("file_path"); fp != "" {
 			if projectRoot != "" {
-				return git.RelativePath(projectRoot, fp)
+				return git.CheckoutRelativePath(projectRoot, fp)
 			}
 			return fp
 		}

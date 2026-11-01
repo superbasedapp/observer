@@ -160,7 +160,8 @@ type PurgeResult struct {
 	// were gone) per table.
 	Skipped map[string]int `json:"skipped"`
 	// Nulled counts rows kept with their session link set to NULL per
-	// table (the purgeNullLink decisions).
+	// table (the purgeNullLink decisions), or with the purged session's id
+	// removed from a JSON id list (the purgeRemoveFromList decisions).
 	Nulled map[string]int `json:"nulled,omitempty"`
 	// KeptSessions counts candidate sessions kept because another source's
 	// rows still reference them (the keep_if_other_source rule).
@@ -256,6 +257,11 @@ const (
 	// the session or its rows go (CLAUDE.md rule 4: the purge never writes
 	// them).
 	purgeOwnerReconciles purgeDecisionKind = "owner_reconciles"
+	// purgeRemoveFromList: the rows are their own record but carry session
+	// ids inside a JSON array column (a list, not a key); the purged
+	// session's id is removed from every list that holds it and the row
+	// stays.
+	purgeRemoveFromList purgeDecisionKind = "remove_from_list"
 )
 
 // purgeSessionDecision is the reviewed decision for one session-keyed
@@ -286,8 +292,10 @@ type purgeSessionDecision struct {
 // adapter purge (ledger MODPKG-10, T-678). Every column of the node schema
 // whose name contains session_id or thread_id has exactly one row here:
 // TestPurgeSessionDecisionsCoverTheSchema fails on a new one, so a new
-// session-keyed table cannot ship without a recorded purge decision. The
-// order is the statement order inside a session's savepoint.
+// session-keyed table cannot ship without a recorded purge decision. A JSON
+// list of session ids under another name (remove_from_list) is listed too,
+// and that test pins each such column by name. The order is the statement
+// order inside a session's savepoint.
 var purgeSessionDecisions = []purgeSessionDecision{
 	// Capture rows: this adapter's are deleted by the tool selector before
 	// the session step; what is left is another source's.
@@ -310,6 +318,7 @@ var purgeSessionDecisions = []purgeSessionDecision{
 	{table: "tool_account_observations", column: "session_id", kind: purgeDeleteWithSession, toolColumn: "tool", reason: "account identity observed in this adapter's capture"},
 	{table: "session_skill_snapshots", column: "session_id", kind: purgeDeleteWithSession, toolColumn: "tool", reason: "skills observed in this adapter's capture"},
 	{table: "claudecode_effort", column: "session_id", kind: purgeDeleteWithSession, reason: "effort level captured for the session's tool calls"},
+	{table: "hook_activity", column: "session_id", kind: purgeDeleteWithSession, toolColumn: "tool", reason: "hook liveness counts of this adapter's hooks for the session; the unattributed bucket has no session and is never purged with one"},
 	{table: "cache_events", column: "session_id", kind: purgeDeleteWithSession, reason: "cache observations derived from the session's turns"},
 	{table: "cache_segments", column: "session_id", kind: purgeDeleteWithSession, reason: "cache segments derived from the session's turns"},
 	{table: "cache_entries", column: "session_id", kind: purgeDeleteWithSession, reason: "cache state derived from the session's turns"},
@@ -332,8 +341,12 @@ var purgeSessionDecisions = []purgeSessionDecision{
 	{table: "process_events", column: "session_id", kind: purgeNullLink, reason: "process observability is its own capture"},
 	{table: "summary_calls", column: "session_id", kind: purgeNullLink, reason: "Observer's own LLM spend stays counted"},
 	{table: "limit_snapshots", column: "session_id", kind: purgeNullLink, reason: "account-level provider rate-limit state"},
+	{table: "sec_findings", column: "session_id", kind: purgeNullLink, reason: "a security finding is a fact about the project's code, not capture; the purged session's lineage link is dropped"},
 	{table: "plan_snapshots", column: "session_id", kind: purgeNullLink, reason: "Plans & limits status line readings are account-level plan state; the session link only scopes them"},
 	{table: "handoffs", column: "target_session_id", kind: purgeNullLink, reason: "a handoff from a kept session into a purged one keeps its source record"},
+	// Their own record, with session ids inside a JSON list: kept, the
+	// purged id removed from the list.
+	{table: "commit_landings", column: "contributors_json", kind: purgeRemoveFromList, reason: "a commit's delivery outcome is git history, not capture; the purged session's opaque id leaves its contributor list"},
 	// Never rewritten.
 	{table: "guard_events", column: "session_id", kind: purgeKeepDangling, reason: "hash-chained guard audit"},
 	{table: "guard_approvals", column: "session_id", kind: purgeKeepDangling, reason: "security grant record (expires on its own)"},
@@ -341,6 +354,10 @@ var purgeSessionDecisions = []purgeSessionDecision{
 	{table: "mcp_relay_record", column: "coding_session_id", kind: purgeKeepDangling, reason: "hash-chained Agent Access relay record"},
 	{table: "remote_audit", column: "session_id", kind: purgeKeepDangling, reason: "remote access audit record; its session_id is a remote device session, not a coding session"},
 	{table: "terminal_run", column: "source_session_id", kind: purgeKeepDangling, reason: "dashboard launch record"},
+	{table: "org_message_threads_local", column: "thread_id", kind: purgeKeepDangling, reason: "an org message thread id, not a coding session; owned by the messaging store (orgmessages.go)"},
+	{table: "org_messages_inbox", column: "thread_id", kind: purgeKeepDangling, reason: "an org message thread id, not a coding session; owned by the messaging store (orgmessages.go)"},
+	{table: "org_message_outbox", column: "thread_id", kind: purgeKeepDangling, reason: "an org message thread id, not a coding session; owned by the messaging store (orgmessages.go)"},
+	{table: "org_message_outbox", column: "result_thread_id", kind: purgeKeepDangling, reason: "the org message thread id the server returned, not a coding session; owned by the messaging store (orgmessages.go)"},
 	{table: "benchmark_session_members", column: "session_id", kind: purgeKeepDangling, reason: "operator-authored benchmark result; its reader LEFT JOINs, so a purged member reads as absent"},
 	{table: "arena_candidates", column: "session_ids", kind: purgeKeepDangling, reason: "operator-authored arena result (a JSON id list, display only)"},
 	{table: "cloud_session_map", column: "local_session_id", kind: purgeKeepDangling, reason: "content-free pseudonym; the handle a hosted deletion request needs"},
@@ -603,6 +620,11 @@ func purgeAdapterSessions(ctx context.Context, tx *sql.Tx, cands []string, tool 
 			case purgeNullLink:
 				//nolint:gosec // G202: as above.
 				stepErr = exec(d.table, nulled, `UPDATE `+d.table+` SET `+d.column+` = NULL WHERE `+d.column+` = ?`, sid)
+			case purgeRemoveFromList:
+				//nolint:gosec // G202: as above.
+				stepErr = exec(d.table, nulled, `UPDATE `+d.table+` SET `+d.column+` =
+					(SELECT COALESCE(json_group_array(j.value), '[]') FROM json_each(`+d.table+`.`+d.column+`) j WHERE j.value <> ?)
+					WHERE EXISTS (SELECT 1 FROM json_each(`+d.table+`.`+d.column+`) j WHERE j.value = ?)`, sid, sid)
 			}
 			if stepErr != nil {
 				break

@@ -133,19 +133,25 @@ func readQwenRouteAt(path string) (string, bool, error) {
 // removeQwenRouteAt puts model.baseUrl and every openai-lane modelProviders
 // entry still on the proxy URL back to the known default host.
 func removeQwenRouteAt(path, value, _ string) error {
+	return removeQwenRouteTo(path, value, qwenDefaultBaseURL)
+}
+
+// removeQwenRouteTo puts model.baseUrl and every openai-lane modelProviders
+// entry still on the route URL value back to restore.
+func removeQwenRouteTo(path, value, restore string) error {
 	return editRouteFile("proxyroute.removeQwenRouteAt", cfgfmt.FormatJSON, path, qwenBaseURLPath, value, func(doc cfgfmt.Doc) error {
-		if err := doc.Set(qwenBaseURLPath, qwenDefaultBaseURL); err != nil {
+		if err := doc.Set(qwenBaseURLPath, restore); err != nil {
 			return err
 		}
-		return restoreQwenProviders(doc, value)
+		return restoreQwenProviders(doc, value, restore)
 	})
 }
 
 // restoreQwenProviders points every openai-lane modelProviders entry whose
-// baseUrl is proxyURL back at the default host, in either schema shape the
+// baseUrl is proxyURL back at restore, in either schema shape the
 // writer handles (an array, or {models: [...]}). Only the list that changed
 // is rewritten; every other key keeps its bytes.
-func restoreQwenProviders(doc cfgfmt.Doc, proxyURL string) error {
+func restoreQwenProviders(doc cfgfmt.Doc, proxyURL, restore string) error {
 	for _, listPath := range []cfgfmt.Path{
 		{"modelProviders", "openai"},
 		{"modelProviders", "openai", "models"},
@@ -171,7 +177,7 @@ func restoreQwenProviders(doc cfgfmt.Doc, proxyURL string) error {
 				for k, ev := range entry {
 					c[k] = ev
 				}
-				c["baseUrl"] = qwenDefaultBaseURL
+				c["baseUrl"] = restore
 				out[i] = c
 				changed = true
 			}

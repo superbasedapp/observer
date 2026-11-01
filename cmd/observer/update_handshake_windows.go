@@ -111,11 +111,12 @@ func sendHandshakeMessage(msg string) error {
 		return fmt.Errorf("observer update: no handshake report path in %s", handshakeFileEnv)
 	}
 	tmp := path + ".part"
+	//nolint:gosec // G703: path is the handshake file the parent daemon set in this child's own OBSERVER_UPDATE_HANDSHAKE_FILE env var; the child writes only its own report.
 	if err := os.WriteFile(tmp, []byte(msg+"\n"), 0o600); err != nil {
 		return fmt.Errorf("observer update: reporting the handshake: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	if err := os.Rename(tmp, path); err != nil { //nolint:gosec // G703: as above, the daemon's own handshake path
+		_ = os.Remove(tmp) //nolint:gosec // G703: the temp beside the daemon's own handshake path
 		return fmt.Errorf("observer update: publishing the handshake report: %w", err)
 	}
 	return nil

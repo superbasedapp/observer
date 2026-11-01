@@ -51,6 +51,10 @@ type fakeUpdateStore struct {
 	snapshot      string
 	snapErr       error
 	snapshotCalls int
+	// applied / appliedAt are AppliedMigrationSteps before and after the
+	// swap: a rise with an unchanged schema is a late step the target ran.
+	applied   int
+	appliedAt int
 }
 
 func newFakeUpdateStore() *fakeUpdateStore {
@@ -98,6 +102,13 @@ func (f *fakeUpdateStore) SchemaVersion(context.Context) (int, error) {
 		return f.schemaAt, nil
 	}
 	return f.schema, nil
+}
+
+func (f *fakeUpdateStore) AppliedMigrationSteps(context.Context) (int, error) {
+	if f.swapped {
+		return f.appliedAt, nil
+	}
+	return f.applied, nil
 }
 
 func (f *fakeUpdateStore) SnapshotDatabase(_ context.Context, dest string) error {
@@ -1126,5 +1137,95 @@ func TestAnUnverifiableSignatureSchemeBlocksRatherThanPassing(t *testing.T) {
 	}
 	if got := f.installedBinary(); !strings.Contains(got, "OLD") {
 		t.Fatal("a mislabelled signature scheme reached the swap")
+	}
+}
+
+// TestLiveSandboxDefersEvenWhenForced pins SBX-UPD-1 (sandbox plan v2
+// section 5.5, I10, acceptance mutation proof 10): an apply with a live
+// sandboxed run defers even with --force inside an admin window, and the
+// posture reports deferred_live_sandbox; the runtime registers the counter
+// as non-forcible.
+func TestLiveSandboxDefersEvenWhenForced(t *testing.T) {
+	f := newApplyFixture(t)
+	f.deps.Quiescence = &quiesce.Quiescence{
+		Gate: f.gate,
+		Live: []quiesce.LiveWork{{Name: liveSandboxWorkName, Count: func() int { return 1 }, Forcible: false}},
+	}
+	f.opts.Force, f.opts.InAdminWindow = true, true
+	out, _ := f.run()
+	if !out.Deferred || out.Reason != update.ReasonDeferredLiveSandbox || out.State != update.StateAvailable {
+		t.Fatalf("outcome %+v, want a deferral with %s", out, update.ReasonDeferredLiveSandbox)
+	}
+	if strings.Contains(f.installedBinary(), "NEW") {
+		t.Fatal("the binary was replaced while a sandboxed run was live")
+	}
+
+	cfg := config.Default()
+	cfg.Update.Enabled = true
+	u := newUpdateRuntime(cfg, "", store.New(nil), nil, fakeSandboxManager{live: 2}, nil)
+	var found bool
+	for _, w := range u.quiescence.Live {
+		if w.Name == liveSandboxWorkName {
+			found = true
+			if w.Forcible || w.Count() != 2 {
+				t.Fatalf("sandbox counter %+v", w)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("the update runtime does not count live sandboxed runs")
+	}
+}
+
+// fakeSandboxManager is a terminal live counter with sandboxed runs.
+type fakeSandboxManager struct{ live int }
+
+func (fakeSandboxManager) LiveCount() int            { return 0 }
+func (m fakeSandboxManager) LiveSandboxedCount() int { return m.live }
+
+// TestRollbackDecidesTheSnapshotFromTheStepsTheTargetRan pins T-979's rule:
+// the snapshot restore follows what the target RAN, not the version alone. A
+// target that ran only a late step (version unchanged) changed the schema, so
+// the snapshot comes back; a target that only recorded its ledger (adopted)
+// did not, so the database is kept.
+func TestRollbackDecidesTheSnapshotFromTheStepsTheTargetRan(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		appliedAt   int
+		wantRestore bool
+	}{
+		{name: "a late step ran: the snapshot is restored", appliedAt: 11, wantRestore: true},
+		{name: "only adopted: the database is kept", appliedAt: 10, wantRestore: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newApplyFixture(t)
+			f.opts.TargetSchemaVersion = 0 // unknown => a snapshot is taken
+			f.st.schema, f.st.schemaAt = 104, 104
+			f.st.applied, f.st.appliedAt = 10, tc.appliedAt
+			f.deps.Supervise = func(context.Context, string, string, time.Duration) (handshakeResult, error) {
+				f.st.swapped = true
+				if err := os.WriteFile(f.dbPath, []byte("TARGET-DB"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return handshakeResult{Detail: "self-check failed"}, errors.New("self-check failed")
+			}
+			out, _ := f.run()
+			if out.State != update.StateRolledBack {
+				t.Fatalf("outcome = %+v, want rolled_back", out)
+			}
+			if f.st.row.PreviousAppliedSteps != 10 {
+				t.Errorf("the staged row recorded %d applied steps, want 10", f.st.row.PreviousAppliedSteps)
+			}
+			db, err := os.ReadFile(f.dbPath)
+			if err != nil {
+				t.Fatalf("no database at %s: %v", f.dbPath, err)
+			}
+			if restored := string(db) == "SNAPSHOT"; restored != tc.wantRestore {
+				t.Fatalf("database holds %q; snapshot restored = %v, want %v", db, restored, tc.wantRestore)
+			}
+			if got := f.installedBinary(); !strings.Contains(got, "OLD") {
+				t.Fatalf("the OLD binary was not restored: %q", got)
+			}
+		})
 	}
 }

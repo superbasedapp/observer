@@ -16,12 +16,27 @@ import (
 // exercises are never throttled.
 func newRootRedirectServer(t *testing.T, rootRedirectURL *string) http.Handler {
 	t.Helper()
+	return newRootRedirectServerWithSPA(t, rootRedirectURL, nil)
+}
+
+// newRootRedirectServerWithSPA is newRootRedirectServer with a portal SPA
+// mounted (nil spa keeps the API-only shape).
+func newRootRedirectServerWithSPA(t *testing.T, rootRedirectURL *string, spa http.Handler) http.Handler {
+	t.Helper()
 	return New(Options{
 		Logger:          slog.Default(),
 		RateLimit:       &RateLimitConfig{},
 		RootRedirectURL: rootRedirectURL,
+		PortalSPA:       spa,
 	}).Handler()
 }
+
+// stubSPA stands in for the embedded webcloud bundle: it answers 200 with a
+// marker body for every path, so a test can tell the SPA served a request.
+var stubSPA = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("portal-spa"))
+})
 
 // strPtr is a small helper so table rows can express "explicitly set to this
 // string" (including "") versus "leave nil, resolve from the environment".
@@ -84,6 +99,56 @@ func TestRootRedirectRoutes(t *testing.T) {
 			// The redirect (and every other response) must sit behind the same
 			// middleware chain as /portal/: securityHeaders wraps the whole mux
 			// unconditionally, so the fixed header set must be present here too.
+			assertSecurityHeaders(t, rw.Header())
+		})
+	}
+}
+
+// TestRootRedirectToPortal is the operator ruling "Go to the portal" (D-830):
+// with the portal SPA mounted, the bare "/" redirects to /portal/ on the same
+// origin whatever the marketing base is (set, disabled or malformed), while
+// the four policy paths keep following the marketing base exactly as before.
+func TestRootRedirectToPortal(t *testing.T) {
+	const marketing = "https://superbased.app/"
+	cases := []struct {
+		name         string
+		marketing    *string
+		method       string
+		path         string
+		wantStatus   int
+		wantLocation string
+		wantBody     string
+	}{
+		{name: "GET / goes to the portal", marketing: strPtr(marketing), method: http.MethodGet, path: "/", wantStatus: http.StatusFound, wantLocation: portalRootPath},
+		{name: "HEAD / goes to the portal", marketing: strPtr(marketing), method: http.MethodHead, path: "/", wantStatus: http.StatusFound, wantLocation: portalRootPath},
+		{name: "POST / is refused", marketing: strPtr(marketing), method: http.MethodPost, path: "/", wantStatus: http.StatusMethodNotAllowed},
+		{name: "GET /portal/ serves the SPA", marketing: strPtr(marketing), method: http.MethodGet, path: "/portal/", wantStatus: http.StatusOK, wantBody: "portal-spa"},
+		{name: "GET /terms still goes to marketing", marketing: strPtr(marketing), method: http.MethodGet, path: "/terms", wantStatus: http.StatusFound, wantLocation: marketing + "terms"},
+		{name: "GET /privacy still goes to marketing", marketing: strPtr(marketing), method: http.MethodGet, path: "/privacy", wantStatus: http.StatusFound, wantLocation: marketing + "privacy"},
+		{name: "GET /refund-policy still goes to marketing", marketing: strPtr(marketing), method: http.MethodGet, path: "/refund-policy", wantStatus: http.StatusFound, wantLocation: marketing + "refund-policy"},
+		{name: "GET /pricing still goes to marketing", marketing: strPtr(marketing), method: http.MethodGet, path: "/pricing", wantStatus: http.StatusFound, wantLocation: marketing + "pricing"},
+		{name: "marketing disabled: / still goes to the portal", marketing: strPtr(""), method: http.MethodGet, path: "/", wantStatus: http.StatusFound, wantLocation: portalRootPath},
+		{name: "marketing disabled: /terms is 404", marketing: strPtr(""), method: http.MethodGet, path: "/terms", wantStatus: http.StatusNotFound},
+		{name: "marketing malformed: / still goes to the portal", marketing: strPtr("not a url "), method: http.MethodGet, path: "/", wantStatus: http.StatusFound, wantLocation: portalRootPath},
+		{name: "marketing malformed: /pricing is 404", marketing: strPtr("not a url "), method: http.MethodGet, path: "/pricing", wantStatus: http.StatusNotFound},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newRootRedirectServerWithSPA(t, tc.marketing, stubSPA)
+			r := httptest.NewRequest(tc.method, "http://example.test"+tc.path, nil)
+			rw := httptest.NewRecorder()
+			h.ServeHTTP(rw, r)
+			if rw.Code != tc.wantStatus {
+				t.Fatalf("status=%d, want %d (body=%q)", rw.Code, tc.wantStatus, rw.Body.String())
+			}
+			if tc.wantLocation != "" {
+				if got := rw.Header().Get("Location"); got != tc.wantLocation {
+					t.Errorf("Location=%q, want %q", got, tc.wantLocation)
+				}
+			}
+			if tc.wantBody != "" && rw.Body.String() != tc.wantBody {
+				t.Errorf("body=%q, want %q", rw.Body.String(), tc.wantBody)
+			}
 			assertSecurityHeaders(t, rw.Header())
 		})
 	}

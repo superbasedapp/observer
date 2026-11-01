@@ -63,6 +63,7 @@ func TestSingleUserDashboardInvariant(t *testing.T) {
 			if rec.Code != http.StatusOK {
 				t.Fatalf("GET %s: status %d, body=%s", ep.path, rec.Code, rec.Body.String())
 			}
+			assertSchemaVersionIsHead(t, rec.Body.Bytes())
 			got := canonicalize(t, rec.Body.Bytes())
 
 			golden := filepath.Join("golden", ep.name+".json")
@@ -81,6 +82,24 @@ func TestSingleUserDashboardInvariant(t *testing.T) {
 					ep.path, golden, got, want)
 			}
 		})
+	}
+}
+
+// assertSchemaVersionIsHead checks a response's top-level schema_version, when
+// it has one, against the node lineage head. The golden tokenises the value,
+// so this is where a wrong version is still caught.
+func assertSchemaVersionIsHead(t *testing.T, body []byte) {
+	t.Helper()
+	var top map[string]any
+	if err := json.Unmarshal(body, &top); err != nil {
+		return // not an object; canonicalize reports undecodable bodies
+	}
+	raw, ok := top["schema_version"]
+	if !ok {
+		return
+	}
+	if got, want := raw, float64(db.LatestSchemaVersion()); got != want {
+		t.Errorf("schema_version = %v, want the node lineage head %v", got, want)
 	}
 }
 
@@ -184,6 +203,14 @@ func normalize(v any) any {
 			// but the field's presence pins the T-425 contract.
 			if k == "host_name" {
 				x[k] = "<HOSTNAME>"
+				continue
+			}
+			// schema_version is the node lineage head, which moves with
+			// every agent migration. TOKENISED so a new migration needs no
+			// golden edit (lane TESTDB, item 9); its value is checked against
+			// the lineage head in TestSingleUserDashboardInvariant instead.
+			if k == "schema_version" {
+				x[k] = "<SCHEMA_VERSION>"
 				continue
 			}
 			x[k] = normalize(val)

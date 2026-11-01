@@ -66,6 +66,26 @@ func (s *Store) WriteEnrolment(ctx context.Context, e Enrolment) error {
 	return nil
 }
 
+// SetEnrolmentOrgName records a renamed organization's display name on the
+// enrolment row (T-862: the org server carries its current name on every push
+// acknowledgment). It changes nothing else, and only while the row still
+// names orgID, so a late acknowledgment from an org this node has since left
+// or replaced cannot relabel the new enrolment. It reports whether the name
+// changed.
+func (s *Store) SetEnrolmentOrgName(ctx context.Context, orgID, name string) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE org_enrolment SET org_name = ? WHERE id = 1 AND org_id = ? AND org_name <> ?`,
+		name, orgID, name)
+	if err != nil {
+		return false, fmt.Errorf("store.SetEnrolmentOrgName: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("store.SetEnrolmentOrgName: %w", err)
+	}
+	return n > 0, nil
+}
+
 // LoadEnrolment returns the singleton org_enrolment row, or (nil, nil) when the
 // agent is not enrolled (no row, or a pre-028 schema with no table). The
 // not-enrolled path is never an error — org mode being absent is the default.

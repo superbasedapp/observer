@@ -49,6 +49,7 @@ func TestGeminiRouteDecision(t *testing.T) {
 				requireComponents(t, "capture.proxy")
 			}
 			unsetEnvForTest(t, geminiGateEnv...)
+			pinLaunchFiles(t)
 			for k, v := range tc.env {
 				t.Setenv(k, v)
 			}
@@ -94,6 +95,7 @@ func TestGeminiRouteDecision(t *testing.T) {
 // see (a saved Google sign-in or Vertex choice), so "routing via" never
 // over-claims; an ungated route carries no caveat.
 func TestGeminiRoutedCaveat(t *testing.T) {
+	pinLaunchFiles(t)
 	environ := []string{"GEMINI_API_KEY=x"}
 	r := resolveGatedRoute("gemini-cli", "gemini", "http://127.0.0.1:8820", "", nil, environ)
 	if !r.routed {

@@ -169,9 +169,12 @@ func PolicyBundleBoundSigningMessage(version int64, bundleTOML []byte, b PolicyB
 	return buf.Bytes()
 }
 
-// policyBundleSignedMessage is the message b's signature covers: v2 when b
-// carries a binding, v1 otherwise.
+// policyBundleSignedMessage is the message b's signature covers: v3 when b
+// carries a project binding, v2 when it carries a binding, v1 otherwise.
 func policyBundleSignedMessage(b PolicyBundle) []byte {
+	if b.ProjectBinding != nil {
+		return PolicyBundleV3SigningMessage(b.Version, []byte(b.BundleTOML), *b.ProjectBinding)
+	}
 	if b.Binding != nil {
 		return PolicyBundleBoundSigningMessage(b.Version, []byte(b.BundleTOML), *b.Binding)
 	}

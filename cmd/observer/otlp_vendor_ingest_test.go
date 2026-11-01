@@ -15,8 +15,10 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/adapter"
+	"github.com/marmutapp/superbased-observer/internal/adapter/codebuddy"
 	"github.com/marmutapp/superbased-observer/internal/adapter/codex"
 	"github.com/marmutapp/superbased-observer/internal/adapter/gemini"
+	"github.com/marmutapp/superbased-observer/internal/adapter/kimchi"
 	"github.com/marmutapp/superbased-observer/internal/adapter/qwencode"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
@@ -46,13 +48,23 @@ type otlpFixture struct {
 	session string
 	turns   int
 	tools   int
+	// input / cacheRead are the normalized per-turn figures every turn of
+	// the fixture lands with (the mock upstream's 1234-of-which-1000-cached
+	// becomes 234 / 1000; an export with no cache split keeps 1234 / 0).
+	input, cacheRead int64
 }
 
 var liveOTLPFixtures = []otlpFixture{
-	{tool: "codex", file: "logs.json", path: "/v1/logs", session: "01a10e5e-dbc2-7fe3-b64f-4d7d1918389a", turns: 2, tools: 1},
-	{tool: "gemini-cli", file: "logs.json", path: "/v1/logs", json: true, session: "655fdd60-68db-4734-b0fa-041f5c562a33", turns: 2, tools: 1},
-	{tool: "qwen-code", file: "logs.json", path: "/v1/logs", json: true, session: "00f3ac91-e678-4ff1-8dfe-b3b89499a366", turns: 2, tools: 1},
-	{tool: "copilot-cli", file: "traces.json", path: "/v1/traces", json: true, session: "7bb16a66-a714-4265-b119-e9208f02cbff", turns: 2, tools: 1},
+	{tool: "codex", file: "logs.json", path: "/v1/logs", session: "01a10e5e-dbc2-7fe3-b64f-4d7d1918389a", turns: 2, tools: 1, input: 234, cacheRead: 1000},
+	{tool: "gemini-cli", file: "logs.json", path: "/v1/logs", json: true, session: "655fdd60-68db-4734-b0fa-041f5c562a33", turns: 2, tools: 1, input: 234, cacheRead: 1000},
+	{tool: "qwen-code", file: "logs.json", path: "/v1/logs", json: true, session: "00f3ac91-e678-4ff1-8dfe-b3b89499a366", turns: 2, tools: 1, input: 234, cacheRead: 1000},
+	{tool: "copilot-cli", file: "traces.json", path: "/v1/traces", json: true, session: "7bb16a66-a714-4265-b119-e9208f02cbff", turns: 2, tools: 1, input: 234, cacheRead: 1000},
+	// AP-131 (2026-10-22). IBM Bob's export carries no token counts, so it
+	// lands tool calls only; CodeBuddy's agentlens spans carry a GROSS
+	// prompt with no cache split.
+	{tool: "ibm-bob", file: "traces.json", path: "/v1/traces", json: true, session: "0a1b2c3d4e5f60718293a4b5c6d7e8f9", turns: 0, tools: 3},
+	{tool: "codebuddy", file: "traces.json", path: "/v1/traces", json: true, session: "01a165ad-1a86-7973-8bb9-a42e9af357ad", turns: 2, tools: 3, input: 1234, cacheRead: 0},
+	{tool: "kimchi", file: "logs.json", path: "/v1/logs", json: true, session: "01a165b1-cd10-71bf-97ff-2e5a1ebfdeac", turns: 2, tools: 3, input: 234, cacheRead: 1000},
 }
 
 func fixturePath(tool, file string) string {
@@ -153,7 +165,7 @@ func TestOTLPVendorExportsLandOnNode(t *testing.T) {
 			if n := countRows(t, database, `SELECT COUNT(*) FROM api_turns WHERE session_id = ? AND source = ?`, f.session, store.SourceNativeOTel); n != f.turns {
 				t.Errorf("api_turns = %d, want %d", n, f.turns)
 			}
-			if n := countRows(t, database, `SELECT COUNT(*) FROM api_turns WHERE session_id = ? AND input_tokens = 234 AND cache_read_tokens = 1000`, f.session); n != f.turns {
+			if n := countRows(t, database, `SELECT COUNT(*) FROM api_turns WHERE session_id = ? AND input_tokens = ? AND COALESCE(cache_read_tokens, 0) = ?`, f.session, f.input, f.cacheRead); n != f.turns {
 				t.Errorf("normalized api_turns = %d, want %d", n, f.turns)
 			}
 			if n := countRows(t, database, `SELECT COUNT(*) FROM actions WHERE session_id = ? AND tool = ?`, f.session, f.tool); n != f.tools {
@@ -177,6 +189,65 @@ func TestOTLPVendorExportsLandOnNode(t *testing.T) {
 			}
 			if n := countRows(t, database, `SELECT COUNT(*) FROM otel_content WHERE session_id = ?`, f.session); n != 0 {
 				t.Errorf("otel_content = %d with transcript capture on, want 0", n)
+			}
+		})
+	}
+}
+
+// parseOTLPFixture maps a live fixture through the vendor table, decoding it
+// in the encoding its tool sent.
+func parseOTLPFixture(t *testing.T, f otlpFixture) otlpvendor.Result {
+	t.Helper()
+	body, _ := wireBody(t, f)
+	decode := func(msg proto.Message) {
+		var err error
+		if f.json {
+			err = otlpingest.UnmarshalJSON(body, msg)
+		} else {
+			err = proto.Unmarshal(body, msg)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if f.path == "/v1/traces" {
+		var req coltracepb.ExportTraceServiceRequest
+		decode(&req)
+		return otlpvendor.ParseSpans(&req)
+	}
+	var req collogspb.ExportLogsServiceRequest
+	decode(&req)
+	return otlpvendor.ParseLogs(&req)
+}
+
+// TestOTLPTimeToFirstTokenLands: a vendor's own time-to-first-token (AP-131,
+// CodeBuddy's agentlens spans) reaches api_turns when the export owns the
+// tokens.
+func TestOTLPTimeToFirstTokenLands(t *testing.T) {
+	f := liveOTLPFixtures[5] // codebuddy
+	database, base := startOTLPNode(t, func(string) bool { return false }, nil)
+	body, ctype := wireBody(t, f)
+	postOTLP(t, base+f.path, body, ctype)
+	if n := countRows(t, database, `SELECT COUNT(*) FROM api_turns WHERE session_id = ? AND time_to_first_token_ms IN (39, 16) AND total_response_ms > 0`, f.session); n != 2 {
+		t.Errorf("api_turns with the export's TTFT and duration = %d, want 2", n)
+	}
+}
+
+// TestOTLPWaveTracesStayOffPlaneA (AP-131): IBM Bob and CodeBuddy spans
+// carry gen_ai.* attributes, so before their rows claimed them they went to
+// the Plane A handler as if they were a hosted application's traces.
+func TestOTLPWaveTracesStayOffPlaneA(t *testing.T) {
+	for _, f := range []otlpFixture{liveOTLPFixtures[4], liveOTLPFixtures[5]} {
+		t.Run(f.tool, func(t *testing.T) {
+			planeA := 0
+			_, base := startOTLPNode(t, func(string) bool { return true }, func(context.Context, *coltracepb.ExportTraceServiceRequest) error {
+				planeA++
+				return nil
+			})
+			body, ctype := wireBody(t, f)
+			postOTLP(t, base+f.path, body, ctype)
+			if planeA != 0 {
+				t.Errorf("%s spans reached the Plane A handler %d time(s)", f.tool, planeA)
 			}
 		})
 	}
@@ -265,10 +336,19 @@ func TestOTLPTurnsFoldAgainstTranscript(t *testing.T) {
 		// layout, when set, is where the adapter expects the transcript to
 		// live (relative to a temp HOME); the fixture is copied there.
 		layout string
+		// shapeBlocked marks a row whose export and transcript share the
+		// session id but report the same calls in shapes that cannot fold
+		// (AP-131: a gross prompt with no cache split, or a bare model id
+		// and no reasoning count). The test then proves that landing both
+		// WOULD double count, which is why the row keeps
+		// TokensWithTranscript off.
+		shapeBlocked bool
 	}{
-		{liveOTLPFixtures[0], codex.New(), "rollout-2026-10-06T04-51-00-01a10e5e-dbc2-7fe3-b64f-4d7d1918389a.jsonl", ""},
-		{liveOTLPFixtures[1], gemini.New(), "session-2026-10-05T23-24-655fdd60.jsonl", ".gemini/tmp/work-g/chats"},
-		{liveOTLPFixtures[2], qwencode.New(), "00f3ac91-e678-4ff1-8dfe-b3b89499a366.jsonl", ""},
+		{liveOTLPFixtures[0], codex.New(), "rollout-2026-10-06T04-51-00-01a10e5e-dbc2-7fe3-b64f-4d7d1918389a.jsonl", "", false},
+		{liveOTLPFixtures[1], gemini.New(), "session-2026-10-05T23-24-655fdd60.jsonl", ".gemini/tmp/work-g/chats", false},
+		{liveOTLPFixtures[2], qwencode.New(), "00f3ac91-e678-4ff1-8dfe-b3b89499a366.jsonl", "", false},
+		{liveOTLPFixtures[5], codebuddy.New(), "01a165ad-1a86-7973-8bb9-a42e9af357ad.jsonl", "", true},
+		{liveOTLPFixtures[6], kimchi.New(), "2026-10-22T22-18-33-616Z_01a165b1-cd10-71bf-97ff-2e5a1ebfdeac.jsonl", "", true},
 	} {
 		t.Run(tc.f.tool, func(t *testing.T) {
 			v, _ := otlpvendor.ForTool(tc.f.tool)
@@ -306,7 +386,10 @@ func TestOTLPTurnsFoldAgainstTranscript(t *testing.T) {
 				transcriptIn += e.InputTokens
 				transcriptOut += e.OutputTokens + e.ReasoningTokens
 			}
-			if !v.Owner.TokensWithTranscript {
+			if tc.shapeBlocked && v.Owner.TokensWithTranscript {
+				t.Fatalf("%s: export and transcript shapes cannot fold, but the row lands tokens beside the transcript", tc.f.tool)
+			}
+			if !v.Owner.TokensWithTranscript && !tc.shapeBlocked {
 				// The row must say why it cannot fold: the transcript files
 				// the same calls under a different session id, so it owns
 				// the tokens while its adapter is enabled.
@@ -322,21 +405,7 @@ func TestOTLPTurnsFoldAgainstTranscript(t *testing.T) {
 				t.Fatalf("adapter produced no token rows for session %s (got %d events)", tc.f.session, len(pr.TokenEvents))
 			}
 
-			body, _ := wireBody(t, tc.f)
-			var res otlpvendor.Result
-			if tc.f.json {
-				var req collogspb.ExportLogsServiceRequest
-				if err := otlpingest.UnmarshalJSON(body, &req); err != nil {
-					t.Fatal(err)
-				}
-				res = otlpvendor.ParseLogs(&req)
-			} else {
-				var req collogspb.ExportLogsServiceRequest
-				if err := proto.Unmarshal(body, &req); err != nil {
-					t.Fatal(err)
-				}
-				res = otlpvendor.ParseLogs(&req)
-			}
+			res := parseOTLPFixture(t, tc.f)
 			var proxies []sessionmsg.ProxyRow
 			for _, tr := range res.Turns {
 				at := apiTurnFromOTLP(tr)
@@ -350,6 +419,14 @@ func TestOTLPTurnsFoldAgainstTranscript(t *testing.T) {
 			for _, r := range rows {
 				gotIn += r.Bundle.Input
 				gotOut += r.Bundle.Output + r.Bundle.Reasoning
+			}
+			if tc.shapeBlocked {
+				// Landing both would count the session's output twice: the
+				// twins do not fold, so the transcript must stay the owner.
+				if gotOut <= transcriptOut {
+					t.Errorf("%s: export and transcript folded (out %d == single %d); TokensWithTranscript could be enabled", tc.f.tool, gotOut, transcriptOut)
+				}
+				return
 			}
 			if gotIn != transcriptIn || gotOut != transcriptOut {
 				t.Errorf("derived in=%d out=%d, want the single-capture in=%d out=%d (export turns=%d, transcript rows=%d)",

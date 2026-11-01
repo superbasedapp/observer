@@ -45,3 +45,13 @@ test("a write the server does not offer keeps its reason, and a removal-only ste
   assert.equal(hasWizard({ hooks: off, mcp: off, route: off }), false);
   assert.equal(hasWizard(undefined), false);
 });
+
+test("the route step carries the server's trade-off sentence for the consent (FU-24)", () => {
+  const steps = wizardStepsFor({
+    hooks: off,
+    mcp: off,
+    route: { register: true, remove: true, tradeoff: "turns Remote Control off" },
+    route_endpoint: "/api/setup/claude",
+  });
+  assert.equal(steps[0].tradeoff, "turns Remote Control off");
+});

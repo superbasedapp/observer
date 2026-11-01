@@ -1,0 +1,44 @@
+rules:
+  - id: csharp.template-injection
+    languages: [csharp]
+    severity: ERROR
+    message: Input from a web request is compiled as template source, so a caller can run template code on the server; render a fixed template and pass the input as a model.
+    metadata:
+      category: code_vuln
+      cwe: CWE-1336
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: $REQ.Query[...]
+              - pattern: $REQ.Form[...]
+              - pattern: $REQ.Headers[...]
+              - pattern: $REQ.Cookies[...]
+              - pattern: $REQ.QueryString
+              - pattern: $REQ.RouteValues[...]
+              - pattern: $REQ.Body
+              - pattern: $REQ.Params[...]
+              - pattern: $REQ.QueryString[...]
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(Request|request|req|HttpContext\.Request|context\.Request|ctx\.Request)$
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $RT $M(..., [$ANN] $T $X, ...) { ... }
+              - pattern-inside: |
+                  $RT $M(..., [$ANN(...)] $T $X, ...) { ... }
+          - metavariable-regex:
+              metavariable: $ANN
+              regex: ^(FromQuery|FromRoute|FromBody|FromForm|FromHeader)$
+          - pattern: $X
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: Engine.Razor.RunCompile($T, ...)
+              - pattern: Engine.Razor.Compile($T, ...)
+              - pattern: Template.Parse($T, ...)
+              - pattern: Template.ParseLiquid($T, ...)
+              - pattern: Handlebars.Compile($T)
+              - pattern: $ENGINE.CompileRenderStringAsync($K, $T, ...)
+          - focus-metavariable: $T

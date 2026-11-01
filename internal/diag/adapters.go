@@ -114,7 +114,16 @@ func checkAdapters(cfg config.Config) Check {
 // routing pre-flight (proxy reachable + base-URL pointed at the proxy +
 // Azure bypass warning); for everything else it confirms the
 // watcher/hook capture path. Works for ALL adapters, not just opencode.
+// It reads the running user's home; CheckAdapterIn takes one.
 func CheckAdapter(tool string, cfg config.Config) (Check, bool) {
+	return CheckAdapterIn(tool, cfg, "")
+}
+
+// CheckAdapterIn is CheckAdapter for homeDir ("" = the running user's home).
+// The home decides which route note a tool with a third-party-provider lane
+// gets (T-903): the lane note when its persisted route is a route lane, the
+// fixed route's note otherwise.
+func CheckAdapterIn(tool string, cfg config.Config, homeDir string) (Check, bool) {
 	var found adapter.Adapter
 	for _, a := range adapterdefaults.Adapters() {
 		if a.Name() == tool {
@@ -202,6 +211,12 @@ func CheckAdapter(tool string, cfg config.Config) (Check, bool) {
 		}
 
 		switch {
+		case ri.ForeignLane != nil && routedThroughLane(tool, homeDir):
+			// T-903: the managed daemon routed this tool's OWN provider
+			// through a route lane, so the fixed route's note (which names
+			// the default provider table and host) is not how this host is
+			// routed.
+			note(StatusOK, "routed through a proxy route lane to its own provider: "+ri.ForeignLane.Note)
 		case ri.Note != "":
 			note(StatusOK, ri.Note+" - launch with `"+ri.Launcher+"`")
 		case ri.EnvVar != "":

@@ -50,6 +50,10 @@ export type EnrolmentOverview = {
   enrolled_at?: string;
   credential_store?: string;
   tenancy?: string;
+  /** Set when the daemon of a managed enrolment signs no machine proof. */
+  machine_proof_warning?: string;
+  /** Set when a running daemon cannot read the org credential, so it does not push. */
+  daemon_credential_warning?: string;
   pushing_enabled: boolean;
   push_loop_running: boolean;
   /** The configured push ceiling in seconds (`observer org push-status`). */

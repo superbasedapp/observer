@@ -51,11 +51,21 @@ type GitError struct {
 	Args     []string
 	ExitCode int
 	Stderr   string
+	// TimedOut is true when the invocation was killed because ITS OWN
+	// per-invocation timeout expired (not because the caller's context was
+	// cancelled). Timeout is that bound. Before this field a timeout read
+	// as "exit status -1" with no stderr, so the Projects page could only
+	// say "the scan failed" without saying why (2026-10-15).
+	TimedOut bool
+	Timeout  time.Duration
 }
 
 // Error renders the same shape runGit's pre-GitError text used, so
 // existing log lines / %v formatting stay readable.
 func (e *GitError) Error() string {
+	if e.TimedOut {
+		return fmt.Sprintf("gitview.runGit %v: timed out after %s", e.Args, e.Timeout)
+	}
 	if e.Stderr == "" {
 		return fmt.Sprintf("gitview.runGit %v: exit status %d", e.Args, e.ExitCode)
 	}
@@ -154,6 +164,27 @@ func IsNotRepoError(err error) bool {
 		return false
 	}
 	return strings.Contains(strings.ToLower(gitErr.Stderr), notRepoPhrase)
+}
+
+// Failure is the plain, structural description of one failed git
+// invocation that a caller outside this package can classify without
+// importing GitError: the exit code, git's stderr, and whether our own
+// timeout killed it.
+type Failure struct {
+	ExitCode int
+	Stderr   string
+	TimedOut bool
+}
+
+// InspectError extracts the Failure behind err. ok is false when err is
+// not (and does not wrap) a *GitError, e.g. ErrGitUnavailable or a plain
+// cancellation.
+func InspectError(err error) (Failure, bool) {
+	var gitErr *GitError
+	if !errors.As(err, &gitErr) {
+		return Failure{}, false
+	}
+	return Failure{ExitCode: gitErr.ExitCode, Stderr: gitErr.Stderr, TimedOut: gitErr.TimedOut}, true
 }
 
 // FileStatus is one changed path in the working tree. Staged and Worktree are
@@ -313,6 +344,19 @@ func RunReadOnlyTimeout(ctx context.Context, root string, maxBytes int, timeout 
 	return runGitCapped(ctx, root, maxBytes, timeout, nil, args...)
 }
 
+// RunReadOnlyEnv is RunReadOnlyTimeout with extra environment entries appended
+// after the envelope's own (a caller's git hardening environment, e.g.
+// extrun.GitHardeningEnv). Same envelope, same caps, same -c overrides.
+func RunReadOnlyEnv(ctx context.Context, root string, maxBytes int, timeout time.Duration, extraEnv []string, args ...string) ([]byte, bool, error) {
+	if maxBytes <= 0 {
+		maxBytes = maxOutputBytes
+	}
+	if timeout <= 0 {
+		timeout = perCommandTimeout
+	}
+	return runGitCapped(ctx, root, maxBytes, timeout, append([]string(nil), extraEnv...), args...)
+}
+
 // RunReadOnlyNoLazyFetch is RunReadOnlyTimeout with GIT_NO_LAZY_FETCH=1
 // added: on a PARTIAL clone (--filter=blob:none / tree:0) a missing object
 // becomes an error instead of a fetch from the promisor remote. Same
@@ -339,6 +383,9 @@ func RunReadOnlyNoLazyFetch(ctx context.Context, root string, maxBytes int, time
 // maxOutputBytes / perCommandTimeout) and RunReadOnly[Timeout]
 // (caller-chosen) share one envelope.
 func runGitCapped(ctx context.Context, root string, maxBytes int, timeout time.Duration, extraEnv []string, args ...string) ([]byte, bool, error) {
+	if dir, refused := HostGitRefused(root); refused {
+		return nil, false, fmt.Errorf("%w (%s)", ErrHostGitRefused, dir)
+	}
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -349,6 +396,10 @@ func runGitCapped(ctx context.Context, root string, maxBytes int, timeout time.D
 	// hooks run arbitrary scripts; the pager can spawn a program. Command-line
 	// -c overrides repo/global/system config, so these win regardless of the
 	// repository. --no-pager + core.pager=cat also keep output non-interactive.
+	// log.showSignature=false: a repository's log.showSignature=true makes
+	// log and show run gpg.program (or gpg.ssh.program) on every signed
+	// commit, which the daemon's commit scan reads every tick (RB1 sweep
+	// finding P3).
 	full := []string{
 		"-C", root,
 		"--no-optional-locks",
@@ -357,6 +408,7 @@ func runGitCapped(ctx context.Context, root string, maxBytes int, timeout time.D
 		"-c", "core.untrackedcache=false",
 		"-c", "core.hookspath=",
 		"-c", "core.pager=cat",
+		"-c", "log.showSignature=false",
 	}
 	full = append(full, args...)
 	cmd := exec.CommandContext(cctx, "git", full...)
@@ -391,11 +443,18 @@ func runGitCapped(ctx context.Context, root string, maxBytes int, timeout time.D
 		if errors.As(err, &exitErr) {
 			exitCode = exitErr.ExitCode()
 		}
-		return nil, false, &GitError{
+		ge := &GitError{
 			Args:     append([]string(nil), args...),
 			ExitCode: exitCode,
 			Stderr:   strings.TrimSpace(string(stderr.Bytes())),
 		}
+		// Our own deadline fired while the caller's context is still live:
+		// this is a timeout, not a cancellation.
+		if errors.Is(cctx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+			ge.TimedOut = true
+			ge.Timeout = timeout
+		}
+		return nil, false, ge
 	}
 	return stdout.Bytes(), stdout.overflowed, nil
 }

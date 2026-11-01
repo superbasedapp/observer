@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -216,7 +215,10 @@ func TestSubjectCapReachesTheTwoDirectVendorChokepoints(t *testing.T) {
 			gd, st, cfg := publishedModelCapFixture(t, tc.session, tc.sessionModels)
 			w := intervention.Workload{
 				SurfaceID: "fixture/cli", SessionID: tc.session,
-				Identity: intervention.Identity{UID: os.Getuid()},
+				// The authority's uid (0 on Windows this release, ruling
+				// P-175: process intervention is Linux-only), never
+				// os.Getuid(), which is -1 there.
+				Identity: intervention.Identity{UID: nodeInterventionAuthorityUID()},
 			}
 			d, err := nodeInterventionBudget(context.Background(), st, cfg, gd, w,
 				nodeInterventionSource{Tool: "codex", Ready: true, Reason: "ready"}, time.Now().UTC())

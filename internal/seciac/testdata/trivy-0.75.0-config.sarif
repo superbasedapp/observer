@@ -1,0 +1,1646 @@
+{
+  "version": "2.1.0",
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "fullName": "Trivy Vulnerability Scanner",
+          "informationUri": "https://github.com/aquasecurity/trivy",
+          "name": "Trivy",
+          "rules": [
+            {
+              "id": "DS-0002",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "Image user should not be 'root'"
+              },
+              "fullDescription": {
+                "text": "Running containers with 'root' user can lead to a container escape situation. It is a best practice to run containers as non-root users, which can be done by adding a 'USER' statement to the Dockerfile."
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/ds-0002",
+              "help": {
+                "text": "Misconfiguration DS-0002\nType: Dockerfile Security Check\nSeverity: HIGH\nCheck: Image user should not be 'root'\nMessage: Specify at least 1 USER command in Dockerfile with non-root user as argument\nLink: [DS-0002](https://avd.aquasec.com/misconfig/ds-0002)\nRunning containers with 'root' user can lead to a container escape situation. It is a best practice to run containers as non-root users, which can be done by adding a 'USER' statement to the Dockerfile.",
+                "markdown": "**Misconfiguration DS-0002**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|Dockerfile Security Check|HIGH|Image user should not be 'root'|Specify at least 1 USER command in Dockerfile with non-root user as argument|[DS-0002](https://avd.aquasec.com/misconfig/ds-0002)|\n\nRunning containers with 'root' user can lead to a container escape situation. It is a best practice to run containers as non-root users, which can be done by adding a 'USER' statement to the Dockerfile."
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "8.0",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "HIGH"
+                ]
+              }
+            },
+            {
+              "id": "DS-0025",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "'apk add' is missing '--no-cache'"
+              },
+              "fullDescription": {
+                "text": "You should use 'apk add' with '--no-cache' to clean package cached data and reduce image size."
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/ds-0025",
+              "help": {
+                "text": "Misconfiguration DS-0025\nType: Dockerfile Security Check\nSeverity: HIGH\nCheck: 'apk add' is missing '--no-cache'\nMessage: '--no-cache' is missed: apk add curl\nLink: [DS-0025](https://avd.aquasec.com/misconfig/ds-0025)\nYou should use 'apk add' with '--no-cache' to clean package cached data and reduce image size.",
+                "markdown": "**Misconfiguration DS-0025**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|Dockerfile Security Check|HIGH|'apk add' is missing '--no-cache'|'--no-cache' is missed: apk add curl|[DS-0025](https://avd.aquasec.com/misconfig/ds-0025)|\n\nYou should use 'apk add' with '--no-cache' to clean package cached data and reduce image size."
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "8.0",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "HIGH"
+                ]
+              }
+            },
+            {
+              "id": "DS-0026",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "No HEALTHCHECK defined"
+              },
+              "fullDescription": {
+                "text": "You should add HEALTHCHECK instruction in your docker container images to perform the health check on running containers."
+              },
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/ds-0026",
+              "help": {
+                "text": "Misconfiguration DS-0026\nType: Dockerfile Security Check\nSeverity: LOW\nCheck: No HEALTHCHECK defined\nMessage: Add HEALTHCHECK instruction in your Dockerfile\nLink: [DS-0026](https://avd.aquasec.com/misconfig/ds-0026)\nYou should add HEALTHCHECK instruction in your docker container images to perform the health check on running containers.",
+                "markdown": "**Misconfiguration DS-0026**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|Dockerfile Security Check|LOW|No HEALTHCHECK defined|Add HEALTHCHECK instruction in your Dockerfile|[DS-0026](https://avd.aquasec.com/misconfig/ds-0026)|\n\nYou should add HEALTHCHECK instruction in your docker container images to perform the health check on running containers."
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "2.0",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "LOW"
+                ]
+              }
+            },
+            {
+              "id": "AWS-0086",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "S3 Access block should block public ACL"
+              },
+              "fullDescription": {
+                "text": "S3 buckets should block public ACLs on buckets and any objects they contain. By blocking, PUTs with fail if the object has any public ACL a.\n"
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/aws-0086",
+              "help": {
+                "text": "Misconfiguration AWS-0086\nType: Terraform Security Check\nSeverity: HIGH\nCheck: S3 Access block should block public ACL\nMessage: No public access block so not blocking public acls\nLink: [AWS-0086](https://avd.aquasec.com/misconfig/aws-0086)\nS3 buckets should block public ACLs on buckets and any objects they contain. By blocking, PUTs with fail if the object has any public ACL a.\n",
+                "markdown": "**Misconfiguration AWS-0086**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|Terraform Security Check|HIGH|S3 Access block should block public ACL|No public access block so not blocking public acls|[AWS-0086](https://avd.aquasec.com/misconfig/aws-0086)|\n\nS3 buckets should block public ACLs on buckets and any objects they contain. By blocking, PUTs with fail if the object has any public ACL a.\n"
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "8.0",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "HIGH"
+                ]
+              }
+            },
+            {
+              "id": "AWS-0087",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "S3 Access block should block public policy"
+              },
+              "fullDescription": {
+                "text": "S3 bucket policy should have block public policy to prevent users from putting a policy that enable public access.\n"
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/aws-0087",
+              "help": {
+                "text": "Misconfiguration AWS-0087\nType: Terraform Security Check\nSeverity: HIGH\nCheck: S3 Access block should block public policy\nMessage: No public access block so not blocking public policies\nLink: [AWS-0087](https://avd.aquasec.com/misconfig/aws-0087)\nS3 bucket policy should have block public policy to prevent users from putting a policy that enable public access.\n",
+                "markdown": "**Misconfiguration AWS-0087**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|Terraform Security Check|HIGH|S3 Access block should block public policy|No public access block so not blocking public policies|[AWS-0087](https://avd.aquasec.com/misconfig/aws-0087)|\n\nS3 bucket policy should have block public policy to prevent users from putting a policy that enable public access.\n"
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "8.0",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "HIGH"
+                ]
+              }
+            },
+            {
+              "id": "AWS-0089",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "S3 Bucket Logging"
+              },
+              "fullDescription": {
+                "text": "Ensures S3 bucket logging is enabled for S3 buckets"
+              },
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/aws-0089",
+              "help": {
+                "text": "Misconfiguration AWS-0089\nType: Terraform Security Check\nSeverity: LOW\nCheck: S3 Bucket Logging\nMessage: Bucket has logging disabled\nLink: [AWS-0089](https://avd.aquasec.com/misconfig/aws-0089)\nEnsures S3 bucket logging is enabled for S3 buckets",
+                "markdown": "**Misconfiguration AWS-0089**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|Terraform Security Check|LOW|S3 Bucket Logging|Bucket has logging disabled|[AWS-0089](https://avd.aquasec.com/misconfig/aws-0089)|\n\nEnsures S3 bucket logging is enabled for S3 buckets"
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "2.0",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "LOW"
+                ]
+              }
+            },
+            {
+              "id": "AWS-0090",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "S3 Data should be versioned"
+              },
+              "fullDescription": {
+                "text": "Versioning in Amazon S3 is a means of keeping multiple variants of an object in the same bucket.\n\nYou can use the S3 Versioning feature to preserve, retrieve, and restore every version of every object stored in your buckets.\n\nWith versioning you can recover more easily from both unintended user actions and application failures.\n\nWhen you enable versioning, also keep in mind the potential costs of storing noncurrent versions of objects. To help manage those costs, consider setting up an S3 Lifecycle configuration.\n"
+              },
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/aws-0090",
+              "help": {
+                "text": "Misconfiguration AWS-0090\nType: Terraform Security Check\nSeverity: MEDIUM\nCheck: S3 Data should be versioned\nMessage: Bucket does not have versioning enabled\nLink: [AWS-0090](https://avd.aquasec.com/misconfig/aws-0090)\nVersioning in Amazon S3 is a means of keeping multiple variants of an object in the same bucket.\n\nYou can use the S3 Versioning feature to preserve, retrieve, and restore every version of every object stored in your buckets.\n\nWith versioning you can recover more easily from both unintended user actions and application failures.\n\nWhen you enable versioning, also keep in mind the potential costs of storing noncurrent versions of objects. To help manage those costs, consider setting up an S3 Lifecycle configuration.\n",
+                "markdown": "**Misconfiguration AWS-0090**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|Terraform Security Check|MEDIUM|S3 Data should be versioned|Bucket does not have versioning enabled|[AWS-0090](https://avd.aquasec.com/misconfig/aws-0090)|\n\nVersioning in Amazon S3 is a means of keeping multiple variants of an object in the same bucket.\n\nYou can use the S3 Versioning feature to preserve, retrieve, and restore every version of every object stored in your buckets.\n\nWith versioning you can recover more easily from both unintended user actions and application failures.\n\nWhen you enable versioning, also keep in mind the potential costs of storing noncurrent versions of objects. To help manage those costs, consider setting up an S3 Lifecycle configuration.\n"
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "5.5",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "MEDIUM"
+                ]
+              }
+            },
+            {
+              "id": "AWS-0091",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "S3 Access Block should Ignore Public ACL"
+              },
+              "fullDescription": {
+                "text": "S3 buckets should ignore public ACLs on buckets and any objects they contain. By ignoring rather than blocking, PUT calls with public ACLs will still be applied but the ACL will be ignored.\n"
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/aws-0091",
+              "help": {
+                "text": "Misconfiguration AWS-0091\nType: Terraform Security Check\nSeverity: HIGH\nCheck: S3 Access Block should Ignore Public ACL\nMessage: No public access block so not blocking public acls\nLink: [AWS-0091](https://avd.aquasec.com/misconfig/aws-0091)\nS3 buckets should ignore public ACLs on buckets and any objects they contain. By ignoring rather than blocking, PUT calls with public ACLs will still be applied but the ACL will be ignored.\n",
+                "markdown": "**Misconfiguration AWS-0091**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|Terraform Security Check|HIGH|S3 Access Block should Ignore Public ACL|No public access block so not blocking public acls|[AWS-0091](https://avd.aquasec.com/misconfig/aws-0091)|\n\nS3 buckets should ignore public ACLs on buckets and any objects they contain. By ignoring rather than blocking, PUT calls with public ACLs will still be applied but the ACL will be ignored.\n"
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "8.0",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "HIGH"
+                ]
+              }
+            },
+            {
+              "id": "AWS-0092",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "S3 Buckets not publicly accessible through ACL."
+              },
+              "fullDescription": {
+                "text": "Buckets should not have ACLs that allow public access\n"
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/aws-0092",
+              "help": {
+                "text": "Misconfiguration AWS-0092\nType: Terraform Security Check\nSeverity: HIGH\nCheck: S3 Buckets not publicly accessible through ACL.\nMessage: Bucket has a public ACL: \"public-read\"\nLink: [AWS-0092](https://avd.aquasec.com/misconfig/aws-0092)\nBuckets should not have ACLs that allow public access\n",
+                "markdown": "**Misconfiguration AWS-0092**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|Terraform Security Check|HIGH|S3 Buckets not publicly accessible through ACL.|Bucket has a public ACL: \"public-read\"|[AWS-0092](https://avd.aquasec.com/misconfig/aws-0092)|\n\nBuckets should not have ACLs that allow public access\n"
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "8.0",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "HIGH"
+                ]
+              }
+            },
+            {
+              "id": "AWS-0093",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "S3 Access block should restrict public bucket to limit access"
+              },
+              "fullDescription": {
+                "text": "S3 buckets should restrict public policies for the bucket. By enabling, the restrict_public_buckets, only the bucket owner and AWS Services can access if it has a public policy.\n"
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/aws-0093",
+              "help": {
+                "text": "Misconfiguration AWS-0093\nType: Terraform Security Check\nSeverity: HIGH\nCheck: S3 Access block should restrict public bucket to limit access\nMessage: No public access block so not restricting public buckets\nLink: [AWS-0093](https://avd.aquasec.com/misconfig/aws-0093)\nS3 buckets should restrict public policies for the bucket. By enabling, the restrict_public_buckets, only the bucket owner and AWS Services can access if it has a public policy.\n",
+                "markdown": "**Misconfiguration AWS-0093**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|Terraform Security Check|HIGH|S3 Access block should restrict public bucket to limit access|No public access block so not restricting public buckets|[AWS-0093](https://avd.aquasec.com/misconfig/aws-0093)|\n\nS3 buckets should restrict public policies for the bucket. By enabling, the restrict_public_buckets, only the bucket owner and AWS Services can access if it has a public policy.\n"
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "8.0",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "HIGH"
+                ]
+              }
+            },
+            {
+              "id": "AWS-0094",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "S3 buckets should each define an aws_s3_bucket_public_access_block"
+              },
+              "fullDescription": {
+                "text": "The \"block public access\" settings in S3 override individual policies that apply to a given bucket, meaning that all public access can be controlled in one central types for that bucket. It is therefore good practice to define these settings for each bucket in order to clearly define the public access that can be allowed for it.\n"
+              },
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/aws-0094",
+              "help": {
+                "text": "Misconfiguration AWS-0094\nType: Terraform Security Check\nSeverity: LOW\nCheck: S3 buckets should each define an aws_s3_bucket_public_access_block\nMessage: Bucket does not have a corresponding public access block.\nLink: [AWS-0094](https://avd.aquasec.com/misconfig/aws-0094)\nThe \"block public access\" settings in S3 override individual policies that apply to a given bucket, meaning that all public access can be controlled in one central types for that bucket. It is therefore good practice to define these settings for each bucket in order to clearly define the public access that can be allowed for it.\n",
+                "markdown": "**Misconfiguration AWS-0094**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|Terraform Security Check|LOW|S3 buckets should each define an aws_s3_bucket_public_access_block|Bucket does not have a corresponding public access block.|[AWS-0094](https://avd.aquasec.com/misconfig/aws-0094)|\n\nThe \"block public access\" settings in S3 override individual policies that apply to a given bucket, meaning that all public access can be controlled in one central types for that bucket. It is therefore good practice to define these settings for each bucket in order to clearly define the public access that can be allowed for it.\n"
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "2.0",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "LOW"
+                ]
+              }
+            },
+            {
+              "id": "AWS-0132",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "S3 encryption should use Customer Managed Keys"
+              },
+              "fullDescription": {
+                "text": "Encryption using AWS keys provides protection for your S3 buckets. To gain greater control over encryption, such as key rotation, access policies, and auditability, use customer managed keys (CMKs) with SSE-KMS.\nNote that SSE-KMS is not supported for S3 server access logging destination buckets; in such cases, use SSE-S3 instead.\n"
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/aws-0132",
+              "help": {
+                "text": "Misconfiguration AWS-0132\nType: Terraform Security Check\nSeverity: HIGH\nCheck: S3 encryption should use Customer Managed Keys\nMessage: Bucket does not encrypt data with a customer managed key.\nLink: [AWS-0132](https://avd.aquasec.com/misconfig/aws-0132)\nEncryption using AWS keys provides protection for your S3 buckets. To gain greater control over encryption, such as key rotation, access policies, and auditability, use customer managed keys (CMKs) with SSE-KMS.\nNote that SSE-KMS is not supported for S3 server access logging destination buckets; in such cases, use SSE-S3 instead.\n",
+                "markdown": "**Misconfiguration AWS-0132**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|Terraform Security Check|HIGH|S3 encryption should use Customer Managed Keys|Bucket does not encrypt data with a customer managed key.|[AWS-0132](https://avd.aquasec.com/misconfig/aws-0132)|\n\nEncryption using AWS keys provides protection for your S3 buckets. To gain greater control over encryption, such as key rotation, access policies, and auditability, use customer managed keys (CMKs) with SSE-KMS.\nNote that SSE-KMS is not supported for S3 server access logging destination buckets; in such cases, use SSE-S3 instead.\n"
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "8.0",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "HIGH"
+                ]
+              }
+            },
+            {
+              "id": "KSV-0001",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "Can elevate its own privileges"
+              },
+              "fullDescription": {
+                "text": "A program inside the container can elevate its own privileges and run as root, which might give the program control over the container and node."
+              },
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/ksv-0001",
+              "help": {
+                "text": "Misconfiguration KSV-0001\nType: Kubernetes Security Check\nSeverity: MEDIUM\nCheck: Can elevate its own privileges\nMessage: Container 'app' of Pod 'demo' should set 'securityContext.allowPrivilegeEscalation' to false\nLink: [KSV-0001](https://avd.aquasec.com/misconfig/ksv-0001)\nA program inside the container can elevate its own privileges and run as root, which might give the program control over the container and node.",
+                "markdown": "**Misconfiguration KSV-0001**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|Kubernetes Security Check|MEDIUM|Can elevate its own privileges|Container 'app' of Pod 'demo' should set 'securityContext.allowPrivilegeEscalation' to false|[KSV-0001](https://avd.aquasec.com/misconfig/ksv-0001)|\n\nA program inside the container can elevate its own privileges and run as root, which might give the program control over the container and node."
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "5.5",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "MEDIUM"
+                ]
+              }
+            },
+            {
+              "id": "KSV-0003",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "Default capabilities: some containers do not drop all"
+              },
+              "fullDescription": {
+                "text": "The container should drop all default capabilities and add only those that are needed for its execution."
+              },
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/ksv-0003",
+              "help": {
+                "text": "Misconfiguration KSV-0003\nType: Kubernetes Security Check\nSeverity: LOW\nCheck: Default capabilities: some containers do not drop all\nMessage: Container 'app' of Pod 'demo' should add 'ALL' to 'securityContext.capabilities.drop'\nLink: [KSV-0003](https://avd.aquasec.com/misconfig/ksv-0003)\nThe container should drop all default capabilities and add only those that are needed for its execution.",
+                "markdown": "**Misconfiguration KSV-0003**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|Kubernetes Security Check|LOW|Default capabilities: some containers do not drop all|Container 'app' of Pod 'demo' should add 'ALL' to 'securityContext.capabilities.drop'|[KSV-0003](https://avd.aquasec.com/misconfig/ksv-0003)|\n\nThe container should drop all default capabilities and add only those that are needed for its execution."
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "2.0",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "LOW"
+                ]
+              }
+            },
+            {
+              "id": "KSV-0004",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "Default capabilities: some containers do not drop any"
+              },
+              "fullDescription": {
+                "text": "Security best practices require containers to run with minimal required capabilities."
+              },
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/ksv-0004",
+              "help": {
+                "text": "Misconfiguration KSV-0004\nType: Kubernetes Security Check\nSeverity: LOW\nCheck: Default capabilities: some containers do not drop any\nMessage: Container 'app' of 'pod' 'demo' in 'default' namespace should set securityContext.capabilities.drop\nLink: [KSV-0004](https://avd.aquasec.com/misconfig/ksv-0004)\nSecurity best practices require containers to run with minimal required capabilities.",
+                "markdown": "**Misconfiguration KSV-0004**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|Kubernetes Security Check|LOW|Default capabilities: some containers do not drop any|Container 'app' of 'pod' 'demo' in 'default' namespace should set securityContext.capabilities.drop|[KSV-0004](https://avd.aquasec.com/misconfig/ksv-0004)|\n\nSecurity best practices require containers to run with minimal required capabilities."
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "2.0",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "LOW"
+                ]
+              }
+            },
+            {
+              "id": "KSV-0011",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "CPU not limited"
+              },
+              "fullDescription": {
+                "text": "Enforcing CPU limits prevents DoS via resource exhaustion."
+              },
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/ksv-0011",
+              "help": {
+                "text": "Misconfiguration KSV-0011\nType: Kubernetes Security Check\nSeverity: LOW\nCheck: CPU not limited\nMessage: Container 'app' of Pod 'demo' should set 'resources.limits.cpu'\nLink: [KSV-0011](https://avd.aquasec.com/misconfig/ksv-0011)\nEnforcing CPU limits prevents DoS via resource exhaustion.",
+                "markdown": "**Misconfiguration KSV-0011**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|Kubernetes Security Check|LOW|CPU not limited|Container 'app' of Pod 'demo' should set 'resources.limits.cpu'|[KSV-0011](https://avd.aquasec.com/misconfig/ksv-0011)|\n\nEnforcing CPU limits prevents DoS via resource exhaustion."
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "2.0",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "LOW"
+                ]
+              }
+            },
+            {
+              "id": "KSV-0012",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "Runs as root user"
+              },
+              "fullDescription": {
+                "text": "Force the running image to run as a non-root user to ensure least privileges."
+              },
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/ksv-0012",
+              "help": {
+                "text": "Misconfiguration KSV-0012\nType: Kubernetes Security Check\nSeverity: MEDIUM\nCheck: Runs as root user\nMessage: Container 'app' of Pod 'demo' should set 'securityContext.runAsNonRoot' to true\nLink: [KSV-0012](https://avd.aquasec.com/misconfig/ksv-0012)\nForce the running image to run as a non-root user to ensure least privileges.",
+                "markdown": "**Misconfiguration KSV-0012**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|Kubernetes Security Check|MEDIUM|Runs as root user|Container 'app' of Pod 'demo' should set 'securityContext.runAsNonRoot' to true|[KSV-0012](https://avd.aquasec.com/misconfig/ksv-0012)|\n\nForce the running image to run as a non-root user to ensure least privileges."
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "5.5",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "MEDIUM"
+                ]
+              }
+            },
+            {
+              "id": "KSV-0013",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "Image tag \":latest\" used"
+              },
+              "fullDescription": {
+                "text": "It is best to avoid using the ':latest' image tag when deploying containers in production. Doing so makes it hard to track which version of the image is running, and hard to roll back the version."
+              },
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/ksv-0013",
+              "help": {
+                "text": "Misconfiguration KSV-0013\nType: Kubernetes Security Check\nSeverity: MEDIUM\nCheck: Image tag \":latest\" used\nMessage: Container 'app' of Pod 'demo' should specify an image tag\nLink: [KSV-0013](https://avd.aquasec.com/misconfig/ksv-0013)\nIt is best to avoid using the ':latest' image tag when deploying containers in production. Doing so makes it hard to track which version of the image is running, and hard to roll back the version.",
+                "markdown": "**Misconfiguration KSV-0013**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|Kubernetes Security Check|MEDIUM|Image tag \":latest\" used|Container 'app' of Pod 'demo' should specify an image tag|[KSV-0013](https://avd.aquasec.com/misconfig/ksv-0013)|\n\nIt is best to avoid using the ':latest' image tag when deploying containers in production. Doing so makes it hard to track which version of the image is running, and hard to roll back the version."
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "5.5",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "MEDIUM"
+                ]
+              }
+            },
+            {
+              "id": "KSV-0014",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "Root file system is not read-only"
+              },
+              "fullDescription": {
+                "text": "An immutable root file system prevents applications from writing to their local disk. This can limit intrusions, as attackers will not be able to tamper with the file system or write foreign executables to disk."
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/ksv-0014",
+              "help": {
+                "text": "Misconfiguration KSV-0014\nType: Kubernetes Security Check\nSeverity: HIGH\nCheck: Root file system is not read-only\nMessage: Container 'app' of Pod 'demo' should set 'securityContext.readOnlyRootFilesystem' to true\nLink: [KSV-0014](https://avd.aquasec.com/misconfig/ksv-0014)\nAn immutable root file system prevents applications from writing to their local disk. This can limit intrusions, as attackers will not be able to tamper with the file system or write foreign executables to disk.",
+                "markdown": "**Misconfiguration KSV-0014**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|Kubernetes Security Check|HIGH|Root file system is not read-only|Container 'app' of Pod 'demo' should set 'securityContext.readOnlyRootFilesystem' to true|[KSV-0014](https://avd.aquasec.com/misconfig/ksv-0014)|\n\nAn immutable root file system prevents applications from writing to their local disk. This can limit intrusions, as attackers will not be able to tamper with the file system or write foreign executables to disk."
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "8.0",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "HIGH"
+                ]
+              }
+            },
+            {
+              "id": "KSV-0015",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "CPU requests not specified"
+              },
+              "fullDescription": {
+                "text": "When containers have resource requests specified, the scheduler can make better decisions about which nodes to place pods on, and how to deal with resource contention."
+              },
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/ksv-0015",
+              "help": {
+                "text": "Misconfiguration KSV-0015\nType: Kubernetes Security Check\nSeverity: LOW\nCheck: CPU requests not specified\nMessage: Container 'app' of Pod 'demo' should set 'resources.requests.cpu'\nLink: [KSV-0015](https://avd.aquasec.com/misconfig/ksv-0015)\nWhen containers have resource requests specified, the scheduler can make better decisions about which nodes to place pods on, and how to deal with resource contention.",
+                "markdown": "**Misconfiguration KSV-0015**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|Kubernetes Security Check|LOW|CPU requests not specified|Container 'app' of Pod 'demo' should set 'resources.requests.cpu'|[KSV-0015](https://avd.aquasec.com/misconfig/ksv-0015)|\n\nWhen containers have resource requests specified, the scheduler can make better decisions about which nodes to place pods on, and how to deal with resource contention."
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "2.0",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "LOW"
+                ]
+              }
+            },
+            {
+              "id": "KSV-0016",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "Memory requests not specified"
+              },
+              "fullDescription": {
+                "text": "When containers have memory requests specified, the scheduler can make better decisions about which nodes to place pods on, and how to deal with resource contention."
+              },
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/ksv-0016",
+              "help": {
+                "text": "Misconfiguration KSV-0016\nType: Kubernetes Security Check\nSeverity: LOW\nCheck: Memory requests not specified\nMessage: Container 'app' of Pod 'demo' should set 'resources.requests.memory'\nLink: [KSV-0016](https://avd.aquasec.com/misconfig/ksv-0016)\nWhen containers have memory requests specified, the scheduler can make better decisions about which nodes to place pods on, and how to deal with resource contention.",
+                "markdown": "**Misconfiguration KSV-0016**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|Kubernetes Security Check|LOW|Memory requests not specified|Container 'app' of Pod 'demo' should set 'resources.requests.memory'|[KSV-0016](https://avd.aquasec.com/misconfig/ksv-0016)|\n\nWhen containers have memory requests specified, the scheduler can make better decisions about which nodes to place pods on, and how to deal with resource contention."
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "2.0",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "LOW"
+                ]
+              }
+            },
+            {
+              "id": "KSV-0017",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "Privileged"
+              },
+              "fullDescription": {
+                "text": "Privileged containers share namespaces with the host system and do not offer any security. They should be used exclusively for system containers that require high privileges."
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/ksv-0017",
+              "help": {
+                "text": "Misconfiguration KSV-0017\nType: Kubernetes Security Check\nSeverity: HIGH\nCheck: Privileged\nMessage: Container 'app' of Pod 'demo' should set 'securityContext.privileged' to false\nLink: [KSV-0017](https://avd.aquasec.com/misconfig/ksv-0017)\nPrivileged containers share namespaces with the host system and do not offer any security. They should be used exclusively for system containers that require high privileges.",
+                "markdown": "**Misconfiguration KSV-0017**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|Kubernetes Security Check|HIGH|Privileged|Container 'app' of Pod 'demo' should set 'securityContext.privileged' to false|[KSV-0017](https://avd.aquasec.com/misconfig/ksv-0017)|\n\nPrivileged containers share namespaces with the host system and do not offer any security. They should be used exclusively for system containers that require high privileges."
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "8.0",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "HIGH"
+                ]
+              }
+            },
+            {
+              "id": "KSV-0018",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "Memory not limited"
+              },
+              "fullDescription": {
+                "text": "Enforcing memory limits prevents DoS via resource exhaustion."
+              },
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/ksv-0018",
+              "help": {
+                "text": "Misconfiguration KSV-0018\nType: Kubernetes Security Check\nSeverity: LOW\nCheck: Memory not limited\nMessage: Container 'app' of Pod 'demo' should set 'resources.limits.memory'\nLink: [KSV-0018](https://avd.aquasec.com/misconfig/ksv-0018)\nEnforcing memory limits prevents DoS via resource exhaustion.",
+                "markdown": "**Misconfiguration KSV-0018**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|Kubernetes Security Check|LOW|Memory not limited|Container 'app' of Pod 'demo' should set 'resources.limits.memory'|[KSV-0018](https://avd.aquasec.com/misconfig/ksv-0018)|\n\nEnforcing memory limits prevents DoS via resource exhaustion."
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "2.0",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "LOW"
+                ]
+              }
+            },
+            {
+              "id": "KSV-0020",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "Runs with UID \u003c= 10000"
+              },
+              "fullDescription": {
+                "text": "Force the container to run with user ID \u003e 10000 to avoid conflicts with the host’s user table."
+              },
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/ksv-0020",
+              "help": {
+                "text": "Misconfiguration KSV-0020\nType: Kubernetes Security Check\nSeverity: LOW\nCheck: Runs with UID \u003c= 10000\nMessage: Container 'app' of Pod 'demo' should set 'securityContext.runAsUser' \u003e 10000\nLink: [KSV-0020](https://avd.aquasec.com/misconfig/ksv-0020)\nForce the container to run with user ID \u003e 10000 to avoid conflicts with the host’s user table.",
+                "markdown": "**Misconfiguration KSV-0020**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|Kubernetes Security Check|LOW|Runs with UID \u003c= 10000|Container 'app' of Pod 'demo' should set 'securityContext.runAsUser' \u003e 10000|[KSV-0020](https://avd.aquasec.com/misconfig/ksv-0020)|\n\nForce the container to run with user ID \u003e 10000 to avoid conflicts with the host’s user table."
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "2.0",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "LOW"
+                ]
+              }
+            },
+            {
+              "id": "KSV-0021",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "Runs with GID \u003c= 10000"
+              },
+              "fullDescription": {
+                "text": "Force the container to run with group ID \u003e 10000 to avoid conflicts with the host’s user table."
+              },
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/ksv-0021",
+              "help": {
+                "text": "Misconfiguration KSV-0021\nType: Kubernetes Security Check\nSeverity: LOW\nCheck: Runs with GID \u003c= 10000\nMessage: Container 'app' of Pod 'demo' should set 'securityContext.runAsGroup' \u003e 10000\nLink: [KSV-0021](https://avd.aquasec.com/misconfig/ksv-0021)\nForce the container to run with group ID \u003e 10000 to avoid conflicts with the host’s user table.",
+                "markdown": "**Misconfiguration KSV-0021**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|Kubernetes Security Check|LOW|Runs with GID \u003c= 10000|Container 'app' of Pod 'demo' should set 'securityContext.runAsGroup' \u003e 10000|[KSV-0021](https://avd.aquasec.com/misconfig/ksv-0021)|\n\nForce the container to run with group ID \u003e 10000 to avoid conflicts with the host’s user table."
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "2.0",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "LOW"
+                ]
+              }
+            },
+            {
+              "id": "KSV-0030",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "Runtime/Default Seccomp profile not set"
+              },
+              "fullDescription": {
+                "text": "According to pod security standard 'Seccomp', the RuntimeDefault seccomp profile must be required, or allow specific additional profiles."
+              },
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/ksv-0030",
+              "help": {
+                "text": "Misconfiguration KSV-0030\nType: Kubernetes Security Check\nSeverity: LOW\nCheck: Runtime/Default Seccomp profile not set\nMessage: Either Pod or Container should set 'securityContext.seccompProfile.type' to 'RuntimeDefault'\nLink: [KSV-0030](https://avd.aquasec.com/misconfig/ksv-0030)\nAccording to pod security standard 'Seccomp', the RuntimeDefault seccomp profile must be required, or allow specific additional profiles.",
+                "markdown": "**Misconfiguration KSV-0030**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|Kubernetes Security Check|LOW|Runtime/Default Seccomp profile not set|Either Pod or Container should set 'securityContext.seccompProfile.type' to 'RuntimeDefault'|[KSV-0030](https://avd.aquasec.com/misconfig/ksv-0030)|\n\nAccording to pod security standard 'Seccomp', the RuntimeDefault seccomp profile must be required, or allow specific additional profiles."
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "2.0",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "LOW"
+                ]
+              }
+            },
+            {
+              "id": "KSV-0104",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "Seccomp policies disabled"
+              },
+              "fullDescription": {
+                "text": "A program inside the container can bypass Seccomp protection policies."
+              },
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/ksv-0104",
+              "help": {
+                "text": "Misconfiguration KSV-0104\nType: Kubernetes Security Check\nSeverity: MEDIUM\nCheck: Seccomp policies disabled\nMessage: container \"app\" of pod \"demo\" in \"default\" namespace should specify a seccomp profile\nLink: [KSV-0104](https://avd.aquasec.com/misconfig/ksv-0104)\nA program inside the container can bypass Seccomp protection policies.",
+                "markdown": "**Misconfiguration KSV-0104**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|Kubernetes Security Check|MEDIUM|Seccomp policies disabled|container \"app\" of pod \"demo\" in \"default\" namespace should specify a seccomp profile|[KSV-0104](https://avd.aquasec.com/misconfig/ksv-0104)|\n\nA program inside the container can bypass Seccomp protection policies."
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "5.5",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "MEDIUM"
+                ]
+              }
+            },
+            {
+              "id": "KSV-0106",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "Container capabilities must only include NET_BIND_SERVICE"
+              },
+              "fullDescription": {
+                "text": "Containers must drop ALL capabilities, and are only permitted to add back the NET_BIND_SERVICE capability."
+              },
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/ksv-0106",
+              "help": {
+                "text": "Misconfiguration KSV-0106\nType: Kubernetes Security Check\nSeverity: LOW\nCheck: Container capabilities must only include NET_BIND_SERVICE\nMessage: container should drop all\nLink: [KSV-0106](https://avd.aquasec.com/misconfig/ksv-0106)\nContainers must drop ALL capabilities, and are only permitted to add back the NET_BIND_SERVICE capability.",
+                "markdown": "**Misconfiguration KSV-0106**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|Kubernetes Security Check|LOW|Container capabilities must only include NET_BIND_SERVICE|container should drop all|[KSV-0106](https://avd.aquasec.com/misconfig/ksv-0106)|\n\nContainers must drop ALL capabilities, and are only permitted to add back the NET_BIND_SERVICE capability."
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "2.0",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "LOW"
+                ]
+              }
+            },
+            {
+              "id": "KSV-0110",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "Workloads in the default namespace"
+              },
+              "fullDescription": {
+                "text": "Checks whether a workload is running in the default namespace."
+              },
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/ksv-0110",
+              "help": {
+                "text": "Misconfiguration KSV-0110\nType: Kubernetes Security Check\nSeverity: LOW\nCheck: Workloads in the default namespace\nMessage: pod demo in default namespace should set metadata.namespace to a non-default namespace\nLink: [KSV-0110](https://avd.aquasec.com/misconfig/ksv-0110)\nChecks whether a workload is running in the default namespace.",
+                "markdown": "**Misconfiguration KSV-0110**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|Kubernetes Security Check|LOW|Workloads in the default namespace|pod demo in default namespace should set metadata.namespace to a non-default namespace|[KSV-0110](https://avd.aquasec.com/misconfig/ksv-0110)|\n\nChecks whether a workload is running in the default namespace."
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "2.0",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "LOW"
+                ]
+              }
+            },
+            {
+              "id": "KSV-0118",
+              "name": "Misconfiguration",
+              "shortDescription": {
+                "text": "Default security context configured"
+              },
+              "fullDescription": {
+                "text": "Security context controls the allocation of security parameters for the pod/container/volume, ensuring the appropriate level of protection. Relying on default security context may expose vulnerabilities to potential attacks that rely on privileged access."
+              },
+              "defaultConfiguration": {
+                "level": "error"
+              },
+              "helpUri": "https://avd.aquasec.com/misconfig/ksv-0118",
+              "help": {
+                "text": "Misconfiguration KSV-0118\nType: Kubernetes Security Check\nSeverity: HIGH\nCheck: Default security context configured\nMessage: pod demo in default namespace is using the default security context, which allows root privileges\nLink: [KSV-0118](https://avd.aquasec.com/misconfig/ksv-0118)\nSecurity context controls the allocation of security parameters for the pod/container/volume, ensuring the appropriate level of protection. Relying on default security context may expose vulnerabilities to potential attacks that rely on privileged access.",
+                "markdown": "**Misconfiguration KSV-0118**\n| Type | Severity | Check | Message | Link |\n| --- | --- | --- | --- | --- |\n|Kubernetes Security Check|HIGH|Default security context configured|pod demo in default namespace is using the default security context, which allows root privileges|[KSV-0118](https://avd.aquasec.com/misconfig/ksv-0118)|\n\nSecurity context controls the allocation of security parameters for the pod/container/volume, ensuring the appropriate level of protection. Relying on default security context may expose vulnerabilities to potential attacks that rely on privileged access."
+              },
+              "properties": {
+                "precision": "very-high",
+                "security-severity": "8.0",
+                "tags": [
+                  "misconfiguration",
+                  "security",
+                  "HIGH"
+                ]
+              }
+            }
+          ],
+          "version": "dev"
+        }
+      },
+      "results": [
+        {
+          "ruleId": "DS-0002",
+          "ruleIndex": 0,
+          "level": "error",
+          "message": {
+            "text": "Artifact: Dockerfile\nType: dockerfile\nVulnerability DS-0002\nSeverity: HIGH\nMessage: Specify at least 1 USER command in Dockerfile with non-root user as argument\nLink: [DS-0002](https://avd.aquasec.com/misconfig/ds-0002)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "Dockerfile",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 1,
+                  "startColumn": 1,
+                  "endLine": 1,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "Dockerfile"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "DS-0025",
+          "ruleIndex": 1,
+          "level": "error",
+          "message": {
+            "text": "Artifact: Dockerfile\nType: dockerfile\nVulnerability DS-0025\nSeverity: HIGH\nMessage: '--no-cache' is missed: apk add curl\nLink: [DS-0025](https://avd.aquasec.com/misconfig/ds-0025)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "Dockerfile",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 2,
+                  "startColumn": 1,
+                  "endLine": 2,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "Dockerfile"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "DS-0026",
+          "ruleIndex": 2,
+          "level": "note",
+          "message": {
+            "text": "Artifact: Dockerfile\nType: dockerfile\nVulnerability DS-0026\nSeverity: LOW\nMessage: Add HEALTHCHECK instruction in your Dockerfile\nLink: [DS-0026](https://avd.aquasec.com/misconfig/ds-0026)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "Dockerfile",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 1,
+                  "startColumn": 1,
+                  "endLine": 1,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "Dockerfile"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "AWS-0086",
+          "ruleIndex": 3,
+          "level": "error",
+          "message": {
+            "text": "Artifact: infra/main.tf\nType: terraform\nVulnerability AWS-0086\nSeverity: HIGH\nMessage: No public access block so not blocking public acls\nLink: [AWS-0086](https://avd.aquasec.com/misconfig/aws-0086)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "infra/main.tf",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 1,
+                  "startColumn": 1,
+                  "endLine": 4,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "infra/main.tf"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "AWS-0087",
+          "ruleIndex": 4,
+          "level": "error",
+          "message": {
+            "text": "Artifact: infra/main.tf\nType: terraform\nVulnerability AWS-0087\nSeverity: HIGH\nMessage: No public access block so not blocking public policies\nLink: [AWS-0087](https://avd.aquasec.com/misconfig/aws-0087)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "infra/main.tf",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 1,
+                  "startColumn": 1,
+                  "endLine": 4,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "infra/main.tf"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "AWS-0089",
+          "ruleIndex": 5,
+          "level": "note",
+          "message": {
+            "text": "Artifact: infra/main.tf\nType: terraform\nVulnerability AWS-0089\nSeverity: LOW\nMessage: Bucket has logging disabled\nLink: [AWS-0089](https://avd.aquasec.com/misconfig/aws-0089)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "infra/main.tf",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 1,
+                  "startColumn": 1,
+                  "endLine": 4,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "infra/main.tf"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "AWS-0090",
+          "ruleIndex": 6,
+          "level": "warning",
+          "message": {
+            "text": "Artifact: infra/main.tf\nType: terraform\nVulnerability AWS-0090\nSeverity: MEDIUM\nMessage: Bucket does not have versioning enabled\nLink: [AWS-0090](https://avd.aquasec.com/misconfig/aws-0090)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "infra/main.tf",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 1,
+                  "startColumn": 1,
+                  "endLine": 4,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "infra/main.tf"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "AWS-0091",
+          "ruleIndex": 7,
+          "level": "error",
+          "message": {
+            "text": "Artifact: infra/main.tf\nType: terraform\nVulnerability AWS-0091\nSeverity: HIGH\nMessage: No public access block so not blocking public acls\nLink: [AWS-0091](https://avd.aquasec.com/misconfig/aws-0091)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "infra/main.tf",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 1,
+                  "startColumn": 1,
+                  "endLine": 4,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "infra/main.tf"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "AWS-0092",
+          "ruleIndex": 8,
+          "level": "error",
+          "message": {
+            "text": "Artifact: infra/main.tf\nType: terraform\nVulnerability AWS-0092\nSeverity: HIGH\nMessage: Bucket has a public ACL: \"public-read\"\nLink: [AWS-0092](https://avd.aquasec.com/misconfig/aws-0092)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "infra/main.tf",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 3,
+                  "startColumn": 1,
+                  "endLine": 3,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "infra/main.tf"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "AWS-0093",
+          "ruleIndex": 9,
+          "level": "error",
+          "message": {
+            "text": "Artifact: infra/main.tf\nType: terraform\nVulnerability AWS-0093\nSeverity: HIGH\nMessage: No public access block so not restricting public buckets\nLink: [AWS-0093](https://avd.aquasec.com/misconfig/aws-0093)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "infra/main.tf",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 1,
+                  "startColumn": 1,
+                  "endLine": 4,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "infra/main.tf"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "AWS-0094",
+          "ruleIndex": 10,
+          "level": "note",
+          "message": {
+            "text": "Artifact: infra/main.tf\nType: terraform\nVulnerability AWS-0094\nSeverity: LOW\nMessage: Bucket does not have a corresponding public access block.\nLink: [AWS-0094](https://avd.aquasec.com/misconfig/aws-0094)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "infra/main.tf",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 1,
+                  "startColumn": 1,
+                  "endLine": 4,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "infra/main.tf"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "AWS-0132",
+          "ruleIndex": 11,
+          "level": "error",
+          "message": {
+            "text": "Artifact: infra/main.tf\nType: terraform\nVulnerability AWS-0132\nSeverity: HIGH\nMessage: Bucket does not encrypt data with a customer managed key.\nLink: [AWS-0132](https://avd.aquasec.com/misconfig/aws-0132)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "infra/main.tf",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 1,
+                  "startColumn": 1,
+                  "endLine": 4,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "infra/main.tf"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "KSV-0001",
+          "ruleIndex": 12,
+          "level": "warning",
+          "message": {
+            "text": "Artifact: k8s/pod.yaml\nType: kubernetes\nVulnerability KSV-0001\nSeverity: MEDIUM\nMessage: Container 'app' of Pod 'demo' should set 'securityContext.allowPrivilegeEscalation' to false\nLink: [KSV-0001](https://avd.aquasec.com/misconfig/ksv-0001)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "k8s/pod.yaml",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 7,
+                  "startColumn": 1,
+                  "endLine": 10,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "k8s/pod.yaml"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "KSV-0003",
+          "ruleIndex": 13,
+          "level": "note",
+          "message": {
+            "text": "Artifact: k8s/pod.yaml\nType: kubernetes\nVulnerability KSV-0003\nSeverity: LOW\nMessage: Container 'app' of Pod 'demo' should add 'ALL' to 'securityContext.capabilities.drop'\nLink: [KSV-0003](https://avd.aquasec.com/misconfig/ksv-0003)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "k8s/pod.yaml",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 7,
+                  "startColumn": 1,
+                  "endLine": 10,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "k8s/pod.yaml"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "KSV-0004",
+          "ruleIndex": 14,
+          "level": "note",
+          "message": {
+            "text": "Artifact: k8s/pod.yaml\nType: kubernetes\nVulnerability KSV-0004\nSeverity: LOW\nMessage: Container 'app' of 'pod' 'demo' in 'default' namespace should set securityContext.capabilities.drop\nLink: [KSV-0004](https://avd.aquasec.com/misconfig/ksv-0004)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "k8s/pod.yaml",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 7,
+                  "startColumn": 1,
+                  "endLine": 10,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "k8s/pod.yaml"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "KSV-0011",
+          "ruleIndex": 15,
+          "level": "note",
+          "message": {
+            "text": "Artifact: k8s/pod.yaml\nType: kubernetes\nVulnerability KSV-0011\nSeverity: LOW\nMessage: Container 'app' of Pod 'demo' should set 'resources.limits.cpu'\nLink: [KSV-0011](https://avd.aquasec.com/misconfig/ksv-0011)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "k8s/pod.yaml",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 7,
+                  "startColumn": 1,
+                  "endLine": 10,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "k8s/pod.yaml"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "KSV-0012",
+          "ruleIndex": 16,
+          "level": "warning",
+          "message": {
+            "text": "Artifact: k8s/pod.yaml\nType: kubernetes\nVulnerability KSV-0012\nSeverity: MEDIUM\nMessage: Container 'app' of Pod 'demo' should set 'securityContext.runAsNonRoot' to true\nLink: [KSV-0012](https://avd.aquasec.com/misconfig/ksv-0012)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "k8s/pod.yaml",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 7,
+                  "startColumn": 1,
+                  "endLine": 10,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "k8s/pod.yaml"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "KSV-0013",
+          "ruleIndex": 17,
+          "level": "warning",
+          "message": {
+            "text": "Artifact: k8s/pod.yaml\nType: kubernetes\nVulnerability KSV-0013\nSeverity: MEDIUM\nMessage: Container 'app' of Pod 'demo' should specify an image tag\nLink: [KSV-0013](https://avd.aquasec.com/misconfig/ksv-0013)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "k8s/pod.yaml",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 7,
+                  "startColumn": 1,
+                  "endLine": 10,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "k8s/pod.yaml"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "KSV-0014",
+          "ruleIndex": 18,
+          "level": "error",
+          "message": {
+            "text": "Artifact: k8s/pod.yaml\nType: kubernetes\nVulnerability KSV-0014\nSeverity: HIGH\nMessage: Container 'app' of Pod 'demo' should set 'securityContext.readOnlyRootFilesystem' to true\nLink: [KSV-0014](https://avd.aquasec.com/misconfig/ksv-0014)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "k8s/pod.yaml",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 7,
+                  "startColumn": 1,
+                  "endLine": 10,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "k8s/pod.yaml"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "KSV-0015",
+          "ruleIndex": 19,
+          "level": "note",
+          "message": {
+            "text": "Artifact: k8s/pod.yaml\nType: kubernetes\nVulnerability KSV-0015\nSeverity: LOW\nMessage: Container 'app' of Pod 'demo' should set 'resources.requests.cpu'\nLink: [KSV-0015](https://avd.aquasec.com/misconfig/ksv-0015)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "k8s/pod.yaml",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 7,
+                  "startColumn": 1,
+                  "endLine": 10,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "k8s/pod.yaml"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "KSV-0016",
+          "ruleIndex": 20,
+          "level": "note",
+          "message": {
+            "text": "Artifact: k8s/pod.yaml\nType: kubernetes\nVulnerability KSV-0016\nSeverity: LOW\nMessage: Container 'app' of Pod 'demo' should set 'resources.requests.memory'\nLink: [KSV-0016](https://avd.aquasec.com/misconfig/ksv-0016)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "k8s/pod.yaml",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 7,
+                  "startColumn": 1,
+                  "endLine": 10,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "k8s/pod.yaml"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "KSV-0017",
+          "ruleIndex": 21,
+          "level": "error",
+          "message": {
+            "text": "Artifact: k8s/pod.yaml\nType: kubernetes\nVulnerability KSV-0017\nSeverity: HIGH\nMessage: Container 'app' of Pod 'demo' should set 'securityContext.privileged' to false\nLink: [KSV-0017](https://avd.aquasec.com/misconfig/ksv-0017)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "k8s/pod.yaml",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 7,
+                  "startColumn": 1,
+                  "endLine": 10,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "k8s/pod.yaml"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "KSV-0018",
+          "ruleIndex": 22,
+          "level": "note",
+          "message": {
+            "text": "Artifact: k8s/pod.yaml\nType: kubernetes\nVulnerability KSV-0018\nSeverity: LOW\nMessage: Container 'app' of Pod 'demo' should set 'resources.limits.memory'\nLink: [KSV-0018](https://avd.aquasec.com/misconfig/ksv-0018)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "k8s/pod.yaml",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 7,
+                  "startColumn": 1,
+                  "endLine": 10,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "k8s/pod.yaml"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "KSV-0020",
+          "ruleIndex": 23,
+          "level": "note",
+          "message": {
+            "text": "Artifact: k8s/pod.yaml\nType: kubernetes\nVulnerability KSV-0020\nSeverity: LOW\nMessage: Container 'app' of Pod 'demo' should set 'securityContext.runAsUser' \u003e 10000\nLink: [KSV-0020](https://avd.aquasec.com/misconfig/ksv-0020)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "k8s/pod.yaml",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 7,
+                  "startColumn": 1,
+                  "endLine": 10,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "k8s/pod.yaml"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "KSV-0021",
+          "ruleIndex": 24,
+          "level": "note",
+          "message": {
+            "text": "Artifact: k8s/pod.yaml\nType: kubernetes\nVulnerability KSV-0021\nSeverity: LOW\nMessage: Container 'app' of Pod 'demo' should set 'securityContext.runAsGroup' \u003e 10000\nLink: [KSV-0021](https://avd.aquasec.com/misconfig/ksv-0021)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "k8s/pod.yaml",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 7,
+                  "startColumn": 1,
+                  "endLine": 10,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "k8s/pod.yaml"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "KSV-0030",
+          "ruleIndex": 25,
+          "level": "note",
+          "message": {
+            "text": "Artifact: k8s/pod.yaml\nType: kubernetes\nVulnerability KSV-0030\nSeverity: LOW\nMessage: Either Pod or Container should set 'securityContext.seccompProfile.type' to 'RuntimeDefault'\nLink: [KSV-0030](https://avd.aquasec.com/misconfig/ksv-0030)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "k8s/pod.yaml",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 7,
+                  "startColumn": 1,
+                  "endLine": 10,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "k8s/pod.yaml"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "KSV-0104",
+          "ruleIndex": 26,
+          "level": "warning",
+          "message": {
+            "text": "Artifact: k8s/pod.yaml\nType: kubernetes\nVulnerability KSV-0104\nSeverity: MEDIUM\nMessage: container \"app\" of pod \"demo\" in \"default\" namespace should specify a seccomp profile\nLink: [KSV-0104](https://avd.aquasec.com/misconfig/ksv-0104)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "k8s/pod.yaml",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 7,
+                  "startColumn": 1,
+                  "endLine": 10,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "k8s/pod.yaml"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "KSV-0106",
+          "ruleIndex": 27,
+          "level": "note",
+          "message": {
+            "text": "Artifact: k8s/pod.yaml\nType: kubernetes\nVulnerability KSV-0106\nSeverity: LOW\nMessage: container should drop all\nLink: [KSV-0106](https://avd.aquasec.com/misconfig/ksv-0106)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "k8s/pod.yaml",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 7,
+                  "startColumn": 1,
+                  "endLine": 10,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "k8s/pod.yaml"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "KSV-0110",
+          "ruleIndex": 28,
+          "level": "note",
+          "message": {
+            "text": "Artifact: k8s/pod.yaml\nType: kubernetes\nVulnerability KSV-0110\nSeverity: LOW\nMessage: pod demo in default namespace should set metadata.namespace to a non-default namespace\nLink: [KSV-0110](https://avd.aquasec.com/misconfig/ksv-0110)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "k8s/pod.yaml",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 3,
+                  "startColumn": 1,
+                  "endLine": 4,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "k8s/pod.yaml"
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "KSV-0118",
+          "ruleIndex": 29,
+          "level": "error",
+          "message": {
+            "text": "Artifact: k8s/pod.yaml\nType: kubernetes\nVulnerability KSV-0118\nSeverity: HIGH\nMessage: pod demo in default namespace is using the default security context, which allows root privileges\nLink: [KSV-0118](https://avd.aquasec.com/misconfig/ksv-0118)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "k8s/pod.yaml",
+                  "uriBaseId": "ROOTPATH"
+                },
+                "region": {
+                  "startLine": 5,
+                  "startColumn": 1,
+                  "endLine": 10,
+                  "endColumn": 1
+                }
+              },
+              "message": {
+                "text": "k8s/pod.yaml"
+              }
+            }
+          ]
+        }
+      ],
+      "columnKind": "utf16CodeUnits",
+      "originalUriBaseIds": {
+        "ROOTPATH": {
+          "uri": "file:///work/project/"
+        }
+      }
+    }
+  ]
+}

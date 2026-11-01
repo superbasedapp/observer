@@ -55,8 +55,12 @@ type proxyRouteResolver struct {
 func newProxyRouteResolver(proxyServing bool, homeDir string) *proxyRouteResolver {
 	return &proxyRouteResolver{
 		enabled: proxyServing,
-		inspect: func() []proxyroute.RouteStatus { return proxyroute.InspectRoutes(homeDir) },
-		now:     time.Now,
+		// A route in the file whose tool talks to another provider does not
+		// reach the proxy, so it owns no tokens (CLI-3).
+		inspect: func() []proxyroute.RouteStatus {
+			return proxyroute.ApplyActiveProvider(proxyroute.InspectRoutes(homeDir))
+		},
+		now: time.Now,
 	}
 }
 

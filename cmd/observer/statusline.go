@@ -21,6 +21,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/accessgrant"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/diag"
+	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/statusline"
 )
 
@@ -84,10 +85,30 @@ type statuslineDeps struct {
 	// §1.1 "if stdin is a pipe (not a TTY)") — this is what keeps the
 	// command from blocking forever waiting on a human at a keyboard.
 	stdinTTY func() bool
+	// messages returns the developer's [messages] section (whether the
+	// "messages" segment shows, and for which messages). Nil = the defaults.
+	// Production reads the config resolve already loaded, so it costs no
+	// second config.Load.
+	messages func() config.MessagesConfig
+	// security returns the "security" segment's text for the payload's
+	// project (statusline_security.go, lane sec-c3), nil when it shows
+	// nothing. Nil = the segment is off. Production builds it from the
+	// config resolve already loaded.
+	security func(statusline.Input) *string
+}
+
+// messagesSettings is deps.messages, defaulted.
+func (d statuslineDeps) messagesSettings() config.MessagesConfig {
+	if d.messages != nil {
+		return d.messages()
+	}
+	return config.DefaultMessagesConfig()
 }
 
 // defaultStatuslineDeps returns the production seams.
 func defaultStatuslineDeps() statuslineDeps {
+	msgs := config.DefaultMessagesConfig()
+	var security func(statusline.Input) *string
 	return statuslineDeps{
 		getenv: os.Getenv,
 		resolve: func() (string, string, error) {
@@ -95,11 +116,20 @@ func defaultStatuslineDeps() statuslineDeps {
 			if err != nil {
 				return "", "", err
 			}
+			msgs = cfg.Messages
+			security = statuslineSecurityProvider(cfg)
 			dbDir := filepath.Dir(cfg.Observer.DBPath)
 			base := "http://" + resolveDashboardAddr("", cfg.Dashboard.Addr, "127.0.0.1:8081")
 			return dbDir, base, nil
 		},
 		stdinTTY: statuslineStdinIsTerminal,
+		messages: func() config.MessagesConfig { return msgs },
+		security: func(in statusline.Input) *string {
+			if security == nil {
+				return nil
+			}
+			return security(in)
+		},
 	}
 }
 
@@ -132,6 +162,11 @@ type statuslineRunOptions struct {
 	modelSet       bool
 	cwd            string
 	cwdSet         bool
+
+	// host is the registry tool that runs this command (--host, written by
+	// `observer init --statusline-tools`); "" is the Claude Code
+	// registration, which predates the flag.
+	host string
 }
 
 // newStatuslineCmd builds the production `observer statusline` command.
@@ -154,6 +189,7 @@ func newStatuslineCmdWith(deps statuslineDeps) *cobra.Command {
 		sessionCostFlag float64
 		modelFlag       string
 		cwdFlag         string
+		hostFlag        string
 	)
 
 	cmd := &cobra.Command{
@@ -166,7 +202,8 @@ total observed spend, and the active model name.
 All dollar figures are estimated list-price totals, not an invoiced amount
 (same caveat as the rest of this product).
 
-Input precedence: piped stdin JSON (Claude Code's statusLine contract) wins,
+Input precedence: piped stdin JSON (Claude Code's statusLine contract, or the
+CodeBuddy, Kimchi or VT Code status-line payload, detected by shape) wins,
 then --session-cost/--model/--cwd flags, then OBSERVER_STATUSLINE_SESSION_COST/
 OBSERVER_STATUSLINE_MODEL, then nothing (segments are omitted, never zeroed).
 
@@ -189,6 +226,7 @@ time) that segment is silently omitted and the command still exits 0.`,
 				modelSet:       cmd.Flags().Changed("model"),
 				cwd:            cwdFlag,
 				cwdSet:         cmd.Flags().Changed("cwd"),
+				host:           hostFlag,
 			}
 			return runStatusline(cmd, deps, opts)
 		},
@@ -212,6 +250,8 @@ time) that segment is silently omitted and the command still exits 0.`,
 		"model display name (used when stdin JSON doesn't supply model)")
 	cmd.Flags().StringVar(&cwdFlag, "cwd", "",
 		"current working directory (used when stdin JSON doesn't supply cwd/workspace)")
+	cmd.Flags().StringVar(&hostFlag, "host", "",
+		"registry tool id of the host running this command (written by `observer init --statusline-tools`); only a host whose payload carries Claude Code's plan rate_limits forwards them to Plans & limits")
 
 	return cmd
 }
@@ -338,35 +378,12 @@ func computeStatusline(ctx context.Context, cmd *cobra.Command, deps statuslineD
 	// rawStdin is the bounded stdin payload, kept for the Plans & limits
 	// feed (statusline_plans.go), which forwards only its rate_limits
 	// numbers.
-	var rawStdin []byte
+	var (
+		rawStdin []byte
+		shape    statusline.Shape
+	)
 	if !deps.stdinTTY() {
-		// F2a: a stalled pipe (opened, never written to, never closed)
-		// must never block this command forever — the read itself is
-		// deadline-bounded, independent of (and nested inside) the
-		// overall F2c total deadline. F3: reading limit+1 bytes lets
-		// readStatuslineStdin's caller (here) detect an oversized
-		// stream even when its first `limit` bytes happen to parse as
-		// complete, valid JSON on their own.
-		data, ok := readStatuslineStdin(ctx, cmd.InOrStdin(), statuslineStdinLimit, statuslineStdinReadTimeout)
-		switch {
-		case !ok:
-			// Timed out (or the overall context expired first) —
-			// proceed without stdin data. Fail-open, never an error.
-		case int64(len(data)) > statuslineStdinLimit:
-			// Oversized stream (F3): the true stream was larger than
-			// the documented bound even though a truncated prefix
-			// might parse cleanly. Treat stdin as wholly absent
-			// rather than risk acting on a truncated payload.
-		case len(data) > 0:
-			// ParseInput is tolerant: on malformed JSON it returns a
-			// usable zero Input alongside the error, so a bad payload
-			// never panics and never blocks the rest of the merge —
-			// we simply overlay nothing from stdin in that case.
-			if parsed, perr := statusline.ParseInput(data); perr == nil {
-				merged = overlayStatuslineInput(merged, parsed)
-			}
-			rawStdin = data
-		}
+		merged, rawStdin, shape = overlayStatuslineStdin(ctx, cmd, merged)
 	}
 	progress.set(merged)
 
@@ -417,7 +434,7 @@ func computeStatusline(ctx context.Context, cmd *cobra.Command, deps statuslineD
 			daemonAttempted = true
 			effectiveTimeout = clampStatuslineTimeout(opts.timeout)
 			start := time.Now()
-			ok, ferr := fetchStatuslineTile(ctx, loopbackBase, effectiveTimeout, statuslineSessionID(merged), &tile)
+			ok, ferr := fetchStatuslineTile(ctx, loopbackBase, effectiveTimeout, statuslineSessionID(merged), deps.messagesSettings(), &tile)
 			daemonLatency = time.Since(start)
 			if ok {
 				daemonOK = true
@@ -425,7 +442,12 @@ func computeStatusline(ctx context.Context, cmd *cobra.Command, deps statuslineD
 				// to the daemon, on change only (statusline_plans.go).
 				// Same loopback-and-live-daemon gate as the tile above;
 				// fail-open, bounded.
-				forwardPlanStatusLine(ctx, loopbackBase, dbDir, rawStdin, time.Now())
+				// Only a host whose payload carries Claude Code's plan
+				// rate_limits forwards (a look-alike host never feeds
+				// Claude's plan meter).
+				if statuslineHostForwardsPlanLimits(opts.host) {
+					forwardPlanStatusLine(ctx, loopbackBase, dbDir, rawStdin, time.Now())
+				}
 			} else {
 				daemonReason = fmt.Sprintf("unreachable (%v, %s)", ferr, daemonLatency.Round(time.Millisecond))
 			}
@@ -459,9 +481,18 @@ func computeStatusline(ctx context.Context, cmd *cobra.Command, deps statuslineD
 		}
 	}
 
+	segments := opts.segments
+	// The security segment (lane sec-c3): from the signed posture file,
+	// never the daemon; skipped with --no-daemon like every resolution.
+	if !opts.noDaemon && budgetDBDir != "" && deps.security != nil {
+		if label := deps.security(merged); label != nil {
+			tile.Security = label
+			segments = withSecuritySegment(segments)
+		}
+	}
 	renderOpts := statusline.RenderOptions{
 		Color:    resolveStatuslineColor(deps, opts),
-		Segments: opts.segments,
+		Segments: segments,
 	}
 	line := statusline.Render(merged, tile, renderOpts)
 
@@ -476,23 +507,86 @@ func computeStatusline(ctx context.Context, cmd *cobra.Command, deps statuslineD
 	}
 
 	if opts.explain {
-		var buf strings.Builder
-		explainSource := source
-		if explainSource == "stdin" {
-			explainSource = "stdin-only"
-		}
-		fmt.Fprintf(&buf, "statusline: path=%s", explainSource)
-		if daemonAttempted {
-			fmt.Fprintf(&buf, " daemon_timeout=%s daemon_latency=%s", effectiveTimeout, daemonLatency.Round(time.Millisecond))
-		}
-		if daemonReason != "" {
-			fmt.Fprintf(&buf, " daemon_reason=%q", daemonReason)
-		}
-		buf.WriteString("\n")
-		res.stderr = buf.String()
+		res.stderr = statuslineExplainLine(source, shape, opts.host, daemonAttempted, effectiveTimeout, daemonLatency, daemonReason)
 	}
 
 	return res
+}
+
+// overlayStatuslineStdin reads the bounded stdin payload and overlays it on
+// merged, returning the raw bytes (for the Plans & limits feed) and the
+// payload's shape. A stalled, oversized or malformed payload overlays
+// nothing (fail-open, never an error).
+func overlayStatuslineStdin(ctx context.Context, cmd *cobra.Command, merged statusline.Input) (statusline.Input, []byte, statusline.Shape) {
+	var (
+		rawStdin []byte
+		shape    statusline.Shape
+	)
+	// F2a: a stalled pipe (opened, never written to, never closed)
+	// must never block this command forever — the read itself is
+	// deadline-bounded, independent of (and nested inside) the
+	// overall F2c total deadline. F3: reading limit+1 bytes lets
+	// readStatuslineStdin's caller (here) detect an oversized
+	// stream even when its first `limit` bytes happen to parse as
+	// complete, valid JSON on their own.
+	data, ok := readStatuslineStdin(ctx, cmd.InOrStdin(), statuslineStdinLimit, statuslineStdinReadTimeout)
+	switch {
+	case !ok:
+		// Timed out (or the overall context expired first) —
+		// proceed without stdin data. Fail-open, never an error.
+	case int64(len(data)) > statuslineStdinLimit:
+		// Oversized stream (F3): the true stream was larger than
+		// the documented bound even though a truncated prefix
+		// might parse cleanly. Treat stdin as wholly absent
+		// rather than risk acting on a truncated payload.
+	case len(data) > 0:
+		// ParseInput is tolerant: on malformed JSON it returns a
+		// usable zero Input alongside the error, so a bad payload
+		// never panics and never blocks the rest of the merge —
+		// we simply overlay nothing from stdin in that case.
+		if parsed, sh, perr := statusline.ParsePayload(data); perr == nil {
+			merged = overlayStatuslineInput(merged, parsed)
+			shape = sh
+		}
+		rawStdin = data
+	}
+	return merged, rawStdin, shape
+}
+
+// statuslineExplainLine is the --explain line written to stderr: the data
+// path, the payload shape, the host, and the daemon attempt.
+func statuslineExplainLine(source string, shape statusline.Shape, host string, daemonAttempted bool, effectiveTimeout, daemonLatency time.Duration, daemonReason string) string {
+	var buf strings.Builder
+	explainSource := source
+	if explainSource == "stdin" {
+		explainSource = "stdin-only"
+	}
+	fmt.Fprintf(&buf, "statusline: path=%s", explainSource)
+	if shape != "" {
+		fmt.Fprintf(&buf, " payload=%s", shape)
+	}
+	if host != "" {
+		fmt.Fprintf(&buf, " host=%q", host)
+	}
+	if daemonAttempted {
+		fmt.Fprintf(&buf, " daemon_timeout=%s daemon_latency=%s", effectiveTimeout, daemonLatency.Round(time.Millisecond))
+	}
+	if daemonReason != "" {
+		fmt.Fprintf(&buf, " daemon_reason=%q", daemonReason)
+	}
+	buf.WriteString("\n")
+	return buf.String()
+}
+
+// statuslineHostForwardsPlanLimits reports whether the host running this
+// command declares Claude Code's plan rate_limits in its payload
+// (integration.StatusLineSpec.PlanRateLimits). No --host is the Claude Code
+// registration, written before the flag existed.
+func statuslineHostForwardsPlanLimits(host string) bool {
+	if host == "" {
+		return true
+	}
+	return integration.StatusLineFor(host).PlanRateLimits
 }
 
 // readStatuslineStdin reads at most limit+1 bytes from r within a hard
@@ -675,6 +769,8 @@ type statuslineWireResponse struct {
 	SessionTokens         *int64   `json:"session_tokens"`
 	GrantsInForce         int      `json:"grants_in_force"`
 	NextGrantExpiryNs     int64    `json:"next_grant_expiry_ns"`
+	MessagesUnread        int      `json:"messages_unread"`
+	MessagesUnreadAlerts  int      `json:"messages_unread_alerts"`
 }
 
 // fetchStatuslineTile makes the one bounded, loopback-only HTTP call
@@ -682,7 +778,7 @@ type statuslineWireResponse struct {
 // with a hard client timeout. Returns ok=false on any failure (network,
 // non-200 status, malformed body) — the caller degrades silently in
 // every such case (plan §2.3).
-func fetchStatuslineTile(ctx context.Context, base string, timeout time.Duration, sessionID string, tile *statusline.DaemonTile) (bool, error) {
+func fetchStatuslineTile(ctx context.Context, base string, timeout time.Duration, sessionID string, msgs config.MessagesConfig, tile *statusline.DaemonTile) (bool, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -718,7 +814,23 @@ func fetchStatuslineTile(ctx context.Context, base string, timeout time.Duration
 	tile.TodayTokens = body.TodayTokens
 	tile.SessionTokens = body.SessionTokens
 	tile.Grants = statuslineGrantsText(body.GrantsInForce, body.NextGrantExpiryNs, time.Now())
+	tile.MessagesUnread = statuslineMessagesUnread(body.MessagesUnread, body.MessagesUnreadAlerts, msgs)
 	return true, nil
+}
+
+// statuslineMessagesUnread is the count the "messages" segment shows under
+// the developer's [messages] choices (T-854): nothing when they turned the
+// status line surface off, only alert conversations under alerts_only,
+// every unread admin message otherwise.
+func statuslineMessagesUnread(all, alerts int, msgs config.MessagesConfig) int {
+	switch {
+	case !msgs.Statusline:
+		return 0
+	case msgs.AlertsOnly:
+		return alerts
+	default:
+		return all
+	}
 }
 
 // statuslineGrantsText renders the grants segment: how many org exceptions

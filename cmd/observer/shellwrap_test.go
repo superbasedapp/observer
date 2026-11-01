@@ -55,7 +55,7 @@ func TestShellWrapCLIRoundTrip(t *testing.T) {
 		t.Skip("POSIX layout")
 	}
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	t.Setenv("SHELL", "/bin/bash")
 	t.Setenv("ZDOTDIR", "")
 	t.Setenv("XDG_CONFIG_HOME", "")
@@ -119,7 +119,7 @@ func TestShellWrapStartRefreshRepointsMovedShims(t *testing.T) {
 		t.Skip("POSIX layout")
 	}
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	t.Setenv("SHELL", "/bin/bash")
 	t.Setenv("ZDOTDIR", "")
 	t.Setenv("XDG_CONFIG_HOME", "")

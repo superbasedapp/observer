@@ -18,6 +18,7 @@ import (
 )
 
 func TestExitCodeFrom(t *testing.T) {
+	needSh(t)
 	if got := exitCodeFrom(nil); got != 0 {
 		t.Fatalf("nil err: got %d want 0", got)
 	}
@@ -90,6 +91,7 @@ func TestSpecDisplayName(t *testing.T) {
 }
 
 func TestRunFiltersStdoutAndRecordsStats(t *testing.T) {
+	needSh(t)
 	cfgPath, dbPath := writeRunConfig(t)
 
 	// Produce a mix of lines; the generic git filter should drop the hint
@@ -139,6 +141,7 @@ func TestRunFiltersStdoutAndRecordsStats(t *testing.T) {
 }
 
 func TestRunPassesThroughWhenDisabled(t *testing.T) {
+	needSh(t)
 	cfgPath, dbPath := writeRunConfigShellDisabled(t)
 	_ = dbPath
 
@@ -162,6 +165,7 @@ func TestRunPassesThroughWhenDisabled(t *testing.T) {
 }
 
 func TestRunForwardsExitCode(t *testing.T) {
+	needSh(t)
 	cfgPath, _ := writeRunConfig(t)
 
 	err := runRun(context.Background(), []string{"sh", "-c", "exit 7"}, runOptions{
@@ -180,6 +184,7 @@ func TestRunForwardsExitCode(t *testing.T) {
 }
 
 func TestRunHonorsExcludeCommands(t *testing.T) {
+	needSh(t)
 	cfgPath, dbPath := writeRunConfigExclude(t, "sh")
 	_ = dbPath
 

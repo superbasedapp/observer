@@ -17,8 +17,10 @@ const PartTelemetry Part = "telemetry"
 type TelemetryOptions struct {
 	// HomeDir pins the user home ("" = os.UserHomeDir).
 	HomeDir string
-	// Getenv resolves the file's directory override (CODEX_HOME). nil
-	// means os.Getenv; a pinned HomeDir ignores the environment.
+	// Getenv resolves the file's directory override (CODEX_HOME). nil is
+	// the one pinned-home rule (crossmount.HomeEnv, R-188 F1): os.Getenv
+	// only when the process home is not isolated; a pinned HomeDir ignores
+	// the environment.
 	Getenv func(string) string
 	// Addr is the node receiver's OTLP/HTTP BIND address ([ingest.otel]
 	// http_addr, host:port). Required for a write; ignored by a removal.

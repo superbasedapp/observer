@@ -6,16 +6,14 @@ import (
 	"testing"
 )
 
-// TestDeleteAgedExcerptsSeeksByRowid pins T-415: the retention pass must
-// reach the FTS5 excerpt table by rowid (idxStr "=") from the aged actions'
-// timestamp range through the migration-147 c0 index. The pre-fix
-// `DELETE FROM action_excerpts WHERE action_id IN (SELECT id FROM actions
-// WHERE timestamp < ?)` planned as `SCAN action_excerpts VIRTUAL TABLE
-// INDEX 0:` (empty idxStr), a scan of every excerpt on every pass.
-func TestDeleteAgedExcerptsSeeksByRowid(t *testing.T) {
+// TestDeleteBatchExcerptsSeeksByRowid pins T-415 for the batched delete
+// (2026-10-18): the FTS5 excerpt table must be reached by rowid (idxStr "=")
+// through the migration-147 c0 index on the content table, never by a scan of
+// every excerpt.
+func TestDeleteBatchExcerptsSeeksByRowid(t *testing.T) {
 	dbPath, _ := seed(t)
 	d := openExisting(t, dbPath)
-	rows, err := d.QueryContext(context.Background(), "EXPLAIN QUERY PLAN "+deleteAgedExcerptsSQL, "2026-01-01T00:00:00Z")
+	rows, err := d.QueryContext(context.Background(), "EXPLAIN QUERY PLAN "+deleteBatchExcerptsSQLPrefix+"?,?))", 1, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,7 +31,7 @@ func TestDeleteAgedExcerptsSeeksByRowid(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(plan, "\n")
-	sawVTab, sawC0, sawTS := false, false, false
+	sawVTab, sawC0 := false, false
 	for _, line := range plan {
 		if strings.Contains(line, "action_excerpts VIRTUAL TABLE") {
 			sawVTab = true
@@ -43,16 +41,13 @@ func TestDeleteAgedExcerptsSeeksByRowid(t *testing.T) {
 		}
 		if strings.Contains(line, "action_excerpts_content") {
 			sawC0 = true
-			if !strings.Contains(line, "(c0=?)") {
-				t.Errorf("shadow table not seeked by c0: %q\nplan:\n%s", line, joined)
+			if !strings.Contains(line, "c0=?") {
+				t.Errorf("content table not seeked by c0: %q\nplan:\n%s", line, joined)
 			}
 		}
-		if strings.Contains(line, "idx_actions_") && strings.Contains(line, "timestamp<?") {
-			sawTS = true
-		}
 	}
-	if !sawVTab || !sawC0 || !sawTS {
-		t.Errorf("plan missing the aged-range seek path (vtab=%v c0=%v ts=%v):\n%s", sawVTab, sawC0, sawTS, joined)
+	if !sawVTab || !sawC0 {
+		t.Errorf("plan missing the batch seek path (vtab=%v c0=%v):\n%s", sawVTab, sawC0, joined)
 	}
 }
 

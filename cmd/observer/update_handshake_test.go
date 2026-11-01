@@ -51,6 +51,10 @@ exec sleep 2`)
 	if res.ChildPID <= 0 {
 		t.Errorf("ChildPID = %d, want a real pid", res.ChildPID)
 	}
+	// Started marks the run as the Windows warm-up (it ran exePath).
+	if !res.Started {
+		t.Error("Started = false after the child ran; the apply would warm up a second time")
+	}
 }
 
 // TestHandshakeRejectsTheWrongNonce: a stale child, or an unrelated process,
@@ -167,5 +171,18 @@ func TestInterpretHandshakeMessage(t *testing.T) {
 				t.Errorf("detail = %q, want it to contain %q", detail, tc.wantHas)
 			}
 		})
+	}
+}
+
+// TestWarmUpNewBinaryRunsTheFile: the production warm-up runs the file once
+// with --version and returns (lane shr-hookseam2).
+func TestWarmUpNewBinaryRunsTheFile(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ran")
+	bin := writeFakeBinary(t, dir, "observer", `echo "$1" >> "`+marker+`"`)
+	warmUpNewBinary(context.Background(), bin)
+	b, err := os.ReadFile(marker)
+	if err != nil || strings.TrimSpace(string(b)) != "--version" {
+		t.Fatalf("warm-up ran with %q (%v), want one --version run", b, err)
 	}
 }

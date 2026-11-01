@@ -34,7 +34,7 @@ var hookTrustReaders = map[integration.HookMechanism]func(homeDir string) HookTr
 		st := readCodexHookTrust(homeDir)
 		return HookTrust{
 			Applicable: true, Trusted: st.trusted, Registered: st.registered, Source: st.hooksPath, Err: st.err,
-			Remedy: "open `codex` and run /hooks to mark the entry trusted (codex requires per-hook approval before dispatch)",
+			Remedy: "run `observer init --codex` (it records trust for Observer's own entries) or approve the entry in codex /hooks (codex requires per-hook trust before dispatch)",
 		}
 	},
 }

@@ -50,6 +50,14 @@ type Input struct {
 	Expected []string
 	// Owned reports whether a hook command is Observer's.
 	Owned func(command string) bool
+	// NormalizePath, when non-nil, maps a hooks.json path to the form trust
+	// keys are compared in. It is applied to HooksPath and to the path part
+	// of every [hooks.state] key. Codex keys trust with the absolute path IT
+	// loaded, so a Windows Codex records C:\Users\<u>\.codex\hooks.json
+	// (possibly with the \\?\ prefix) while a WSL daemon reads the same file
+	// as /mnt/c/Users/<u>/.codex/hooks.json; without a normalizer such an
+	// entry could never read as trusted. nil compares keys byte for byte.
+	NormalizePath func(path string) string
 }
 
 // Entry is one Observer event's classification.
@@ -121,14 +129,46 @@ type hooksFile struct {
 
 // handlerRef is one Observer handler found in hooks.json.
 type handlerRef struct {
-	event  string
-	key    string
+	event string
+	key   string
+	// lookup is key with its path normalized (Input.NormalizePath): the
+	// form the parsed [hooks.state] map is keyed by.
+	lookup string
 	hashes []string
+}
+
+// splitStateKey splits a [hooks.state] key "<path>:<event>:<group>:<handler>"
+// into the path and the ":<event>:<group>:<handler>" tail, from the right
+// (a Windows path carries its own drive colon). ok is false for a key with
+// fewer than three colons.
+func splitStateKey(k string) (path, tail string, ok bool) {
+	i := len(k)
+	for n := 0; n < 3; n++ {
+		j := strings.LastIndex(k[:i], ":")
+		if j < 0 {
+			return "", "", false
+		}
+		i = j
+	}
+	return k[:i], k[i:], true
+}
+
+// normalizeStateKey rewrites the path part of a [hooks.state] key with norm.
+func normalizeStateKey(k string, norm func(string) string) string {
+	path, tail, ok := splitStateKey(k)
+	if !ok {
+		return k
+	}
+	return norm(path) + tail
 }
 
 // Classify returns the trust state of every Observer Codex event.
 func Classify(in Input) (Report, error) {
 	rep := Report{ConfigPresent: in.ConfigTOML != nil}
+	norm := in.NormalizePath
+	if norm == nil {
+		norm = func(s string) string { return s }
+	}
 	var hf hooksFile
 	if len(in.HooksJSON) > 0 {
 		if err := json.Unmarshal(in.HooksJSON, &hf); err != nil {
@@ -148,7 +188,7 @@ func Classify(in Input) (Report, error) {
 		st, _ := hooksTbl["state"].(map[string]any)
 		for k, v := range st {
 			if m, ok := v.(map[string]any); ok {
-				state[k] = m
+				state[normalizeStateKey(k, norm)] = m
 			}
 		}
 	}
@@ -165,12 +205,13 @@ func Classify(in Input) (Report, error) {
 					continue
 				}
 				key := fmt.Sprintf("%s:%s:%d:%d", in.HooksPath, snake, gi, hi)
+				lookup := fmt.Sprintf("%s:%s:%d:%d", norm(in.HooksPath), snake, gi, hi)
 				timeout := h.Timeout
 				if timeout == nil {
 					timeout = h.TimeoutSec
 				}
 				hashes := candidateHashes(snake, g.Matcher, h.Command, timeout, h.Async, h.StatusMessage)
-				recorded := normHash(stringField(state[key], "trusted_hash"))
+				recorded := normHash(stringField(state[lookup], "trusted_hash"))
 				if recorded != "" && containsStr(hashes, recorded) {
 					rep.HashVerified = true
 				}
@@ -178,7 +219,7 @@ func Classify(in Input) (Report, error) {
 					continue
 				}
 				if _, seen := owned[event]; !seen {
-					owned[event] = &handlerRef{event: event, key: key, hashes: hashes}
+					owned[event] = &handlerRef{event: event, key: key, lookup: lookup, hashes: hashes}
 				}
 			}
 		}
@@ -195,7 +236,7 @@ func Classify(in Input) (Report, error) {
 		rep.Entries = append(rep.Entries, Entry{
 			Event:    event,
 			Key:      ref.key,
-			State:    classifyOne(state[ref.key], ref.hashes, rep.HashVerified),
+			State:    classifyOne(state[ref.lookup], ref.hashes, rep.HashVerified),
 			Expected: expected[event],
 		})
 	}

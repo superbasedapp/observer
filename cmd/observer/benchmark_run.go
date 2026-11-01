@@ -290,6 +290,7 @@ func (r *benchmarkRunner) executeCell(ctx context.Context, runID string, spec be
 		Prompt: cell.Task.Prompt, Model: cell.Config.Model,
 		WorkspaceDir: workspacePath, HomeDir: homeDir, ProxyURL: opts.ProxyURL,
 		TimeoutSec: spec.Budget.MaxWallSecCell, MaxTurns: spec.Budget.MaxTurnsPerCell,
+		TaskRepo: cell.Task.Repo,
 	})
 	rec.WallMS = res.WallMS
 	ec := res.ExitCode

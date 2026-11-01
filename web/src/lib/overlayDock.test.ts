@@ -43,7 +43,7 @@ test("a double undo cannot unmark another overlay that is still open", () => {
 test("the dock carries the class the CSS rule hides under an open overlay", () => {
   assert.equal(OVERLAY_OPEN_ATTR, "data-overlay-open");
   const dock = readFileSync(new URL("../components/LaunchDock.tsx", import.meta.url), "utf8");
-  assert.match(dock, /className="sb-launch-dock fixed bottom-4 right-4 z-\[70\]/);
+  assert.match(dock, /className="sb-launch-dock fixed bottom-4 right-4 z-\[25\]/);
   const css = readFileSync(new URL("../index.css", import.meta.url), "utf8");
   assert.match(css, /body\[data-overlay-open\] \.sb-launch-dock\s*\{\s*display:\s*none;?\s*\}/);
 });

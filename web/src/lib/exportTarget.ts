@@ -79,6 +79,7 @@ export const EXPORT_ROUTES: readonly ExportRow[] = [
   { path: "/security", tab: "prompt-guard", endpoint: "/api/guard/prompt/events" },
   { path: "/security", tab: "mcp", endpoint: "/api/guard/mcp" },
   { path: "/security", tab: "coverage", endpoint: "/api/guard/conformance" },
+  { path: "/code-security", endpoint: "/api/security/findings", base: { status: "open", limit: 1000 } },
   {
     path: "/egress",
     none: "Nothing to export here: egress decisions stream on the page and the policy is exported from its own editor.",
@@ -148,6 +149,7 @@ export const EXPORT_ROUTES: readonly ExportRow[] = [
   { path: "/remote", tab: "terminal-control", endpoint: "/api/remote/sessions" },
   { path: "/remote", tab: "tailscale", none: CONFIG_TAB },
   { path: "/remote", tab: "audit", endpoint: "/api/remote/audit" },
+  { path: "/messages", endpoint: "/api/messages" },
   { path: "/requests", endpoint: "/api/requests" },
   { path: "/settings", endpoint: "/api/config" },
 ];

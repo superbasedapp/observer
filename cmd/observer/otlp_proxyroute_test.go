@@ -6,6 +6,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -205,6 +206,37 @@ func TestOTLPTokenOwnerCheck(t *testing.T) {
 	}
 	if newProxyRouteResolver(reason == "", t.TempDir()).Routed("codex") {
 		t.Error("a resolver for a node that serves no proxy must never hand token ownership to it")
+	}
+}
+
+// TestProxyRouteResolverInactiveProvider pins CLI-3 on the OTLP token owner:
+// a Qwen Code route in settings.json whose selected auth type is another
+// provider does not reach the proxy, so the proxy does not own its tokens.
+// On the old code Routed answered true from the base URL alone.
+func TestProxyRouteResolverInactiveProvider(t *testing.T) {
+	cases := []struct {
+		name, authType string
+		want           bool
+	}{
+		{"openai: routed", "openai", true},
+		{"another provider: the route is not used", "gemini", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := pinToolHomes(t)
+			p := filepath.Join(home, ".qwen", "settings.json")
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			body := `{"model":{"baseUrl":"http://127.0.0.1:8820/v1"},"security":{"auth":{"selectedType":"` + tc.authType + `"}}}`
+			if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			r := newProxyRouteResolver(true, home)
+			if got := r.Routed("qwen-code"); got != tc.want {
+				t.Fatalf("Routed(qwen-code) = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

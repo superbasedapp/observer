@@ -80,6 +80,29 @@ var toolGateProbeShapes = map[string]func(toolGateProbeInput) []byte{
 		}
 		return mustJSON(base)
 	},
+	// The 2026-10-21 wave: dialects whose payload carries the tool under a
+	// field the generic superset does not spell, or names it natively.
+	// Dirac: the call sits under preToolUse.{toolName, parameters}.
+	"dirac-pretool": func(in toolGateProbeInput) []byte {
+		return mustJSON(map[string]any{
+			"hookName": in.Event, "taskId": in.SessionID, "workspaceRoots": []string{in.Cwd},
+			"preToolUse": map[string]any{"toolName": "write_to_file", "parameters": map[string]string{"path": in.FakePath, "content": toolGateProbeContent}},
+		})
+	},
+	// Autohand pre-tool: native tool names, no session id.
+	"autohand-pretool": func(in toolGateProbeInput) []byte {
+		return mustJSON(map[string]any{
+			"cwd": in.Cwd, "hook_event_name": in.Event, "tool_name": "write_file",
+			"tool_input": map[string]string{"path": in.FakePath, "content": toolGateProbeContent},
+		})
+	},
+	// Kimchi's bash pre-gate: the bash tool only, no session id.
+	"kimchi-bash-pretool": func(in toolGateProbeInput) []byte {
+		return mustJSON(map[string]any{
+			"tool_name": "bash", "cwd": in.Cwd,
+			"input": map[string]string{"command": "echo observer-doctor-probe > " + in.FakePath},
+		})
+	},
 }
 
 // genericToolGateProbe is the superset payload for a dialect the table does

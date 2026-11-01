@@ -47,6 +47,9 @@ func TestUnlaunchableRulesTable(t *testing.T) {
 		{"browser extension capture", unlaunchableFacts{c: Capability{Hook: HookSpec{Mechanism: HookBrowserExtension}}}, UnlaunchableBrowser},
 		{"hosted by an editor", unlaunchableFacts{c: Capability{}, host: "Visual Studio Code"}, UnlaunchableHosted},
 		{"ungrounded desktop app", unlaunchableFacts{c: Capability{GUI: gui}}, UnlaunchableDesktop},
+		{"binary row, no launcher", unlaunchableFacts{c: Capability{Binary: &BinaryResolveSpec{Names: BinaryNames{Unix: []string{"x"}}}}}, UnlaunchableCLINoLauncher},
+		// FU-148: a CLI binary with an ungrounded desktop row is still a CLI.
+		{"binary row and an ungrounded desktop row", unlaunchableFacts{c: Capability{GUI: gui, Binary: &BinaryResolveSpec{Names: BinaryNames{Unix: []string{"x"}}}}}, UnlaunchableCLINoLauncher},
 		{"nothing at all", unlaunchableFacts{c: Capability{}}, UnlaunchableNoCLI},
 	}
 	for _, tc := range cases {
@@ -80,6 +83,18 @@ func TestUnlaunchablesToday(t *testing.T) {
 		"copilot":        UnlaunchableHosted,
 		"kilo-code":      UnlaunchableHosted,
 		"deepseek":       UnlaunchableNoCLI,
+		// The 2026-10-21 capture-only wave: grounded CLI binaries, no
+		// `observer <verb>` launcher yet.
+		"autohand":        UnlaunchableCLINoLauncher,
+		"codebuddy":       UnlaunchableCLINoLauncher,
+		"cortex-code":     UnlaunchableCLINoLauncher,
+		"deepagents-code": UnlaunchableCLINoLauncher,
+		"dimcode":         UnlaunchableCLINoLauncher,
+		"dirac":           UnlaunchableCLINoLauncher,
+		"ibm-bob":         UnlaunchableCLINoLauncher,
+		"kimchi":          UnlaunchableCLINoLauncher,
+		"stakpak":         UnlaunchableCLINoLauncher,
+		"vtcode":          UnlaunchableCLINoLauncher,
 	}
 	got := map[string]UnlaunchableKind{}
 	for _, u := range Unlaunchables() {

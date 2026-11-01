@@ -1,0 +1,17 @@
+# The labelling batch manifest (content free: no excerpt, no finding). One row per packet batch per
+# side: the reviewer id (listed in labellers.tsv), the id of the fresh agent run that labelled the
+# batch (one agent per batch per side, never shared), the batch's packet count and the sha256 of its
+# packet id list (one id per line). `seccorpus labels` refuses a label file whose batch is not here.
+# isolation is the labelling harness's to set (attested), never a labeller's; no harness attests it yet, so it
+# stays -, and a measurement whose passes agree on every verdict and reason code is one effective pass.
+batch	side	reviewer	run_agent	packets	ids_sha256	isolation
+batch-001	a	agent:sec-g5-reviewer-a	agent:a53144420ff76e673	30	d5b464c898c6fcee93422e0272c8b5fb48fccd0839cb11463e6d2d7596bf6e5d	-
+batch-001	b	-	-	30	d5b464c898c6fcee93422e0272c8b5fb48fccd0839cb11463e6d2d7596bf6e5d	-
+batch-002	a	agent:sec-g5-reviewer-a	agent:ace4ff31f6806374d	30	057459c21e14f4350de0bd790357af1b3aca3b814415f16eee928321a8237949	-
+batch-002	b	-	-	30	057459c21e14f4350de0bd790357af1b3aca3b814415f16eee928321a8237949	-
+batch-003	a	agent:sec-g5-reviewer-a	agent:a0f5e068704b62143	30	d5ef7350c0013333f86d2200fceb6b76fd05442c003e49d19cba871acd4dace2	-
+batch-003	b	-	-	30	d5ef7350c0013333f86d2200fceb6b76fd05442c003e49d19cba871acd4dace2	-
+batch-004	a	agent:sec-g5-reviewer-a	agent:a69cfe90bfa0a6a88	30	0af551cac58ff5260dab60c3373a31a564535c1e122c9d385f0fc2a5c4437f6c	-
+batch-004	b	-	-	30	0af551cac58ff5260dab60c3373a31a564535c1e122c9d385f0fc2a5c4437f6c	-
+batch-005	a	agent:sec-g5-reviewer-a	agent:aa90c5d240a0c26c4	1	44972ad8b4b09735cec85289bfa55003a8fd22b9a47517fbd5c8f6808285c194	-
+batch-005	b	-	-	1	44972ad8b4b09735cec85289bfa55003a8fd22b9a47517fbd5c8f6808285c194	-

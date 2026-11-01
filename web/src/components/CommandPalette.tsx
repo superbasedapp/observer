@@ -3,12 +3,15 @@ import { useNavigate } from "react-router-dom";
 import clsx from "clsx";
 import { History, Play, Zap, type LucideIcon } from "lucide-react";
 import { NAV_ITEMS } from "@/lib/nav";
+import { useMessagesSummary } from "@/lib/useMessagesSummary";
+import { showMessagesNav } from "@/lib/adminMessages";
 import { NODE_TAB_ROUTES, nodeTabJumps } from "@/lib/pageTabRoutes";
 import { useGovernanceVisibility } from "@/lib/governance";
 import { hiddenNavIds, withoutHiddenPaths } from "@/lib/visibility";
 import { useInactiveNavIds } from "@/lib/useComponents";
 import { hiddenTabIds, withoutHiddenTabPaths } from "@/lib/tabVisibility";
 import { useTour } from "@/components/tour/TourProvider";
+import { openFirstRun } from "@/lib/firstRun";
 import { useFilters } from "@/lib/filters";
 import { toolMeta } from "@/lib/tools";
 import { fmtShortId } from "@/lib/format";
@@ -157,7 +160,12 @@ export function CommandPalette({
   // A page hidden by governance or owned by an inactive component is not
   // offered (modular packaging plan 7.3).
   const inactiveNav = useInactiveNavIds();
-  const hiddenPages = useMemo(() => [...hiddenNavIds(gov.gov), ...inactiveNav], [gov.gov, inactiveNav]);
+  // Messages is offered only on an enrolled node (D-695), like the nav.
+  const messagesShown = showMessagesNav(useMessagesSummary().data);
+  const hiddenPages = useMemo(
+    () => [...hiddenNavIds(gov.gov), ...inactiveNav, ...(messagesShown ? [] : ["messages"])],
+    [gov.gov, inactiveNav, messagesShown],
+  );
   const hiddenTabs = hiddenTabIds(gov.gov);
 
   const items = useMemo<Item[]>(() => {
@@ -169,6 +177,14 @@ export function CommandPalette({
         label: "Start product tour",
         hint: "Replay the guided walkthrough",
         run: startTour,
+      },
+      {
+        kind: "command",
+        key: "cmd:firstrun",
+        label: "Show history capture",
+        hint: "AI tools found here and how much of their history is captured",
+        // After the palette has closed, so the dialog takes focus last.
+        run: () => window.setTimeout(openFirstRun, 0),
       },
     ];
     const pages: JumpItem[] = withoutHiddenPaths(NAV_ITEMS, (n) => n.path, hiddenPages, NAV_ITEMS).map((n) => ({

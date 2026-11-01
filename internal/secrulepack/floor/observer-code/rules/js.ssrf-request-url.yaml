@@ -1,0 +1,49 @@
+rules:
+  - id: js.ssrf-request-url
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: A URL taken from a web request is fetched by the server, so a caller can make it reach internal hosts; check the host against an allow-list first.
+    metadata:
+      category: code_vuln
+      cwe: CWE-918
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: $REQ.query
+              - pattern: $REQ.body
+              - pattern: $REQ.params
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(req|request|ctx\.request)$
+    pattern-sanitizers:
+      - pattern: encodeURIComponent(...)
+      - pattern: parseInt(...)
+      - pattern: Number(...)
+      - pattern: '`${process.env.$V}...`'
+      - patterns:
+          - pattern: '`${$CFG.$BASE}...`'
+          - metavariable-regex:
+              metavariable: $CFG
+              regex: (?i)^(\w*config\w*|\w*settings\w*|\w*options|opts|this\.\w*config\w*)$
+      - patterns:
+          - pattern-either:
+              - pattern: '"$LIT" + $X'
+              - pattern: '"$LIT" + $X + $Y'
+          - metavariable-regex:
+              metavariable: $LIT
+              regex: ^https?://[^/?#]+[/?#]
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: fetch($U, ...)
+              - pattern: axios($U, ...)
+              - pattern: axios.$M($U, ...)
+              - pattern: got($U, ...)
+              - pattern: got.$M($U, ...)
+              - pattern: http.get($U, ...)
+              - pattern: https.get($U, ...)
+              - pattern: http.request($U, ...)
+              - pattern: https.request($U, ...)
+              - pattern: needle($M, $U, ...)
+          - focus-metavariable: $U

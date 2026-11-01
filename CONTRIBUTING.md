@@ -84,7 +84,7 @@ case-by-case.
 
 ## Development setup
 
-Requirements: **Go 1.26+**. Observer uses `modernc.org/sqlite` (pure
+Requirements: **Go 1.27+**. Observer uses `modernc.org/sqlite` (pure
 Go, no CGO). No C toolchain needed.
 
 ```bash

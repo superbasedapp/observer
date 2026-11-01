@@ -17,7 +17,7 @@
 <p align="center">
   <strong>Track what every AI coding agent costs, inside your editor. See the limit coming.</strong><br>
   See what Claude Code, Codex, Cursor and 37 more AI coding tools cost, per session and per model,
-  from the tokens your provider actually billed. No account, no telemetry.
+  from the tokens your provider actually billed. No account, and your session content stays local.
 </p>
 
 <p align="center">
@@ -28,9 +28,9 @@
 
 - **Provider-exact cost.** A local proxy records the tokens your provider returned, including
   5-minute vs 1-hour cache writes, reasoning tokens and long-context repricing.
-- **Every coding agent in one place.** 40 adapters: Claude Code, Codex, Cursor, GitHub Copilot,
+- **Every coding agent in one place.** 50 adapters: Claude Code, Codex, Cursor, GitHub Copilot,
   Gemini CLI, Cline, Aider, Kiro, Devin, OpenCode, Junie and more, in one local database.
-- **Local-first.** Everything stays in `~/.observer/observer.db` on your workspace host.
+- **Local-first.** Everything is stored in `~/.observer/observer.db` on your workspace host.
 - **Know the next bill before it lands.** Prompt-cache expiry warnings and a cost band for your next
   message.
 
@@ -55,6 +55,11 @@
 
 If something looks off, run **SuperBased: Doctor**. The **Get Started with SuperBased** walkthrough
 (Help > Welcome) covers the rest.
+
+**macOS needs version 13 Ventura or later.** The bundled `observer` binary is built with Go 1.27,
+which no longer runs on macOS 12 Monterey. On macOS 12, stay on v1.36.0 or upgrade macOS first.
+v1.36.0 was meant to carry an advance notice of this and did not. Linux and Windows are not
+affected.
 
 ## What you get
 
@@ -107,7 +112,7 @@ Click any session to open its detail view. Four of its tabs:
 
 ## Privacy
 
-No telemetry and no account. After the binary is in place, the extension talks only to
+No account needed. After the binary is in place, the extension talks only to
 `127.0.0.1` on your workspace host; it contacts GitHub Releases only if it finds neither a bundled
 nor a local binary. Remote-SSH, WSL, Dev Containers and Codespaces keep the data on the remote host.
 

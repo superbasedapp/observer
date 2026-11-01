@@ -62,9 +62,14 @@ type PromptSeamCaps struct {
 	// Block: the seam can stop the prompt outright.
 	Block bool
 	// WarnIndirect: the seam's warning reaches the MODEL, not the
-	// developer (Antigravity CLI's PreInvocation ephemeralMessage), so a
-	// warn there still toasts.
+	// developer (Devin CLI's additionalContext), so a warn there still
+	// toasts.
 	WarnIndirect bool
+	// BlockSilent: the seam's block carries no developer-visible reason
+	// (Antigravity CLI's PreInvocation abort is atomic: no message can
+	// accompany it), so the desktop toast is the developer's only signal
+	// and a block there toasts whatever [guard.alerts].min_severity says.
+	BlockSilent bool
 	// Redact: the seam can replace the prompt text the model receives
 	// (Poolside updated_prompt, commandcode transform). A lane sets it only
 	// when it can actually mask THIS prompt (every finding is a certain
@@ -84,7 +89,8 @@ var (
 	// it was sent; it can only record.
 	PromptSeamCapture = PromptSeamCaps{}
 	// PromptSeamWarnOnly: a near-pre-send hook that can surface a notice
-	// but cannot stop the model call (Antigravity CLI PreInvocation).
+	// to the model but cannot stop the model call (Devin CLI
+	// UserPromptSubmit).
 	PromptSeamWarnOnly = PromptSeamCaps{Warn: true, WarnIndirect: true}
 )
 

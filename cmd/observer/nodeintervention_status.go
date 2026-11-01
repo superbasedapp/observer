@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -218,6 +219,17 @@ func writeNodeInterventionStatus(ctx context.Context, dbPath string, status node
 }
 
 func nodeInterventionStatusLine(ctx context.Context, st *store.Store, dbPath string) string {
+	return nodeInterventionStatusLineOn(ctx, st, dbPath, runtime.GOOS)
+}
+
+// nodeInterventionStatusLineOn is nodeInterventionStatusLine for goos: on an
+// OS without a process-control backend the controller's identity can never
+// be read back, so the line names the missing capability instead of an
+// unverifiable identity.
+func nodeInterventionStatusLineOn(ctx context.Context, st *store.Store, dbPath, goos string) string {
+	if line, unsupported := nodeControlUnsupported(goos); unsupported {
+		return line
+	}
 	status, err := readNodeInterventionStatus(ctx, st, dbPath)
 	if err != nil {
 		return "unavailable - " + err.Error()

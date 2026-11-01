@@ -88,17 +88,27 @@ type stagedForeignLayout struct {
 	root        string
 	windowsUser string
 	discover    bool
+	// realHome pins the account's real home for the isolation rules
+	// (isolation.go). Empty keeps the staged layout deciding alone.
+	realHome string
 }
 
 var stagedForeign atomic.Pointer[stagedForeignLayout]
 
 // ForeignHomesSuppressed reports whether foreign-OS home discovery is off for
-// this process — EnvDisableForeignHomes is set, or this is a test binary
-// without a staged layout that opts back in. Code that reaches the foreign
-// side WITHOUT going through AllHomes (a fixed /mnt/c path, an interop exec)
-// must consult it so the knob and the test guard cover that path too.
+// this process: EnvDisableForeignHomes is set, this is a test binary
+// without a staged layout that opts back in, or the process is isolated
+// (IsolationReason: an isolated HOME, --no-crossmount, a --config outside
+// the real home; LEFT2 audit S5). Code that reaches the foreign side WITHOUT
+// going through AllHomes (a fixed /mnt/c path, an interop exec) must
+// consult it so the knob, the test guard and the isolation rules cover that
+// path too.
 func ForeignHomesSuppressed() bool {
-	return foreignSuppressedWith(stagedForeign.Load(), os.Getenv(EnvDisableForeignHomes), testBinaryGuard)
+	staged := stagedForeign.Load()
+	if foreignSuppressedWith(staged, os.Getenv(EnvDisableForeignHomes), testBinaryGuard) {
+		return true
+	}
+	return activeIsolationReason(staged) != ""
 }
 
 // foreignSuppressedWith is the pure decision behind ForeignHomesSuppressed,
@@ -137,6 +147,13 @@ type ForeignLayoutForTest struct {
 	// set it to run a non-vacuous control that shows the same layout IS found
 	// once discovery is allowed.
 	Discover bool
+	// RealHome, when set, stands in for the account's real home and turns on
+	// the isolation rules of isolation.go for the staged layout: with HOME
+	// (USERPROFILE on Windows) outside RealHome no foreign home is detected
+	// and no explicit foreign override outside HOME is honoured, exactly as
+	// for a real binary. Empty keeps the old meaning (the layout decides
+	// alone).
+	RealHome string
 }
 
 // StageForeignLayoutForTest installs layout for the rest of the calling test
@@ -152,10 +169,13 @@ func StageForeignLayoutForTest(tb testing.TB, layout ForeignLayoutForTest) {
 		root:        filepath.Clean(layout.Root),
 		windowsUser: layout.WindowsUser,
 		discover:    layout.Discover,
+		realHome:    layout.RealHome,
 	})
+	restoreIsolation := resetProcessIsolationForTest()
 	resetExtrasCacheForTest()
 	tb.Cleanup(func() {
 		stagedForeign.Store(prev)
+		restoreIsolation()
 		resetExtrasCacheForTest()
 	})
 }

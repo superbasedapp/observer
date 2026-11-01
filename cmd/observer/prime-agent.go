@@ -5,13 +5,17 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/integration"
 )
+
+// primeAgentModelsArtifact is the models.json prime-agent reads: the
+// prime-agent/user-models artifact, so PRIME_AGENT_CODING_AGENT_DIR
+// (tilde-expanded) moves it (S-17; the launcher hard-coded ~/.prime/agent).
+const primeAgentModelsArtifact = "prime-agent/user-models"
 
 // primeAgentProviderName is the custom prime-agent provider entry the
 // launcher ensures in models.json. Distinct name so it never collides with
@@ -157,9 +161,9 @@ func newPrimeAgentCmd() *cobra.Command {
 			}
 			// T-035: on a managed node, every built-in provider the registry
 			// row can cover is pointed at its proxy lane for the session too.
-			if home, herr := os.UserHomeDir(); herr == nil {
+			if modelsPath, perr := launcherArtifactPath(primeAgentModelsArtifact); perr == nil {
 				restoreOverrides, err := applyManagedProviderOverrides(cmd.Context(), configPath, providerOverridesSpec{
-					tool: "prime-agent", path: filepath.Join(home, ".prime", "agent", "models.json"), display: primeAgentModelsDisplay,
+					tool: "prime-agent", path: modelsPath, display: primeAgentModelsDisplay,
 					proxyRoot: resolved, ownName: primeAgentProviderName, overrides: integration.ProviderOverridesFor("prime-agent"),
 				}, cmd.ErrOrStderr())
 				if err != nil {
@@ -272,14 +276,14 @@ const primeAgentModelsDisplay = "~/.prime/agent/models.json"
 // operator's own provider of that name, removed after the session) — same
 // upstream file schema. The apiKey is the env var NAME, never a literal key.
 func preparePrimeAgentObserverProvider(baseURL string, hasCredential bool) (observerModelsRoute, error) {
-	home, err := os.UserHomeDir()
+	modelsPath, err := launcherArtifactPath(primeAgentModelsArtifact)
 	if err != nil {
 		return observerModelsRoute{}, newVisibleLauncherError(err,
-			"observer prime-agent: cannot locate your home directory to configure prime-agent's provider")
+			"observer prime-agent: cannot locate prime-agent's models.json to configure its provider ("+err.Error()+")")
 	}
 	return prepareObserverModelsProvider(observerModelsProviderSpec{
 		tool:    "prime-agent",
-		path:    filepath.Join(home, ".prime", "agent", "models.json"),
+		path:    modelsPath,
 		display: primeAgentModelsDisplay,
 		name:    primeAgentProviderName,
 		baseURL: baseURL,

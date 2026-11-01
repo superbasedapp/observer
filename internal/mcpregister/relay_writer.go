@@ -523,7 +523,7 @@ func (r *Registrar) Revert(_ context.Context, c project.Client, rows []project.J
 		return fmt.Errorf("%w: %s", project.ErrConfigChanged, c.ConfigPath)
 	}
 	if empty {
-		if err := os.Remove(c.ConfigPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := removeConfigFile(c.ConfigPath, again); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return relayWriterError(c, fmt.Errorf("remove: %w", err))
 		}
 		return nil

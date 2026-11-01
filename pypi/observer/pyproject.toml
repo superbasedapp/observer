@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "superbased-observer"
 dynamic = ["version"]
-description = "Local-first AI coding agent observability: Claude Code token usage, Codex cost and Cursor spend across 40 adapters, provider-exact via a local proxy. No account, no telemetry."
+description = "Local-first AI coding agent observability: Claude Code token usage, Codex cost and Cursor spend across 50 adapters, provider-exact via a local proxy. No account needed."
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
@@ -32,7 +32,6 @@ keywords = [
   "prompt-caching",
   "spend",
   "local-first",
-  "no-telemetry",
 ]
 classifiers = [
   "Development Status :: 5 - Production/Stable",
@@ -73,7 +72,7 @@ path = "src/observer/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 # `packages` excludes _bin/ explicitly because hatchling's default
-# file-collection respects .gitignore — and our .gitignore lists the
+# file-collection respects .gitignore, and our .gitignore lists the
 # staged binaries (observer, observer.exe, antigravity-bridge.exe)
 # to keep them out of source control. Without the explicit exclude,
 # hatchling would also process _bin/ through the gitignore filter,

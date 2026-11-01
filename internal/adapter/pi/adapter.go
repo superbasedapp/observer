@@ -556,8 +556,14 @@ func modelName(state *sessionContext) string {
 // cross-mount-resolved $HOME so observer in WSL2 picks up sessions
 // from /mnt/c/Users/<u>/.pi (and vice-versa). The subpath is uniform
 // across OSes.
+//
+// PI_CODING_AGENT_DIR adds <agentDir>/sessions on the native side, resolved
+// through the pi/user-settings artifact the launcher uses (S-17).
 func defaultRoots() []string {
 	var roots []string
+	if d := adapter.RelocatedToolHome("pi/user-settings", 0); d != "" {
+		roots = append(roots, filepath.Join(d, "sessions"))
+	}
 	for _, h := range crossmount.AllHomes() {
 		roots = append(roots, filepath.Join(h.Path, ".pi", "agent", "sessions"))
 	}

@@ -54,8 +54,9 @@ func (c *Client) SetAccessGrantSink(sink func()) {
 // the member, plus the managed machine identity when there is one.
 // It is grantSubjectFor (accessgrant_claim.go), so the fetch and every
 // decision-time read agree on one subject.
-func (c *Client) accessGrantSubject(_ context.Context, enr *store.Enrolment) (string, string) {
-	return grantSubjectFor(enr)
+func (c *Client) accessGrantSubject(ctx context.Context, enr *store.Enrolment) (string, string) {
+	managed, _ := NodeManagedFor(ctx, c.store, enr) //nolint:errcheck // a read error fetches the member subject, the closed direction
+	return grantSubjectFor(enr, managed)
 }
 
 // FetchAccessGrants pulls GET /api/agent/grants and applies the D-016 ladder:

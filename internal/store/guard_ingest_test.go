@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/freshness"
 	"github.com/marmutapp/superbased-observer/internal/guard"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/policy"
@@ -118,6 +119,53 @@ func TestIngest_GuardSeam(t *testing.T) {
 	report, err := s.VerifyGuardChain(ctx)
 	if err != nil || !report.OK {
 		t.Errorf("chain after ingest = (%+v, %v), want OK", report, err)
+	}
+}
+
+// TestIngest_GuardSeamFileActionReparse pins the file-action branch of the
+// same idempotency rule. File actions insert one at a time through
+// insertSingleAction (the freshness classifier path), whose upsert takes
+// the UPDATE branch on a re-read; it used to report that as an insert, so
+// every whole-store re-parse (deepagents-code, stakpak, ibm-bob, dimcode,
+// kiro-cli...) wrote the same file_access flag again.
+func TestIngest_GuardSeamFileActionReparse(t *testing.T) {
+	t.Parallel()
+	s := newGuardedStore(t)
+	ctx := context.Background()
+	classifier := freshness.New(s.db, freshness.Options{MaxHashSizeMB: 10, FastPathStatOnly: true})
+	now := time.Date(2026, 10, 21, 18, 30, 0, 0, time.UTC)
+
+	events := []models.ToolEvent{{
+		SourceFile: "sessions.db", SourceEventID: "read:1", SessionID: "sF", ProjectRoot: "/home/u/proj",
+		Timestamp: now, Tool: models.ToolDeepAgentsCode, ActionType: models.ActionReadFile,
+		Target: "/home/u/.ssh/id_rsa", Success: true, RawToolName: "read_file",
+	}}
+	opts := IngestOptions{Classifier: classifier}
+
+	res, err := s.Ingest(ctx, events, nil, opts)
+	if err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	if res.ActionsInserted != 1 || res.GuardEventsRecorded != 1 {
+		t.Fatalf("first ingest = (actions %d, guard %d), want (1, 1)", res.ActionsInserted, res.GuardEventsRecorded)
+	}
+
+	for pass := 2; pass <= 4; pass++ {
+		res, err = s.Ingest(ctx, events, nil, opts)
+		if err != nil {
+			t.Fatalf("re-Ingest pass %d: %v", pass, err)
+		}
+		if res.ActionsInserted != 0 || res.GuardEventsRecorded != 0 {
+			t.Errorf("re-ingest pass %d = (actions %d, guard %d), want (0, 0)",
+				pass, res.ActionsInserted, res.GuardEventsRecorded)
+		}
+	}
+	rows, err := s.LoadGuardEventsForSession(ctx, "sF")
+	if err != nil {
+		t.Fatalf("LoadGuardEventsForSession: %v", err)
+	}
+	if len(rows) != 1 || rows[0].EventKind != "file_access" || rows[0].ActionID == nil {
+		t.Errorf("guard rows after re-parses = %+v, want one linked file_access row", rows)
 	}
 }
 

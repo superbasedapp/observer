@@ -7,11 +7,7 @@
     "stdout": "{\"decision\":\"approve\"}\n",
     "exit_code": 0
   },
-  "antigravity PreToolUse": {
-    "stdout": "{\"decision\":\"approve\"}\n",
-    "exit_code": 0
-  },
-  "antigravity UserPromptSubmit": {
+  "antigravity no-such-event": {
     "stdout": "{\"decision\":\"approve\"}\n",
     "exit_code": 0
   },
@@ -24,6 +20,10 @@
     "exit_code": 0
   },
   "antigravity-cli no-such-event": {
+    "stdout": "{}\n",
+    "exit_code": 0
+  },
+  "autohand no-such-event": {
     "stdout": "{}\n",
     "exit_code": 0
   },
@@ -151,11 +151,11 @@
     "stdout": "{\"decision\":\"approve\"}\n",
     "exit_code": 0
   },
-  "cline-cli PreToolUse": {
-    "stdout": "",
+  "cline-cli no-such-event": {
+    "stdout": "{\"decision\":\"approve\"}\n",
     "exit_code": 0
   },
-  "cline-cli UserPromptSubmit": {
+  "codebuddy no-such-event": {
     "stdout": "{\"decision\":\"approve\"}\n",
     "exit_code": 0
   },
@@ -215,12 +215,8 @@
     "stdout": "{\"decision\":\"approve\"}\n",
     "exit_code": 0
   },
-  "copilot-cli PreToolUse": {
-    "stdout": "{\"decision\":\"approve\"}\n",
-    "exit_code": 0
-  },
-  "copilot-cli UserPromptSubmit": {
-    "stdout": "{\"decision\":\"approve\"}\n",
+  "copilot-cli no-such-event": {
+    "stdout": "{}\n",
     "exit_code": 0
   },
   "copilot-web PreToolUse": {
@@ -228,6 +224,10 @@
     "exit_code": 0
   },
   "copilot-web UserPromptSubmit": {
+    "stdout": "{\"decision\":\"approve\"}\n",
+    "exit_code": 0
+  },
+  "cortex-code no-such-event": {
     "stdout": "{\"decision\":\"approve\"}\n",
     "exit_code": 0
   },
@@ -323,11 +323,11 @@
     "stdout": "{\"permission\":\"allow\",\"continue\":true}\n",
     "exit_code": 0
   },
-  "deepseek PreToolUse": {
+  "deepagents-code no-such-event": {
     "stdout": "{\"decision\":\"approve\"}\n",
     "exit_code": 0
   },
-  "deepseek UserPromptSubmit": {
+  "deepseek no-such-event": {
     "stdout": "{\"decision\":\"approve\"}\n",
     "exit_code": 0
   },
@@ -352,6 +352,14 @@
     "exit_code": 0
   },
   "devin pre_write_code": {
+    "stdout": "",
+    "exit_code": 0
+  },
+  "dimcode no-such-event": {
+    "stdout": "",
+    "exit_code": 0
+  },
+  "dirac no-such-event": {
     "stdout": "",
     "exit_code": 0
   },
@@ -443,6 +451,10 @@
     "stdout": "{\"decision\":\"approve\"}\n",
     "exit_code": 0
   },
+  "ibm-bob no-such-event": {
+    "stdout": "{\"decision\":\"approve\"}\n",
+    "exit_code": 0
+  },
   "junie PreToolUse": {
     "stdout": "{}\n",
     "exit_code": 0
@@ -467,16 +479,16 @@
     "stdout": "{\"decision\":\"approve\"}\n",
     "exit_code": 0
   },
+  "kimchi no-such-event": {
+    "stdout": "{\"decision\":\"approve\"}\n",
+    "exit_code": 0
+  },
   "kimi-code no-such-event": {
     "stdout": "",
     "exit_code": 0
   },
-  "kiro-cli PreToolUse": {
-    "stdout": "{\"decision\":\"approve\"}\n",
-    "exit_code": 0
-  },
-  "kiro-cli UserPromptSubmit": {
-    "stdout": "{\"decision\":\"approve\"}\n",
+  "kiro-cli no-such-event": {
+    "stdout": "",
     "exit_code": 0
   },
   "kiro-crew PreToolUse": {
@@ -605,6 +617,18 @@
   },
   "qwen-code no-such-event": {
     "stdout": "{\"decision\":\"approve\"}\n",
+    "exit_code": 0
+  },
+  "stakpak PreToolUse": {
+    "stdout": "{\"decision\":\"approve\"}\n",
+    "exit_code": 0
+  },
+  "stakpak UserPromptSubmit": {
+    "stdout": "{\"decision\":\"approve\"}\n",
+    "exit_code": 0
+  },
+  "vtcode no-such-event": {
+    "stdout": "",
     "exit_code": 0
   },
   "zcode no-such-event": {

@@ -921,7 +921,14 @@ func TestUnregisterCommandCode_RefusesOnChecksumMismatch(t *testing.T) {
 		t.Fatalf("register: %v", res.Error)
 	}
 	path := filepath.Join(r.opts.HomeDir, ".commandcode", "mods", "observer-guard.ts")
-	if err := os.WriteFile(path, []byte("// modified out of band since install\nexport default function (cmd) {}"), 0o600); err != nil {
+	// Observer's own mod, edited since install: still Observer's (its
+	// marker), so --force removes it; a file that is not Observer's mod is
+	// never removed (FU-212, TestFU212UninstallKeepsForeignFiles).
+	mod, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(mod, []byte("\n// modified out of band since install\n")...), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

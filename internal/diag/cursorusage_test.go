@@ -14,7 +14,7 @@ import (
 )
 
 func TestCheckCursorUsage(t *testing.T) {
-	database := routingGapDB(t)
+	database := diagTestDB(t)
 	ctx := context.Background()
 	now := time.Now().UTC()
 	stamp := now.Format(time.RFC3339Nano)

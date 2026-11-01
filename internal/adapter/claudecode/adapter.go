@@ -9,10 +9,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/adapter"
+	"github.com/marmutapp/superbased-observer/internal/agentconfig"
 	"github.com/marmutapp/superbased-observer/internal/contentcap"
 	"github.com/marmutapp/superbased-observer/internal/git"
 	"github.com/marmutapp/superbased-observer/internal/models"
@@ -44,6 +46,12 @@ type Adapter struct {
 	// onto ToolEvents at parse time so the dashboard's Effort column
 	// renders without a separate read-side join. See EffortLookup.
 	effortLookup EffortLookup
+	// getenv reads CLAUDE_CONFIG_DIR (through the agentconfig rule on
+	// claude-code/user-settings) for WatchPaths; nil = os.Getenv.
+	getenv func(string) string
+	// xcodeRootFn, when set, replaces the Xcode Claude Agent projects root
+	// (xcode.go); tests only.
+	xcodeRootFn func() string
 }
 
 // New returns a Claude Code adapter with the default scrubber and
@@ -81,6 +89,13 @@ func (*Adapter) Name() string { return models.ToolClaudeCode }
 // subpath is identical across OSes — Claude Code uses ~/.claude on
 // Linux, macOS, and Windows alike — so no per-home OS branching is
 // needed here.
+//
+// A relocated profile (CLAUDE_CONFIG_DIR, CC-8) ADDS its projects dir after
+// the per-home roots: the variable usually selects one profile for one
+// invocation (a `claude-work` alias), so the default ~/.claude stays in use
+// beside it and is never dropped. The relocation is the agentconfig rule on
+// claude-code/user-settings (relocatedProjectsRoot), the same one the hook,
+// MCP and route writers follow.
 func (a *Adapter) WatchPaths() []string {
 	if a.watchRoot != "" {
 		return []string{a.watchRoot}
@@ -89,7 +104,37 @@ func (a *Adapter) WatchPaths() []string {
 	for _, h := range crossmount.AllHomes() {
 		roots = append(roots, filepath.Join(h.Path, ".claude", "projects"))
 	}
+	if r := a.relocatedProjectsRoot(); r != "" {
+		roots = adapter.DedupRootsByIdentity(append(roots, r))
+	}
+	// Xcode's bundled Claude Agent keeps its own config home (FU-150,
+	// xcode.go); its transcripts are captured beside the default ones.
+	if r := a.xcodeRoot(); r != "" {
+		roots = adapter.DedupRootsByIdentity(append(roots, r))
+	}
 	return roots
+}
+
+// claudeSettingsArtifact is the agentconfig FileRow whose directory is the
+// Claude Code config home.
+const claudeSettingsArtifact = "claude-code/user-settings"
+
+// relocatedProjectsRoot is <config home>/projects when a relocation rule on
+// claude-code/user-settings moves the native config home, "" otherwise.
+func (a *Adapter) relocatedProjectsRoot() string {
+	getenv := a.getenv
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	got, err := agentconfig.ResolveArtifact(claudeSettingsArtifact, agentconfig.PathEnv{GOOS: runtime.GOOS, Home: home, Getenv: getenv})
+	if err != nil || got.RelocatedBy == "" || got.Path == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(filepath.Clean(got.Path)), "projects")
 }
 
 // IsSessionFile implements adapter.Adapter. Claude Code session files end in
@@ -413,6 +458,7 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 	// own first entrypoint-bearing line — harmless, the store write is
 	// first-wins-unless-empty (models.SessionSurface doc).
 	surfaceStamped := false
+	hostedKind, hostedHost, hostedOK := a.hostedSurface(path)
 	// versionStamped gates Issue 2 tool-version capture the same way:
 	// stamp at most once per ParseSessionFile call, from the first line
 	// carrying a non-empty `version` + sessionId. first-wins-unless-empty
@@ -563,8 +609,13 @@ func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset 
 			// Part E: capture-surface attribution (IDE-15 provenance
 			// half) — stamp once per parse from the first line that
 			// carries both an entrypoint and a session id.
-			if !surfaceStamped && line.Entrypoint != "" && line.SessionID != "" {
-				if kind, host, ok := resolveClaudeSurface(line.Entrypoint); ok {
+			if !surfaceStamped && (line.Entrypoint != "" || hostedOK) && line.SessionID != "" {
+				kind, host, ok := resolveClaudeSurface(line.Entrypoint)
+				if hostedOK {
+					// The transcript's place (the Xcode home) decides.
+					kind, host, ok = hostedKind, hostedHost, true
+				}
+				if ok {
 					res.SessionSurfaces = append(res.SessionSurfaces, models.SessionSurface{
 						SessionID:   line.SessionID,
 						Surface:     kind,
@@ -1479,7 +1530,7 @@ func (a *Adapter) extractTarget(toolName string, rawInput []byte, projectRoot st
 	case "Read", "Write", "Edit":
 		if fp := pick("file_path"); fp != "" {
 			if projectRoot != "" {
-				return git.RelativePath(projectRoot, fp)
+				return git.CheckoutRelativePath(projectRoot, fp)
 			}
 			return fp
 		}

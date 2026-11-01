@@ -108,7 +108,10 @@ func (c *ReportSeqCounter) readPersisted() int64 {
 
 // ManagedMachineIdentity returns this host's org-salted machine fingerprint
 // (W-4, the same identity BindMachine presents) when — and only when — the
-// node is currently enrolled under managed tenancy. It mirrors BindMachine's
+// node is currently managed: a managed enrolment, or an enrolment whose org
+// switched it to enterprise and whose grant this node holds (NodeManagedFor,
+// operator rulings P-204 and P-205; the org server serves such a node as a
+// managed one, so it names its machine like one). It mirrors BindMachine's
 // fail-open tolerance exactly: no enrolment, a load error, an individual/BYO
 // enrolment, or a machine-id resolution error all return "" rather than
 // propagating an error, because a report() caller has no error path to hand
@@ -120,15 +123,20 @@ func (c *Client) ManagedMachineIdentity(ctx context.Context) string {
 	if err != nil {
 		return ""
 	}
-	return managedMachineIdentityOf(enr)
+	managed, err := NodeManagedFor(ctx, c.store, enr)
+	if err != nil {
+		return ""
+	}
+	return managedMachineIdentityOf(enr, managed)
 }
 
 // managedMachineIdentityOf is ManagedMachineIdentity over an enrolment the
-// caller already holds (the leave notice runs after the enrolment generation
-// is fenced, so it must not re-read the row). "" for nil, an unmanaged
-// enrolment, or a machine-id resolution error.
-func managedMachineIdentityOf(enr *store.Enrolment) string {
-	if enr == nil || !enr.IsManaged() {
+// caller already holds and the managed answer it resolved (the leave notice
+// runs after the enrolment generation is fenced, so it resolves managed
+// before the fence and must not re-read the row). "" for nil, an unmanaged
+// node, or a machine-id resolution error.
+func managedMachineIdentityOf(enr *store.Enrolment, managed bool) string {
+	if enr == nil || !managed {
 		return ""
 	}
 	mid, err := machineid.ForOrg(enr.OrgID)

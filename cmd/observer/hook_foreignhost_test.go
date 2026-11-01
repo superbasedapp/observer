@@ -11,6 +11,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/db"
 	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
+	"github.com/marmutapp/superbased-observer/internal/hook"
 )
 
 // TestClaudeCodeHook_ForeignCursorPayloadIsNoOp drives the REAL claude-code
@@ -36,6 +37,21 @@ func TestClaudeCodeHook_ForeignCursorPayloadIsNoOp(t *testing.T) {
 		"[guard.prompt]\nenabled = true\nmode = \"ask-once\"\nhook_lane = true\nreconsider_min_delay = \"0s\"\n"
 	if err := os.WriteFile(configPath, []byte(cfgBody), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
+	}
+	// Observer's own cursor hooks are registered in the hook's home (FU-122:
+	// the replay stands down only while they are; TestClaudeCodeHook_
+	// CursorReplayJudgedWithoutCursorRegistration covers the absent case).
+	home := t.TempDir()
+	pinToolHomesAt(t, home)
+	if err := os.MkdirAll(filepath.Join(home, ".cursor"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	reg, err := hook.NewRegistry(hook.Options{BinaryPath: filepath.Join(home, "bin", "observer"), ConfigPath: configPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res := reg.Register("cursor"); res.Error != nil {
+		t.Fatalf("register cursor: %v", res.Error)
 	}
 	var exitCodes []int
 	prevExit := hookOSExit

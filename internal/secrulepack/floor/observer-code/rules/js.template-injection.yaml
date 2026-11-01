@@ -1,0 +1,40 @@
+rules:
+  - id: js.template-injection
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: Input from a web request is compiled as a template, so a caller can run template code on the server; compile a fixed template and pass the input as data.
+    metadata:
+      category: code_vuln
+      cwe: CWE-1336
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: $REQ.query
+              - pattern: $REQ.body
+              - pattern: $REQ.params
+              - pattern: $REQ.cookies
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(req|request|ctx\.request)$
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: ejs.render($T, ...)
+              - pattern: ejs.compile($T, ...)
+              - patterns:
+                  - pattern: $HB.compile($T, ...)
+                  - metavariable-regex:
+                      metavariable: $HB
+                      regex: ^(Handlebars|handlebars|hbs|Mustache|mustache|dot|doT)$
+              - pattern: pug.render($T, ...)
+              - pattern: pug.compile($T, ...)
+              - pattern: _.template($T, ...)
+              - pattern: lodash.template($T, ...)
+              - pattern: nunjucks.renderString($T, ...)
+              - patterns:
+                  - pattern: $ENV.renderString($T, ...)
+                  - metavariable-regex:
+                      metavariable: $ENV
+                      regex: (?i)^(env|nunjucks.*|.*env)$
+          - focus-metavariable: $T

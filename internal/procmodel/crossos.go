@@ -168,6 +168,45 @@ var DefaultCrossOSToolBasenames = map[string][]string{
 	// project is open, the process presenting in the project cwd (the
 	// same shape as "cursor" above).
 	"zed": {"zed.exe", "zed"},
+	// --- 2026-10-21 capture-only wave (no observer launcher, so no seed;
+	// cross-OS attribution rides these basenames alone) ---
+	// Autohand Code: npm bin `autohand` (Node entry point, so node belongs
+	// here) and a vendor-native build (autohand / autohand.exe;
+	// ahtraces(.exe) is the vendor's own trace uploader, not the agent).
+	// `agent` and `ah` aliases are deliberately omitted as too generic.
+	"autohand": {"autohand.exe", "autohand", "autohand-code.exe", "autohand-code", "node.exe", "node"},
+	// ibm-bob: npm-installed Node script (bobshell dist/bob.js). On Linux the
+	// `bob` bin is a symlink executed via its node shebang, on Windows the
+	// bob.cmd shim runs node.exe, so the root process is node; the shim
+	// name is listed for completeness.
+	"ibm-bob": {"bob.cmd", "bob", "node.exe", "node"},
+	// Snowflake Cortex Code: a Node single-executable, so the process is the
+	// branded binary itself (no node/python name): the Linux ELF `cortex`
+	// and, on Windows, cortex.exe (the cortex.cmd shim on PATH execs it).
+	"cortex-code": {"cortex.exe", "cortex"},
+	// CodeBuddy Code: npm Node entry point (like command-code); `cbc`
+	// excluded as ambiguous.
+	"codebuddy": {"codebuddy.exe", "codebuddy", "codebuddy-code.exe", "codebuddy-code", "node.exe", "node"},
+	// Deep Agents Code: uv tool entry points `dcode` / `deepagents-code`; on
+	// Windows the root is the uv trampoline dcode.exe, which launches the
+	// venv's python, so python belongs here (the hermes/aider precedent).
+	"deepagents-code": {"dcode.exe", "dcode", "deepagents-code.exe", "deepagents-code", "python.exe", "python"},
+	// dimcode: the npm shim `dim`/`dimcode` is a node wrapper (bin/dim.mjs)
+	// that spawnSync's the platform binary (dimcode.exe on Windows, a
+	// `dimcode` ELF under ~/.dimcode/binaries on Linux/macOS) in the same
+	// cwd; no session-id env var is exported.
+	"dimcode": {"dimcode.exe", "dimcode", "dim.exe", "dim", "node.exe", "node"},
+	// dirac: npm JS bin (dirac.cmd shim on Windows, a node-run cli.mjs
+	// everywhere; no dirac.exe exists), so node belongs here like
+	// cline-cli/command-code.
+	"dirac": {"dirac", "node.exe", "node"},
+	// Kimchi (Cast AI): a Bun-compiled single native executable, no node at
+	// the process level (the muse/junie native-binary rule).
+	"kimchi": {"kimchi.exe", "kimchi"},
+	// Stakpak: native Rust binary (stakpak.dev).
+	"stakpak": {"stakpak.exe", "stakpak"},
+	// VT Code: native Rust binary (static-pie ELF / PE).
+	"vtcode": {"vtcode.exe", "vtcode"},
 }
 
 // DefaultCrossOSToolLaunchers maps a session tool to the branded IDE/desktop
@@ -311,6 +350,23 @@ var DefaultRefreshLauncherBasenames = map[string]bool{
 	// shim also presents is deliberately not added, same rule as command-code.
 	"prime-agent.exe": true,
 	"prime-agent":     true,
+	// 2026-10-21 capture-only wave — the distinctive NATIVE binaries only:
+	// autohand's vendor-native build, dimcode's platform binary (spawned
+	// by its node wrapper), kimchi (Bun-compiled), stakpak and vtcode
+	// (Rust). The npm-script tools of the wave (ibm-bob, codebuddy,
+	// dirac) present as node and follow the SCRIPT-WRAPPER rule above;
+	// deepagents-code presents as python; `cortex` is too generic a word
+	// to match on name alone.
+	"autohand.exe": true,
+	"autohand":     true,
+	"dimcode.exe":  true,
+	"dimcode":      true,
+	"kimchi.exe":   true,
+	"kimchi":       true,
+	"stakpak.exe":  true,
+	"stakpak":      true,
+	"vtcode.exe":   true,
+	"vtcode":       true,
 	// NOTE: roo-code (node-only, no branded launcher), pi (`pi` too short/
 	// generic to match on name alone without the cwd guard), and cowork (claude
 	// launcher already covered) are intentionally NOT added here — they still

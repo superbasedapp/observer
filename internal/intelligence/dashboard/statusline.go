@@ -11,6 +11,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/costtext"
 	"github.com/marmutapp/superbased-observer/internal/dashapi"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
+	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
 // StatuslineResponse is the wire shape of GET /api/statusline — a small,
@@ -45,6 +46,14 @@ type StatuslineResponse struct {
 	// none ends). Omitted on a node with none (request-grants G6).
 	GrantsInForce     int   `json:"grants_in_force,omitempty"`
 	NextGrantExpiryNs int64 `json:"next_grant_expiry_ns,omitempty"`
+	// MessagesUnread / MessagesUnreadAlerts count the unread messages from
+	// the org's admins, all of them and those in alert conversations (T-854).
+	// The statusline command picks one by the developer's
+	// [messages].alerts_only and drops both under [messages].statusline =
+	// false. Counts only: no message text ever reaches this tile. Omitted
+	// when zero.
+	MessagesUnread       int `json:"messages_unread,omitempty"`
+	MessagesUnreadAlerts int `json:"messages_unread_alerts,omitempty"`
 }
 
 // statuslineCacheEntry is one memoized StatuslineResponse plus the instant
@@ -233,6 +242,14 @@ func (s *Server) handleStatuslineTile(w http.ResponseWriter, r *http.Request) {
 	resp.CostDisplay = s.statuslineCostDisplay(ctx)
 	if costtext.Tokens(resp.CostDisplay) {
 		resp.TodayUSD, resp.SessionUSD = nil, nil
+	}
+	// Also outside the figure cache: reading a message must clear the
+	// segment on the very next tick. Two COUNT queries over a small
+	// node-local table.
+	if s.db() != nil {
+		if sum, err := store.New(s.db()).OrgMessageSummary(ctx); err == nil {
+			resp.MessagesUnread, resp.MessagesUnreadAlerts = sum.Unread, sum.UnreadAlerts
+		}
 	}
 
 	writeJSON(w, resp)

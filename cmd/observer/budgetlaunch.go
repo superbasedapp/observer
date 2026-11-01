@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -51,6 +50,11 @@ type budgetLaunchEvidence struct {
 	// host). Empty means the default: the tool's own launch surface, resolved
 	// from the registry by integration.LaunchSurfaceClass.
 	SurfaceClass integration.InterventionSurfaceClass
+	// OrgRewrote names the base-URL keys a managed node's organization
+	// rewrote over the developer's own preset value for this run (CLI-8,
+	// D13), so the evidence says the route is the organization's. Empty on
+	// an individual node, where the preset always stays.
+	OrgRewrote []string
 }
 
 // managedBudgetLaunchState separates the organization's requirement from the
@@ -138,7 +142,9 @@ func resolveBudgetLaunchAuthority(ctx context.Context, st *store.Store, failClos
 	if err != nil {
 		return false, "", fmt.Errorf("budget launch authority: %w", err)
 	}
-	in := budgetLaunchAuthorityInput{managed: enrolment.IsManaged(), noGrant: grant == nil}
+	// Managed by enrolment or by its org's switch to enterprise (P-204,
+	// govern.GrantIsManaged over the verified grant the loader just read).
+	in := budgetLaunchAuthorityInput{managed: enrolment.IsManaged() || govern.GrantIsManaged(grant), noGrant: grant == nil}
 	var effective govern.Effective
 	if grant != nil {
 		effective = govern.Resolve(govern.Delivered{}, grant, live, time.Now().UTC())
@@ -281,40 +287,31 @@ func composeManagedBudgetLaunchState(cfg config.Config, cached store.OrgBudgetCa
 // unreadable budget cache under verified managed authority composes the B-625
 // blocking posture.
 func enforceBudgetControlledLaunch(ctx context.Context, configPath, tool string, evidence budgetLaunchEvidence) error {
-	if evidence.Route == budgetLaunchRouteMaintenance {
-		return nil
-	}
-	cfg, database, cleanup, err := loadConfigAndDB(ctx, configPath)
-	if err != nil {
-		return budgetLaunchStateFailure(tool, err)
-	}
-	defer cleanup()
+	return enforceBudgetControlledLaunchIn(ctx, configPath, tool, evidence, "")
+}
 
-	// T-497: the org's "No sandbox available" choice, the same
-	// decision the dashboard's fresh launch makes (launch_sandbox_gate.go).
-	if err := enforceSandboxFallbackLaunch(ctx, cfg, store.New(database), configPath, tool); err != nil {
+// enforceBudgetControlledLaunchIn is enforceBudgetControlledLaunch for a
+// launch that opens dir (`observer ide <app> <folder>`, FU-190): the gate
+// rows that read the launch directory (repo trust, the hook switch) read the
+// folder the app opens, not this process's working directory. An empty dir
+// keeps the working directory (a launch that opens no folder).
+func enforceBudgetControlledLaunchIn(ctx context.Context, configPath, tool string, evidence budgetLaunchEvidence, dir string) error {
+	// The gates and their order are the launch-gate table (launch_gates.go):
+	// the maintenance skip, the state load, the T-910 hook switch and the
+	// org's "No sandbox available" choice (T-497, the same decision the
+	// dashboard's fresh launch makes), then the two budget questions above.
+	//
+	// Inside a sandbox box (lane sbx-p2) the node database is not there:
+	// the same walk runs host-side through the capture relay
+	// (hook_relay.go boxLaunchGate, sandbox_relay.go runSandboxGate).
+	if err, boxed := boxLaunchGate(tool, evidence); boxed {
 		return err
 	}
-
-	state, err := resolveManagedBudgetLaunchState(ctx, cfg, database)
-	if err != nil {
-		return budgetLaunchStateFailure(tool, err)
+	r := cliLaunchGateRun(ctx, configPath, tool, evidence)
+	if dir != "" {
+		r.launchDir = func() (string, error) { return dir, nil }
 	}
-	if state.Warning != "" {
-		// Not a refusal (D-521): say it at the terminal the tool starts in.
-		fmt.Fprintf(os.Stderr, "observer %s: warning: %s\n", tool, state.Warning)
-	}
-	if !state.Required {
-		return nil
-	}
-	if !state.GuardReady {
-		return budgetLaunchRefusal(tool, budgetLaunchCauseGuardNotReady)
-	}
-	st := store.New(database)
-	if err := budgetLaunchCoverage(ctx, cfg, st, tool, evidence); err != nil {
-		return err
-	}
-	return budgetLaunchSpendAdmission(ctx, cfg, configPath, st, tool, state)
+	return walkLaunchGates(r, launchGates)
 }
 
 // budgetLaunchCoverage answers question 1 above through the one cause

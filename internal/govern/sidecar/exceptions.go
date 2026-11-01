@@ -121,6 +121,19 @@ func ReadExceptions(path, effectiveHash string) (map[string]Exception, string) {
 	if err != nil {
 		return nil, ReasonUnreadable
 	}
+	return ReadExceptionsBytes(raw, effectiveHash)
+}
+
+// ReadExceptionsBytes applies ReadExceptions' rules to exceptions-file bytes
+// the caller already holds (the daemon's last verified copy, T-845). Empty
+// bytes are ReasonAbsent: no exception, every pin in force.
+func ReadExceptionsBytes(raw []byte, effectiveHash string) (map[string]Exception, string) {
+	if len(raw) == 0 {
+		return nil, ReasonAbsent
+	}
+	if len(raw) > MaxBytes {
+		return nil, ReasonOversize
+	}
 	f, err := DecodeExceptions(raw)
 	if err != nil {
 		return nil, ReasonMalformed

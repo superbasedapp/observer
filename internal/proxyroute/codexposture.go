@@ -29,6 +29,23 @@ const CodexBuiltinOpenAI = "openai"
 // CodexBuiltinBedrock is codex's built-in Amazon Bedrock provider id.
 const CodexBuiltinBedrock = "amazon-bedrock"
 
+// The other built-in provider ids codex ships (vendor source
+// codex-rs/model-provider-info/src/lib.rs, built_in_model_providers,
+// re-grounded 2026-10-25 for surface-gap review CX-9). None has a base_url
+// in the user's config, so each falls to a bypassing row; the ids only let
+// the explanation say where the turns go.
+const (
+	// CodexBuiltinBedrockRuntime is the Amazon Bedrock Runtime provider: the
+	// same SigV4-signed AWS path as amazon-bedrock.
+	CodexBuiltinBedrockRuntime = "amazon-bedrock-runtime"
+	// CodexBuiltinGCP is the Google Cloud Vertex AI provider.
+	CodexBuiltinGCP = "gcp"
+	// CodexBuiltinOllama and CodexBuiltinLMStudio are the local OSS
+	// providers (localhost:11434 and localhost:1234).
+	CodexBuiltinOllama   = "ollama"
+	CodexBuiltinLMStudio = "lmstudio"
+)
+
 // CodexPosture classifies where codex's selected provider sends turns.
 type CodexPosture string
 
@@ -97,7 +114,7 @@ var codexPostureRules = []codexPostureRule{
 		return IsObserverBaseURL(in.ProviderBaseURL)
 	}, CodexPostureProxy},
 	{"bedrock", func(in CodexProviderInput) bool {
-		return in.Provider == CodexBuiltinBedrock
+		return in.Provider == CodexBuiltinBedrock || in.Provider == CodexBuiltinBedrockRuntime
 	}, CodexPostureBedrock},
 	{"provider_elsewhere", func(in CodexProviderInput) bool {
 		return in.ProviderBaseURL != ""
@@ -119,17 +136,36 @@ func ClassifyCodexProvider(in CodexProviderInput) CodexPosture {
 	return CodexPostureSelfResolved
 }
 
+// codexSelfResolvedWhere names where a built-in self-resolving provider
+// sends turns, for the explanation only (the posture is the same row).
+var codexSelfResolvedWhere = map[string]string{
+	CodexBuiltinGCP:      "the built-in Google Cloud Vertex AI provider, which sends turns to Vertex AI with Google credentials",
+	CodexBuiltinOllama:   "the built-in local Ollama provider, which sends turns to localhost:11434",
+	CodexBuiltinLMStudio: "the built-in local LM Studio provider, which sends turns to localhost:1234",
+}
+
+// codexSessionLogOnly is the explanation tail every bypassing posture
+// shares.
+const codexSessionLogOnly = "codex tokens come from its session log only (not proxy-exact)"
+
 // CodexBypassExplanation is the one-line, operator-facing reason a bypassing
 // posture leaves the proxy. "" for a non-bypassing posture. provider is the
 // selected provider id (for the message only).
 func CodexBypassExplanation(p CodexPosture, provider string) string {
+	id := displayProvider(provider)
 	switch p {
 	case CodexPostureBedrock:
-		return "model_provider=\"" + CodexBuiltinBedrock + "\" sends turns SigV4-signed straight to Amazon Bedrock; the observer proxy never sees them, so codex tokens come from its session log only (not proxy-exact)"
+		if id == CodexBuiltinOpenAI {
+			id = CodexBuiltinBedrock
+		}
+		return "model_provider=\"" + id + "\" sends turns SigV4-signed straight to Amazon Bedrock; the observer proxy never sees them, so " + codexSessionLogOnly
 	case CodexPostureDirect:
-		return "model_provider=\"" + displayProvider(provider) + "\" points at a base URL that is not the observer proxy; its turns bypass the proxy and codex tokens come from its session log only (not proxy-exact)"
+		return "model_provider=\"" + id + "\" points at a base URL that is not the observer proxy; its turns bypass the proxy and " + codexSessionLogOnly
 	case CodexPostureSelfResolved:
-		return "model_provider=\"" + displayProvider(provider) + "\" resolves its own endpoint (no base_url); its turns bypass the observer proxy and codex tokens come from its session log only (not proxy-exact)"
+		if where, ok := codexSelfResolvedWhere[id]; ok {
+			return "model_provider=\"" + id + "\" is " + where + "; its turns bypass the observer proxy and " + codexSessionLogOnly
+		}
+		return "model_provider=\"" + id + "\" resolves its own endpoint (no base_url); its turns bypass the observer proxy and " + codexSessionLogOnly
 	}
 	return ""
 }

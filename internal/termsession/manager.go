@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/termcore"
+	"github.com/marmutapp/superbased-observer/internal/termfilter"
 	"github.com/marmutapp/superbased-observer/internal/termlease"
 )
 
@@ -383,10 +384,13 @@ func NewManager(opts Options) *Manager {
 // write side is at most one exclusive, revocable WriterLease. Done fires when
 // the process exits.
 type Session struct {
-	handle    string
-	spec      Spec
-	pty       PTY
-	out       *outBuf
+	handle string
+	spec   Spec
+	pty    PTY
+	out    *outBuf
+	// osc52 strips OSC 52 from the output when the spec asks (StripOSC52);
+	// owned by the pump goroutine alone.
+	osc52     *termfilter.OSC52Stripper
 	createdAt time.Time
 	now       func() time.Time
 	// pid is the OS pid of the PTY child, snapshotted once at Create from the
@@ -1349,7 +1353,12 @@ func (m *Manager) Create(spec Spec) (string, error) {
 		return "", err
 	}
 
+	var osc52 *termfilter.OSC52Stripper
+	if spec.StripOSC52 {
+		osc52 = &termfilter.OSC52Stripper{}
+	}
 	s := &Session{
+		osc52:                osc52,
 		spec:                 spec,
 		pty:                  p,
 		pid:                  pid,
@@ -1548,22 +1557,51 @@ func (m *Manager) waitExit(s *Session) {
 func (m *Manager) pump(s *Session) {
 	defer m.wg.Done()
 	buf := make([]byte, 32*1024)
+	emit := func(b []byte) {
+		if len(b) == 0 {
+			return
+		}
+		s.out.write(b)
+		s.touch()
+		// Untrusted byte tap (F3): forward output to the injected sink
+		// synchronously. The sink must not retain the slice or block.
+		if m.onOutput != nil {
+			m.onOutput(s.handle, b)
+		}
+	}
 	for {
 		n, err := s.pty.Read(buf)
 		if n > 0 {
-			s.out.write(buf[:n])
-			s.touch()
-			// Untrusted byte tap (F3): forward output to the injected sink
-			// synchronously. The sink must not retain the slice or block.
-			if m.onOutput != nil {
-				m.onOutput(s.handle, buf[:n])
+			if s.osc52 != nil {
+				// A sandboxed run's clipboard sequences never reach a viewer
+				// (ruling P-175); a sequence split across reads is still
+				// removed.
+				emit(s.osc52.Write(buf[:n]))
+			} else {
+				emit(buf[:n])
 			}
 		}
 		if err != nil {
+			if s.osc52 != nil {
+				emit(s.osc52.Flush())
+			}
 			s.out.close()
 			return
 		}
 	}
+}
+
+// Notice appends a daemon-authored line to a live session's output (its
+// replay ring), so every attached viewer reads it as the session's last
+// output, such as why the daemon is about to close the session. It never
+// reaches the process's input. false when the handle is not live here.
+func (m *Manager) Notice(handle, line string) bool {
+	s := m.get(handle)
+	if s == nil {
+		return false
+	}
+	s.out.write([]byte(line))
+	return true
 }
 
 // Close kills a session's process tree and removes it from the registry.

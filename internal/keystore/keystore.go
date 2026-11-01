@@ -93,11 +93,11 @@ var keychainProbe = KeychainUsable
 // a throwaway record under service. It is the only reliable cross-platform
 // availability test.
 func KeychainUsable(service, probe string) bool {
-	if err := keyring.Set(service, probe, "1"); err != nil {
+	if err := keyring.Set(Namespace(service), probe, "1"); err != nil {
 		return false
 	}
-	got, err := keyring.Get(service, probe)
-	_ = keyring.Delete(service, probe)
+	got, err := keyring.Get(Namespace(service), probe)
+	_ = keyring.Delete(Namespace(service), probe)
 	return err == nil && got == "1"
 }
 
@@ -143,7 +143,7 @@ func (s *keychainStore) Get(name string) (string, error) {
 	if err := checkName(name); err != nil {
 		return "", err
 	}
-	v, err := keyring.Get(s.service, name)
+	v, err := keyring.Get(Namespace(s.service), name)
 	if errors.Is(err, keyring.ErrNotFound) {
 		return "", ErrNotFound
 	}
@@ -160,7 +160,7 @@ func (s *keychainStore) Set(name, value string) error {
 	if len(value) > MaxValueBytes {
 		return ErrValueTooLarge
 	}
-	if err := keyring.Set(s.service, name, value); err != nil {
+	if err := keyring.Set(Namespace(s.service), name, value); err != nil {
 		return fmt.Errorf("keystore.Set: %w", err)
 	}
 	return nil
@@ -170,7 +170,7 @@ func (s *keychainStore) Delete(name string) error {
 	if err := checkName(name); err != nil {
 		return err
 	}
-	if err := keyring.Delete(s.service, name); err != nil && !errors.Is(err, keyring.ErrNotFound) {
+	if err := keyring.Delete(Namespace(s.service), name); err != nil && !errors.Is(err, keyring.ErrNotFound) {
 		return fmt.Errorf("keystore.Delete: %w", err)
 	}
 	return nil

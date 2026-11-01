@@ -39,6 +39,15 @@ okta.
 
 - Factory (droid): the pinwheel from https://factory.ai/favicon.svg
 - Prime Intellect (prime-agent): the mark from the primeintellect.ai logo SVG
+- Autohand (autohand): the ring grid from https://autohand.ai/logos/ours/autohand-logo-dark.svg
+- IBM Bob (ibm-bob): the robot mark from https://bob.ibm.com/icon.svg (not the IBM logo)
+- Deep Agents (deepagents-code): the "D" from the langchain-ai/deepagents `.github/images/logo-dark.svg` (MIT repo)
+- DimCode (dimcode): the block mark in the https://dimcode.dev header
+- Kimchi (kimchi): https://kimchi.dev/favicon.svg
+- Stakpak (stakpak): `icons/stakpak.svg` of github.com/stakpak/zed-stakpak-agent-server (Apache-2.0)
+- Dirac (dirac): the rule, stem and dot are from https://dirac.run/static/images/dirac.svg (2026-10-22; the vendor file draws its delta as an SVG `<text>` glyph, so the delta itself is outlined from Noto Sans Italic, SIL OFL 1.1, one of the fonts in the vendor's own font stack; the navy tile and amber accent are not used)
+- VT Code (vtcode): the V polygon of `resources/icons/vtcode.svg` in github.com/vinhnx/vtcode (Apache-2.0 repo; the V glyph itself derives from kudakurage's LigatureSymbols, OFL), the same mark as the favicon of https://vtcode.vinhnx.chatgpt.site/ (2026-10-22; tan tile dropped, outline filled)
+- Snowflake (cortex-code) and CodeBuddy (codebuddy) come from the Lobe Icons set above.
 
 ## Redrawn from vendor icons
 

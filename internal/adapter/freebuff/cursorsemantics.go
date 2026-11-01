@@ -31,6 +31,8 @@ func (a *Adapter) CursorSemanticsFor(path string) adapter.FileCursorSemantics {
 			Kind: adapter.CursorWatermark,
 			Detail: "freebuff chat-messages.json is a whole-file rewrite; the cursor " +
 				"is a message COUNT, not a byte offset",
+			// parseCLIChats reads only this file (adapter.go os.ReadFile(path)).
+			SelfContained: true,
 		}
 	default:
 		return adapter.FileCursorSemantics{}

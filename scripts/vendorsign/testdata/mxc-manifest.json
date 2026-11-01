@@ -1,0 +1,13 @@
+{
+  "kind": "observer.mxc-files.v1",
+  "upstream": "npm:@microsoft/mxc-sdk",
+  "version": "1.0.1",
+  "package_url": "https://registry.npmjs.org/@microsoft/mxc-sdk/-/mxc-sdk-1.0.1.tgz",
+  "package_sha256": "416d9607c9d4652395d95c3d9c5f5605f1f2f845da1a63228bee41b7392cef49",
+  "signer": "Microsoft Corporation",
+  "authenticode": "valid mxc_ffi.dll=0123456789ABCDEF0123456789ABCDEF01234567 wxc-exec.exe=0123456789ABCDEF0123456789ABCDEF01234567",
+  "files": [
+    {"name": "mxc_ffi.dll", "package_path": "package/bin/x64/mxc_ffi.dll", "sha256": "bd45522f06dc9cc8001dcd5d7320bc2bf303fb08a39bf10f3404bd9a8001812c", "size": 6123320},
+    {"name": "wxc-exec.exe", "package_path": "package/bin/x64/wxc-exec.exe", "sha256": "090f5d1f7bb93104ab08dcd4e8034ef954aeefcdaf6658dde5f7dff4cfc12f3a", "size": 12152632}
+  ]
+}

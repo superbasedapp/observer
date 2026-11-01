@@ -85,6 +85,7 @@ func newUpdateApplyCmd() *cobra.Command {
 		version string
 		force   bool
 		dryRun  bool
+		cfgPath string
 	)
 	cmd := &cobra.Command{
 		Use:   "apply",
@@ -104,9 +105,10 @@ window, permits an apply while a dashboard terminal is live. It never
 shortens the drain and never skips verification.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runUpdateVerb(cmd, updateApplyRequest{Version: version, Force: force, DryRun: dryRun})
+			return runUpdateVerb(cmd, cfgPath, updateApplyRequest{Version: version, Force: force, DryRun: dryRun})
 		},
 	}
+	cmd.Flags().StringVar(&cfgPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml)")
 	cmd.Flags().StringVar(&version, "version", "", "Target version (defaults to whatever the org published for this node)")
 	cmd.Flags().BoolVar(&force, "force", false, "Ignore the maintenance window; with an admin window, proceed past a live dashboard terminal")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the plan, including whether a database snapshot is involved, and do nothing")
@@ -115,7 +117,10 @@ shortens the drain and never skips verification.`,
 
 // newUpdateRollbackCmd builds `observer update rollback`.
 func newUpdateRollbackCmd() *cobra.Command {
-	var yes bool
+	var (
+		yes     bool
+		cfgPath string
+	)
 	cmd := &cobra.Command{
 		Use:   "rollback",
 		Short: "Restore the previous binary (and its database snapshot when the schema advanced)",
@@ -129,7 +134,7 @@ before anything is restored. Confirmation is required unless --yes is given.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if !yes {
-				st, _, err := loadUpdateStateForCLI(cmd.Context())
+				st, _, err := loadUpdateStateForCLIAt(cmd.Context(), cfgPath)
 				if err != nil {
 					return err
 				}
@@ -144,10 +149,11 @@ before anything is restored. Confirmation is required unless --yes is given.`,
 				fmt.Fprintln(out, "\nRe-run with --yes to proceed.")
 				return nil
 			}
-			return runUpdateVerb(cmd, updateApplyRequest{Rollback: true})
+			return runUpdateVerb(cmd, cfgPath, updateApplyRequest{Rollback: true})
 		},
 	}
 	cmd.Flags().BoolVar(&yes, "yes", false, "Proceed without the confirmation prompt")
+	cmd.Flags().StringVar(&cfgPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml)")
 	return cmd
 }
 
@@ -209,10 +215,12 @@ enums.`,
 }
 
 // runUpdateVerb sends the request to a running daemon, or performs it here.
-func runUpdateVerb(cmd *cobra.Command, req updateApplyRequest) error {
+// cfgPath is the --config file ("" = the default): the no-daemon path
+// snapshots and restores exactly that file (merge audit finding 8).
+func runUpdateVerb(cmd *cobra.Command, cfgPath string, req updateApplyRequest) error {
 	ctx := cmd.Context()
 	out := cmd.OutOrStdout()
-	cfg, err := config.Load(config.LoadOptions{})
+	cfg, err := config.Load(config.LoadOptions{GlobalPath: cfgPath})
 	if err != nil {
 		return fmt.Errorf("observer update: loading the config: %w", err)
 	}
@@ -247,7 +255,7 @@ func runUpdateVerb(cmd *cobra.Command, req updateApplyRequest) error {
 	fmt.Fprintln(out, "fork-exec-and-watch handshake does not apply: the --version probe of the")
 	fmt.Fprintln(out, "staged binary is the acceptance gate, and the previous binary is still")
 	fmt.Fprintln(out, "preserved for `observer update rollback`.")
-	return runUpdateLocally(ctx, out, cfg, req)
+	return runUpdateLocally(ctx, out, cfg, cfgPath, req)
 }
 
 // updateUnderDaemonRefusal is the one reason an update verb prints when a
@@ -362,8 +370,8 @@ func printUpdateResponse(w io.Writer, resp updateApplyResponse) error {
 
 // runUpdateLocally performs the apply in this process. It is the no-daemon
 // path only; see the file doc for why.
-func runUpdateLocally(ctx context.Context, w io.Writer, cfg config.Config, req updateApplyRequest) error {
-	s, closeDB, err := openUpdateStore(ctx, "")
+func runUpdateLocally(ctx context.Context, w io.Writer, cfg config.Config, cfgPath string, req updateApplyRequest) error {
+	s, closeDB, err := openUpdateStore(ctx, cfgPath)
 	if err != nil {
 		return err
 	}
@@ -374,7 +382,7 @@ func runUpdateLocally(ctx context.Context, w io.Writer, cfg config.Config, req u
 		return err
 	}
 	if req.Rollback {
-		return runLocalRollback(ctx, w, s, st, cfg)
+		return runLocalRollback(ctx, w, s, st, cfg, cfgPath)
 	}
 	if strings.TrimSpace(st.ManifestJSON) == "" {
 		return fmt.Errorf("observer update: this node holds no accepted manifest; run `observer update check` while the daemon is enrolled and running")
@@ -387,10 +395,11 @@ func runUpdateLocally(ctx context.Context, w io.Writer, cfg config.Config, req u
 	if !ok {
 		return fmt.Errorf("observer update: manifest %d builds nothing for %s/%s", man.ManifestVersion, runtime.GOOS, runtime.GOARCH)
 	}
-	deps, opts, err := buildLocalApply(ctx, s, cfg, man, art, req)
+	deps, opts, err := buildLocalApply(ctx, s, cfg, cfgPath, man, art, req)
 	if err != nil {
 		return err
 	}
+	deps.WarmUpNotice = w
 	out, err := runUpdateApply(ctx, deps, opts)
 	_ = printUpdateResponse(w, updateApplyResponse{
 		State: string(out.State), Reason: string(out.Reason), ErrorClass: string(out.ErrorClass),
@@ -400,10 +409,15 @@ func runUpdateLocally(ctx context.Context, w io.Writer, cfg config.Config, req u
 	return err
 }
 
-// runLocalRollback restores the previous binary, and the snapshot when the
-// schema advanced, naming the discarded window first.
-func runLocalRollback(ctx context.Context, w io.Writer, s *store.Store, st store.UpdateStateRow, cfg config.Config) error {
+// runLocalRollback restores the previous binary and its pre-apply
+// config.toml (cfgPath, "" = the default), and the snapshot when the schema
+// advanced, naming the discarded window first.
+func runLocalRollback(ctx context.Context, w io.Writer, s *store.Store, st store.UpdateStateRow, cfg config.Config, cfgPath string) error {
 	schemaNow, err := s.SchemaVersion(ctx)
+	if err != nil {
+		return err
+	}
+	appliedNow, err := s.AppliedMigrationSteps(ctx)
 	if err != nil {
 		return err
 	}
@@ -412,17 +426,25 @@ func runLocalRollback(ctx context.Context, w io.Writer, s *store.Store, st store
 		HasPreviousBinary:     fileExists(st.PreviousBinaryPath),
 		PreviousSchemaVersion: st.PreviousSchemaVersion,
 		CurrentSchemaVersion:  schemaNow,
+		PreviousAppliedSteps:  st.PreviousAppliedSteps,
+		CurrentAppliedSteps:   appliedNow,
 		HasDBBackup:           fileExists(st.PreviousDBBackupPath),
 	})
 	if decision.Refuse {
 		fmt.Fprintf(w, "rollback refused: %s\n", decision.Reason)
 		return fmt.Errorf("observer update rollback: %s", decision.Reason)
 	}
-	exePath := resolvedExecutablePath()
+	exePath := updateExecutablePath()
+	var cfgRes rollbackConfigResult
 	if decision.RestoreBinary {
 		if err := restoreBinary(osSwapFS{}, runtime.GOOS, st.PreviousBinaryPath, exePath, st.PreviousVersion); err != nil {
 			return err
 		}
+		// The pre-apply config.toml comes back with the binary, through the
+		// one restore every rollback path shares; the newer file is kept as
+		// a displaced copy beside it. A failure is reported at the end and
+		// never skips the database restore (merge audit finding 2).
+		cfgRes = restoreRollbackConfig(updateConfigPathFor(cfgPath), st.PreviousBinaryPath, time.Now())
 	}
 	// writer is the handle the ledger row goes through. The DB-restoring
 	// branch replaces the file underneath this process, so it must close its
@@ -434,6 +456,9 @@ func runLocalRollback(ctx context.Context, w io.Writer, s *store.Store, st store
 			fmt.Fprintf(w, "warning: closing the database before restoring the snapshot failed: %v\n", cerr)
 		}
 		if err := restoreDatabaseSnapshot(st.PreviousDBBackupPath, cfg.Observer.DBPath); err != nil {
+			if cfgRes.Err != nil {
+				return fmt.Errorf("observer update rollback: %w%s", err, cfgRes.failureNote())
+			}
 			return err
 		}
 		reopened, rerr := reopenUpdateStore(cfg.Observer.DBPath)
@@ -444,31 +469,49 @@ func runLocalRollback(ctx context.Context, w io.Writer, s *store.Store, st store
 			writer = reopened
 		}
 	}
-	fmt.Fprintf(w, "state: %s\n%s\n", decision.State, decision.Reason)
+	state, class := decision.State, decision.ErrorClass
+	if cfgRes.Err != nil {
+		state, class = update.StateFailed, update.ErrorPermission
+	}
+	fmt.Fprintf(w, "state: %s\n%s\n", state, decision.Reason)
+	if cfgRes.Err != nil {
+		fmt.Fprintf(w, "the previous binary was restored%s\n", cfgRes.failureNote())
+	}
+	var cfgErr error
+	if cfgRes.Err != nil {
+		cfgErr = fmt.Errorf("observer update rollback: the previous binary was restored but config.toml was not: %w", cfgRes.Err)
+	}
 	if writer == nil {
-		return nil
+		return cfgErr
 	}
 	row := st
 	row.State = update.StateRolledBack
 	row.TargetVersion = st.PreviousVersion
-	row.ErrorClass = decision.ErrorClass
+	row.ErrorClass = class
+	if cfgRes.Err != nil {
+		row.State = state
+	}
 	_ = writer.SaveUpdateState(ctx, row)
 	detail := "operator-invoked rollback: " + decision.Reason
 	if decision.DiscardsDataWindow {
 		detail += "; rows ingested after the pre-apply snapshot were discarded"
 	}
-	return writer.AppendUpdateEvent(ctx, store.UpdateEventRow{
+	detail += cfgRes.failureNote()
+	if err := writer.AppendUpdateEvent(ctx, store.UpdateEventRow{
 		FromVersion: version, ToVersion: st.PreviousVersion,
-		State: update.StateRolledBack, ErrorClass: decision.ErrorClass,
+		State: row.State, ErrorClass: class,
 		Detail: detail,
-	})
+	}); err != nil {
+		return err
+	}
+	return cfgErr
 }
 
 // buildLocalApply wires the CLI-side apply. Download is deliberately absent:
 // a CLI with no daemon has no enrolment bearer loaded, so it can only apply
 // an artifact the daemon already staged. Saying that plainly is better than
 // opening a second fetch path on the node (ruling R8).
-func buildLocalApply(ctx context.Context, s *store.Store, cfg config.Config, man update.Manifest, art update.Artifact, req updateApplyRequest) (applyDeps, applyOptions, error) {
+func buildLocalApply(ctx context.Context, s *store.Store, cfg config.Config, cfgPath string, man update.Manifest, art update.Artifact, req updateApplyRequest) (applyDeps, applyOptions, error) {
 	win, err := update.ParseWindow(cfg.Update.Window)
 	if err != nil {
 		return applyDeps{}, applyOptions{}, err
@@ -491,6 +534,7 @@ func buildLocalApply(ctx context.Context, s *store.Store, cfg config.Config, man
 		Supervise: func(context.Context, string, string, time.Duration) (handshakeResult, error) {
 			return handshakeResult{Ready: true, Detail: "no daemon was running, so the --version probe was the acceptance gate"}, nil
 		},
+		WarmUp: warmUpNewBinary,
 		FS:     osSwapFS{},
 		GOOS:   runtime.GOOS,
 		Logger: slog.Default(),
@@ -505,11 +549,12 @@ func buildLocalApply(ctx context.Context, s *store.Store, cfg config.Config, man
 		Installed: update.Installed{
 			Version: version, SchemaVersion: schema, ExecPath: exePath, Detection: det,
 		},
-		StateDir: cfg.Update.StateDir,
-		DBPath:   cfg.Observer.DBPath,
-		Window:   win,
-		Force:    req.Force,
-		DryRun:   req.DryRun,
+		StateDir:   cfg.Update.StateDir,
+		DBPath:     cfg.Observer.DBPath,
+		ConfigPath: updateConfigPathFor(cfgPath),
+		Window:     win,
+		Force:      req.Force,
+		DryRun:     req.DryRun,
 		// The manifest's own declaration of the target's schema version. Zero
 		// still means "may advance", so a pre-field manifest snapshots as
 		// before and a declared-equal one skips the VACUUM INTO.
@@ -581,7 +626,12 @@ func closeDBQuietly(d *sql.DB) error {
 // still holds a pre-105 state file reports the truth instead of "idle" for
 // one release. The source is returned so a surface can say which it read.
 func loadUpdateStateForCLI(ctx context.Context) (update.NodeState, string, error) {
-	s, closeDB, err := openUpdateStore(ctx, "")
+	return loadUpdateStateForCLIAt(ctx, "")
+}
+
+// loadUpdateStateForCLIAt is loadUpdateStateForCLI for a --config file.
+func loadUpdateStateForCLIAt(ctx context.Context, cfgPath string) (update.NodeState, string, error) {
+	s, closeDB, err := openUpdateStore(ctx, cfgPath)
 	if err == nil {
 		defer closeDB()
 		row, lerr := s.LoadUpdateState(ctx)

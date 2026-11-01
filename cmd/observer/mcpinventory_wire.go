@@ -47,10 +47,18 @@ func mcpInventoryProviders() store.MCPInventoryProviders {
 
 // readMCPInventory parses every location through mcpsec.ParseConfig and tags
 // each server with its config path. Unreadable / malformed files are skipped
-// (mcpsec.Inventory's degrade posture).
+// (mcpsec.Inventory's degrade posture). A location whose relocation
+// variable holds a relative value names no file (locate.Location.Unresolved,
+// FU-130) and is skipped by that name, never read as "": this seam carries
+// servers only, so the variable is reported where an issue can be shown
+// (`observer guard mcp list`, through mcpsec.Inventory), and the change
+// token below records the state.
 func readMCPInventory(locs []locate.Location, readFile func(string) ([]byte, error)) []store.MCPInventoryEntry {
 	var out []store.MCPInventoryEntry
 	for _, loc := range locs {
+		if loc.Unresolved != "" || loc.Path == "" {
+			continue
+		}
 		raw, err := readFile(loc.Path)
 		if err != nil {
 			continue
@@ -68,10 +76,16 @@ func readMCPInventory(locs []locate.Location, readFile func(string) ([]byte, err
 
 // statMCPConfigs is the cheap change token: each config's (path, size,
 // mtime) - or "absent" - hashed. A config edit moves it; an idle node re-reads
-// nothing until the snapshot gate's freshness floor.
+// nothing until the snapshot gate's freshness floor. A location with no file
+// (a relative relocation value, FU-130) hashes as its client and the
+// variable, so setting or fixing the variable moves the token too.
 func statMCPConfigs(locs []locate.Location, stat func(string) (os.FileInfo, error)) string {
 	h := sha256.New()
 	for _, loc := range locs {
+		if loc.Unresolved != "" || loc.Path == "" {
+			fmt.Fprintf(h, "%s\x00unresolved\x00%s\x01", loc.Client, loc.Unresolved)
+			continue
+		}
 		fi, err := stat(loc.Path)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):

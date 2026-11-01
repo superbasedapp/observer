@@ -310,6 +310,41 @@
   animation-play-state: paused;
 }
 
+/* Obs riding the progress line on a slow route load (TopProgress `rider`,
+   D-665..D-669). Same 250 ms threshold as the bar. The run box is the host
+   minus Obs's own width (28 px in the wide frame = 50.4 px), so a
+   translateX of 100% of itself carries Obs to the far edge without
+   overflowing. Transform and opacity only. */
+.sb-progress-rider {
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 0;
+  pointer-events: none;
+  animation: sb-fade-in var(--dur) var(--ease) 250ms both;
+}
+.sb-progress-rider-run {
+  position: absolute;
+  top: 3px;
+  left: 0;
+  width: calc(100% - 52px);
+  line-height: 0;
+  animation: sb-progress-rider 2.6s var(--ease-in-out) infinite;
+}
+@keyframes sb-progress-rider {
+  0% {
+    transform: translateX(0);
+    opacity: 0;
+  }
+  12%,
+  88% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+}
+
 /* The flash under an AnimatedNumber whose value just changed. */
 .sb-value {
   position: relative;
@@ -639,7 +674,8 @@
   .sb-draw-check,
   .sb-dash-flow,
   .sb-typing > span,
-  .sb-attention {
+  .sb-attention,
+  .sb-progress-rider-run {
     animation: none !important;
   }
   .sb-tool-stack > * {

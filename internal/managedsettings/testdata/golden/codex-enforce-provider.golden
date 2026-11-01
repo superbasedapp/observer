@@ -1,0 +1,168 @@
+===== requirements.toml =====
+# Observer-managed Codex requirements (requirements.toml) - ENFORCED.
+# When a user's config/profile/CLI conflicts with a rule here, Codex falls
+# back to a compatible value and notifies the user. Deploy per the README
+# (system path /etc/codex/requirements.toml, %ProgramData%\OpenAI\Codex\requirements.toml
+# on Windows, or MDM requirements_toml_base64 on macOS).
+
+# Run ONLY managed hooks; ignore user/project/session/plugin hooks. Strong - it
+# disables a user's own hooks, and Observer's per-node ~/.codex/hooks.json too,
+# so Observer's hooks are declared below as managed hooks (trusted by policy,
+# no /hooks trust step). Enabled because --enforce-managed-hooks was set.
+allow_managed_hooks_only = true
+
+# Enforce Observer's proxy provider (--enforce-proxy-provider). A requirements
+# model_provider outranks a CLI -c model_provider, --oss, a profile and the
+# user's config, so a user value no longer takes Codex off the proxy. This
+# file also binds Open Interpreter, which reads it too.
+model_provider = "openai-observer"
+
+[model_providers.openai-observer]
+name = "OpenAI (via Observer)"
+base_url = "http://127.0.0.1:8820/v1"
+wire_api = "responses"
+requires_openai_auth = true
+
+# Observer's hooks as MANAGED hooks. The script each command names is part of
+# this artifact set: deploy it into the managed directory (see the README).
+[hooks]
+managed_dir = "/etc/codex/hooks"
+windows_managed_dir = "C:\\ProgramData\\OpenAI\\Codex\\hooks"
+
+[[hooks.SessionStart]]
+matcher = "*"
+
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "/etc/codex/hooks/observer-codex-hook.sh SessionStart"
+commandWindows = "C:\\ProgramData\\OpenAI\\Codex\\hooks\\observer-codex-hook.cmd SessionStart"
+
+[[hooks.UserPromptSubmit]]
+matcher = "*"
+
+[[hooks.UserPromptSubmit.hooks]]
+type = "command"
+command = "/etc/codex/hooks/observer-codex-hook.sh UserPromptSubmit"
+commandWindows = "C:\\ProgramData\\OpenAI\\Codex\\hooks\\observer-codex-hook.cmd UserPromptSubmit"
+
+[[hooks.PreToolUse]]
+matcher = "*"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "/etc/codex/hooks/observer-codex-hook.sh PreToolUse"
+commandWindows = "C:\\ProgramData\\OpenAI\\Codex\\hooks\\observer-codex-hook.cmd PreToolUse"
+
+[[hooks.PermissionRequest]]
+matcher = "*"
+
+[[hooks.PermissionRequest.hooks]]
+type = "command"
+command = "/etc/codex/hooks/observer-codex-hook.sh PermissionRequest"
+commandWindows = "C:\\ProgramData\\OpenAI\\Codex\\hooks\\observer-codex-hook.cmd PermissionRequest"
+
+[[hooks.PostToolUse]]
+matcher = "*"
+
+[[hooks.PostToolUse.hooks]]
+type = "command"
+command = "/etc/codex/hooks/observer-codex-hook.sh PostToolUse"
+commandWindows = "C:\\ProgramData\\OpenAI\\Codex\\hooks\\observer-codex-hook.cmd PostToolUse"
+
+[[hooks.Stop]]
+matcher = "*"
+
+[[hooks.Stop.hooks]]
+type = "command"
+command = "/etc/codex/hooks/observer-codex-hook.sh Stop"
+commandWindows = "C:\\ProgramData\\OpenAI\\Codex\\hooks\\observer-codex-hook.cmd Stop"
+
+[[hooks.SessionEnd]]
+matcher = "*"
+
+[[hooks.SessionEnd.hooks]]
+type = "command"
+command = "/etc/codex/hooks/observer-codex-hook.sh SessionEnd"
+commandWindows = "C:\\ProgramData\\OpenAI\\Codex\\hooks\\observer-codex-hook.cmd SessionEnd"
+
+[[hooks.SubagentStart]]
+matcher = "*"
+
+[[hooks.SubagentStart.hooks]]
+type = "command"
+command = "/etc/codex/hooks/observer-codex-hook.sh SubagentStart"
+commandWindows = "C:\\ProgramData\\OpenAI\\Codex\\hooks\\observer-codex-hook.cmd SubagentStart"
+
+[[hooks.SubagentStop]]
+matcher = "*"
+
+[[hooks.SubagentStop.hooks]]
+type = "command"
+command = "/etc/codex/hooks/observer-codex-hook.sh SubagentStop"
+commandWindows = "C:\\ProgramData\\OpenAI\\Codex\\hooks\\observer-codex-hook.cmd SubagentStop"
+
+===== README.md =====
+# Observer managed-config for OpenAI Codex
+
+Two artifacts, two layers of Codex's policy model:
+
+- **managed_config.toml** - DEFAULTS the user may change in-session (Codex
+  reapplies them next launch; they override even CLI `--config`). This is the
+  artifact that wires Observer up.
+- **requirements.toml** - ENFORCED rules. A conflicting user value falls back
+  to a compatible one and the user is notified.
+
+## Telemetry delivery
+
+Per-turn token capture comes from the **proxy route** (`openai_base_url = "http://127.0.0.1:8820/v1"`)
+plus `[features].hooks`. The proxy must be running and reachable. (Codex
+0.130+ drops the launcher's `-c openai_base_url`; the file value is what works.)
+
+## Enforced provider
+
+`requirements.toml` sets `model_provider = "openai-observer"` and its complete
+`[model_providers.openai-observer]` (base URL `http://127.0.0.1:8820/v1`). Codex ranks a
+requirements provider above `-c model_provider=...`, `--oss`, a profile and
+the user's `config.toml`, so the route holds where `openai_base_url` alone
+is only a default. Three things to know before you deploy it:
+
+- It binds **Open Interpreter** too: it reads the same `requirements.toml`,
+  so its sessions also go through Observer's proxy.
+- The proxy must be running on every node: with it down, Codex and Open
+  Interpreter calls fail instead of going direct.
+- Not live-verified: `codex -c model_provider=openai ...` should still land
+  an `api_turns` row on a node with this file deployed.
+
+## Managed hooks
+
+`allow_managed_hooks_only = true` makes Codex skip every user, project,
+session and plugin hook, Observer's per-node `~/.codex/hooks.json` included.
+So `requirements.toml` declares Observer's hooks as managed `[hooks]`, which
+Codex trusts by policy (no `/hooks` trust step), and each command runs a
+script you deploy into the managed directory. Codex installs nothing there.
+
+- Linux and macOS: copy `observer-codex-hook.sh` to `/etc/codex/hooks/observer-codex-hook.sh` (owner root, mode 0755).
+- Windows: copy `observer-codex-hook.cmd` to `C:\ProgramData\OpenAI\Codex\hooks\observer-codex-hook.cmd` and lock the directory like
+  `requirements.toml` (administrators write, users read and execute).
+
+The scripts run the node's `observer hook codex <Event>`, the command
+`observer init` registers per node, so `observer` must resolve on the node
+(or regenerate with `--hook-binary` / `--hook-binary-windows`). Declare the
+hooks in ONE requirements source: Codex takes `[hooks]` from the highest
+source that sets it and does not merge lower ones.
+
+## Deploy
+
+- **Single node (no license):** write `requirements.toml` to
+  `/etc/codex/requirements.toml` (Linux and macOS) or
+  `%ProgramData%\OpenAI\Codex\requirements.toml` (Windows; an HKLM
+  `SOFTWARE\Policies\OpenAI\Codex` `RequirementsPath` value can relocate it).
+  Write `managed_config.toml` to `/etc/codex/managed_config.toml` (Linux and
+  macOS) or the user's `%USERPROFILE%\.codex\managed_config.toml` (Windows,
+  where the user can edit it). Verify Codex picks them up on launch.
+- **Fleet (MDM, macOS):** push `requirements.toml` as the `requirements_toml_base64`
+  value - base64 of the file (the CLI prints it with `--print-mdm-base64`).
+- **Requirements precedence (highest→lowest):** macOS MDM
+  `requirements_toml_base64` → legacy `/etc/codex/managed_config.toml` read as
+  requirements (Unix) → cloud-managed requirements → system `requirements.toml`.
+  A higher source's value wins; a lower one only fills what is unset.

@@ -67,7 +67,7 @@ func TestDaemonShutdownWatchdogNamesBlockerAndForcesExit(t *testing.T) {
 	if !bytes.Contains(stacks, []byte("goroutine ")) {
 		t.Fatalf("stack dump has no goroutines:\n%.400s", stacks)
 	}
-	if fi, err := os.Stat(filepath.Join(dir, fmt.Sprintf("observer-shutdown-%d.stacks", os.Getpid()))); err == nil && fi.Mode().Perm() != 0o600 {
+	if fi, err := os.Stat(filepath.Join(dir, fmt.Sprintf("observer-shutdown-%d.stacks", os.Getpid()))); err == nil && (posixModes && fi.Mode().Perm() != 0o600) {
 		t.Fatalf("stack dump mode = %v, want 0600", fi.Mode().Perm())
 	}
 }

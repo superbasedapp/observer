@@ -1,0 +1,6 @@
+//go:build !sbo_omit_security && !sbo_omit_security_deps && !sbo_omit_security_scan_osv
+
+package dashboard
+
+// osvDriverCompiled reports that this build carries security.scan.osv.
+const osvDriverCompiled = true

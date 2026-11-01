@@ -19,7 +19,6 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/fsatomic"
 	"github.com/marmutapp/superbased-observer/internal/govern"
 	"github.com/marmutapp/superbased-observer/internal/govern/sidecar"
-	"github.com/marmutapp/superbased-observer/internal/grantverify"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/orgenrol"
@@ -195,6 +194,12 @@ type nodeGovernanceHandle struct {
 	// nil simply reports nothing — which is the correct behaviour for every
 	// short-lived CLI process that builds a handle to read a posture.
 	effectivePins func() map[string]string
+
+	// verified is the daemon's last verified copy of what this handle wrote
+	// (T-845, guardorglock_wire.go): set by SetSidecar, filled after every
+	// successful write, and read by the posture loop, which records it in
+	// the MAC'd org lock and repairs a file that no longer matches it.
+	verified *governanceCopy
 }
 
 // SetEffectivePinReader installs the Track C item 3 effective-pin reader.
@@ -264,6 +269,7 @@ func (h *nodeGovernanceHandle) SetSidecar(path, writerVersion string, startup st
 	}
 	h.mu.Lock()
 	h.sidecarPath, h.writerVersion, h.startup = path, writerVersion, startup
+	h.verified = newGovernanceCopy(path)
 	h.lastWrittenHash, h.lastWrittenAt = "", time.Time{}
 	h.mu.Unlock()
 }
@@ -338,11 +344,21 @@ func (h *nodeGovernanceHandle) WriteSidecar(ctx context.Context) {
 	// The sidecar first, then its exceptions file: a reader between the two
 	// writes sees a new posture hash with the old binding, which lifts
 	// nothing (every pin applies), never an exception for the wrong posture.
-	err := writeGovernanceSidecar(path, file)
-	var exErr error
-	if err == nil {
-		exErr = writeGovernanceExceptions(sidecar.ExceptionsPath(path), file.EffectiveHash, writerVersion, now, exceptions)
-	}
+	//
+	// T-845: both writes happen inside the verified copy's write section, so
+	// the posture loop's repair check can never see a half-finished write as
+	// a tamper (and restore the previous bytes over the new ones).
+	h.mu.Lock()
+	vc := h.verified
+	h.mu.Unlock()
+	var err, exErr error
+	vc.write(func() (sidecarRaw, exceptionsRaw []byte, ok bool) {
+		sidecarRaw, err = writeGovernanceSidecar(path, file)
+		if err == nil {
+			exceptionsRaw, exErr = writeGovernanceExceptions(sidecar.ExceptionsPath(path), file.EffectiveHash, writerVersion, now, exceptions)
+		}
+		return sidecarRaw, exceptionsRaw, err == nil && exErr == nil
+	})
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -475,26 +491,36 @@ func sidecarFileFor(eff govern.Effective, writerVersion string, now time.Time) s
 // "succeeded" onto a filesystem that silently discarded it is the same
 // condition as a failed write and must take the same path, or the node would
 // ack effective over a file no reader can use.
-func writeGovernanceSidecar(path string, file sidecar.File) error {
+func writeGovernanceSidecar(path string, file sidecar.File) ([]byte, error) {
 	raw, err := sidecar.Encode(file)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	return raw, writeGovernanceSidecarBytes(path, raw, file.EffectiveHash, file.State)
+}
+
+// writeGovernanceFileBytes is the atomic, fsynced, retried write both
+// governance files use (the handle's write and the verified copy's repair).
+func writeGovernanceFileBytes(path string, raw []byte, tempPattern string) error {
 	var lastErr error
 	for attempt := 0; attempt < sidecarWriteAttempts; attempt++ {
 		if attempt > 0 {
 			time.Sleep(sidecarWriteBackoff)
 		}
-		lastErr = fsatomic.WriteFile(path, raw, fsatomic.Options{
-			TempPattern: ".governance-effective-*.tmp",
-			Fsync:       true,
-		})
+		lastErr = fsatomic.WriteFile(path, raw, fsatomic.Options{TempPattern: tempPattern, Fsync: true})
 		if lastErr == nil {
-			break
+			return nil
 		}
 	}
-	if lastErr != nil {
-		return lastErr
+	return lastErr
+}
+
+// writeGovernanceSidecarBytes writes encoded sidecar bytes and verifies them
+// by reading them back (the §1.4.1 contract above), for both the handle's
+// write and the verified copy's repair: one write path for the file.
+func writeGovernanceSidecarBytes(path string, raw []byte, effectiveHash, state string) error {
+	if err := writeGovernanceFileBytes(path, raw, ".governance-effective-*.tmp"); err != nil {
+		return err
 	}
 	back, rerr := os.ReadFile(path) //nolint:gosec // the path is the node's own resolved sidecar
 	if rerr != nil {
@@ -504,7 +530,7 @@ func writeGovernanceSidecar(path string, file sidecar.File) error {
 	if derr != nil {
 		return fmt.Errorf("read back: %w", derr)
 	}
-	if decoded.EffectiveHash != file.EffectiveHash || decoded.State != file.State {
+	if decoded.EffectiveHash != effectiveHash || decoded.State != state {
 		return fmt.Errorf("read back: the file on disk does not match what was written (state %q hash %q)",
 			decoded.State, decoded.EffectiveHash)
 	}
@@ -519,14 +545,14 @@ func writeGovernanceSidecar(path string, file sidecar.File) error {
 // update rollback puts an older binary next to this file). With no
 // exception in force the file is removed; if it cannot be removed it is
 // overwritten with an empty set, so nothing stays lifted.
-func writeGovernanceExceptions(path, effectiveHash, writerVersion string, now time.Time, exceptions map[string]sidecar.Exception) error {
+func writeGovernanceExceptions(path, effectiveHash, writerVersion string, now time.Time, exceptions map[string]sidecar.Exception) ([]byte, error) {
 	if path == "" {
-		return nil
+		return nil, nil
 	}
 	if len(exceptions) == 0 {
 		rmErr := os.Remove(path)
 		if rmErr == nil || errors.Is(rmErr, os.ErrNotExist) {
-			return nil
+			return nil, nil
 		}
 		exceptions = map[string]sidecar.Exception{}
 	}
@@ -538,36 +564,23 @@ func writeGovernanceExceptions(path, effectiveHash, writerVersion string, now ti
 		Exceptions:    exceptions,
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
-	var lastErr error
-	for attempt := 0; attempt < sidecarWriteAttempts; attempt++ {
-		if attempt > 0 {
-			time.Sleep(sidecarWriteBackoff)
-		}
-		lastErr = fsatomic.WriteFile(path, raw, fsatomic.Options{
-			TempPattern: ".governance-exceptions-*.tmp",
-			Fsync:       true,
-		})
-		if lastErr == nil {
-			break
-		}
-	}
-	if lastErr != nil {
-		return lastErr
+	if err := writeGovernanceFileBytes(path, raw, ".governance-exceptions-*.tmp"); err != nil {
+		return nil, err
 	}
 	back, rerr := os.ReadFile(path) //nolint:gosec // the path is derived from the node's own resolved sidecar
 	if rerr != nil {
-		return fmt.Errorf("read back: %w", rerr)
+		return nil, fmt.Errorf("read back: %w", rerr)
 	}
 	decoded, derr := sidecar.DecodeExceptions(back)
 	if derr != nil {
-		return fmt.Errorf("read back: %w", derr)
+		return nil, fmt.Errorf("read back: %w", derr)
 	}
 	if decoded.EffectiveHash != effectiveHash || exceptionsDigest(decoded.Exceptions) != exceptionsDigest(exceptions) {
-		return errors.New("read back: the exceptions file on disk does not match what was written")
+		return nil, errors.New("read back: the exceptions file on disk does not match what was written")
 	}
-	return nil
+	return raw, nil
 }
 
 // newNodeGovernanceHandle builds the seam over an identity loader. A nil
@@ -1096,7 +1109,7 @@ func governanceIdentityLoader(st *store.Store) func(ctx context.Context) (*gover
 		if !ok {
 			return nil, live, nil
 		}
-		grant := grantFromStore(row)
+		grant := grantFromStore(row, enr)
 		// The developer sees the org's NAME, never its id: the grant row
 		// stores the id in org_name, so prefer the enrolment's name (what
 		// `observer org status` prints). Display only; integrity below
@@ -1131,11 +1144,7 @@ func governanceIdentityLoader(st *store.Store) func(ctx context.Context) (*gover
 // inside that window and leaves the signature untouched, so verifying
 // against the working clock would make every renewed grant look tampered.
 func verifyStoredGrantIntegrity(ctx context.Context, st *store.Store, orgURL, tenancy string, row store.EnrolmentGrant) (govern.GrantIntegrity, govern.ConsentEvidence) {
-	pub, ok, err := orgclient.OrgPolicyPublicKeyFor(ctx, st, orgURL)
-	if err != nil || !ok {
-		return govern.GrantIntegrityUnchecked, govern.ConsentEvidenceUnverified
-	}
-	return storedGrantIntegrity(row, tenancy, pub)
+	return orgclient.StoredGrantIntegrity(ctx, st, orgURL, tenancy, row)
 }
 
 // storedGrantIntegrity is the pure half of verifyStoredGrantIntegrity: it
@@ -1144,52 +1153,37 @@ func verifyStoredGrantIntegrity(ctx context.Context, st *store.Store, orgURL, te
 // share (the signed-consent candidate table, GRANT-INTEG-2, and the consent
 // evidence each candidate proves, Sol A3-03, live there).
 func storedGrantIntegrity(row store.EnrolmentGrant, tenancy string, pub ed25519.PublicKey) (govern.GrantIntegrity, govern.ConsentEvidence) {
-	return grantverify.Verify(orgcontract.StoredGrantDocument{
-		OrgID:                 row.OrgID,
-		OrgServerURL:          row.OrgServerURL,
-		KeyPinSHA256:          row.KeyPinSHA256,
-		Authority:             row.Authority,
-		GrantedAt:             formatStoredGrantTime(row.GrantedAt),
-		ExpiresAt:             formatStoredGrantTime(row.SignedExpiresAt),
-		ConsentMode:           row.ConsentMode,
-		ConsentActor:          row.ConsentActor,
-		Signature:             row.Signature,
-		ReplacementGeneration: row.ReplacementGeneration,
-		InitialComponents:     row.InitialComponents,
-		InitialProof:          row.InitialComponentsProof,
-	}, tenancy, pub)
-}
-
-// formatStoredGrantTime renders a stored grant timestamp back into the exact
-// RFC3339 spelling the signer used. Every mint site formats
-// now.UTC().Format(time.RFC3339) (api/handlers.go, posture/posture.go,
-// breakglass), and the store round-trips through time.Parse + .UTC(), so
-// this reproduces the signed bytes rather than approximating them. The zero
-// time renders empty, which is what an absent wire field signed as.
-func formatStoredGrantTime(t time.Time) string {
-	if t.IsZero() {
-		return ""
-	}
-	return t.UTC().Format(time.RFC3339)
+	return orgclient.StoredGrantIntegrityWith(row, tenancy, pub)
 }
 
 // grantFromStore maps the store row onto the resolver's plain struct. One
-// mapper, so the store row shape never leaks past this file.
-func grantFromStore(row store.EnrolmentGrant) *govern.Grant {
+// mapper, so the store row shape never leaks past this file. enr is the
+// enrolment the node holds (nil when unknown): its tenancy and org id, with
+// the row's replacement generation, are the facts govern.GrantIsManaged
+// decides managed tenancy on (OSH-R-013, P-204); the caller fills
+// Integrity where it can verify the stored grant.
+func grantFromStore(row store.EnrolmentGrant, enr *store.Enrolment) *govern.Grant {
+	tenancy, enrolmentOrgID := "", ""
+	if enr != nil {
+		tenancy, enrolmentOrgID = enr.Tenancy, enr.OrgID
+	}
 	return &govern.Grant{
-		OrgKey:       row.OrgKey,
-		Generation:   row.Generation,
-		OrgID:        row.OrgID,
-		OrgName:      row.OrgName,
-		OrgServerURL: row.OrgServerURL,
-		KeyPinSHA256: row.KeyPinSHA256,
-		Authority:    row.Authority,
-		ConsentMode:  row.ConsentMode,
-		ConsentActor: row.ConsentActor,
-		GrantedAt:    row.GrantedAt,
-		ExpiresAt:    row.ExpiresAt,
-		Signature:    row.Signature,
-		ReceiptHash:  row.ReceiptHash,
+		Tenancy:               tenancy,
+		EnrolmentOrgID:        enrolmentOrgID,
+		ReplacementGeneration: row.ReplacementGeneration,
+		OrgKey:                row.OrgKey,
+		Generation:            row.Generation,
+		OrgID:                 row.OrgID,
+		OrgName:               row.OrgName,
+		OrgServerURL:          row.OrgServerURL,
+		KeyPinSHA256:          row.KeyPinSHA256,
+		Authority:             row.Authority,
+		ConsentMode:           row.ConsentMode,
+		ConsentActor:          row.ConsentActor,
+		GrantedAt:             row.GrantedAt,
+		ExpiresAt:             row.ExpiresAt,
+		Signature:             row.Signature,
+		ReceiptHash:           row.ReceiptHash,
 	}
 }
 
@@ -1300,4 +1294,15 @@ func loadNodeGovernanceLKGStatus(ctx context.Context, cfg config.Config, st *sto
 	logger.Info("governance: installed verified node.governance cache", "version", cached.resource.Version,
 		"enforce_allowed", enforceAllowed)
 	return lkgInstalled
+}
+
+// VerifiedCopy returns the handle's verified copy of the governance files it
+// writes (nil before SetSidecar).
+func (h *nodeGovernanceHandle) VerifiedCopy() *governanceCopy {
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.verified
 }

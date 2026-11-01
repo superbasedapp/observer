@@ -317,7 +317,7 @@ func TestResolveProcessBridgeListenToken(t *testing.T) {
 	if serr != nil {
 		t.Fatalf("token file not persisted: %v", serr)
 	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
+	if perm := info.Mode().Perm(); posixModes && perm != 0o600 {
 		t.Fatalf("token file mode = %o, want 600", perm)
 	}
 	second, err := resolveProcessBridgeListenToken(pc, dir)

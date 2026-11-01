@@ -2,7 +2,12 @@
 // module so the unit suite can pin the threshold + dedup logic
 // without spinning up a vscode runtime.
 
-import type { HeadlineResponse, WatcherHealthResponse } from '../api/types';
+import type {
+  HeadlineResponse,
+  MessagesNewest,
+  MessagesSummaryResponse,
+  WatcherHealthResponse,
+} from '../api/types';
 
 export const BUDGET_PCT_THRESHOLD = 80;
 export const WATCHER_BEHIND_BYTES_THRESHOLD = 10 * 1024;
@@ -89,4 +94,77 @@ export function decideWatcherLag(
     worstFile: worst.path,
     worstBytes: worst.behind,
   };
+}
+
+export interface AdminMessageDecision {
+  /** Show a notification now. */
+  fire: boolean;
+  /** Use showWarningMessage (an alert) instead of showInformationMessage. */
+  warn?: boolean;
+  /** The notification text. */
+  text?: string;
+  /** Offer Acknowledge (the message asked for one). */
+  canAck?: boolean;
+  message?: MessagesNewest;
+  /** The message id to remember as notified (the caller persists it). */
+  seen: number;
+}
+
+/**
+ * decideAdminMessage returns whether to announce the newest admin message
+ * from a GET /api/messages/summary payload (T-854).
+ *
+ *  - Only when the developer kept the VS Code surface on
+ *    (surfaces.vscode) and the node is enrolled.
+ *  - Reads `push`, which already applies the developer's alerts_only
+ *    choice, never the raw counts.
+ *  - Dedup on the org's message id, which only grows: a message is
+ *    announced once, ever (the caller persists `seen` in globalState), and
+ *    an older message never re-fires after a newer one was seen.
+ *  - Only while it is still unread (push.unread > 0): a message read in the
+ *    dashboard before the next poll is not announced.
+ *
+ * Copy names the author and never a pronoun (D-688 ruling 6).
+ */
+export function decideAdminMessage(
+  data: MessagesSummaryResponse | null | undefined,
+  lastSeenId: number,
+): AdminMessageDecision {
+  const prev = Number.isFinite(lastSeenId) ? lastSeenId : 0;
+  if (!data || !data.enrolled) return { fire: false, seen: prev };
+  const m = data.push?.newest ?? null;
+  if (!m || m.message_id <= prev) return { fire: false, seen: prev };
+  if (!data.surfaces?.vscode || (data.push?.unread ?? 0) <= 0) {
+    return { fire: false, seen: m.message_id };
+  }
+  const who = m.author_name?.trim() || 'your admin';
+  const what = m.subject?.trim() || 'a new message';
+  const end = /[.!?]$/.test(what) ? '' : '.';
+  const ask = m.require_ack ? ' They ask you to acknowledge it.' : '';
+  return {
+    fire: true,
+    warn: m.kind === 'alert',
+    text: `Message from your admin, ${who}: ${what}${end}${ask}`,
+    canAck: m.require_ack,
+    message: m,
+    seen: m.message_id,
+  };
+}
+
+/**
+ * messagesStatusText is the status bar item's text, or null to hide it:
+ * shown only while there is something unread (push.unread, alerts_only
+ * already applied) on an enrolled node whose VS Code surface is on.
+ */
+export function messagesStatusText(data: MessagesSummaryResponse | null | undefined): string | null {
+  if (!data || !data.enrolled || !data.surfaces?.vscode) return null;
+  const n = data.push?.unread ?? 0;
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return `${n > 99 ? '99+' : Math.floor(n)} from admin`;
+}
+
+/** messagesRoute is the dashboard route that opens one conversation. */
+export function messagesRoute(threadId?: string): string {
+  if (!threadId) return '/messages';
+  return `/messages?thread=${encodeURIComponent(threadId)}`;
 }

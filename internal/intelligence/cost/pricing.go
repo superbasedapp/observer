@@ -2545,6 +2545,22 @@ var defaultPricing = map[string]Pricing{
 	// TestTable_2026Q3UnboundedPrefixKnownLimitation in pricing_test.go.
 	"hy3":         {Input: 0.132, Output: 0.528, CacheRead: 0.033},
 	"tencent/hy3": {Input: 0.15, Output: 0.59, CacheRead: 0.037},
+	// "hy4-preview" (CodeBuddy Code's model id, AP-127). No Tencent USD
+	// card yet; this is the GATEWAY list price from the pi-mono model
+	// catalog bundled in @tencent-ai/codebuddy-code dist/codebuddy.js
+	// (read 2026-10-21): opencode-go "hy4-preview" and vercel-ai-gateway
+	// "tencent/hy4-preview" both carry cost {input:0.834, output:2.501,
+	// cacheRead:0.042} per 1M. An API list-price estimate, not what a
+	// CodeBuddy plan bills (credits); replace with Tencent's own card when
+	// one is published. Tencent's own TokenHub card (tencentcloud.com/act/
+	// pro/tokenhub, fetched 2026-10-22) lists "Hy4 Preview (hy4-preview)"
+	// at $0.834 input / $2.501 output / $0.042 cache hit per 1M, the same
+	// figures. kimi-k2.8-preview has no catalog cost anywhere on this box
+	// and neither Moonshot's pricing page (platform.kimi.com, fetched
+	// 2026-10-22) nor Tencent's TokenHub lists it, so it carries no row of
+	// its own: it resolves only through the "kimi" family prefix, which the
+	// ladder reports as PricingSourceFamily (approximate), never exact.
+	"hy4-preview": {Input: 0.834, Output: 2.501, CacheRead: 0.042},
 
 	// StepFun — openrouter.ai/stepfun/step-3.5-flash. No cache rate is
 	// published on the listing — CacheRead left at 0 so fillDefaults'
@@ -2836,6 +2852,26 @@ var defaultPricing = map[string]Pricing{
 	// reliability=approximate rather than reliability=unknown, so cost
 	// rollups treat it as a known-priced model with zero rate.
 	"kilo-auto/free": {Input: 0, Output: 0, CacheRead: 0},
+	// fantail is Autohand Code's hosted default model (the `autohandai`
+	// provider, https://api.autohand.ai/v1). The vendor's own catalog
+	// (~/.autohand/model-catalog/models.json, autohandai.fantail, fetched
+	// from code.autohand.ai, read 2026-10-21) lists cost {input:0,
+	// output:0, cacheRead:0, cacheWrite:0}: routed through Autohand's
+	// gateway at no charge to the user. Explicit so it reads as a
+	// known-priced $0 instead of unknown (the kilo-auto/free shape). The
+	// other zero-cost autohandai catalog ids are added only when seen.
+	"fantail": {Input: 0, Output: 0, CacheRead: 0},
+	// kimchi-dev/gemma-4-31b is Kimchi's own dev gateway (provider
+	// "kimchi-dev", catalog provider "ai-enabler"); the kimchi adapter
+	// stamps model as "<provider>/<model>". The vendor's own catalog
+	// (~/.config/kimchi/harness/models.json, kimchi-dev.gemma-4-31b, read
+	// 2026-10-21) lists cost {input:0, output:0, cacheRead:0,
+	// cacheWrite:0}, and every live usage envelope for it carries cost
+	// total 0 (testdata/kimchi/session-wsl.jsonl). Explicit so it reads as
+	// a known-priced $0 (the fantail / kilo-auto/free shape). Keyed WITH
+	// the provider prefix only: a bare "gemma-4-31b" served elsewhere is
+	// not free and must not inherit this row.
+	"kimchi-dev/gemma-4-31b": {Input: 0, Output: 0, CacheRead: 0},
 	// kilo-auto/small is Kilo's title-generation slot — alias to the
 	// Haiku 4.5 family rates (cheapest priced small-model class we
 	// reliably price). Operator can override via

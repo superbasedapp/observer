@@ -1,0 +1,16 @@
+ro /home/dev/src/repo/.git
+rw /home/dev/src/repo/.git/objects
+rw /home/dev/src/repo/.git/worktrees/repo
+rw /home/dev/src/repo/.git/refs/heads/observer-sandbox/run1
+rw /home/dev/src/repo/.git/logs/refs/heads/observer-sandbox/run1
+protect dir /home/dev/src/repo/.git/hooks
+protect file /home/dev/src/repo/.git/config
+protect dir /home/dev/src/repo/.git/info
+protect file /home/dev/src/repo/.git/config.worktree
+protect file /home/dev/src/repo/.git/objects/info/alternates
+protect file /home/dev/src/repo/.git/objects/info/http-alternates
+protect file /home/dev/src/repo/.git/worktrees/repo/commondir
+protect file /home/dev/src/repo/.git/worktrees/repo/gitdir
+protect file /home/dev/src/repo/.git/worktrees/repo/config.worktree
+protect file /home/dev/.observer/workspaces/run1/repo/.git
+protect dir /home/dev/src/repo/.git/worktrees/side

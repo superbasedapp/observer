@@ -722,7 +722,8 @@ func TestPreflightCapacityErrAgainstFakeJetStream(t *testing.T) {
 	}
 }
 
-// TestWithDefaults pins the pinned defaults and the duplicate-window clamp.
+// TestWithDefaults pins the pinned defaults, and that the stream config never
+// carries an age limit (T-823) while keeping the duplicate window as set.
 func TestWithDefaults(t *testing.T) {
 	o := Options{}.withDefaults()
 	if o.Stream != DefaultStream {
@@ -731,8 +732,8 @@ func TestWithDefaults(t *testing.T) {
 	if o.Replicas != 1 {
 		t.Errorf("Replicas = %d, want 1", o.Replicas)
 	}
-	if o.MaxAge != DefaultMaxAge || o.MaxBytes != DefaultMaxBytes || o.MaxMsgBytes != DefaultMaxMsgBytes {
-		t.Errorf("caps = %v/%d/%d, want %v/%d/%d", o.MaxAge, o.MaxBytes, o.MaxMsgBytes, DefaultMaxAge, DefaultMaxBytes, DefaultMaxMsgBytes)
+	if o.MaxBytes != DefaultMaxBytes || o.MaxMsgBytes != DefaultMaxMsgBytes {
+		t.Errorf("caps = %d/%d, want %d/%d", o.MaxBytes, o.MaxMsgBytes, DefaultMaxBytes, DefaultMaxMsgBytes)
 	}
 	if o.MaxMessages != unlimited {
 		t.Errorf("MaxMessages = %d, want unlimited (%d)", o.MaxMessages, unlimited)
@@ -743,10 +744,14 @@ func TestWithDefaults(t *testing.T) {
 	if o.MaxDeliver != DefaultMaxDeliver || o.AckWait != DefaultAckWait {
 		t.Errorf("consumer defaults = %d/%v", o.MaxDeliver, o.AckWait)
 	}
-	// The duplicate window may never exceed MaxAge.
-	clamped := Options{MaxAge: time.Minute, DuplicateWindow: time.Hour}.withDefaults()
-	if clamped.DuplicateWindow != time.Minute {
-		t.Errorf("clamped DuplicateWindow = %v, want %v (MaxAge)", clamped.DuplicateWindow, time.Minute)
+	// No age horizon exists any more, so nothing clamps the duplicate window.
+	kept := Options{DuplicateWindow: 3 * time.Hour}.withDefaults()
+	if kept.DuplicateWindow != 3*time.Hour {
+		t.Errorf("DuplicateWindow = %v, want 3h", kept.DuplicateWindow)
+	}
+	cfg := Options{}.withDefaults().streamConfig()
+	if cfg.MaxAge != 0 || cfg.Retention != jetstream.LimitsPolicy || cfg.Discard != jetstream.DiscardNew {
+		t.Errorf("stream config = MaxAge %v retention %v discard %v, want 0 / limits / new", cfg.MaxAge, cfg.Retention, cfg.Discard)
 	}
 }
 

@@ -35,6 +35,12 @@ func TestSupportedFamiliesDriveDispatch(t *testing.T) {
 		// policy that allows nothing, so every non-core component is inert
 		// (unlisted: inert, operator ruling Q5).
 		FamilyNodeComponents: `{}`,
+		// The two module families (roadmap F0-9): security.scanning has no
+		// compiler yet (its body NACKs with ErrFamilyNotLinked);
+		// terminals.isolation's empty body is a valid "no floor" (lane
+		// SBX-P1B).
+		FamilySecurityScanning:   `{}`,
+		FamilyTerminalsIsolation: `{}`,
 	}
 
 	if len(minimalBody) != len(SupportedFamilies) {
@@ -57,6 +63,12 @@ func TestSupportedFamiliesDriveDispatch(t *testing.T) {
 				// ErrFamilyNotLinked, never a silent compile (D-535).
 				if !errors.Is(err, ErrFamilyNotLinked) {
 					t.Fatalf("CompileFamilyBody(%q) in a build without its compiler: err = %v, want ErrFamilyNotLinked", family, err)
+				}
+				return
+			}
+			if family != FamilyMCPAccess && IsLinkedOnlyFamily(family) && !IsFamilyLinked(family) {
+				if !errors.Is(err, ErrFamilyNotLinked) {
+					t.Fatalf("CompileFamilyBody(%q) with no compiler linked: err = %v, want ErrFamilyNotLinked", family, err)
 				}
 				return
 			}

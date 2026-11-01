@@ -15,16 +15,26 @@ const (
 	clineConfigRf = "https://docs.cline.bot/getting-started/config.md"
 	clineAudit    = "docs/audits/adapter-config-surface-2026-10-03.md section 5 cline (vendor source + docs.cline.bot, 2026-10-03)"
 	clineStateNt  = "Extension-managed state (set through the Cline UI); the editor never writes it."
+
+	clineMCPSharedRf = "https://raw.githubusercontent.com/cline/cline/main/apps/vscode/src/sdk/SdkController.ts (McpHub settings dir, L331-345, fetched 2026-10-25)"
+	clineMCPLegacyRf = "https://raw.githubusercontent.com/cline/cline/main/apps/vscode/src/hosts/vscode/mcp-settings-legacy-migration.ts (getLegacyMcpSettingsSources, fetched 2026-10-25)"
 )
 
 var clineFiles = []FileRow{
 	{
 		ID: "cline/mcp-settings", Tool: "cline", Shape: "cline/mcp-settings", Kind: KindMCP, Scope: ScopeUser,
+		Paths: samePath("~/.cline/data/settings/cline_mcp_settings.json"), Format: FormatJSON,
+		Precedence: 20, WriteNeeds: PrivUser, Grounding: source(clineMCPSharedRf),
+		Note: "The MCP file current builds read (McpHub on resolveDefaultMcpSettingsPath), shared with the Cline CLI and Cline for JetBrains " +
+			"(the same file as cline-cli/mcp-settings). CLINE_MCP_SETTINGS_PATH, CLINE_DATA_DIR and CLINE_DIR relocate it (relocate.go).",
+	},
+	{
+		ID: "cline/mcp-settings-legacy", Tool: "cline", Shape: "cline/mcp-settings", Kind: KindMCP, Scope: ScopeUser,
 		Paths: samePath("<vscode>/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json"), Format: FormatJSON,
-		Precedence: 20, WriteNeeds: PrivUser, Grounding: doc(clineConfigRf),
+		Precedence: 10, WriteNeeds: PrivUser, Grounding: source(clineMCPLegacyRf),
 		Note: "<vscode> is the VS Code user data dir: Linux ~/.config/Code, macOS ~/Library/Application Support/Code, Windows %APPDATA%\\Code. " +
-			"Builds on the shared SDK layout keep this file at ~/.cline/data/settings/cline_mcp_settings.json instead (catalogued under cline-cli, " +
-			"which owns ~/.cline).",
+			"Legacy: current builds copy its servers into the shared file once (mcp-settings-legacy-migration.ts) and never read it again. " +
+			"Observer no longer writes it; an unregister removes the observer entry an older build left here.",
 	},
 	{
 		ID: "cline/global-state", Tool: "cline", Shape: "cline/global-state", Kind: KindToolState, Scope: ScopeUser,

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -247,6 +248,11 @@ func (d *enrolDashboard) Overview(ctx context.Context) (dashapi.EnrolmentOvervie
 	}
 	ov.UserEmail, ov.EnrolledAt = st.UserEmail, st.EnrolledAt
 	ov.Tenancy = rep.Tenancy
+	if ov.Tenancy == orgcontract.TenancyManaged {
+		ov.MachineProofWarning = machineProofWarning(ctx, b.store)
+	}
+	// WINNODE2 item 1b: a running daemon that cannot read the credential.
+	ov.DaemonCredentialWarning = daemonCredentialWarning(loadLiveDaemonCredentials(ctx, filepath.Dir(b.cfg.Observer.DBPath), b.store))
 	ov.ShareMode, ov.ShareModeLine = rep.ShareRule, dashboardCopy(rep.ShareLine)
 	ov.TargetActions = rep.TargetActions
 	ov.GovernanceWarning = dashboardGovernanceWarning(rep.GovernanceLine)
@@ -395,7 +401,7 @@ func classifyEnrolErr(orgURL string, err error) error {
 			"the organization refused this enrolment code: it is invalid, expired, or already used. Ask your admin for a new one, or sign in with your organization account instead")
 	case errors.Is(err, orgclient.ErrMemberNotActive):
 		return orgenrol.Fail(orgenrol.CodeMemberNotActive,
-			"your organization account is not active yet. Redeem your sign-in invite and sign in to the organization dashboard once, then enrol again with the same code - it is still valid")
+			"your organization account is not active yet. Open the set-password link from your invitation first, set your password and sign in to the organization dashboard once, then enrol again with the same code - it is still valid")
 	case errors.As(err, &urlErr), errors.As(err, &netErr):
 		return orgenrol.Fail(orgenrol.CodeUnreachable, "could not complete the enrolment with %s: the connection failed (%v)", orgURL, err)
 	default:
@@ -543,7 +549,7 @@ func (d *enrolDashboard) recordGrant(ctx context.Context, b orgBundle, offer *or
 		case added:
 			dec.Notes = append(dec.Notes, dashapi.EnrolNote{
 				Level: "info",
-				Text:  fmt.Sprintf("Wrote [org_client.policy] accept_families and preauthorize_enforce = %s to %s. Edit or remove them at any time.", quotedTomlStringList(families), cfgPath),
+				Text:  fmt.Sprintf("Wrote [org_client.policy] %s to %s. Edit or remove them at any time.", managedPolicyKeyLinesText(families), cfgPath),
 			})
 		}
 	}

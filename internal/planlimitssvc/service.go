@@ -279,6 +279,14 @@ func validate(src planlimits.SourceDef, params, secrets map[string]string, requi
 			return fmt.Errorf("%w: %s is required", ErrInvalid, p.Key)
 		}
 	}
+	// A self-hosted gateway's base URL is checked by the same policy the
+	// egress package applies to every request (ledger SUBS-5), so an account
+	// that could never be polled is never saved.
+	if src.UserBaseURL {
+		if _, err := planlimits.CheckBaseURL(params[planlimits.ParamBaseURL]); err != nil {
+			return fmt.Errorf("%w: %s", ErrInvalid, err.Error())
+		}
+	}
 	allowed := map[string]bool{}
 	for _, sp := range src.Secrets {
 		allowed[sp.Key] = true

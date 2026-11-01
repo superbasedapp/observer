@@ -27,6 +27,8 @@ import { useTileVisible } from "@/lib/useComponents";
 import { useDaemonRestart } from "@/lib/useDaemonRestart";
 import { integrityHealthRow } from "@/lib/integrity";
 import { isUpdateAvailable, useUpdateCheck } from "@/lib/version";
+import { npmUpdateCommand } from "@/lib/npmCommand";
+import { useHostOS } from "@/lib/keyPlatform";
 import { fmtDateTime } from "@/lib/format";
 import type {
   DoctorReport,
@@ -128,6 +130,7 @@ function UpdateCard() {
   const { latest, checking, error, lastCheckedAt, checkNow } =
     useUpdateCheck();
   const updateAvailable = isUpdateAvailable(current, latest);
+  const hostOS = useHostOS();
   // The org-served half reads /api/update: hidden when that component is not
   // active here (T-670); the npm check above is core and always shown.
   const showOrgUpdate = useTileVisible()({ route: "/api/update/status" });
@@ -169,8 +172,18 @@ function UpdateCard() {
           {updateAvailable ? (
             <>
               <span className="text-accent">v{latest} is available</span> -
-              update with <kbd>npm i -g @superbased/observer</kbd> or{" "}
-              <kbd>pipx upgrade superbased-observer</kbd>, or read the{" "}
+              update with <kbd>{npmUpdateCommand(hostOS)}</kbd> or{" "}
+              <kbd>pipx upgrade superbased-observer</kbd>, or run the new
+              installer from{" "}
+              <a
+                href="https://superbased.app/download"
+                target="_blank"
+                rel="noreferrer"
+                className="text-accent hover:underline"
+              >
+                superbased.app/download
+              </a>
+              . Read the{" "}
               <a
                 href={`https://github.com/superbasedapp/observer/releases/tag/v${latest}`}
                 target="_blank"

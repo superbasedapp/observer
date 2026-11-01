@@ -51,6 +51,9 @@ export type ReleaseAnnouncement = {
   url?: string;
   expires_at: string; // RFC3339, required — banners self-retire
   source: "release" | "org";
+  // fixed_in, optional: the release from which the announcement no longer
+  // applies (announce.FixedIn; WINNODE2 16b).
+  fixed_in?: string;
 };
 
 // ANNOUNCE_MAX_BODY mirrors announce.MaxBodyChars.
@@ -93,7 +96,27 @@ export function parseAnnouncement(
     }
   }
   const source = str(a.source) === "org" ? "org" : "release";
-  return { id, severity, title, body, url, expires_at: expires, source };
+  const fixedIn = str(a.fixed_in).trim();
+  return {
+    id,
+    severity,
+    title,
+    body,
+    url,
+    expires_at: expires,
+    source,
+    ...(fixedIn ? { fixed_in: fixedIn } : {}),
+  };
+}
+
+// announcementApplies reports whether an announcement is still news for a
+// node running `running` (WINNODE2 16b, announce.ForVersion): one fixed in
+// a release the node is at or past is not. A running version that is not a
+// release (a dev build, unknown) keeps every announcement.
+export function announcementApplies(a: Pick<ReleaseAnnouncement, "fixed_in">, running: string | null | undefined): boolean {
+  if (!a.fixed_in || !running) return true;
+  const cmp = compareSemver(running, a.fixed_in);
+  return cmp === null || cmp < 0;
 }
 
 type CacheEntry = {

@@ -1,0 +1,8 @@
+{
+  "user": {"id": "usr_fixture"},
+  "entitlement": {
+    "tier": "free",
+    "freeRemaining": 7,
+    "quota": {"available": false, "window5h": null, "week": null}
+  }
+}

@@ -13,15 +13,28 @@ import (
 type Step struct {
 	Argv []string
 	Dir  string
+	// Hardened marks a step that runs git on the host against a repository
+	// a box could write (the worktree source): the runner drops the
+	// inherited GIT_* environment and adds the extrun git hardening
+	// environment (no system or global config, no fsmonitor, no hooks, no
+	// prompt) on top of the argv's own -c flags (WorktreeHostGitArgs).
+	Hardened bool
+	// NeutralHome marks a step that must read no configuration of the
+	// host user: the runner points HOME and XDG_CONFIG_HOME at an empty
+	// directory for it (the return scan's config read, CopyConfigListStep).
+	NeutralHome bool
 }
 
 // Steps is Plan's result: the resolved final workspace directory (Dir)
 // plus the ordered git Steps that produce it (empty for SourceLive). The
 // caller executes Steps in order via its own injected subprocess runner
 // — this package never calls os/exec — and stops at the first failure.
+// Branch is the branch the plan creates: for a worktree the composed
+// WorktreeBranch, for a clone the requested Branch ("" when none).
 type Steps struct {
-	Dir   string
-	Steps []Step
+	Dir    string
+	Steps  []Step
+	Branch string
 }
 
 // Plan is the pure decision at the heart of U3 workspace preparation
@@ -81,7 +94,7 @@ func planCloneLocal(req Request) (Steps, error) {
 		}
 		steps = append(steps, Step{Argv: []string{"git", "-C", dest, "checkout", "-b", req.Branch}})
 	}
-	return Steps{Dir: dest, Steps: steps}, nil
+	return Steps{Dir: dest, Steps: steps, Branch: req.Branch}, nil
 }
 
 // planCloneRemote composes `git clone -- <url> <dest>`, run host-side
@@ -107,40 +120,47 @@ func planCloneRemote(req Request) (Steps, error) {
 		}
 		steps = append(steps, Step{Argv: []string{"git", "-C", dest, "checkout", "-b", req.Branch}})
 	}
-	return Steps{Dir: dest, Steps: steps}, nil
+	return Steps{Dir: dest, Steps: steps, Branch: req.Branch}, nil
 }
 
 // planWorktree composes
 //
-//	git -C <ProjectRoot> worktree add -b <Branch> -- <dest>
+//	git -C <ProjectRoot> <WorktreeHostGitArgs> worktree add -b <branch> -- <dest> [<StartPoint>]
 //
-// Gated by AllowWorktreeSource — a worktree needs ProjectRoot's own
-// .git bound read-write inside the sandbox and attributes the run to the
-// main repo (git.FindRoot resolves the worktree's .git FILE back to the
-// main repo), a caveat the caller surfaces in the dashboard copy. Branch
-// is required: without a distinct branch, `git worktree add` collides
-// with whatever branch ProjectRoot already has checked out.
+// Gated by AllowWorktreeSource: the box gets the main repository's git
+// object store, its own worktree git dir and the run's ref directory
+// read-write (PlanWorktreeBox), and the run attributes to the main
+// repository (git.FindRoot resolves a linked worktree to it, F0-14). The
+// branch is always a fresh `observer-sandbox/<id>/<label>` (WorktreeBranch;
+// Branch is only the label, "work" when empty), so it never collides with a
+// branch ProjectRoot has checked out and `-b` refuses rather than resets
+// an existing one. StartPoint, when set, pins the commit the branch starts
+// from (a full object id), so the run's base is known exactly. The add
+// carries the host hardening (WorktreeHostGitArgs, Step.Hardened), so the
+// main repository's post-checkout hook and fsmonitor do not run.
 func planWorktree(req Request) (Steps, error) {
 	if !req.AllowWorktreeSource {
-		return Steps{}, fmt.Errorf("workspace.Plan: worktree source requires allow_worktree_source (it needs the main repo's .git bound read-write, and attribution points at the main repo, not the sandboxed copy - off by default)")
+		return Steps{}, fmt.Errorf("workspace.Plan: worktree source requires allow_worktree_source (it mounts the main repository's .git folder writable in the box - off by default)")
 	}
 	if err := validateAbsPath("ProjectRoot", req.ProjectRoot); err != nil {
 		return Steps{}, err
 	}
-	if req.Branch == "" {
-		return Steps{}, fmt.Errorf("workspace.Plan: worktree source requires Branch (a worktree without a distinct branch collides with the source checkout)")
-	}
-	if err := validateCleanToken("Branch", req.Branch); err != nil {
+	branch, err := WorktreeBranch(req.ID, req.Branch)
+	if err != nil {
 		return Steps{}, err
+	}
+	if req.StartPoint != "" && !validStartPoint(req.StartPoint) {
+		return Steps{}, fmt.Errorf("workspace.Plan: worktree StartPoint %q is not a full object id", req.StartPoint)
 	}
 	dest, err := mintDest(req.ManagedRoot, req.ID, filepath.Base(req.ProjectRoot))
 	if err != nil {
 		return Steps{}, err
 	}
-	steps := []Step{
-		{Argv: []string{"git", "-C", req.ProjectRoot, "worktree", "add", "-b", req.Branch, "--", dest}},
+	argv := append(append([]string{"git", "-C", req.ProjectRoot}, worktreeHostGit...), "worktree", "add", "-b", branch, "--", dest)
+	if req.StartPoint != "" {
+		argv = append(argv, req.StartPoint)
 	}
-	return Steps{Dir: dest, Steps: steps}, nil
+	return Steps{Dir: dest, Steps: []Step{{Argv: argv, Hardened: true}}, Branch: branch}, nil
 }
 
 // mintDest computes <managedRoot>/<id>/<leafCandidate> and validates

@@ -18,6 +18,8 @@ import (
 
 	keyring "github.com/zalando/go-keyring"
 
+	"github.com/marmutapp/superbased-observer/internal/keystore"
+
 	"github.com/marmutapp/superbased-observer/internal/dpop/jose"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/store"
@@ -84,7 +86,7 @@ func TestAgentAccessKeychainStoreRoundTripPerAlg(t *testing.T) {
 	}
 	// A corrupted record is refused, not guessed at.
 	for _, bad := range []string{"plain", "sbo-aak-v1:EdDSA:!!!", "sbo-aak-v1:ES256:" + mustEnvelopeBody(t, ed)} {
-		if err := keyring.Set("sbo-aa-test", recAgentAccessKey, bad); err != nil {
+		if err := keyring.Set(keystore.Namespace("sbo-aa-test"), recAgentAccessKey, bad); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := st.LoadAgentAccessKey(); err == nil {

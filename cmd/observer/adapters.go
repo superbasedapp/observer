@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -169,7 +170,7 @@ func renderAdapterMatrix(w io.Writer, caps []integration.Capability, disallowed 
 			handoffCell(c.Handoff),
 			attachCell(c.Attach),
 			resumeCell(c),
-			promptCell(c.PromptLane, c.Hook.AutoWired),
+			promptCell(c.PromptLane, c.Hook.AutoWiredNow()),
 			enforce,
 			lifecycleCell(c.Lifecycle),
 		)
@@ -320,6 +321,10 @@ func routabilityCell(s integration.RouteStatus) string {
 		return "probe"
 	case integration.RouteStatusNativeExempt:
 		return "native-exempt"
+	case integration.RouteStatusSettingsIgnored:
+		// A surface-row value (one surface ignores the settings route); a
+		// tool-level row never carries it, but the label is closed anyway.
+		return "settings-ignored"
 	default:
 		return "—"
 	}
@@ -356,6 +361,10 @@ func hookCell(h integration.HookSpec) string {
 	}
 	if !h.AutoWired {
 		s += "+manual"
+	}
+	if h.LiveGate.Waiting() {
+		// DEC-12: the writer is built but switched off.
+		s += "+gated:" + strings.TrimSpace(string(h.LiveGate))
 	}
 	return s
 }
@@ -586,13 +595,47 @@ func controlCoverageLine(tool string) (string, bool) {
 	if !ok {
 		return "", false
 	}
+	return controlCoverageText(row), true
+}
+
+// controlCoverageLineObserved is controlCoverageLine with the tool-wide
+// route proof counted over the surfaces this node holds sessions of (AW-48):
+// a declared surface with no session here is skipped and named "no sessions
+// observed". With no database, or when the counts cannot be read, it is the
+// registry view.
+func controlCoverageLineObserved(ctx context.Context, database *sql.DB, tool string) (string, bool) {
+	if database == nil {
+		return controlCoverageLine(tool)
+	}
+	counts, err := store.New(database).LoadSurfaceSessionCounts(ctx, tool)
+	if err != nil {
+		return controlCoverageLine(tool)
+	}
+	groups := make([]controlcoverage.SurfaceSession, 0, len(counts))
+	for _, c := range counts {
+		groups = append(groups, controlcoverage.SurfaceSession{Kind: c.Surface, Host: c.SurfaceHost, Sessions: c.Sessions})
+	}
+	row, ok := controlcoverage.ForObserved(tool, groups)
+	if !ok {
+		return "", false
+	}
+	return controlCoverageText(row), true
+}
+
+// controlCoverageText renders one control-coverage row as the doctor line.
+func controlCoverageText(row controlcoverage.Row) string {
 	line := fmt.Sprintf("tool-call=%s, prompt-submit=%s, budget=%s",
 		enforcementCell(row.ToolCallChannel), promptSubmitCell(row.PromptSubmit), budgetChannelCell(row.BudgetChannel))
 	if row.BudgetChannel == integration.BudgetAdmissionObserverProxy {
 		line += " (route " + routeProofCell(row.RouteProof) + ")"
 	}
+	// Per capture surface: how far the tool gate and the proxy route reach
+	// (surface-gap Wave 3; "tool gate: cli gated, desktop ungated").
+	if posture := row.PostureText(); posture != "" {
+		line += "; surfaces: " + posture
+	}
 	if row.Note != "" {
 		line += " - " + row.Note
 	}
-	return line, true
+	return line
 }

@@ -79,7 +79,7 @@
       "AltSeam": "watcher"
     },
     "context_inject": {
-      "State": "vendor_only",
+      "State": "none",
       "AltSeam": ""
     },
     "environment_observe": {
@@ -103,7 +103,7 @@
       "AltSeam": "watcher"
     },
     "prompt_gate": {
-      "State": "none",
+      "State": "wired",
       "AltSeam": "capture_lane"
     },
     "session_lifecycle": {
@@ -127,7 +127,7 @@
       "AltSeam": "watcher"
     },
     "tool_gate": {
-      "State": "vendor_only",
+      "State": "wired",
       "AltSeam": "watcher"
     },
     "tool_observe": {
@@ -181,7 +181,7 @@
       "AltSeam": "capture_lane"
     },
     "session_lifecycle": {
-      "State": "none",
+      "State": "vendor_only",
       "AltSeam": "watcher"
     },
     "stop_gate": {
@@ -203,6 +203,80 @@
     "tool_gate": {
       "State": "wired",
       "AltSeam": "sandbox"
+    },
+    "tool_observe": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "tool_rewrite": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "turn_lifecycle": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "user_message": {
+      "State": "none",
+      "AltSeam": ""
+    }
+  },
+  "autohand": {
+    "compact_lifecycle": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "context_inject": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "environment_observe": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "model_call_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "notification_observe": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "permission_gate": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "permission_observe": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "prompt_gate": {
+      "State": "wired",
+      "AltSeam": "capture_lane"
+    },
+    "session_lifecycle": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "stop_gate": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "subagent_lifecycle": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "task_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "tool_failure_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "tool_gate": {
+      "State": "wired",
+      "AltSeam": "watcher"
     },
     "tool_observe": {
       "State": "vendor_only",
@@ -523,7 +597,7 @@
       "AltSeam": "proxy"
     },
     "context_inject": {
-      "State": "none",
+      "State": "vendor_only",
       "AltSeam": ""
     },
     "environment_observe": {
@@ -547,7 +621,7 @@
       "AltSeam": "watcher"
     },
     "prompt_gate": {
-      "State": "none",
+      "State": "wired",
       "AltSeam": "proxy"
     },
     "session_lifecycle": {
@@ -584,6 +658,80 @@
     },
     "turn_lifecycle": {
       "State": "wired",
+      "AltSeam": "watcher"
+    },
+    "user_message": {
+      "State": "none",
+      "AltSeam": ""
+    }
+  },
+  "codebuddy": {
+    "compact_lifecycle": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "context_inject": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "environment_observe": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "model_call_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "notification_observe": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "permission_gate": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "permission_observe": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "prompt_gate": {
+      "State": "wired",
+      "AltSeam": "capture_lane"
+    },
+    "session_lifecycle": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "stop_gate": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "subagent_lifecycle": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "task_observe": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "tool_failure_observe": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "tool_gate": {
+      "State": "wired",
+      "AltSeam": "watcher"
+    },
+    "tool_observe": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "tool_rewrite": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "turn_lifecycle": {
+      "State": "vendor_only",
       "AltSeam": "watcher"
     },
     "user_message": {
@@ -843,7 +991,7 @@
       "AltSeam": "watcher"
     },
     "prompt_gate": {
-      "State": "vendor_only",
+      "State": "wired",
       "AltSeam": "proxy"
     },
     "session_lifecycle": {
@@ -955,6 +1103,80 @@
     "turn_lifecycle": {
       "State": "wired",
       "AltSeam": ""
+    },
+    "user_message": {
+      "State": "none",
+      "AltSeam": ""
+    }
+  },
+  "cortex-code": {
+    "compact_lifecycle": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "context_inject": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "environment_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "model_call_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "notification_observe": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "permission_gate": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "permission_observe": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "prompt_gate": {
+      "State": "wired",
+      "AltSeam": "capture_lane"
+    },
+    "session_lifecycle": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "stop_gate": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "subagent_lifecycle": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "task_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "tool_failure_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "tool_gate": {
+      "State": "wired",
+      "AltSeam": "watcher"
+    },
+    "tool_observe": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "tool_rewrite": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "turn_lifecycle": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
     },
     "user_message": {
       "State": "none",
@@ -1183,6 +1405,80 @@
       "AltSeam": ""
     }
   },
+  "deepagents-code": {
+    "compact_lifecycle": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "context_inject": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "environment_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "model_call_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "notification_observe": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "permission_gate": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "permission_observe": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "prompt_gate": {
+      "State": "wired",
+      "AltSeam": "capture_lane"
+    },
+    "session_lifecycle": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "stop_gate": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "subagent_lifecycle": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "task_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "tool_failure_observe": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "tool_gate": {
+      "State": "wired",
+      "AltSeam": "watcher"
+    },
+    "tool_observe": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "tool_rewrite": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "turn_lifecycle": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "user_message": {
+      "State": "none",
+      "AltSeam": ""
+    }
+  },
   "deepseek": {
     "compact_lifecycle": {
       "State": "none",
@@ -1213,7 +1509,7 @@
       "AltSeam": "watcher"
     },
     "prompt_gate": {
-      "State": "none",
+      "State": "wired",
       "AltSeam": "capture_lane"
     },
     "session_lifecycle": {
@@ -1237,7 +1533,7 @@
       "AltSeam": "watcher"
     },
     "tool_gate": {
-      "State": "vendor_only",
+      "State": "wired",
       "AltSeam": "watcher"
     },
     "tool_observe": {
@@ -1316,6 +1612,154 @@
     },
     "tool_observe": {
       "State": "none",
+      "AltSeam": "watcher"
+    },
+    "tool_rewrite": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "turn_lifecycle": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "user_message": {
+      "State": "none",
+      "AltSeam": ""
+    }
+  },
+  "dimcode": {
+    "compact_lifecycle": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "context_inject": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "environment_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "model_call_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "notification_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "permission_gate": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "permission_observe": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "prompt_gate": {
+      "State": "wired",
+      "AltSeam": "capture_lane"
+    },
+    "session_lifecycle": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "stop_gate": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "subagent_lifecycle": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "task_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "tool_failure_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "tool_gate": {
+      "State": "wired",
+      "AltSeam": "watcher"
+    },
+    "tool_observe": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "tool_rewrite": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "turn_lifecycle": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "user_message": {
+      "State": "none",
+      "AltSeam": ""
+    }
+  },
+  "dirac": {
+    "compact_lifecycle": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "context_inject": {
+      "State": "vendor_only",
+      "AltSeam": ""
+    },
+    "environment_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "model_call_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "notification_observe": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "permission_gate": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "permission_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "prompt_gate": {
+      "State": "wired",
+      "AltSeam": "capture_lane"
+    },
+    "session_lifecycle": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "stop_gate": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "subagent_lifecycle": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "task_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "tool_failure_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "tool_gate": {
+      "State": "wired",
+      "AltSeam": "watcher"
+    },
+    "tool_observe": {
+      "State": "vendor_only",
       "AltSeam": "watcher"
     },
     "tool_rewrite": {
@@ -1485,7 +1929,7 @@
       "AltSeam": "proxy"
     },
     "context_inject": {
-      "State": "none",
+      "State": "vendor_only",
       "AltSeam": ""
     },
     "environment_observe": {
@@ -1923,6 +2367,80 @@
       "AltSeam": ""
     }
   },
+  "ibm-bob": {
+    "compact_lifecycle": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "context_inject": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "environment_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "model_call_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "notification_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "permission_gate": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "permission_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "prompt_gate": {
+      "State": "wired",
+      "AltSeam": "capture_lane"
+    },
+    "session_lifecycle": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "stop_gate": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "subagent_lifecycle": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "task_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "tool_failure_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "tool_gate": {
+      "State": "wired",
+      "AltSeam": "watcher"
+    },
+    "tool_observe": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "tool_rewrite": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "turn_lifecycle": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "user_message": {
+      "State": "none",
+      "AltSeam": ""
+    }
+  },
   "junie": {
     "compact_lifecycle": {
       "State": "none",
@@ -2145,6 +2663,80 @@
       "AltSeam": ""
     }
   },
+  "kimchi": {
+    "compact_lifecycle": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "context_inject": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "environment_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "model_call_observe": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "notification_observe": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "permission_gate": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "permission_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "prompt_gate": {
+      "State": "wired",
+      "AltSeam": "capture_lane"
+    },
+    "session_lifecycle": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "stop_gate": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "subagent_lifecycle": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "task_observe": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "tool_failure_observe": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "tool_gate": {
+      "State": "wired",
+      "AltSeam": "watcher"
+    },
+    "tool_observe": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "tool_rewrite": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "turn_lifecycle": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "user_message": {
+      "State": "none",
+      "AltSeam": ""
+    }
+  },
   "kimi-code": {
     "compact_lifecycle": {
       "State": "vendor_only",
@@ -2249,7 +2841,7 @@
       "AltSeam": "watcher"
     },
     "prompt_gate": {
-      "State": "probe_required",
+      "State": "wired",
       "AltSeam": "capture_lane"
     },
     "session_lifecycle": {
@@ -2273,7 +2865,7 @@
       "AltSeam": "watcher"
     },
     "tool_gate": {
-      "State": "vendor_only",
+      "State": "wired",
       "AltSeam": "sandbox"
     },
     "tool_observe": {
@@ -2841,7 +3433,7 @@
       "AltSeam": "watcher"
     },
     "prompt_gate": {
-      "State": "vendor_only",
+      "State": "wired",
       "AltSeam": "proxy"
     },
     "session_lifecycle": {
@@ -3039,7 +3631,7 @@
       "AltSeam": "watcher"
     },
     "context_inject": {
-      "State": "none",
+      "State": "vendor_only",
       "AltSeam": ""
     },
     "environment_observe": {
@@ -3113,7 +3705,7 @@
       "AltSeam": "proxy"
     },
     "context_inject": {
-      "State": "none",
+      "State": "vendor_only",
       "AltSeam": ""
     },
     "environment_observe": {
@@ -3171,6 +3763,154 @@
     "tool_rewrite": {
       "State": "none",
       "AltSeam": "proxy"
+    },
+    "turn_lifecycle": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "user_message": {
+      "State": "none",
+      "AltSeam": ""
+    }
+  },
+  "stakpak": {
+    "compact_lifecycle": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "context_inject": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "environment_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "model_call_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "notification_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "permission_gate": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "permission_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "prompt_gate": {
+      "State": "none",
+      "AltSeam": "capture_lane"
+    },
+    "session_lifecycle": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "stop_gate": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "subagent_lifecycle": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "task_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "tool_failure_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "tool_gate": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "tool_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "tool_rewrite": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "turn_lifecycle": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "user_message": {
+      "State": "none",
+      "AltSeam": ""
+    }
+  },
+  "vtcode": {
+    "compact_lifecycle": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "context_inject": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "environment_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "model_call_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "notification_observe": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "permission_gate": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "permission_observe": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "prompt_gate": {
+      "State": "wired",
+      "AltSeam": "capture_lane"
+    },
+    "session_lifecycle": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "stop_gate": {
+      "State": "none",
+      "AltSeam": ""
+    },
+    "subagent_lifecycle": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "task_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "tool_failure_observe": {
+      "State": "none",
+      "AltSeam": "watcher"
+    },
+    "tool_gate": {
+      "State": "wired",
+      "AltSeam": "watcher"
+    },
+    "tool_observe": {
+      "State": "vendor_only",
+      "AltSeam": "watcher"
+    },
+    "tool_rewrite": {
+      "State": "none",
+      "AltSeam": ""
     },
     "turn_lifecycle": {
       "State": "vendor_only",

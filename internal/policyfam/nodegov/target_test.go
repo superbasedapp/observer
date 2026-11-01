@@ -38,6 +38,9 @@ var releasedKeys = map[int]struct{ pinned, share, features []string }{
 		pinned: []string{"guard.budget.from_org", "guard.budget.hard", "guard.strict", "routing.enabled", "tasks.enabled"},
 		share:  []string{"intelligence.org_enrichment", "obs.egress", "task_detail", "tool_account_detail"},
 	},
+	4: { // v1.36.0 (the held v1.35.0 shipped inside it)
+		pinned: []string{"guard.budget.fail_closed", "org_client.push_interval_seconds"},
+	},
 }
 
 // TestKeyGenerationsCoverEveryKey fails when a pinned key, share key or

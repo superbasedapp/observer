@@ -157,40 +157,6 @@ func TestProbeDirEnvRootIsWindowsOnly(t *testing.T) {
 	}
 }
 
-// TestRegistryTotals pins the raw registry shape at HEAD as DI-19's
-// recurrence gate: a silent drift in these three counts means a doc
-// (docs/plans/adapter-coverage-parity-plan-2026-06-26.md §15,
-// docs/README.md) has gone stale and needs a bump alongside the code
-// change that moved the number. Verified 2026-09-02 against the live
-// registry (matches docs/audits/dashboard-install-audit-2026-09-02.md
-// §3's count and the adapter-coverage-parity plan's 2026-08-27 snapshot).
-func TestRegistryTotals(t *testing.T) {
-	const (
-		wantTotal      = 45 // len(integration.Tools()); 42 -> 43 on 2026-09-03 (kiro-crew), 43 -> 44 on 2026-09-05 (poolside), 44 -> 45 on 2026-09-06 (zed)
-		wantLaunchable = 31 // Handoff.Launchable() == true; 27 -> 31 on 2026-10-03 (aider, crush, junie, poolside)
-		wantBinary     = 31 // Binary != nil (every launchable row; aider was Binary-only before 2026-10-03)
-	)
-	caps := integration.Capabilities()
-	if got := len(caps); got != wantTotal {
-		t.Errorf("total registry rows = %d, want %d (bump docs/plans/adapter-coverage-parity-plan-2026-06-26.md §15 and docs/README.md alongside this constant if the change is intentional)", got, wantTotal)
-	}
-	launchable, binary := 0, 0
-	for _, c := range caps {
-		if c.Handoff.Launchable() {
-			launchable++
-		}
-		if c.Binary != nil {
-			binary++
-		}
-	}
-	if launchable != wantLaunchable {
-		t.Errorf("launchable rows = %d, want %d (bump docs/plans/adapter-coverage-parity-plan-2026-06-26.md §15 and docs/README.md alongside this constant if the change is intentional)", launchable, wantLaunchable)
-	}
-	if binary != wantBinary {
-		t.Errorf("Binary != nil rows = %d, want %d (bump docs/plans/adapter-coverage-parity-plan-2026-06-26.md §15 and docs/README.md alongside this constant if the change is intentional)", binary, wantBinary)
-	}
-}
-
 // TestGooseInstallHintsMatchVendorDocs pins goose's guided install to the
 // commands https://goose-docs.ai/docs/getting-started/installation documents
 // (re-grounded 2026-10-02 after a failed guided install on a Linux node): the

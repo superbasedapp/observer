@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime/pprof"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -114,4 +115,37 @@ func checkpointOnShutdown(database *sql.DB) {
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownCheckpointTimeout)
 	defer cancel()
 	_, _ = database.ExecContext(ctx, "PRAGMA wal_checkpoint(PASSIVE)")
+}
+
+// startupStopBound is how long a stop requested during the earliest part of
+// startup (before the stop watchdog below exists) may take before the
+// process exits anyway (D-MU2). A var for tests.
+var startupStopBound = daemonShutdownBound
+
+// startupStopGuard covers the window between the signal context and the
+// daemon's stop watchdog: a SIGTERM that arrives while startup is still in
+// a step that does not watch ctx (a config migration, a governance load)
+// used to be swallowed by the signal context, so `observer service stop`
+// left the process running (D-MU2). Once ctx is done, the guard waits bound
+// and then calls exit, unless handoff was called first (the stop watchdog
+// is armed from then on and owns the bound). handoff is idempotent.
+func startupStopGuard(ctx context.Context, bound time.Duration, stderr io.Writer, exit func(int)) (handoff func()) {
+	handed := make(chan struct{})
+	var once sync.Once
+	go func() {
+		select {
+		case <-handed:
+			return
+		case <-ctx.Done():
+		}
+		t := time.NewTimer(bound)
+		defer t.Stop()
+		select {
+		case <-handed:
+		case <-t.C:
+			fmt.Fprintf(stderr, "shutdown: stop requested during startup did not finish within %s; exiting.\n", bound)
+			exit(1)
+		}
+	}()
+	return func() { once.Do(func() { close(handed) }) }
 }

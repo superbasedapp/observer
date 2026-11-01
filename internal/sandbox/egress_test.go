@@ -185,8 +185,8 @@ func TestHostArgvAndParseRoundTrip(t *testing.T) {
 	}{
 		{EgressHost, nil, false},
 		{EgressNone, nil, false},
-		{EgressProxyOnly, []string{"/o/observer", HostVerb, "--sock-dir", "/tmp/s", "--proxy-addr", "127.0.0.1:8820", "--"}, false},
-		{EgressInternet, []string{"/o/observer", HostVerb, "--sock-dir", "/tmp/s", "--proxy-addr", "127.0.0.1:8820", "--gateway", "--"}, true},
+		{EgressProxyOnly, []string{"/o/observer", HostVerb, "--sock-dir", "/tmp/s", "--private-net", "--proxy-addr", "127.0.0.1:8820", "--"}, false},
+		{EgressInternet, []string{"/o/observer", HostVerb, "--sock-dir", "/tmp/s", "--private-net", "--proxy-addr", "127.0.0.1:8820", "--gateway", "--"}, true},
 	}
 	for _, tc := range tests {
 		got, err := HostArgv("/o/observer", NetRequest{Egress: tc.mode, HostSocketDir: "/tmp/s", ProxyPort: 8820})
@@ -203,7 +203,7 @@ func TestHostArgvAndParseRoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: ParseHostArgs: %v", tc.mode, err)
 		}
-		if parsed.SockDir != "/tmp/s" || parsed.ProxyAddr != "127.0.0.1:8820" || parsed.Gateway != tc.gateway {
+		if parsed.SockDir != "/tmp/s" || parsed.ProxyAddr != "127.0.0.1:8820" || parsed.Gateway != tc.gateway || !parsed.PrivateNet {
 			t.Errorf("%s: parsed %+v", tc.mode, parsed)
 		}
 		if parsed.Command[0] != "/usr/bin/bwrap" || len(parsed.Command) != 4 {
@@ -415,7 +415,7 @@ func TestHostArgvCarriesAllowCIDRsAndPlaceholders(t *testing.T) {
 			name: "internet with allow-list and placeholders", mode: EgressInternet,
 			cidrs: []string{"10.20.0.0/16", "fd00:1::/32"}, ph: ph,
 			want: []string{
-				"/o/observer", HostVerb, "--sock-dir", "/tmp/s", "--proxy-addr", "127.0.0.1:8820", "--gateway",
+				"/o/observer", HostVerb, "--sock-dir", "/tmp/s", "--private-net", "--proxy-addr", "127.0.0.1:8820", "--gateway",
 				"--egress-allow-cidr", "10.20.0.0/16", "--egress-allow-cidr", "fd00:1::/32",
 				"--placeholder-file", "/home/dev/.observer/guard-policy.toml", "--placeholder-dir", "/home/dev/.observer/attach", "--",
 			},
@@ -423,7 +423,7 @@ func TestHostArgvCarriesAllowCIDRsAndPlaceholders(t *testing.T) {
 		},
 		{
 			name: "proxy_only ignores the allow-list", mode: EgressProxyOnly, cidrs: []string{"10.20.0.0/16"},
-			want: []string{"/o/observer", HostVerb, "--sock-dir", "/tmp/s", "--proxy-addr", "127.0.0.1:8820", "--"},
+			want: []string{"/o/observer", HostVerb, "--sock-dir", "/tmp/s", "--private-net", "--proxy-addr", "127.0.0.1:8820", "--"},
 		},
 		{
 			name: "host tier with placeholders runs the helper without a socket dir", mode: EgressHost, ph: ph,
@@ -657,6 +657,31 @@ func TestPlaceholderContent(t *testing.T) {
 	} {
 		if got := string(PlaceholderContent(path)); got != want {
 			t.Errorf("PlaceholderContent(%s) = %q, want %q", path, got, want)
+		}
+	}
+}
+
+// TestRelayOfWrap (lane sbx-p2c): the launcher reads the relay run id and
+// observer directory back from the wrap argv the plan composed; an argv
+// with no helper, or a helper with no relay, names none.
+func TestRelayOfWrap(t *testing.T) {
+	t.Parallel()
+	n := NetRequest{Egress: EgressProxyOnly, HostSocketDir: "/tmp/s", ProxyPort: 8820}
+	argv, err := hostArgvRelay("/o/observer", n, nil, RelayRequest{RunID: "run-1", HostObserverDir: "/home/u/.observer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	argv = append(argv, "/usr/bin/bwrap", "--", "/o/observer", HostVerb, "--relay-run", "inner")
+	if id, dir, ok := RelayOfWrap(argv); !ok || id != "run-1" || dir != "/home/u/.observer" {
+		t.Fatalf("relay of wrap: %q %q %v", id, dir, ok)
+	}
+	plain, err := HostArgv("/o/observer", n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range [][]string{nil, {"/usr/bin/bwrap", "--"}, append(plain, "/usr/bin/bwrap")} {
+		if _, _, ok := RelayOfWrap(a); ok {
+			t.Errorf("relay found in %v", a)
 		}
 	}
 }

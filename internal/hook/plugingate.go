@@ -24,16 +24,26 @@ import (
 const (
 	// PluginDialectToolGate is the plugin hosts' tool-gate dialect.
 	PluginDialectToolGate = "plugin-shim"
-	// PromptDialectPluginShim is the plugin hosts' prompt-gate dialect
-	// (OpenCode / Kilo CLI chat.message: a modify-only seam, where a block
-	// is delivered by replacing the message text before the model sees it).
+	// PromptDialectPluginShim is the plugin hosts' prompt-gate dialect for
+	// a seam that can stop the prompt and show a notice but has no native
+	// confirm (OpenCode / Kilo CLI chat.message: the shim throws, so the
+	// model is never called, and toasts the reason).
 	PromptDialectPluginShim = "plugin-shim-prompt"
+	// PromptDialectPluginShimConfirm is the plugin hosts' prompt-gate
+	// dialect for a seam that can also open a native confirm dialog and
+	// rewrite the prompt (pi `input`: {action:"handled"} stops it,
+	// ctx.ui.confirm asks, {action:"transform"} rewrites). Where the host
+	// has no UI the shim answers a confirm as a stop the developer resends
+	// to confirm, the same reconsider-once flow re-enter uses.
+	PromptDialectPluginShimConfirm = "plugin-shim-prompt-confirm"
 )
 
 // PluginReply is the plugin dialect's reply. Decision is allow, deny, ask
-// or modify; Enforced tells the plugin whether guard enforcement was in
-// force for this capability, so a later failure to reach observer at all
-// can fail closed (or open) the same way observer would have.
+// or modify; Message, on an allow or a modify, is a notice the shim shows
+// the developer (a guard warning or flag) without stopping anything;
+// Enforced tells the plugin whether guard enforcement was in force for this
+// capability, so a later failure to reach observer at all can fail closed
+// (or open) the same way observer would have.
 type PluginReply struct {
 	Decision string `json:"decision"`
 	Reason   string `json:"reason,omitempty"`
@@ -131,7 +141,13 @@ func BuildPluginToolEvent(tool string, body []byte, caps policy.Capabilities) (p
 	if ev.Target == "" {
 		return policy.Event{}, false
 	}
+	if isWriteAction(ev.ActionType) {
+		// The proposed content, so the in-hook secret scan (S-721) reads
+		// what the write would add, as on the Claude Code gate.
+		ev.Edits = proposedEditsIn(toolInputMap(body))
+	}
 	ev.Dialect = pluginShellDialects[strings.ToLower(env.ToolName)]
+	ev.AltDialect = unstatedShellAltDialect(ev.Kind, ev.Dialect, ev.Cwd)
 	return ev, true
 }
 
@@ -167,10 +183,51 @@ func HandlePluginToolGate(
 	persist func(guard.ActionVerdict),
 	stdout, stderr io.Writer,
 ) (blocked bool, recordAfterReply func()) {
+	return HandlePluginToolGateEnriched(tool, event, body, caps, enforced, ev, persist, nil, stdout, stderr)
+}
+
+// HandlePluginToolGateEnriched is HandlePluginToolGate with an enrich step
+// (ToolGateRequest.Enrich's contract): the cmd layer fills the security
+// pillar's facts on the event before it is evaluated (lane sec-gate2). A
+// nil enrich is HandlePluginToolGate.
+func HandlePluginToolGateEnriched(
+	tool, event string,
+	body []byte,
+	caps policy.Capabilities,
+	enforced bool,
+	ev guard.Evaluator,
+	persist func(guard.ActionVerdict),
+	enrich func(*policy.Event),
+	stdout, stderr io.Writer,
+) (blocked bool, recordAfterReply func()) {
+	return HandlePluginToolGateAllow(tool, event, body, caps, enforced, ev, persist, enrich, nil, stdout, stderr)
+}
+
+// HandlePluginToolGateAllow is HandlePluginToolGateEnriched with an allow
+// seam (lane SEC-F2B, decision log P-078 ruling 4): onAllow runs once
+// guard allowed the call, after the decision and BEFORE the allow reply is
+// written, so whatever it records exists when the plugin reads the reply
+// (the shim's earlier call after the reply left a small race). It never
+// runs for an ask, a deny or an event that could not be built. A nil
+// onAllow is HandlePluginToolGateEnriched.
+func HandlePluginToolGateAllow(
+	tool, event string,
+	body []byte,
+	caps policy.Capabilities,
+	enforced bool,
+	ev guard.Evaluator,
+	persist func(guard.ActionVerdict),
+	enrich func(*policy.Event),
+	onAllow func(),
+	stdout, stderr io.Writer,
+) (blocked bool, recordAfterReply func()) {
 	pe, ok := BuildPluginToolEvent(tool, body, caps)
 	if !ok {
 		WritePluginReply(stdout, PluginReply{Decision: "allow", Enforced: EnforcedHint(enforced)})
 		return false, nil
+	}
+	if enrich != nil {
+		enrich(&pe)
 	}
 	verdict, recordWorthy := ev.EvaluateHook(pe)
 	em := guard.ResolveEmission(verdict.Verdict, pe.Caps)
@@ -198,12 +255,31 @@ func HandlePluginToolGate(
 		doPersist()
 		return true, nil
 	}
-	WritePluginReply(stdout, PluginReply{Decision: "allow", Enforced: EnforcedHint(enforced)})
+	if onAllow != nil {
+		onAllow()
+	}
+	allow := PluginReply{Decision: "allow", Enforced: EnforcedHint(enforced)}
+	if recordWorthy {
+		allow.Message = pluginFlagMessage(verdict.Verdict.Decision, em.Reason)
+	}
+	WritePluginReply(stdout, allow)
 	if !recordWorthy {
 		return false, nil
 	}
 	logForensics("approve+flag")
 	return false, doPersist
+}
+
+// pluginFlagMessage is the notice a plugin tool gate carries on an allow
+// whose verdict is still worth recording (a flag): the shim shows it to the
+// developer (a TUI toast, a pi notify) so a flagged call is not silent. ""
+// for anything below a flag or without a reason.
+func pluginFlagMessage(d policy.Decision, reason string) string {
+	reason = strings.TrimSpace(reason)
+	if d < policy.DecisionFlag || reason == "" {
+		return ""
+	}
+	return "observer: flagged, not blocked: " + reason
 }
 
 // PluginToolGateCaps are a plugin tool gate's channel capabilities:
@@ -234,9 +310,27 @@ func extractPluginPrompt(body []byte) (prompt, sessionID string, ok, fieldMissin
 	return *env.Prompt, env.SessionID, true, false
 }
 
+// buildPluginPromptReply is both plugin prompt dialects' reply: a stop the
+// developer can confirm (re-enter, or the native confirm) is "ask", any
+// other stop "deny", a warning an allow carrying the notice as message, and
+// anything else a bare allow. The shim maps each onto its host (pluginshim
+// observer-shim.ts); the dialect row's caps decide which of these a verdict
+// can reach.
 func buildPluginPromptReply(out promptReplyOutcome) any {
-	if out.Blocking {
+	switch {
+	case out.Blocking && out.Confirmable:
+		return PluginReply{Decision: "ask", Reason: out.Reason}
+	case out.Blocking:
 		return PluginReply{Decision: "deny", Reason: out.Reason}
+	case out.Warn:
+		return PluginReply{Decision: "allow", Message: out.Reason}
 	}
 	return PluginReply{Decision: "allow"}
+}
+
+// buildPluginPromptRedactReply is the plugin prompt dialects' MODIFY reply:
+// the shim sends out.Masked to the model in place of what the developer
+// typed (pi {action:"transform"}) and shows the reason as a notice.
+func buildPluginPromptRedactReply(out promptReplyOutcome) any {
+	return PluginReply{Decision: "modify", Prompt: out.Masked, Message: out.Reason}
 }

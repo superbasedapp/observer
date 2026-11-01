@@ -123,7 +123,7 @@ func TestCommandCodeHeadlessFlagIsASeedConflict(t *testing.T) {
 func TestCommandCodeManagementVerbsAreRejectedForSeeding(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.toml")
-	if err := os.WriteFile(cfgPath, []byte("[observer]\ndb_path = \""+filepath.Join(dir, "observer.db")+"\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("[observer]\ndb_path = \""+filepath.ToSlash(filepath.Join(dir, "observer.db"))+"\"\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	for _, verb := range []string{"status", "info", "mcp", "login", "learn-taste"} {
@@ -163,7 +163,7 @@ func TestCommandCodeManagementVerbsAreRejectedForSeeding(t *testing.T) {
 func TestCommandCodeSeededInteractiveLaunchIsNotRejected(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.toml")
-	if err := os.WriteFile(cfgPath, []byte("[observer]\ndb_path = \""+filepath.Join(dir, "observer.db")+"\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("[observer]\ndb_path = \""+filepath.ToSlash(filepath.Join(dir, "observer.db"))+"\"\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	cmd := newCommandCodeCmd()

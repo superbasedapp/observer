@@ -131,7 +131,7 @@ func parseProcNetTCP(data []byte, port int) (listening bool, established int) {
 // (clientwire.Remover, the one removal seam): every route it WOULD remove is
 // a route present now. Nothing is written.
 func presentProxyRoutes(binary string, port int) ([]string, error) {
-	rem, err := clientwire.NewRemover(clientwire.RemoveOptions{Getenv: os.Getenv, BinaryPath: binary, ProxyPort: port, DryRun: true})
+	rem, err := clientwire.NewRemover(clientwire.RemoveOptions{BinaryPath: binary, ProxyPort: port, DryRun: true})
 	if err != nil {
 		return nil, err
 	}

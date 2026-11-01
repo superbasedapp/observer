@@ -1,0 +1,68 @@
+{
+  "version": "0.1.0",
+  "id": "5d457a94-f807-86d2-90e9-a1236af9bcac",
+  "timestamp": "2026-10-24T12:00:00Z",
+  "vcs": {
+    "type": "git",
+    "revision": "6dcb09b5b57875f334f61aebed695e2e4193db5e"
+  },
+  "tool": {
+    "name": "superbased-observer",
+    "version": "v1.40.0"
+  },
+  "files": [
+    {
+      "path": "src/main.go",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai",
+            "model_id": "claude-opus-4-8"
+          }
+        }
+      ]
+    },
+    {
+      "path": "README.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "mixed",
+            "model_id": "claude-opus-4-8"
+          }
+        }
+      ]
+    }
+  ],
+  "metadata": {
+    "dev.superbased.observer": {
+      "label": "experimental",
+      "spec": "agent-trace 0.1.0",
+      "spec_read": "2026-10-24",
+      "record_digest": "15bc5a0c83f98509a1801ef504547481f5075819287793e82e1832b3551527e5",
+      "key_id": "fe812c12f3ab4ce6ac5db69ac352f906",
+      "attestation": "self_attested",
+      "sessions": [
+        "sess-1",
+        "sess-2"
+      ],
+      "agents": [
+        "claude-code"
+      ],
+      "models": [
+        "claude-opus-4-8"
+      ],
+      "prompt_ids": [
+        "101",
+        "102"
+      ],
+      "lines": {
+        "ai": 14,
+        "human": 7,
+        "unknown": 0,
+        "human_capture": "vscode"
+      },
+      "unresolved_files": 1
+    }
+  }
+}

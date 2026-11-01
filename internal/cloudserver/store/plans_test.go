@@ -49,12 +49,13 @@ func TestPlanResolutionDefaultsToFree(t *testing.T) {
 			a.Plan.Name, a.Plan.Version, store.PlanFree, store.DefaultFreePlanVersion)
 	}
 	// Migration 0041 (D-299) raised free to 100/day and 3000/month in the v3
-	// row and pinned it to the GPT-6 Luna route; concurrency is unchanged.
+	// row; 0043 ("Pin Haiku") kept those caps in v4 and pinned the Claude
+	// Haiku 5.5 route; concurrency is unchanged.
 	if a.DailyCap != 100 || a.MonthlyCap != 3000 || a.ConcurrencyCap != 2 {
 		t.Fatalf("free caps = %d/%d/%d, want 100/3000/2", a.DailyCap, a.MonthlyCap, a.ConcurrencyCap)
 	}
-	if a.Plan.RouteID != gpt6LunaRoute {
-		t.Fatalf("free plan route_id = %q, want %q", a.Plan.RouteID, gpt6LunaRoute)
+	if a.Plan.RouteID != haikuRoute {
+		t.Fatalf("free plan route_id = %q, want %q", a.Plan.RouteID, haikuRoute)
 	}
 	if a.BudgetPool != "free" {
 		t.Fatalf("free plan pool = %q, want %q", a.BudgetPool, "free")

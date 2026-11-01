@@ -13,6 +13,14 @@ widening the adapter captured nothing from the desktop app (0
 `open-interpreter` rows in the live DB) despite four completed
 sessions on disk.
 
+**Update 2026-10-26 (FU-94)**: desktop 0.0.56 migrated its runtime home
+into `~/.openinterpreter` (marker `.workstation-runtime-home-migrated-v1`),
+so current desktop rollouts land in `~/.openinterpreter/sessions`, the
+CLI's root. This fixture still models the pre-migration `codex-home`
+layout; `TestOpenInterpreterMigratedDesktopHomeCapturedOnce` copies the
+same rollout into a temp `~/.openinterpreter/sessions` to cover the
+migrated one.
+
 The directory layout under this fixture deliberately mirrors the live
 one from `codex-home` down, so a test can point the adapter's explicit
 `watchRoot` at the day directory and exercise the real path shape.

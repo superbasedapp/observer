@@ -1,0 +1,1 @@
+{"code":"200","successResponse":true,"data":"{\"codingPlanInstanceInfos\":[{\"planName\":\"Old Lite\",\"status\":\"EXPIRED\",\"codingPlanQuotaInfo\":{\"per5HourUsedQuota\":1200,\"per5HourTotalQuota\":1200}},{\"planName\":\"Lite\",\"status\":\"VALID\",\"codingPlanQuotaInfo\":{\"per5HourUsedQuota\":10,\"per5HourTotalQuota\":1200,\"per5HourQuotaNextRefreshTime\":1790000300000}}]}"}

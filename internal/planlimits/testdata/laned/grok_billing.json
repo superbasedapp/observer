@@ -1,0 +1,1 @@
+{"billingCycle":{"billingPeriodStart":"2025-10-01T00:00:00Z","billingPeriodEnd":"2025-11-01T00:00:00Z"},"monthlyLimit":{"val":99900},"onDemandCap":{"val":5000},"on_demand_enabled":true,"disabledByConfig":false,"usage":{"includedUsed":{"val":12345},"onDemandUsed":{},"totalUsed":{"val":12345}}}

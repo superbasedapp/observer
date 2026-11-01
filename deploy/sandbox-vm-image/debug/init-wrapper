@@ -1,0 +1,10 @@
+#!/bin/bash
+# init-wrapper: the debug image set's PID 1 hand-over (R-016, never
+# shipped). The debug initramfs /init switch_roots here instead of straight
+# into the guest observer: this starts the root-side debug hook watcher
+# (debugd) in the background and then execs the guest observer's
+# sandbox-vm-init with the same arguments, so it is still PID 1 and the run
+# is otherwise unchanged.
+set -eu
+/usr/libexec/observer-debug/debugd </dev/null >/dev/null 2>&1 &
+exec "$@"

@@ -1,12 +1,14 @@
 package hook
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/marmutapp/superbased-observer/internal/hook/commandcodemod"
+	"github.com/marmutapp/superbased-observer/internal/testwriteguard"
 )
 
 // registerCommandCode drops the go:embed'd observer-guard.ts bridge
@@ -39,24 +41,42 @@ func (r *Registry) registerCommandCode() RegistrationResult {
 
 	existing, readErr := os.ReadFile(path)
 	alreadyInstalled := readErr == nil
-	foreign := alreadyInstalled && !commandcodemod.LooksLikeObserverPlugin(existing)
-	if foreign && !r.opts.Force {
-		res.Error = fmt.Errorf("hook.registerCommandCode: %s already exists and doesn't look like an observer-managed file; pass --force to overwrite", path)
-		return res
+	// observer-guard.ts is Observer's own file name (identityOwnedName): a
+	// foreign file is refused, a neutralised mod on a managed repair pass is
+	// rewritten (T-872), and a mod whose PROFILE runs a binary that is not
+	// judged an Observer binary is not Observer's (FU-192).
+	var foreign, repair bool
+	if alreadyInstalled {
+		var err error
+		foreign, repair, err = r.occupiedOwnedFile("hook.registerCommandCode", path, commandcodemod.LooksLikeObserverPlugin(existing), shapedHooksInPluginProfile(existing))
+		if err != nil {
+			res.Error = err
+			return res
+		}
 	}
 
 	events := commandcodemod.EventsExcept(func(e string) bool { return r.skipEvent("command-code", e) })
 	names := commandcodemod.NamesOf(events)
+	// Currency is BYTE-exact (T-847, the plugin-shim writer's M2-07 rule):
+	// an Observer mod with another binary, another event set or a hand
+	// edit is NOT registered, so a dry run reports it as drift and the
+	// rewrite below counts as an add (a repair when it had been registered).
+	want, err := commandcodemod.RenderPluginEvents(r.opts.BinaryPath, r.opts.ConfigPath, r.observerConfigDir(), events)
+	if err != nil {
+		res.Error = fmt.Errorf("hook.registerCommandCode: %w", err)
+		return res
+	}
+	current := alreadyInstalled && !foreign && bytes.Equal(existing, want)
 	if r.opts.DryRun {
-		if !alreadyInstalled {
-			res.HooksAdded = names
-		} else {
+		if current {
 			res.AlreadySet = names
+		} else {
+			res.HooksAdded = names
 		}
 		return res
 	}
 	if foreign {
-		if err := backupForeignCommandCodeMod(path, existing); err != nil {
+		if err := keepReplacedBytes(&res, path, existing, repair); err != nil {
 			res.Error = fmt.Errorf("hook.registerCommandCode: %w", err)
 			return res
 		}
@@ -65,14 +85,17 @@ func (r *Registry) registerCommandCode() RegistrationResult {
 		res.Error = fmt.Errorf("hook.registerCommandCode: %w", err)
 		return res
 	}
-	if err := r.recordChecksum(path); err != nil {
+	if err := r.recordChecksum(res.Tool, path); err != nil {
 		res.Error = fmt.Errorf("hook.registerCommandCode: %w", err)
 		return res
 	}
-	if alreadyInstalled {
+	if current {
 		res.AlreadySet = names
 	} else {
 		res.HooksAdded = names
+	}
+	if repair {
+		noteOwnedRepair(&res, path, names)
 	}
 	return res
 }
@@ -98,6 +121,9 @@ func (r *Registry) observerConfigDir() string {
 // --force, so an operator who had something else at this path can
 // still recover it.
 func backupForeignCommandCodeMod(path string, data []byte) error {
+	if err := testwriteguard.Check("write", path); err != nil {
+		return err
+	}
 	info, err := os.Stat(path)
 	mode := os.FileMode(0o600)
 	if err == nil {
@@ -132,6 +158,19 @@ func (r *Registry) unregisterCommandCode() UnregistrationResult {
 		res.Error = fmt.Errorf("hook.unregisterCommandCode: read: %w", err)
 		return res
 	}
+	// FU-203: a mod whose PROFILE runs a binary that is not judged an
+	// Observer binary is not Observer's to remove, with or without --force.
+	if r.keepsForeignBinary(shapedHooksInPluginProfile(raw)) {
+		res.HooksKept = commandcodemod.EventNames()
+		noteKeptForeign(&res, res.HooksKept...)
+		return res
+	}
+	// FU-212: a file that is not an observer-written mod is kept byte for
+	// byte, with or without --force, and reported.
+	if !commandcodemod.LooksLikeObserverPlugin(raw) {
+		noteKeptForeignFile(&res, path)
+		return res
+	}
 	if r.opts.DryRun {
 		res.HooksRemoved = commandcodemod.EventNames()
 		return res
@@ -148,7 +187,7 @@ func (r *Registry) unregisterCommandCode() UnregistrationResult {
 		return res
 	}
 
-	if err := commandcodemod.RemovePlugin(dir); err != nil {
+	if err := removeEmptyConfigFile(path, raw); err != nil {
 		res.Error = fmt.Errorf("hook.unregisterCommandCode: %w", err)
 		return res
 	}

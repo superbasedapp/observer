@@ -26,7 +26,9 @@ func IsEcho(res []*commonpb.KeyValue) bool {
 	return attrMap(res)[attrEmittedBy].GetStringValue() == emittedBySelf
 }
 
-// claim returns the vendor whose ServiceNames contains svc.
+// claim returns the vendor whose ServiceNames contains svc, else the first
+// vendor one of whose ServiceNamePrefixes svc starts with (an exact name
+// always wins over a prefix).
 func claim(svc string) (*Vendor, bool) {
 	if svc == "" {
 		return nil, false
@@ -34,6 +36,13 @@ func claim(svc string) (*Vendor, bool) {
 	for i := range vendors {
 		for _, n := range vendors[i].ServiceNames {
 			if n == svc {
+				return &vendors[i], true
+			}
+		}
+	}
+	for i := range vendors {
+		for _, p := range vendors[i].ServiceNamePrefixes {
+			if p != "" && strings.HasPrefix(svc, p) {
 				return &vendors[i], true
 			}
 		}
@@ -98,6 +107,7 @@ func ParseLogs(req *collogspb.ExportLogsServiceRequest) Result {
 		}
 		noteUnclaimed(&out, seen, res, matched)
 	}
+	out.GenTimings = timedOnly(out.GenTimings)
 	return out
 }
 
@@ -126,9 +136,20 @@ func ParseSpans(req *coltracepb.ExportTraceServiceRequest) Result {
 							continue
 						}
 						matched = true
-						apply(&out, vd, r, v, ts, sp.GetStartTimeUnixNano(), recordKey(ts, sp.GetSpanId(), 0), "")
+						rv := v
+						if r.F.FromSpanEvents {
+							rv = v.withEvents(spanEventAttrs(sp))
+						}
+						before, beforeTiming := len(out.Tools), len(out.GenTimings)
+						apply(&out, vd, r, rv, ts, sp.GetStartTimeUnixNano(), recordKey(ts, sp.GetSpanId(), 0), "")
 						if r.Kind == KindTurn || r.Kind == KindTool {
 							setSpanDuration(&out, r.Kind, sp)
+						}
+						if r.Kind == KindTool && r.F.SuccessFromStatus && len(out.Tools) > before {
+							setSpanOutcome(&out.Tools[len(out.Tools)-1], sp)
+						}
+						if r.Kind == KindGenTiming && len(out.GenTimings) > beforeTiming {
+							setSpanGenTiming(&out.GenTimings[len(out.GenTimings)-1], &r.F, sp)
 						}
 					}
 				}
@@ -136,6 +157,7 @@ func ParseSpans(req *coltracepb.ExportTraceServiceRequest) Result {
 		}
 		noteUnclaimed(&out, seen, res, matched)
 	}
+	out.GenTimings = timedOnly(out.GenTimings)
 	return out
 }
 
@@ -226,10 +248,11 @@ func apply(out *Result, vd *Vendor, r *Rule, v view, ts time.Time, tsNano uint64
 			Tool: vd.Tool, SourceTag: vd.SourceTag, Provider: firstNonEmpty(v.str(f.Provider), vd.Provider),
 			SessionID: session, RequestID: request, RequestSynthetic: synthetic,
 			Model: v.str(f.Model), Timestamp: ts,
-			CacheReadTokens:  v.int64Of(f.CacheRead),
-			CacheWriteTokens: v.int64Of(f.CacheWrite),
-			ReasoningTokens:  v.int64Of(f.Reasoning),
-			DurationMS:       v.int64Of(f.Duration),
+			CacheReadTokens:    v.int64Of(f.CacheRead),
+			CacheWriteTokens:   v.int64Of(f.CacheWrite),
+			ReasoningTokens:    v.int64Of(f.Reasoning),
+			DurationMS:         v.int64Of(f.Duration),
+			TimeToFirstTokenMS: v.int64Of(f.TTFT),
 			ViaProxyRoute: v.res[RouteResourceAttr].GetStringValue() == RouteProxy &&
 				v.res[RouteToolResourceAttr].GetStringValue() == vd.Tool,
 			BillingID: v.str(f.BillingID),
@@ -255,6 +278,18 @@ func apply(out *Result, vd *Vendor, r *Rule, v view, ts time.Time, tsNano uint64
 			tc.Success, tc.SuccessKnown = !v.has(f.Failure), true
 		}
 		out.Tools = append(out.Tools, tc)
+	case KindGenTiming:
+		// Only a record that names its session and its per-call key can be
+		// joined to the transcript's row, and only a vendor whose row
+		// declares the join may emit one (TestTimingRowsDeclareJoin).
+		key := v.str(f.Request)
+		if vd.TranscriptTiming == "" || session == "" || key == "" {
+			return
+		}
+		out.GenTimings = append(out.GenTimings, GenTiming{
+			Tool: vd.Tool, SessionID: session, Key: vd.TranscriptTiming, KeyValue: key,
+			DurationMS: v.int64Of(f.Duration), Timestamp: ts,
+		})
 	case KindContent:
 		content := v.str(f.Content)
 		if content == "" && f.ContentFromBody {
@@ -324,6 +359,87 @@ func setSpanDuration(out *Result, k Kind, sp *tracepb.Span) {
 		if tc := &out.Tools[len(out.Tools)-1]; tc.DurationMS == 0 {
 			tc.DurationMS = ms
 		}
+	}
+}
+
+// setSpanGenTiming resolves a span-derived generation timing's duration.
+// With Fields.FirstTokenEvent the duration is rebuilt end to end from the
+// first-token event (firstTokenSpanMS), and nothing else is a substitute;
+// otherwise a mapped duration attribute wins, then the span's own
+// start-to-end.
+func setSpanGenTiming(gt *GenTiming, f *Fields, sp *tracepb.Span) {
+	if f.FirstTokenEvent != "" {
+		gt.DurationMS = firstTokenSpanMS(sp, f)
+		return
+	}
+	if gt.DurationMS == 0 {
+		if end, start := sp.GetEndTimeUnixNano(), sp.GetStartTimeUnixNano(); end > start {
+			gt.DurationMS = int64((end - start) / uint64(time.Millisecond))
+		}
+	}
+}
+
+// firstTokenSpanMS is the call's end-to-end duration in milliseconds: from
+// the request start (the first-token event's time minus its time to first
+// token) to the span end. 0 when the event, a positive TTFT on it, or a
+// consistent ordering is missing.
+func firstTokenSpanMS(sp *tracepb.Span, f *Fields) int64 {
+	end := sp.GetEndTimeUnixNano()
+	for _, ev := range sp.GetEvents() {
+		if ev.GetName() != f.FirstTokenEvent {
+			continue
+		}
+		at := ev.GetTimeUnixNano()
+		ttft, ok := view{rec: attrMap(ev.GetAttributes()), res: attrMap(sp.GetAttributes())}.num(f.TTFT)
+		if !ok || ttft <= 0 || at == 0 || end < at {
+			return 0
+		}
+		ns := int64(end-at) + int64(ttft*float64(time.Millisecond))
+		return ns / int64(time.Millisecond)
+	}
+	return 0
+}
+
+// timedOnly drops the generation timings that resolved no positive
+// duration: a stamp carries nothing else.
+func timedOnly(in []GenTiming) []GenTiming {
+	out := in[:0]
+	for _, gt := range in {
+		if gt.DurationMS > 0 {
+			out = append(out, gt)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// spanEventAttrs indexes the attributes of every event on a span, in event
+// order, keeping the FIRST value per key (Fields.FromSpanEvents).
+func spanEventAttrs(sp *tracepb.Span) attrs {
+	m := attrs{}
+	for _, ev := range sp.GetEvents() {
+		for _, kv := range ev.GetAttributes() {
+			if _, seen := m[kv.GetKey()]; !seen {
+				m[kv.GetKey()] = kv.GetValue()
+			}
+		}
+	}
+	return m
+}
+
+// setSpanOutcome resolves a tool call's outcome from its span status when no
+// attribute decided it (Fields.SuccessFromStatus). UNSET stays unknown.
+func setSpanOutcome(tc *ToolCall, sp *tracepb.Span) {
+	if tc.SuccessKnown {
+		return
+	}
+	switch sp.GetStatus().GetCode() {
+	case tracepb.Status_STATUS_CODE_ERROR:
+		tc.Success, tc.SuccessKnown = false, true
+	case tracepb.Status_STATUS_CODE_OK:
+		tc.Success, tc.SuccessKnown = true, true
 	}
 }
 

@@ -78,7 +78,8 @@ test("feature modules are imported only through components.gen.ts", () => {
   const offenders: string[] = [];
   for (const file of walk(SRC)) {
     const r = relative(SRC, file).replace(/\\/g, "/");
-    if (file === REGISTRY || owners.has(r) || r.startsWith("components/workspace/")) continue;
+    // A test file is never bundled, so its import pulls no chunk in.
+    if (file === REGISTRY || owners.has(r) || r.startsWith("components/workspace/") || /\.test\.tsx?$/.test(r)) continue;
     const src = readFileSync(file, "utf8");
     for (const m of src.matchAll(/import\s+(type\s+)?([^;]*?)\s+from\s+["']([^"']+)["']/g)) {
       if (m[1]) continue;

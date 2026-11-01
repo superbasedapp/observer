@@ -1,0 +1,38 @@
+rules:
+  - id: python.unsafe-deserialization
+    languages: [python]
+    severity: ERROR
+    message: Data from a web request or a socket is deserialized with a loader that can run code; use a data-only format or a safe loader.
+    metadata:
+      category: code_vuln
+      cwe: CWE-502
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: flask.request.$ATTR
+              - pattern: request.$ATTR
+              - pattern: self.request.$ATTR
+          - metavariable-regex:
+              metavariable: $ATTR
+              regex: ^(args|form|values|json|data|files|cookies|get_json|get_data|GET|POST|body|COOKIES|FILES|query_params)$
+      - pattern: $SOCK.recv(...)
+      - pattern: $SOCK.recvfrom(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: pickle.loads($D, ...)
+              - pattern: pickle.load($D, ...)
+              - pattern: cPickle.loads($D, ...)
+              - pattern: dill.loads($D, ...)
+              - pattern: marshal.loads($D, ...)
+              - pattern: yaml.unsafe_load($D, ...)
+              - patterns:
+                  - pattern: yaml.load($D, ...)
+                  - pattern-not: yaml.load(..., Loader=yaml.SafeLoader, ...)
+                  - pattern-not: yaml.load(..., Loader=yaml.CSafeLoader, ...)
+                  - pattern-not: yaml.load(..., Loader=SafeLoader, ...)
+                  - pattern-not: yaml.load($X, yaml.SafeLoader)
+                  - pattern-not: yaml.load($X, yaml.CSafeLoader)
+                  - pattern-not: yaml.load($X, SafeLoader)
+          - focus-metavariable: $D

@@ -14,6 +14,9 @@ import { CAPTURE_DOT, liveDotProps, withDotClass } from "@/lib/liveSignals";
 import { slideFromX } from "@shared/lib/motion";
 import type { StatusSnapshot, SetupClaude, WatcherHealth } from "@/lib/types";
 import { WATCHER_LINE_LABEL, WATCHER_LINE_TOOLTIP, watcherLineState } from "@/lib/watcherLine";
+import { useMessagesSummary } from "@/lib/useMessagesSummary";
+import { navBadge, showMessagesNav } from "@/lib/adminMessages";
+import { DisplayControls } from "@/components/TopBar";
 
 export function Sidebar({
   open = false,
@@ -58,7 +61,12 @@ export function Sidebar({
   // Pages of components that are not active on this machine leave the nav
   // too (modular packaging plan 7.3); a direct visit renders NotInstalled.
   const inactiveNav = useInactiveNavIds();
-  const navGroups = filterNavByComponents(filterNavGroups(NAV_GROUPS, visibility.gov), inactiveNav);
+  // Messages shows only on an enrolled node (D-695): until the summary says
+  // so, or when it cannot be read, the item stays out of the nav.
+  const messages = useMessagesSummary().data;
+  const navHidden = showMessagesNav(messages) ? inactiveNav : [...inactiveNav, "messages"];
+  const navGroups = filterNavByComponents(filterNavGroups(NAV_GROUPS, visibility.gov), navHidden);
+  const messagesBadge = navBadge(messages);
   // Desktop (lg+) icon-only rail collapse. The pref is persisted in
   // localStorage ("1"/"0", ProcessesSection pattern) and only bites at
   // lg+ — the mobile drawer keeps full width + labels regardless (the
@@ -208,6 +216,18 @@ export function Sidebar({
                         >
                           {it.label}
                         </span>
+                        {it.id === "messages" && messagesBadge && (
+                          <span
+                            title={`${messagesBadge} unread from your admins`}
+                            aria-label={`${messagesBadge} unread from your admins`}
+                            className={clsx(
+                              "shrink-0 rounded-pill bg-accent px-1.5 text-center font-mono text-[10px] font-semibold leading-4 tabular-nums text-accent-on",
+                              collapsed && "lg:absolute lg:right-1 lg:top-0.5 lg:px-1",
+                            )}
+                          >
+                            {messagesBadge}
+                          </span>
+                        )}
                         {counts[it.id] != null && (
                           // The gutter numbers are ALL-TIME totals, while the
                           // pages window their tables (T-803: "Sessions 5.2K"
@@ -233,6 +253,12 @@ export function Sidebar({
             </div>
           ))}
         </nav>
+        {/* Phone only (below sm): the top bar gives its room to the page
+            title, so the display preferences live here. */}
+        <div className="flex items-center justify-between gap-2 border-t border-line-1 px-3 py-2 sm:hidden">
+          <span className="text-[11px] text-fg-3">Display</span>
+          <DisplayControls />
+        </div>
         {/* Desktop-only collapse toggle — always reachable (visible in
             both expanded and collapsed states). Centered on the rail
             when collapsed; labeled when expanded. */}

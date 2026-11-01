@@ -135,6 +135,51 @@ func openCodeRows() []Translation {
 			Note: "flag-only rule: the native dialect has no record-but-allow action",
 		},
 		{
+			RuleID: "R-162", Fidelity: FidelityNone,
+			Note: "judged on CONTENT (a write that turns a hook switch on), and " + noFileRules,
+		},
+		{
+			RuleID: "R-163", Fidelity: FidelityNone,
+			Note: "flag-only rule: the native dialect has no record-but-allow action",
+		},
+		{
+			RuleID: "R-112", Fidelity: FidelityApprox,
+			Note: "the skip option as the first argument and -c core.hooksPath as the first git option only; --no-verify later in the argument list, environment injection (GIT_CONFIG_PARAMETERS / GIT_CONFIG_COUNT), a lower-case core.hookspath and aliases stay hook-enforced",
+			Entries: []Entry{
+				{Action: ActionDeny, Value: "git commit --no-verify*"},
+				{Action: ActionDeny, Value: "git commit -n*"},
+				{Action: ActionDeny, Value: "git push --no-verify*"},
+				{Action: ActionDeny, Value: "git merge --no-verify*"},
+				{Action: ActionDeny, Value: "git pull --no-verify*"},
+				{Action: ActionDeny, Value: "git rebase --no-verify*"},
+				{Action: ActionDeny, Value: "git am --no-verify*"},
+				{Action: ActionDeny, Value: "git -c core.hooksPath*"},
+			},
+		},
+		{
+			RuleID: "R-113", Fidelity: FidelityNone,
+			Note: "the skip switch is an environment assignment in front of the command, an env operand or an earlier export; none is a command pattern the dialect can name for every spelling",
+		},
+		{
+			RuleID: "R-114", Fidelity: FidelityApprox,
+			Note: "the leading `git config core.hooksPath` forms only; core.fsmonitor and shell writes stay hook-enforced, and the file arms: " + noFileRules,
+			Entries: []Entry{
+				{Action: ActionDeny, Value: "git config core.hooksPath*"},
+				{Action: ActionDeny, Value: "git config --global core.hooksPath*"},
+				{Action: ActionDeny, Value: "git config --unset core.hooksPath*"},
+			},
+		},
+		{
+			RuleID: "R-165", Fidelity: FidelityApprox,
+			Note: "the observer binary's grant verbs as the leading command; package-runner forms, the dashboard's approval routes reached through curl and SQL into guard_approvals stay hook-enforced, and the request row is flag-only",
+			Entries: []Entry{
+				{Action: ActionDeny, Value: "observer guard approve*"},
+				{Action: ActionDeny, Value: "observer guard mcp approve*"},
+				{Action: ActionDeny, Value: "observer guard prompt allow*"},
+				{Action: ActionDeny, Value: "observer guard disable*"},
+			},
+		},
+		{
 			RuleID: "R-170", Fidelity: FidelityNone,
 			Note: "the pipe-to-interpreter shape sits mid-command; a curl/wget prefix pattern would gate every download",
 		},
@@ -199,6 +244,8 @@ func openCodeRows() []Translation {
 		{RuleID: "B-612", Fidelity: FidelityNone, Note: "weekly usage-window utilization is runtime state; limit enforcement is the proxy's (§12.1)"},
 		{RuleID: "B-613", Fidelity: FidelityNone, Note: "weekly usage-window utilization is runtime state; limit enforcement is the proxy's (§12.1)"},
 		{RuleID: "A-610", Fidelity: FidelityNone, Note: "repeat tracking is runtime state; anomaly rules never block (§12.2)"},
+		{RuleID: "R-166", Fidelity: FidelityNone, Note: "the protected path classes are opt-in node config, and this table is static, so R-166 stays hook-enforced"},
+		{RuleID: "A-613", Fidelity: FidelityNone, Note: "evasion tracking is runtime state on the watcher ingest path; anomaly rules never block (§12.2)"},
 	}
 }
 

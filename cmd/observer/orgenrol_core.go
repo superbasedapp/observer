@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"runtime"
+	"strings"
 
 	"github.com/marmutapp/superbased-observer/internal/diag"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
@@ -191,6 +193,19 @@ type enrolWireInput struct {
 	self    string
 	daemons []string
 	exists  func(string) bool
+	// goos decides how two paths compare (samePathOn).
+	goos string
+}
+
+// samePathOn reports whether two cleaned paths name the same file on goos:
+// Windows file names are case-insensitive, so C:\Tools\observer.exe and
+// c:\tools\OBSERVER.EXE are one binary there (WINFIX2 audit finding 10).
+func samePathOn(goos, a, b string) bool {
+	a, b = filepath.Clean(a), filepath.Clean(b)
+	if goos == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }
 
 // enrolWireRules: `observer enroll --wire-clients` registers hooks and MCP
@@ -210,7 +225,7 @@ var enrolWireRules = []enrolWireRule{
 		name: "daemons disagree",
 		when: func(in enrolWireInput) bool {
 			for _, d := range in.daemons[1:] {
-				if d != in.daemons[0] {
+				if !samePathOn(in.goos, d, in.daemons[0]) {
 					return true
 				}
 			}
@@ -222,7 +237,7 @@ var enrolWireRules = []enrolWireRule{
 	},
 	{
 		name: "daemon is this binary",
-		when: func(in enrolWireInput) bool { return in.daemons[0] == in.self },
+		when: func(in enrolWireInput) bool { return samePathOn(in.goos, in.daemons[0], in.self) },
 		pick: func(in enrolWireInput) (string, string) { return in.self, "" },
 	},
 	{
@@ -246,9 +261,20 @@ var enrolWireRules = []enrolWireRule{
 // registers against (enrolWireRules). dbPath filters the live locks to the
 // daemons serving this machine's database; an empty dbPath keeps them all.
 func enrolWireBinary(self, dbPath string, live []diag.LockInfo, exists func(string) bool) (binary, note string) {
-	in := enrolWireInput{self: self, exists: exists}
+	return enrolWireBinaryOn(runtime.GOOS, self, dbPath, live, exists)
+}
+
+// enrolWireBinaryOn is enrolWireBinary with the path comparison of goos.
+func enrolWireBinaryOn(goos, self, dbPath string, live []diag.LockInfo, exists func(string) bool) (binary, note string) {
+	if self != "" {
+		// The same cleaned form as the daemons' paths below, or this
+		// binary never matches its own daemon on Windows (Windows 11 Pro
+		// rerun 2026-10-25, D5 group 4).
+		self = filepath.Clean(self)
+	}
+	in := enrolWireInput{self: self, exists: exists, goos: goos}
 	for _, l := range live {
-		if l.BinaryPath == "" || (dbPath != "" && l.DBPath != "" && filepath.Clean(l.DBPath) != filepath.Clean(dbPath)) {
+		if l.BinaryPath == "" || (dbPath != "" && l.DBPath != "" && !samePathOn(goos, l.DBPath, dbPath)) {
 			continue
 		}
 		in.daemons = append(in.daemons, filepath.Clean(l.BinaryPath))

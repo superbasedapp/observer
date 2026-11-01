@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"path"
@@ -386,8 +385,10 @@ func (s *Server) workOSAuthorizeURLFor(redirectURI, challenge, state, nonce stri
 }
 
 // errWorkOSRejected marks a token exchange the provider refused (a bad, expired,
-// or already-redeemed code) — a CLIENT-caused state, answered 4xx. Any other
-// exchange failure is a provider/transport fault and answered 502.
+// or already-redeemed code): a CLIENT-caused state, answered 4xx. A refusal of
+// this server's own client credentials is errWorkOSMisconfigured instead
+// (workoserr.go, answered 503); any other exchange failure is a
+// provider/transport fault and answered 502.
 var errWorkOSRejected = errors.New("cloudserver/api: workos rejected the authorization code")
 
 // exchangeWorkOSCode redeems the authorization code server-side. The client
@@ -400,36 +401,20 @@ var errWorkOSRejected = errors.New("cloudserver/api: workos rejected the authori
 // is still resolved from the VERIFIED token's (provider, subject), never from
 // anything in this `user` object.
 func (s *Server) exchangeWorkOSCode(ctx context.Context, code, verifier string) (string, accountProfile, error) {
-	form := url.Values{
-		"grant_type":    {"authorization_code"},
-		"client_id":     {s.workOSClientID},
-		"client_secret": {s.workOSAPIKey},
-		"code":          {code},
-		"code_verifier": {verifier},
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.workOSTokenURL, strings.NewReader(form.Encode()))
-	if err != nil {
-		return "", accountProfile{}, fmt.Errorf("cloudserver/api.exchangeWorkOSCode: build request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := s.workOSHTTP.Do(req)
+	status, body, err := s.postWorkOSToken(ctx, code, verifier)
 	if err != nil {
 		return "", accountProfile{}, fmt.Errorf("cloudserver/api.exchangeWorkOSCode: %w", err)
 	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	// 429 is WorkOS's `slow_down` signal — a rate limit, not a rejected code
-	// (§10). It is deliberately EXCLUDED from the "4xx ⇒ the code itself was
-	// bad" branch below and falls through to the generic non-200 branch
-	// instead, which the caller answers as a retryable 502
-	// provider_unavailable: conflating the two would tell the user to restart
-	// sign-in with a fresh authorization code when the right action is simply
-	// "try again shortly" — the code itself was never the problem.
-	if resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode >= 400 && resp.StatusCode < 500 {
-		return "", accountProfile{}, fmt.Errorf("%w: status %d", errWorkOSRejected, resp.StatusCode)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", accountProfile{}, fmt.Errorf("cloudserver/api.exchangeWorkOSCode: token endpoint returned %d", resp.StatusCode)
+	// Every non-200 is classified by workOSClassifyRules (T-964): 429 is
+	// WorkOS's `slow_down` signal and stays a retryable provider fault (§10);
+	// invalid_client / unauthorized_client / 401 are THIS server's
+	// misconfiguration (a key from another WorkOS environment answered 400
+	// invalid_client live); every other 4xx is the code's own fault.
+	if status != http.StatusOK {
+		wc, desc := parseWorkOSError(body)
+		return "", accountProfile{}, &workOSTokenError{
+			Outcome: classifyWorkOSStatus(status, wc), Status: status, Code: wc, Description: desc,
+		}
 	}
 	var out struct {
 		AccessToken string `json:"access_token"`
@@ -543,7 +528,24 @@ func (s *Server) handleWorkOSCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	accessToken, profile, err := s.exchangeWorkOSCode(ctx, code, txn.PKCEVerifier)
+	var tokErr *workOSTokenError
+	_ = errors.As(err, &tokErr)
+	if errors.Is(err, errWorkOSMisconfigured) {
+		// The provider refused THIS server's client credentials. No user action
+		// can fix that, so it is an ERROR naming WorkOS's own error code and
+		// description (never the key, never the code) and a 5xx that says so.
+		s.log.Error("cloudserver/api: WorkOS refused this server's client credentials; browser sign-in is misconfigured",
+			"workos_status", tokErr.Status, "workos_error", tokErr.Code,
+			"workos_error_description", tokErr.Description, "workos_client_id", s.workOSClientID)
+		s.audit(ctx, txn.AccountID, "portal_workos_misconfigured")
+		writeErr(w, http.StatusServiceUnavailable, "signin_misconfigured",
+			"sign-in is misconfigured on our side; this is not a problem with your account. Please try again later.")
+		return
+	}
 	if errors.Is(err, errWorkOSRejected) {
+		s.log.Warn("cloudserver/api: WorkOS rejected the authorization code",
+			"workos_status", tokErr.Status, "workos_error", tokErr.Code,
+			"workos_error_description", tokErr.Description)
 		s.audit(ctx, txn.AccountID, "portal_workos_code_rejected")
 		writeErr(w, http.StatusBadRequest, "code_rejected",
 			"the authorization code was rejected (it may have expired or already been used)")

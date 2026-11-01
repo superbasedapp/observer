@@ -109,14 +109,25 @@ func newOrgPushStatusCmd() *cobra.Command {
 			// dead pids).
 			dbDir := filepath.Dir(b.cfg.Observer.DBPath)
 			locks, _ := diag.LiveLocks(dbDir)
-			running := b.cfg.OrgClient.Enabled && len(locks) > 0
+			// WINNODE2 item 1b: each live daemon's own view of its
+			// credential. A daemon that cannot read it runs the loop but
+			// never pushes.
+			reports, _ := b.store.LoadOrgDaemonCredentialReports(cmd.Context())
+			dcs := liveDaemonCredentials(locks, reports)
+			stuck := notEnrolledDaemons(dcs)
+			running := b.cfg.OrgClient.Enabled && len(locks) > stuck
 			switch {
 			case !b.cfg.OrgClient.Enabled:
 				fmt.Fprintln(out, "Auto-push loop:    not running ([org_client].enabled = false)")
 			case len(locks) == 0:
 				fmt.Fprintln(out, "Auto-push loop:    not running (no `observer start` daemon detected)")
+			case stuck == len(locks):
+				fmt.Fprintf(out, "Auto-push loop:    NOT PUSHING - %d daemon(s) running, none can read the org credential\n", len(locks))
 			default:
 				fmt.Fprintf(out, "Auto-push loop:    running (%d daemon(s))\n", len(locks))
+			}
+			for _, l := range daemonCredentialLines(dcs) {
+				fmt.Fprintf(out, "  %s\n", l)
 			}
 
 			interval := configuredPushInterval(b.cfg.OrgClient)
@@ -141,8 +152,12 @@ func newOrgPushStatusCmd() *cobra.Command {
 				fmt.Fprintln(out, "Last attempt:      (none yet)")
 			} else {
 				lp := st.LastPush
-				fmt.Fprintf(out, "Last attempt:      %s - %s, %d rows%s\n",
-					lp.PushedAt, lp.Status, lp.RowCount, errSuffix(lp.Error))
+				earlier := ""
+				if lastPushBeforeDaemons(lp, dcs) {
+					earlier = " (by an earlier daemon; the running one has not pushed yet)"
+				}
+				fmt.Fprintf(out, "Last attempt:      %s - %s, %d rows%s%s\n",
+					lp.PushedAt, lp.Status, lp.RowCount, errSuffix(lp.Error), earlier)
 			}
 			fmt.Fprintf(out, "Next attempt:      %s\n", nextAttempt(running, st.LastPush, interval))
 

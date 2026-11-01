@@ -139,7 +139,7 @@ func launchDir(projectRoot string) string {
 	if projectRoot == "" {
 		return ""
 	}
-	if fi, err := os.Stat(projectRoot); err == nil && fi.IsDir() {
+	if fi, err := os.Stat(projectRoot); err == nil && fi.IsDir() { //nolint:gosec // G703: a metadata read of the user's own local path; no privilege boundary is crossed
 		return projectRoot
 	}
 	return ""

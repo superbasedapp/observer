@@ -147,7 +147,7 @@ cover:
 GOLANGCI_LINT ?= $(shell command -v golangci-lint 2>/dev/null || echo $(shell $(GO) env GOPATH)/bin/golangci-lint)
 
 lint:
-	@test -x "$(GOLANGCI_LINT)" || { echo "golangci-lint not found at '$(GOLANGCI_LINT)': install golangci-lint v2.12.2 or later, built with Go >= 1.26, the same version CI uses (https://golangci-lint.run/) or pass GOLANGCI_LINT=/path/to/golangci-lint"; exit 1; }
+	@test -x "$(GOLANGCI_LINT)" || { echo "golangci-lint not found at '$(GOLANGCI_LINT)': install golangci-lint v2.14.0 or later, built with Go >= 1.27, the same version CI uses (https://golangci-lint.run/) or pass GOLANGCI_LINT=/path/to/golangci-lint"; exit 1; }
 	$(GOLANGCI_LINT) run ./...
 
 fmt:
@@ -364,7 +364,9 @@ verify-webcloud-dist:
 
 # ---------------------------------------------------------------
 # Historical-data repair for the same taxonomy (internal/db/migrations/
-# 077_tooltax_action_type_backfill.sql). internal/db/taxbackfillgen
+# 196_tooltax_action_type_backfill_2.sql; 077 shipped in v1.36.0 and is
+# frozen by the released-step rule, D-880, so a tooltax change after 196
+# ships needs yet another new step). internal/db/taxbackfillgen
 # transposes the internal/tooltax table into one
 # `UPDATE actions SET action_type = ... WHERE action_type = 'unknown'`
 # per (tool, action type), so the rows already on disk get the categories
@@ -394,9 +396,9 @@ verify-taxonomy-migration:
 # adapters emit after the WP-T6/B2a sweep.
 #
 # SIBLING of taxonomy-migration-build, deliberately not folded into it:
-# 077 is sourced from internal/tooltax and is unknown-only (it can only
-# move rows OUT of the unknown bucket), while 078 rewrites rows an
-# adapter already classified. Regenerating 077 must never absorb 078's
+# 077/196 are sourced from internal/tooltax and are unknown-only (they can
+# only move rows OUT of the unknown bucket), while 078 rewrites rows an
+# adapter already classified. Regenerating 196 must never absorb 078's
 # rewrite, so the generators, artifacts and gates stay separate.
 # ---------------------------------------------------------------
 assistant-migration-build:

@@ -19,6 +19,12 @@ import (
 // succeeded; the caller surfaces this as a firm notice, not a failure.
 var ErrManagedBindRefused = errors.New("managed machine binding refused: this machine is already bound to another managed node")
 
+// ErrManagedBindNotManagedHere is returned when the server answers 403: it
+// does not serve this node as managed (an older org server asked by a node
+// its org switched to enterprise, or the window before the server recorded
+// the node's adoption of the switch).
+var ErrManagedBindNotManagedHere = errors.New("managed machine binding refused: the org server does not serve this node as managed")
+
 // Client-only ManagedBindResponse.Status values that never come off the wire —
 // they describe a locally-resolved outcome (no stable machine source, or a
 // server too old to know the route).
@@ -30,9 +36,11 @@ const (
 // BindMachine performs the SECOND step of managed enrolment (Arc 4 P6a, plan
 // §9): it presents this host's org-salted machine fingerprint so the server can
 // bind one managed node to one machine. It is called ONLY for a managed
-// enrolment (the caller gates on enr.Tenancy == managed) — an individual/BYO
-// node never computes or sends a fingerprint, so the individual plane emits no
-// machine identity at all.
+// node: a managed enrolment at enrolment time, or, once per process before
+// its first integrity report, a node its org switched to enterprise (P-205).
+// An individual/BYO node never computes or sends a fingerprint, so the
+// individual plane emits no machine identity at all. A 403 (the server does
+// not serve this node as managed) returns ErrManagedBindNotManagedHere.
 //
 // Best-effort by design: a host with no stable machine source yields an empty
 // fingerprint and BindMachine returns ManagedBindUnbindable WITHOUT calling the
@@ -99,6 +107,8 @@ func (c *Client) BindMachine(ctx context.Context) (orgcontract.ManagedBindRespon
 	case http.StatusNotFound:
 		// Older server without the route — treat like "no managed binding".
 		return orgcontract.ManagedBindResponse{Status: ManagedBindUnavailable}, nil
+	case http.StatusForbidden:
+		return orgcontract.ManagedBindResponse{}, ErrManagedBindNotManagedHere
 	default:
 		return orgcontract.ManagedBindResponse{}, fmt.Errorf("orgclient.BindMachine: server returned %d", resp.StatusCode)
 	}

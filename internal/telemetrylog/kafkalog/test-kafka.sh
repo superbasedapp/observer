@@ -34,5 +34,5 @@ for attempt in $(seq 1 60); do
     if [ "$attempt" -eq 60 ]; then echo "Kafka fixture startup timed out" >&2; exit 1; fi
     sleep 1
 done
-OBSERVER_KAFKA_TEST_BROKERS="127.0.0.1:$KAFKA_PORT" GOTOOLCHAIN=go1.26.9 GOCACHE=/tmp/go-build-cache \
+OBSERVER_KAFKA_TEST_BROKERS="127.0.0.1:$KAFKA_PORT" GOTOOLCHAIN=go1.27.2 GOCACHE=/tmp/go-build-cache \
     go test -vet=off ./internal/telemetrylog/kafkalog -count=1 -timeout 5m "$@"

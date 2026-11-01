@@ -77,7 +77,8 @@ func resolveComponentGovernance(in componentGovernanceInputs) componentstate.Gov
 // so the two can never disagree about which policy governs the node.
 func nodeComponentsOutcome(in componentGovernanceInputs) nodecomponents.Outcome {
 	ni := nodecomponents.Inputs{
-		Managed:       in.Enrolment.IsManaged(),
+		// Managed by enrolment or by its org's switch to enterprise (P-204).
+		Managed:       in.Enrolment.IsManaged() || govern.GrantIsManaged(in.Grant),
 		Current:       in.Policy,
 		LastKnownGood: in.LastKnownGood,
 		Initial:       in.Initial,
@@ -234,6 +235,13 @@ func loadComponentGovernanceInputs(ctx context.Context, cfg config.Config, st *s
 	// Verified, unexpired component_enable grants (the request rail, T-670).
 	if granted, gerr := orgclient.ComponentGrants(ctx, st, in.Now); gerr == nil {
 		in.Granted = granted
+	}
+	// The security managed pull's components (lane SEC-E), only while the
+	// honoured grant holds enforce.security (security_managedpull.go).
+	if grant != nil {
+		if eff := govern.Resolve(govern.Delivered{}, grant, live, in.Now); eff.Managed && eff.GrantsSecurityEnforcement() {
+			in.Granted = append(in.Granted, securityManagedGranted(ctx, cfg, st, orgclient.ManagedPullConsent{Managed: true, HoldsAuthority: true})...)
+		}
 	}
 	var note string
 	in.Policy, in.LastKnownGood, note = loadComponentPolicy(ctx, cfg, st, enr)

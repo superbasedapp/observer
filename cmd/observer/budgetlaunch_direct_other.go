@@ -9,10 +9,6 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
-func nodeProcessCutoffCoversLaunch(context.Context, config.Config, *store.Store, string, budgetLaunchEvidence) bool {
-	return false
-}
-
 // nodeProcessCutoffCoverage reports why no process cutoff covers a launch on
 // this operating system.
 func nodeProcessCutoffCoverage(context.Context, config.Config, *store.Store, string, budgetLaunchEvidence) (bool, string) {

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/browserhost/hostfiles"
@@ -488,5 +489,51 @@ func TestManifests(t *testing.T) {
 	}
 	if got := rWin.Manifests(); len(got) != 0 {
 		t.Errorf("Manifests on windows = %v, want none (registry-based, not dir-based)", got)
+	}
+}
+
+// TestRegisterKeepsAForeignManifest (audit row 8 on the w13 hand-back, the
+// FU-207 rule): a com.superbased.observer.json that is not Observer's is
+// kept byte for byte without Force, dry run too, and refused naming the
+// path; Force replaces it keeping .bak; Observer's own older manifest is
+// still rewritten.
+func TestRegisterKeepsAForeignManifest(t *testing.T) {
+	home := t.TempDir()
+	mkProfile(t, home, "linux", "chrome")
+	first, _ := NewRegistrar(Options{Home: home, GOOS: "linux", HostPath: "/x/host", ExtensionIDs: []string{"id"}})
+	res := first.Register()
+	if len(res) != 1 || !res[0].Wrote {
+		t.Fatalf("first Register = %+v", res)
+	}
+	path := res[0].ConfigPath
+	ours, _ := os.ReadFile(path)
+	const foreign = `{"name":"com.superbased.observer","description":"someone else's host","path":"/opt/other/host","type":"stdio","allowed_origins":[]}` + "\n"
+	if err := os.WriteFile(path, []byte(foreign), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, dry := range []bool{true, false} {
+		r, _ := NewRegistrar(Options{Home: home, GOOS: "linux", HostPath: "/x/host", ExtensionIDs: []string{"id"}, DryRun: dry})
+		got := r.Register()
+		if len(got) != 1 || got[0].Error == nil || !strings.Contains(got[0].Error.Error(), "doesn't look like an observer-managed file; pass --force to overwrite") || !strings.Contains(got[0].Error.Error(), path) {
+			t.Errorf("dry=%v: Register over a foreign manifest = %+v, want the refusal naming %s", dry, got, path)
+		}
+		if b, _ := os.ReadFile(path); string(b) != foreign {
+			t.Fatalf("dry=%v: the foreign manifest changed without Force:\n%s", dry, b)
+		}
+	}
+	forced, _ := NewRegistrar(Options{Home: home, GOOS: "linux", HostPath: "/x/host", ExtensionIDs: []string{"id"}, Force: true})
+	if got := forced.Register(); len(got) != 1 || got[0].Error != nil || !got[0].Wrote {
+		t.Fatalf("Force Register = %+v", got)
+	}
+	if b, _ := os.ReadFile(path); string(b) != string(ours) {
+		t.Errorf("Force did not write Observer's manifest:\n%s", b)
+	}
+	if b, err := os.ReadFile(path + ".bak"); err != nil || string(b) != foreign {
+		t.Errorf("Force kept no .bak of the foreign manifest: %q, %v", b, err)
+	}
+	// Observer's own manifest for another extension id is rewritten.
+	other, _ := NewRegistrar(Options{Home: home, GOOS: "linux", HostPath: "/x/host", ExtensionIDs: []string{"id2"}})
+	if got := other.Register(); len(got) != 1 || got[0].Error != nil || !got[0].Wrote {
+		t.Errorf("Observer's own older manifest was not rewritten: %+v", got)
 	}
 }

@@ -35,6 +35,10 @@ type credCase struct {
 	body   string // a valid file holding credFixtureSecret
 	broken string // an unparseable file holding credFixtureSecret
 	owned  string // the top-level key the writer owns
+	// alsoOwned is a second top-level key the writer may add: Codex's
+	// [hooks.state] trust records for Observer's own entries (live check
+	// 2026-10-20). "" when there is none.
+	alsoOwned string
 }
 
 func credCases() []credCase {
@@ -70,7 +74,7 @@ func credCases() []credCase {
 			broken: "web_search:\n  api_key: " + credFixtureSecret + "\n  - [unclosed\n",
 		},
 		{
-			tool: "codex", rel: ".codex/config.toml", format: "toml", owned: "features",
+			tool: "codex", rel: ".codex/config.toml", format: "toml", owned: "features", alsoOwned: "hooks",
 			body:   "# my codex config\nmodel = \"o3\"\n\n[features.multi_agent_v2.message_board_remote]\nbearer_token = \"" + credFixtureSecret + "\"\n",
 			broken: "bearer_token = \"" + credFixtureSecret + "\"\nbroken = \n",
 		},
@@ -79,6 +83,17 @@ func credCases() []credCase {
 			body: "# kimi config\ndefault_model = \"openai/gpt-4o\"\n\n[providers.openai]\ntype = \"openai\"\napi_key = \"" + credFixtureSecret + "\" # inline note\n\n" +
 				"[[hooks]]\nevent = \"Notification\"\ncommand = \"notify-send done\"\n",
 			broken: "[providers.openai]\napi_key = \"" + credFixtureSecret + "\"\nbroken = \n",
+		},
+		// The 2026-10-21 wave.
+		{
+			tool: "autohand", rel: ".autohand/config.json", format: "json", owned: "hooks",
+			body:   "{\n  \"provider\": \"openrouter\",\n  \"openrouter\": {\"apiKey\": \"" + credFixtureSecret + "\"},\n  \"api\": {\"companySecret\": \"" + credFixtureSecret + "\"}\n}\n",
+			broken: "{\"openrouter\": {\"apiKey\": " + credFixtureSecret + "}}",
+		},
+		{
+			tool: "codebuddy", rel: ".codebuddy/settings.json", format: "json", owned: "hooks",
+			body:   "{\"env\": {\"CODEBUDDY_API_KEY\": \"" + credFixtureSecret + "\"}, \"model\": \"x\"}",
+			broken: "{\"env\": {\"CODEBUDDY_API_KEY\": \"" + credFixtureSecret + "\"},, }",
 		},
 	}
 }
@@ -141,7 +156,7 @@ func assertNoSecret(t *testing.T, what, s string) {
 }
 
 func TestCredentialFileRowsAreTheAuditedSet(t *testing.T) {
-	want := []string{"claude-code", "codex", "crush", "hermes", "junie", "kimi-code", "poolside", "qwen-code", "zcode"}
+	want := []string{"autohand", "claude-code", "codebuddy", "codex", "crush", "hermes", "junie", "kimi-code", "poolside", "qwen-code", "zcode"}
 	got := integration.CredentialFileHookTools()
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("credential-file rows = %v, want %v", got, want)
@@ -194,7 +209,7 @@ func TestCredentialFileWritersKeepCredentials(t *testing.T) {
 			if n := strings.Count(string(after), credFixtureSecret); n != strings.Count(tc.body, credFixtureSecret) {
 				t.Errorf("credential count %d after the write, want %d", n, strings.Count(tc.body, credFixtureSecret))
 			}
-			if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != 0o640 {
+			if fi, err := os.Stat(path); err != nil || posixModes && fi.Mode().Perm() != 0o640 {
 				t.Errorf("mode after the write = %v (%v), want 0640", fi.Mode().Perm(), err)
 			}
 			assertOnlyOwnedKeyChanged(t, tc, before, after)
@@ -223,7 +238,7 @@ func TestCredentialFileWritersKeepCredentials(t *testing.T) {
 			if !strings.Contains(string(final), credFixtureSecret) {
 				t.Error("the credential did not survive the unregister")
 			}
-			if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != 0o640 {
+			if fi, err := os.Stat(path); err != nil || posixModes && fi.Mode().Perm() != 0o640 {
 				t.Errorf("mode after the unregister = %v (%v), want 0640", fi.Mode().Perm(), err)
 			}
 			assertNoSecret(t, "the log output", logs.String())
@@ -239,7 +254,7 @@ func assertOnlyOwnedKeyChanged(t *testing.T, tc credCase, before, after []byte) 
 	b := decodeFixture(t, tc.format, before)
 	a := decodeFixture(t, tc.format, after)
 	for k, v := range b {
-		if k == tc.owned {
+		if k == tc.owned || (tc.alsoOwned != "" && k == tc.alsoOwned) {
 			continue
 		}
 		if tc.format == "toml" && k == "features" {
@@ -250,7 +265,7 @@ func assertOnlyOwnedKeyChanged(t *testing.T, tc credCase, before, after []byte) 
 		}
 	}
 	for k := range a {
-		if _, ok := b[k]; !ok && k != tc.owned {
+		if _, ok := b[k]; !ok && k != tc.owned && (tc.alsoOwned == "" || k != tc.alsoOwned) {
 			t.Errorf("unexpected new top-level key %q", k)
 		}
 	}
@@ -404,7 +419,7 @@ func TestHermesPluginsEnabledKeepsCredentials(t *testing.T) {
 	if !strings.Contains(string(after), HermesPluginDirName) {
 		t.Error("plugin not enabled")
 	}
-	if fi, _ := os.Stat(cfg); fi.Mode().Perm() != 0o640 {
+	if fi, _ := os.Stat(cfg); posixModes && fi.Mode().Perm() != 0o640 {
 		t.Errorf("mode = %v, want 0640", fi.Mode().Perm())
 	}
 	// No backup copy: the MCP write edits only its own node too (T-384), so

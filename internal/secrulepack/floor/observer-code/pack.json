@@ -1,0 +1,927 @@
+{
+  "schema": "sbo.code-rule-pack.v1",
+  "id": "observer-code",
+  "version": "1.3.1",
+  "licence": "Apache-2.0",
+  "canary": {
+    "rule": "observer-code.canary",
+    "rule_file": "rules/observer-code.canary.yaml",
+    "target": "canary/observer_code_canary.py"
+  },
+  "rules": [
+    {
+      "id": "csharp.cors-credentials-any-origin",
+      "file": "rules/csharp.cors-credentials-any-origin.yaml",
+      "languages": [
+        "csharp"
+      ],
+      "category": "code_vuln",
+      "severity": "medium",
+      "cwe": "CWE-942"
+    },
+    {
+      "id": "csharp.insecure-token-randomness",
+      "file": "rules/csharp.insecure-token-randomness.yaml",
+      "languages": [
+        "csharp"
+      ],
+      "category": "code_vuln",
+      "severity": "medium",
+      "cwe": "CWE-338"
+    },
+    {
+      "id": "csharp.jwt-verification-off",
+      "file": "rules/csharp.jwt-verification-off.yaml",
+      "languages": [
+        "csharp"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-347",
+      "exclude_tests": true
+    },
+    {
+      "id": "csharp.path-traversal-request",
+      "file": "rules/csharp.path-traversal-request.yaml",
+      "languages": [
+        "csharp"
+      ],
+      "category": "code_vuln",
+      "severity": "medium",
+      "cwe": "CWE-22",
+      "precision": {
+        "figure": 0,
+        "wilson_lower": 0,
+        "denominator": 1,
+        "corpus": "jsp7-50 + 10 Java and C# web applications (SEC-G5) + this repository at 1909234af (scripts/seccorpus/corpus/repos.tsv)",
+        "method": "ONE labelling pass so far: side a labelled every selected result (labellers.tsv, batches.tsv); the side-b batches are prepared in batches.tsv and await their attested relabel, so no rule may block; all results when at most 60, else a seeded sample of 60 (P-047, P-077, JSP-8); ecosystem exclusions per internal/seccorpus",
+        "results": 1,
+        "passes": {
+          "results": 0,
+          "verdict_agreements": 0,
+          "reason_agreements": 0,
+          "second_pass_pending": 48
+        }
+      }
+    },
+    {
+      "id": "csharp.shell-interpolation",
+      "file": "rules/csharp.shell-interpolation.yaml",
+      "languages": [
+        "csharp"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-78"
+    },
+    {
+      "id": "csharp.sql-string-concat",
+      "file": "rules/csharp.sql-string-concat.yaml",
+      "languages": [
+        "csharp"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-89",
+      "precision": {
+        "figure": 0,
+        "wilson_lower": 0,
+        "denominator": 4,
+        "corpus": "jsp7-50 + 10 Java and C# web applications (SEC-G5) + this repository at 1909234af (scripts/seccorpus/corpus/repos.tsv)",
+        "method": "ONE labelling pass so far: side a labelled every selected result (labellers.tsv, batches.tsv); the side-b batches are prepared in batches.tsv and await their attested relabel, so no rule may block; all results when at most 60, else a seeded sample of 60 (P-047, P-077, JSP-8); ecosystem exclusions per internal/seccorpus",
+        "results": 4,
+        "passes": {
+          "results": 0,
+          "verdict_agreements": 0,
+          "reason_agreements": 0,
+          "second_pass_pending": 48
+        }
+      },
+      "exclude_tests": true
+    },
+    {
+      "id": "csharp.ssrf-request-url",
+      "file": "rules/csharp.ssrf-request-url.yaml",
+      "languages": [
+        "csharp"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-918",
+      "exclude_tests": true
+    },
+    {
+      "id": "csharp.template-injection",
+      "file": "rules/csharp.template-injection.yaml",
+      "languages": [
+        "csharp"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-1336"
+    },
+    {
+      "id": "csharp.tls-verify-off",
+      "file": "rules/csharp.tls-verify-off.yaml",
+      "languages": [
+        "csharp"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-295",
+      "exclude_tests": true
+    },
+    {
+      "id": "csharp.unsafe-deserialization",
+      "file": "rules/csharp.unsafe-deserialization.yaml",
+      "languages": [
+        "csharp"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-502"
+    },
+    {
+      "id": "csharp.weak-cipher",
+      "file": "rules/csharp.weak-cipher.yaml",
+      "languages": [
+        "csharp"
+      ],
+      "category": "code_vuln",
+      "severity": "medium",
+      "cwe": "CWE-327",
+      "precision": {
+        "figure": 1,
+        "wilson_lower": 0.206549,
+        "denominator": 1,
+        "corpus": "jsp7-50 + 10 Java and C# web applications (SEC-G5) + this repository at 1909234af (scripts/seccorpus/corpus/repos.tsv)",
+        "method": "ONE labelling pass so far: side a labelled every selected result (labellers.tsv, batches.tsv); the side-b batches are prepared in batches.tsv and await their attested relabel, so no rule may block; all results when at most 60, else a seeded sample of 60 (P-047, P-077, JSP-8); ecosystem exclusions per internal/seccorpus",
+        "results": 1,
+        "passes": {
+          "results": 0,
+          "verdict_agreements": 0,
+          "reason_agreements": 0,
+          "second_pass_pending": 48
+        }
+      },
+      "exclude_tests": true
+    },
+    {
+      "id": "csharp.weak-password-hash",
+      "file": "rules/csharp.weak-password-hash.yaml",
+      "languages": [
+        "csharp"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-916",
+      "precision": {
+        "figure": 0,
+        "wilson_lower": 0,
+        "denominator": 1,
+        "corpus": "jsp7-50 + 10 Java and C# web applications (SEC-G5) + this repository at 1909234af (scripts/seccorpus/corpus/repos.tsv)",
+        "method": "ONE labelling pass so far: side a labelled every selected result (labellers.tsv, batches.tsv); the side-b batches are prepared in batches.tsv and await their attested relabel, so no rule may block; all results when at most 60, else a seeded sample of 60 (P-047, P-077, JSP-8); ecosystem exclusions per internal/seccorpus",
+        "results": 1,
+        "passes": {
+          "results": 0,
+          "verdict_agreements": 0,
+          "reason_agreements": 0,
+          "second_pass_pending": 48
+        }
+      }
+    },
+    {
+      "id": "go.cors-credentials-any-origin",
+      "file": "rules/go.cors-credentials-any-origin.yaml",
+      "languages": [
+        "go"
+      ],
+      "category": "code_vuln",
+      "severity": "medium",
+      "cwe": "CWE-942"
+    },
+    {
+      "id": "go.insecure-token-randomness",
+      "file": "rules/go.insecure-token-randomness.yaml",
+      "languages": [
+        "go"
+      ],
+      "category": "code_vuln",
+      "severity": "medium",
+      "cwe": "CWE-338"
+    },
+    {
+      "id": "go.jwt-verification-off",
+      "file": "rules/go.jwt-verification-off.yaml",
+      "languages": [
+        "go"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-347",
+      "exclude_tests": true
+    },
+    {
+      "id": "go.path-traversal-request",
+      "file": "rules/go.path-traversal-request.yaml",
+      "languages": [
+        "go"
+      ],
+      "category": "code_vuln",
+      "severity": "medium",
+      "cwe": "CWE-22",
+      "precision": {
+        "figure": 0,
+        "wilson_lower": 0,
+        "denominator": 1,
+        "corpus": "jsp7-50 + 10 Java and C# web applications (SEC-G5) + this repository at 1909234af (scripts/seccorpus/corpus/repos.tsv)",
+        "method": "ONE labelling pass so far: side a labelled every selected result (labellers.tsv, batches.tsv); the side-b batches are prepared in batches.tsv and await their attested relabel, so no rule may block; all results when at most 60, else a seeded sample of 60 (P-047, P-077, JSP-8); ecosystem exclusions per internal/seccorpus",
+        "results": 1,
+        "passes": {
+          "results": 0,
+          "verdict_agreements": 0,
+          "reason_agreements": 0,
+          "second_pass_pending": 48
+        }
+      }
+    },
+    {
+      "id": "go.shell-interpolation",
+      "file": "rules/go.shell-interpolation.yaml",
+      "languages": [
+        "go"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-78"
+    },
+    {
+      "id": "go.sql-string-concat",
+      "file": "rules/go.sql-string-concat.yaml",
+      "languages": [
+        "go"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-89",
+      "precision": {
+        "figure": 0,
+        "wilson_lower": 0,
+        "denominator": 4,
+        "corpus": "jsp7-50 + 10 Java and C# web applications (SEC-G5) + this repository at 1909234af (scripts/seccorpus/corpus/repos.tsv)",
+        "method": "ONE labelling pass so far: side a labelled every selected result (labellers.tsv, batches.tsv); the side-b batches are prepared in batches.tsv and await their attested relabel, so no rule may block; all results when at most 60, else a seeded sample of 60 (P-047, P-077, JSP-8); ecosystem exclusions per internal/seccorpus",
+        "results": 4,
+        "passes": {
+          "results": 0,
+          "verdict_agreements": 0,
+          "reason_agreements": 0,
+          "second_pass_pending": 48
+        }
+      },
+      "exclude_tests": true
+    },
+    {
+      "id": "go.ssrf-request-url",
+      "file": "rules/go.ssrf-request-url.yaml",
+      "languages": [
+        "go"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-918",
+      "exclude_tests": true
+    },
+    {
+      "id": "go.template-injection",
+      "file": "rules/go.template-injection.yaml",
+      "languages": [
+        "go"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-1336"
+    },
+    {
+      "id": "go.tls-verify-off",
+      "file": "rules/go.tls-verify-off.yaml",
+      "languages": [
+        "go"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-295",
+      "precision": {
+        "figure": 0,
+        "wilson_lower": 0,
+        "denominator": 1,
+        "corpus": "jsp7-50 + 10 Java and C# web applications (SEC-G5) + this repository at 1909234af (scripts/seccorpus/corpus/repos.tsv)",
+        "method": "ONE labelling pass so far: side a labelled every selected result (labellers.tsv, batches.tsv); the side-b batches are prepared in batches.tsv and await their attested relabel, so no rule may block; all results when at most 60, else a seeded sample of 60 (P-047, P-077, JSP-8); ecosystem exclusions per internal/seccorpus",
+        "results": 1,
+        "passes": {
+          "results": 0,
+          "verdict_agreements": 0,
+          "reason_agreements": 0,
+          "second_pass_pending": 48
+        }
+      },
+      "exclude_tests": true
+    },
+    {
+      "id": "go.weak-cipher",
+      "file": "rules/go.weak-cipher.yaml",
+      "languages": [
+        "go"
+      ],
+      "category": "code_vuln",
+      "severity": "medium",
+      "cwe": "CWE-327",
+      "exclude_tests": true
+    },
+    {
+      "id": "go.weak-password-hash",
+      "file": "rules/go.weak-password-hash.yaml",
+      "languages": [
+        "go"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-916"
+    },
+    {
+      "id": "java.cors-credentials-any-origin",
+      "file": "rules/java.cors-credentials-any-origin.yaml",
+      "languages": [
+        "java"
+      ],
+      "category": "code_vuln",
+      "severity": "medium",
+      "cwe": "CWE-942",
+      "precision": {
+        "figure": 1,
+        "wilson_lower": 0.510109,
+        "denominator": 4,
+        "corpus": "jsp7-50 + 10 Java and C# web applications (SEC-G5) + this repository at 1909234af (scripts/seccorpus/corpus/repos.tsv)",
+        "method": "ONE labelling pass so far: side a labelled every selected result (labellers.tsv, batches.tsv); the side-b batches are prepared in batches.tsv and await their attested relabel, so no rule may block; all results when at most 60, else a seeded sample of 60 (P-047, P-077, JSP-8); ecosystem exclusions per internal/seccorpus",
+        "results": 4,
+        "passes": {
+          "results": 0,
+          "verdict_agreements": 0,
+          "reason_agreements": 0,
+          "second_pass_pending": 48
+        }
+      }
+    },
+    {
+      "id": "java.insecure-token-randomness",
+      "file": "rules/java.insecure-token-randomness.yaml",
+      "languages": [
+        "java"
+      ],
+      "category": "code_vuln",
+      "severity": "medium",
+      "cwe": "CWE-338",
+      "precision": {
+        "figure": 0,
+        "wilson_lower": 0,
+        "denominator": 3,
+        "corpus": "jsp7-50 + 10 Java and C# web applications (SEC-G5) + this repository at 1909234af (scripts/seccorpus/corpus/repos.tsv)",
+        "method": "ONE labelling pass so far: side a labelled every selected result (labellers.tsv, batches.tsv); the side-b batches are prepared in batches.tsv and await their attested relabel, so no rule may block; all results when at most 60, else a seeded sample of 60 (P-047, P-077, JSP-8); ecosystem exclusions per internal/seccorpus",
+        "results": 3,
+        "passes": {
+          "results": 0,
+          "verdict_agreements": 0,
+          "reason_agreements": 0,
+          "second_pass_pending": 48
+        }
+      }
+    },
+    {
+      "id": "java.jwt-verification-off",
+      "file": "rules/java.jwt-verification-off.yaml",
+      "languages": [
+        "java"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-347",
+      "exclude_tests": true
+    },
+    {
+      "id": "java.path-traversal-request",
+      "file": "rules/java.path-traversal-request.yaml",
+      "languages": [
+        "java"
+      ],
+      "category": "code_vuln",
+      "severity": "medium",
+      "cwe": "CWE-22",
+      "precision": {
+        "figure": 0,
+        "wilson_lower": 0,
+        "denominator": 2,
+        "corpus": "jsp7-50 + 10 Java and C# web applications (SEC-G5) + this repository at 1909234af (scripts/seccorpus/corpus/repos.tsv)",
+        "method": "ONE labelling pass so far: side a labelled every selected result (labellers.tsv, batches.tsv); the side-b batches are prepared in batches.tsv and await their attested relabel, so no rule may block; all results when at most 60, else a seeded sample of 60 (P-047, P-077, JSP-8); ecosystem exclusions per internal/seccorpus",
+        "results": 2,
+        "passes": {
+          "results": 0,
+          "verdict_agreements": 0,
+          "reason_agreements": 0,
+          "second_pass_pending": 48
+        }
+      }
+    },
+    {
+      "id": "java.shell-interpolation",
+      "file": "rules/java.shell-interpolation.yaml",
+      "languages": [
+        "java"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-78"
+    },
+    {
+      "id": "java.sql-string-concat",
+      "file": "rules/java.sql-string-concat.yaml",
+      "languages": [
+        "java"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-89",
+      "exclude_tests": true
+    },
+    {
+      "id": "java.ssrf-request-url",
+      "file": "rules/java.ssrf-request-url.yaml",
+      "languages": [
+        "java"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-918",
+      "precision": {
+        "figure": 0,
+        "wilson_lower": 0,
+        "denominator": 2,
+        "corpus": "jsp7-50 + 10 Java and C# web applications (SEC-G5) + this repository at 1909234af (scripts/seccorpus/corpus/repos.tsv)",
+        "method": "ONE labelling pass so far: side a labelled every selected result (labellers.tsv, batches.tsv); the side-b batches are prepared in batches.tsv and await their attested relabel, so no rule may block; all results when at most 60, else a seeded sample of 60 (P-047, P-077, JSP-8); ecosystem exclusions per internal/seccorpus",
+        "results": 2,
+        "passes": {
+          "results": 0,
+          "verdict_agreements": 0,
+          "reason_agreements": 0,
+          "second_pass_pending": 48
+        }
+      },
+      "exclude_tests": true
+    },
+    {
+      "id": "java.template-injection",
+      "file": "rules/java.template-injection.yaml",
+      "languages": [
+        "java"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-1336"
+    },
+    {
+      "id": "java.tls-verify-off",
+      "file": "rules/java.tls-verify-off.yaml",
+      "languages": [
+        "java"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-295",
+      "precision": {
+        "figure": 0,
+        "wilson_lower": 0,
+        "denominator": 1,
+        "corpus": "jsp7-50 + 10 Java and C# web applications (SEC-G5) + this repository at 1909234af (scripts/seccorpus/corpus/repos.tsv)",
+        "method": "ONE labelling pass so far: side a labelled every selected result (labellers.tsv, batches.tsv); the side-b batches are prepared in batches.tsv and await their attested relabel, so no rule may block; all results when at most 60, else a seeded sample of 60 (P-047, P-077, JSP-8); ecosystem exclusions per internal/seccorpus",
+        "results": 1,
+        "passes": {
+          "results": 0,
+          "verdict_agreements": 0,
+          "reason_agreements": 0,
+          "second_pass_pending": 48
+        }
+      },
+      "exclude_tests": true
+    },
+    {
+      "id": "java.unsafe-deserialization",
+      "file": "rules/java.unsafe-deserialization.yaml",
+      "languages": [
+        "java"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-502",
+      "precision": {
+        "figure": 0.333333,
+        "wilson_lower": 0.061492,
+        "denominator": 3,
+        "corpus": "jsp7-50 + 10 Java and C# web applications (SEC-G5) + this repository at 1909234af (scripts/seccorpus/corpus/repos.tsv)",
+        "method": "ONE labelling pass so far: side a labelled every selected result (labellers.tsv, batches.tsv); the side-b batches are prepared in batches.tsv and await their attested relabel, so no rule may block; all results when at most 60, else a seeded sample of 60 (P-047, P-077, JSP-8); ecosystem exclusions per internal/seccorpus",
+        "results": 3,
+        "passes": {
+          "results": 0,
+          "verdict_agreements": 0,
+          "reason_agreements": 0,
+          "second_pass_pending": 48
+        }
+      }
+    },
+    {
+      "id": "java.weak-cipher",
+      "file": "rules/java.weak-cipher.yaml",
+      "languages": [
+        "java"
+      ],
+      "category": "code_vuln",
+      "severity": "medium",
+      "cwe": "CWE-327",
+      "precision": {
+        "figure": 0.666667,
+        "wilson_lower": 0.20766,
+        "denominator": 3,
+        "corpus": "jsp7-50 + 10 Java and C# web applications (SEC-G5) + this repository at 1909234af (scripts/seccorpus/corpus/repos.tsv)",
+        "method": "ONE labelling pass so far: side a labelled every selected result (labellers.tsv, batches.tsv); the side-b batches are prepared in batches.tsv and await their attested relabel, so no rule may block; all results when at most 60, else a seeded sample of 60 (P-047, P-077, JSP-8); ecosystem exclusions per internal/seccorpus",
+        "results": 3,
+        "passes": {
+          "results": 0,
+          "verdict_agreements": 0,
+          "reason_agreements": 0,
+          "second_pass_pending": 48
+        }
+      },
+      "exclude_tests": true
+    },
+    {
+      "id": "java.weak-password-hash",
+      "file": "rules/java.weak-password-hash.yaml",
+      "languages": [
+        "java"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-916"
+    },
+    {
+      "id": "js.cors-credentials-any-origin",
+      "file": "rules/js.cors-credentials-any-origin.yaml",
+      "languages": [
+        "javascript",
+        "typescript"
+      ],
+      "category": "code_vuln",
+      "severity": "medium",
+      "cwe": "CWE-942"
+    },
+    {
+      "id": "js.eval-request-input",
+      "file": "rules/js.eval-request-input.yaml",
+      "languages": [
+        "javascript",
+        "typescript"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-95"
+    },
+    {
+      "id": "js.insecure-token-randomness",
+      "file": "rules/js.insecure-token-randomness.yaml",
+      "languages": [
+        "javascript",
+        "typescript"
+      ],
+      "category": "code_vuln",
+      "severity": "medium",
+      "cwe": "CWE-338",
+      "precision": {
+        "figure": 0,
+        "wilson_lower": 0,
+        "denominator": 1,
+        "corpus": "jsp7-50 + 10 Java and C# web applications (SEC-G5) + this repository at 1909234af (scripts/seccorpus/corpus/repos.tsv)",
+        "method": "ONE labelling pass so far: side a labelled every selected result (labellers.tsv, batches.tsv); the side-b batches are prepared in batches.tsv and await their attested relabel, so no rule may block; all results when at most 60, else a seeded sample of 60 (P-047, P-077, JSP-8); ecosystem exclusions per internal/seccorpus",
+        "results": 1,
+        "passes": {
+          "results": 0,
+          "verdict_agreements": 0,
+          "reason_agreements": 0,
+          "second_pass_pending": 48
+        }
+      }
+    },
+    {
+      "id": "js.jwt-verification-off",
+      "file": "rules/js.jwt-verification-off.yaml",
+      "languages": [
+        "javascript",
+        "typescript"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-347",
+      "exclude_tests": true
+    },
+    {
+      "id": "js.path-traversal-request",
+      "file": "rules/js.path-traversal-request.yaml",
+      "languages": [
+        "javascript",
+        "typescript"
+      ],
+      "category": "code_vuln",
+      "severity": "medium",
+      "cwe": "CWE-22",
+      "precision": {
+        "figure": 0,
+        "wilson_lower": 0,
+        "denominator": 2,
+        "corpus": "jsp7-50 + 10 Java and C# web applications (SEC-G5) + this repository at 1909234af (scripts/seccorpus/corpus/repos.tsv)",
+        "method": "ONE labelling pass so far: side a labelled every selected result (labellers.tsv, batches.tsv); the side-b batches are prepared in batches.tsv and await their attested relabel, so no rule may block; all results when at most 60, else a seeded sample of 60 (P-047, P-077, JSP-8); ecosystem exclusions per internal/seccorpus",
+        "results": 2,
+        "passes": {
+          "results": 0,
+          "verdict_agreements": 0,
+          "reason_agreements": 0,
+          "second_pass_pending": 48
+        }
+      }
+    },
+    {
+      "id": "js.shell-interpolation",
+      "file": "rules/js.shell-interpolation.yaml",
+      "languages": [
+        "javascript",
+        "typescript"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-78"
+    },
+    {
+      "id": "js.sql-string-concat",
+      "file": "rules/js.sql-string-concat.yaml",
+      "languages": [
+        "javascript",
+        "typescript"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-89",
+      "exclude_tests": true
+    },
+    {
+      "id": "js.ssrf-request-url",
+      "file": "rules/js.ssrf-request-url.yaml",
+      "languages": [
+        "javascript",
+        "typescript"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-918",
+      "precision": {
+        "figure": 0,
+        "wilson_lower": 0,
+        "denominator": 2,
+        "corpus": "jsp7-50 + 10 Java and C# web applications (SEC-G5) + this repository at 1909234af (scripts/seccorpus/corpus/repos.tsv)",
+        "method": "ONE labelling pass so far: side a labelled every selected result (labellers.tsv, batches.tsv); the side-b batches are prepared in batches.tsv and await their attested relabel, so no rule may block; all results when at most 60, else a seeded sample of 60 (P-047, P-077, JSP-8); ecosystem exclusions per internal/seccorpus",
+        "results": 2,
+        "passes": {
+          "results": 0,
+          "verdict_agreements": 0,
+          "reason_agreements": 0,
+          "second_pass_pending": 48
+        }
+      },
+      "exclude_tests": true
+    },
+    {
+      "id": "js.template-injection",
+      "file": "rules/js.template-injection.yaml",
+      "languages": [
+        "javascript",
+        "typescript"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-1336"
+    },
+    {
+      "id": "js.tls-verify-off",
+      "file": "rules/js.tls-verify-off.yaml",
+      "languages": [
+        "javascript",
+        "typescript"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-295",
+      "precision": {
+        "figure": 0.1,
+        "wilson_lower": 0.017876,
+        "denominator": 10,
+        "corpus": "jsp7-50 + 10 Java and C# web applications (SEC-G5) + this repository at 1909234af (scripts/seccorpus/corpus/repos.tsv)",
+        "method": "ONE labelling pass so far: side a labelled every selected result (labellers.tsv, batches.tsv); the side-b batches are prepared in batches.tsv and await their attested relabel, so no rule may block; all results when at most 60, else a seeded sample of 60 (P-047, P-077, JSP-8); ecosystem exclusions per internal/seccorpus",
+        "results": 10,
+        "passes": {
+          "results": 0,
+          "verdict_agreements": 0,
+          "reason_agreements": 0,
+          "second_pass_pending": 48
+        }
+      },
+      "exclude_tests": true
+    },
+    {
+      "id": "js.unsafe-deserialization",
+      "file": "rules/js.unsafe-deserialization.yaml",
+      "languages": [
+        "javascript",
+        "typescript"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-502"
+    },
+    {
+      "id": "js.weak-cipher",
+      "file": "rules/js.weak-cipher.yaml",
+      "languages": [
+        "javascript",
+        "typescript"
+      ],
+      "category": "code_vuln",
+      "severity": "medium",
+      "cwe": "CWE-327",
+      "precision": {
+        "figure": 1,
+        "wilson_lower": 0.34238,
+        "denominator": 2,
+        "corpus": "jsp7-50 + 10 Java and C# web applications (SEC-G5) + this repository at 1909234af (scripts/seccorpus/corpus/repos.tsv)",
+        "method": "ONE labelling pass so far: side a labelled every selected result (labellers.tsv, batches.tsv); the side-b batches are prepared in batches.tsv and await their attested relabel, so no rule may block; all results when at most 60, else a seeded sample of 60 (P-047, P-077, JSP-8); ecosystem exclusions per internal/seccorpus",
+        "results": 2,
+        "passes": {
+          "results": 0,
+          "verdict_agreements": 0,
+          "reason_agreements": 0,
+          "second_pass_pending": 48
+        }
+      },
+      "exclude_tests": true
+    },
+    {
+      "id": "js.weak-password-hash",
+      "file": "rules/js.weak-password-hash.yaml",
+      "languages": [
+        "javascript",
+        "typescript"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-916"
+    },
+    {
+      "id": "python.cors-credentials-any-origin",
+      "file": "rules/python.cors-credentials-any-origin.yaml",
+      "languages": [
+        "python"
+      ],
+      "category": "code_vuln",
+      "severity": "medium",
+      "cwe": "CWE-942"
+    },
+    {
+      "id": "python.eval-request-input",
+      "file": "rules/python.eval-request-input.yaml",
+      "languages": [
+        "python"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-95"
+    },
+    {
+      "id": "python.insecure-token-randomness",
+      "file": "rules/python.insecure-token-randomness.yaml",
+      "languages": [
+        "python"
+      ],
+      "category": "code_vuln",
+      "severity": "medium",
+      "cwe": "CWE-338"
+    },
+    {
+      "id": "python.jwt-verification-off",
+      "file": "rules/python.jwt-verification-off.yaml",
+      "languages": [
+        "python"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-347",
+      "exclude_tests": true
+    },
+    {
+      "id": "python.path-traversal-request",
+      "file": "rules/python.path-traversal-request.yaml",
+      "languages": [
+        "python"
+      ],
+      "category": "code_vuln",
+      "severity": "medium",
+      "cwe": "CWE-22"
+    },
+    {
+      "id": "python.shell-interpolation",
+      "file": "rules/python.shell-interpolation.yaml",
+      "languages": [
+        "python"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-78"
+    },
+    {
+      "id": "python.sql-string-concat",
+      "file": "rules/python.sql-string-concat.yaml",
+      "languages": [
+        "python"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-89",
+      "exclude_tests": true
+    },
+    {
+      "id": "python.ssrf-request-url",
+      "file": "rules/python.ssrf-request-url.yaml",
+      "languages": [
+        "python"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-918",
+      "exclude_tests": true
+    },
+    {
+      "id": "python.template-injection",
+      "file": "rules/python.template-injection.yaml",
+      "languages": [
+        "python"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-1336"
+    },
+    {
+      "id": "python.tls-verify-off",
+      "file": "rules/python.tls-verify-off.yaml",
+      "languages": [
+        "python"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-295",
+      "exclude_tests": true
+    },
+    {
+      "id": "python.unsafe-deserialization",
+      "file": "rules/python.unsafe-deserialization.yaml",
+      "languages": [
+        "python"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-502"
+    },
+    {
+      "id": "python.weak-cipher",
+      "file": "rules/python.weak-cipher.yaml",
+      "languages": [
+        "python"
+      ],
+      "category": "code_vuln",
+      "severity": "medium",
+      "cwe": "CWE-327",
+      "exclude_tests": true
+    },
+    {
+      "id": "python.weak-password-hash",
+      "file": "rules/python.weak-password-hash.yaml",
+      "languages": [
+        "python"
+      ],
+      "category": "code_vuln",
+      "severity": "high",
+      "cwe": "CWE-916"
+    }
+  ]
+}

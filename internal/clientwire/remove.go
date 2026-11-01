@@ -2,10 +2,10 @@ package clientwire
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/marmutapp/superbased-observer/internal/hook"
 	"github.com/marmutapp/superbased-observer/internal/mcpregister"
+	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
 	"github.com/marmutapp/superbased-observer/internal/proxyroute"
 	"github.com/marmutapp/superbased-observer/internal/routeprov"
 )
@@ -81,8 +81,11 @@ type RemoveOptions struct {
 	// Force removes Observer's entries from a file whose install-time
 	// checksum no longer matches (the operator checked why).
 	Force bool
-	// Getenv resolves the plugin-shim hosts' directory overrides. nil means
-	// os.Getenv.
+	// Getenv reads the relocation variables of every file the removal
+	// edits (hooks, MCP entries, routes, exporter configs). nil is the one
+	// pinned-home rule (crossmount.HomeEnv, R-188 F1): os.Getenv only when
+	// HomeDir is not pinned and the process home is not isolated, and no
+	// variable otherwise.
 	Getenv func(string) string
 	// Writer records who removes a route (routeprov); zero is the CLI.
 	Writer routeprov.Writer
@@ -119,9 +122,7 @@ func NewRemover(opts RemoveOptions) (*Remover, error) {
 	if opts.BinaryPath == "" {
 		return nil, fmt.Errorf("clientwire.NewRemover: BinaryPath is required")
 	}
-	if opts.Getenv == nil {
-		opts.Getenv = os.Getenv
-	}
+	opts.Getenv = crossmount.HomeEnv(opts.HomeDir, opts.Getenv)
 	if opts.ProxyPort <= 0 {
 		opts.ProxyPort = 8820
 	}
@@ -136,6 +137,7 @@ func NewRemover(opts RemoveOptions) (*Remover, error) {
 		return nil, fmt.Errorf("clientwire.NewRemover: %w", err)
 	}
 	mcpReg, err := mcpregister.NewRegistrar(mcpregister.RegisterOptions{
+		Getenv:     opts.Getenv,
 		BinaryPath: opts.BinaryPath,
 		DryRun:     opts.DryRun,
 		Force:      opts.Force,
@@ -173,6 +175,7 @@ func (r *Remover) RouteRegistrarErr() error {
 			ProxyPort: r.opts.ProxyPort,
 			DryRun:    r.opts.DryRun,
 			HomeDir:   r.opts.HomeDir,
+			Getenv:    r.opts.Getenv,
 			// A removal never creates a missing vendor directory (T-742).
 			Lock: hook.LockSettingsFileIfPresent,
 		})

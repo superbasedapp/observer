@@ -1,0 +1,11 @@
+{"ts":"2026-10-21T03:46:00.756Z","level":"debug","module":"bob-shell:harness","msg":"[TreeSitter] Starting initialization"}
+{"ts":"2026-10-21T03:46:00.790Z","level":"info","module":"TaskStore","msg":"Task store opened","data":"C:\\Users\\user\\.bob\\db\\bob.db"}
+{"ts":"2026-10-21T03:46:01.688Z","level":"info","module":"Auth","msg":"Logged out"}
+{"ts":"2026-10-21T03:46:01.728Z","level":"info","module":"Auth","msg":"Starting SSO login flow"}
+{"ts":"2026-10-21T03:46:10.533Z","level":"debug","module":"Auth","msg":"Auth state changed to","data":"authenticated"}
+{"ts":"2026-10-21T03:46:10.542Z","level":"info","module":"Auth","msg":"Login successful","data":"user@example.com"}
+{"ts":"2026-10-21T03:46:36.646Z","level":"debug","module":"Auth","msg":"Found stored tokens, checking expiry"}
+{"ts":"2026-10-21T03:46:36.646Z","level":"debug","module":"Auth","msg":"Auth state changed to","data":"authenticated"}
+{"ts":"2026-10-21T03:46:36.646Z","level":"info","module":"Auth","msg":"Restored session from stored tokens"}
+{"ts":"2026-10-21T03:46:37.102Z","level":"debug","module":"Gateway","msg":"HTTP request","data":{"method":"POST","url":"https://api.us-east.bob.ibm.com/inference/v1/chat/completions","bodySize":51234}}
+{"ts":"2026-10-21T03:46:39.410Z","level":"debug","module":"Gateway","msg":"HTTP request complete","data":{"method":"POST","url":"https://api.us-east.bob.ibm.com/inference/v1/chat/completions","status":200,"elapsedMs":2308}}

@@ -1,0 +1,51 @@
+rules:
+  - id: java.ssrf-request-url
+    languages: [java]
+    severity: ERROR
+    message: A URL taken from a web request is fetched by the server, so a caller can make it reach internal hosts; check the host against an allow-list first.
+    metadata:
+      category: code_vuln
+      cwe: CWE-918
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern: $REQ.$GET(...)
+          - metavariable-regex:
+              metavariable: $GET
+              regex: ^(getParameter|getParameterValues|getParameterMap|getHeader|getHeaders|getQueryString|getCookies|getInputStream|getReader|getPathInfo|getRequestURI)$
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: (?i)^(req|request|httpRequest|servletRequest|httpServletRequest)$
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $RT $M(..., @$ANN $T $X, ...) { ... }
+              - pattern-inside: |
+                  $RT $M(..., @$ANN(...) $T $X, ...) { ... }
+          - metavariable-regex:
+              metavariable: $ANN
+              regex: ^(RequestParam|PathVariable|RequestHeader|RequestBody|QueryParam|PathParam|FormParam|HeaderParam|CookieValue)$
+          - pattern: $X
+    pattern-sanitizers:
+      - pattern: URLEncoder.encode(...)
+      - patterns:
+          - pattern: '"$LIT" + $X'
+          - metavariable-regex:
+              metavariable: $LIT
+              regex: ^https?://[^/?#]+[/?#]
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: new URL($U)
+              - pattern: URI.create($U)
+              - pattern: new URI($U)
+              - pattern: $RT.getForObject($U, ...)
+              - pattern: $RT.getForEntity($U, ...)
+              - pattern: $RT.postForObject($U, ...)
+              - pattern: $RT.postForEntity($U, ...)
+              - pattern: $RT.exchange($U, ...)
+              - pattern: HttpRequest.newBuilder($U)
+              - pattern: WebClient.create($U)
+              - pattern: new HttpGet($U)
+              - pattern: new HttpPost($U)
+          - focus-metavariable: $U

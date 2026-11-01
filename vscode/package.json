@@ -1,8 +1,8 @@
 {
   "name": "superbased-observer",
   "displayName": "SuperBased",
-  "description": "Local-first AI coding agent observability in your editor: Claude Code token usage, Codex cost and Cursor spend across 40 adapters, provider-exact via a local proxy. No account, no telemetry.",
-  "version": "1.36.0",
+  "description": "Local-first AI coding agent observability in your editor: Claude Code token usage, Codex cost and Cursor spend across 50 adapters, provider-exact via a local proxy. No account needed.",
+  "version": "1.37.0",
   "publisher": "superbased",
   "license": "Apache-2.0",
   "author": "Santosh Kathira <contact@superbased.app>",
@@ -51,8 +51,7 @@
     "llm-observability",
     "spend",
     "observability",
-    "local-first",
-    "no-telemetry"
+    "local-first"
   ],
   "icon": "media/icon.png",
   "galleryBanner": {
@@ -87,6 +86,10 @@
       {
         "command": "observer.openComponents",
         "title": "SuperBased: Choose Components"
+      },
+      {
+        "command": "observer.openMessages",
+        "title": "SuperBased: Open Messages from Your Admin"
       },
       {
         "command": "observer.init",
@@ -136,6 +139,10 @@
       {
         "command": "observer.previewInstructions",
         "title": "SuperBased: Preview Instruction Suggestions"
+      },
+      {
+        "command": "observer.showSecurityFindings",
+        "title": "SuperBased: Show code security findings"
       }
     ],
     "viewsContainers": {
@@ -185,7 +192,7 @@
           {
             "id": "welcome",
             "title": "Welcome to SuperBased",
-            "description": "SuperBased captures, normalises, and analyses every AI coding tool's activity, locally, with no telemetry.\n[Open Sidebar](command:workbench.view.extension.observer)",
+            "description": "SuperBased captures, normalises, and analyses every AI coding tool's activity, locally, with no account needed.\n[Open Sidebar](command:workbench.view.extension.observer)",
             "media": {
               "markdown": "walkthroughs/01-welcome.md"
             },
@@ -288,6 +295,10 @@
         {
           "command": "observer.copyProxyEnv",
           "when": "!observer.proxyInactive"
+        },
+        {
+          "command": "observer.showSecurityFindings",
+          "when": "!observer.securityInactive"
         }
       ],
       "view/title": [
@@ -381,6 +392,11 @@
           "markdownDeprecationMessage": "No longer read. The only request that ever sent this header was the saved-line-count report; it now uses `#observer.loc.editorToken#` and the daemon's generated token file.",
           "deprecationMessage": "No longer read. Use observer.loc.editorToken instead.",
           "description": "Deprecated and no longer read by any request. The saved-line-count report now uses observer.loc.editorToken, falling back to the token file the daemon generates in the observer home."
+        },
+        "observer.securityDiagnostics.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show open code security findings as Problems-panel diagnostics on open files, with a status-bar count. Hidden while the Code security component is not active."
         }
       }
     }

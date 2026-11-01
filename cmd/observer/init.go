@@ -67,8 +67,11 @@ func newInitCmd() *cobra.Command {
 		flagCodex            bool
 		flagCursor           bool
 		flagCline            bool
+		flagAntigravity      bool
+		flagTools            []string
 		flagHermes           bool
 		flagStatusline       bool
+		flagStatuslineTools  []string
 		flagUninstall        bool
 		flagAll              bool
 		flagDryRun           bool
@@ -87,11 +90,17 @@ func newInitCmd() *cobra.Command {
 		flagWinCodexHome     string
 		flagWinCursorHome    string
 		flagOTLPExport       []string
+		flagBobNoVendorTel   bool
 		flagComponents       initComponentFlags
 	)
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Register hooks + MCP server with AI coding tools",
+		Long: "Register Observer's hooks, MCP server and proxy route with AI coding tools.\n\n" +
+			"Tool selection: with no tool flag every detected tool is selected (on a terminal with no flags at all, an interactive checklist asks first). " +
+			"--tool <id> selects tools by integration-registry id, repeatable (e.g. --tool copilot-cli --tool gemini-cli); any tool with a hook, MCP or proxy-route capability is selectable, see --tool below. " +
+			"--claude-code, --codex, --cursor and --cline are aliases for --tool with the same id, and --antigravity for --tool antigravity-cli. --all selects every detected tool.\n\n" +
+			crossmountIsolationHelp,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			binary, err := absoluteBinaryPath()
 			if err != nil {
@@ -101,6 +110,14 @@ func newInitCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// --tool <id> (registry-driven, repeatable) and the classic
+			// per-tool flags (aliases for their own ids) fold into one
+			// explicit selection, validated before anything is written.
+			toolIDs, err := resolveInitToolFlag(flagTools)
+			if err != nil {
+				return err
+			}
+			explicitTools := aliasTools([]bool{flagClaudeCode, flagCodex, flagCursor, flagCline, flagAntigravity}, toolIDs)
 			// Component selection first (--components/--with/--without), so
 			// every wiring step below sees the operator's chosen set and
 			// never writes an inactive component's entries.
@@ -131,7 +148,7 @@ func newInitCmd() *cobra.Command {
 			// the --hermes "only that rail" guard. A bare --browser-extension-id
 			// implies the same browser-only intent.
 			browserRequested := flagBrowser || flagBrowserExtID != ""
-			anyClassicFlagEarly := flagClaudeCode || flagCodex || flagCursor || flagCline
+			anyClassicFlagEarly := len(explicitTools) > 0
 			if browserRequested && !anyClassicFlagEarly && !flagAll && !flagHermes {
 				if !flagUninstall && !initGateFor(resolvedConfig).allow(cmd.OutOrStdout(), true, "browser", "capture.browser") {
 					return nil
@@ -142,6 +159,7 @@ func newInitCmd() *cobra.Command {
 					ConfigPath:          resolvedConfig,
 					ExtensionID:         flagBrowserExtID,
 					DryRun:              flagDryRun,
+					Force:               flagForce,
 					Interactive:         stdinIsTerminal() && stdoutIsTerminal(),
 					WindowsBrowserHomes: winHomes,
 					WSLDistro:           winDistro,
@@ -185,12 +203,36 @@ func newInitCmd() *cobra.Command {
 			// re-registers every other detected tool's hooks/MCP too, which
 			// has bitten the operator at least once during local smoke
 			// testing.
-			anyClassicFlag := flagClaudeCode || flagCodex || flagCursor || flagCline
+			anyClassicFlag := len(explicitTools) > 0
 			hermesOnly := flagHermes && !anyClassicFlag && !flagAll
+			// --ibm-bob-disable-vendor-telemetry (AP-135, opt-in): alone it
+			// writes only that one Bob setting.
+			if flagBobNoVendorTel {
+				if err := runIBMBobVendorTelemetryInit(out, binary, flagDryRun, flagUninstall); err != nil {
+					return err
+				}
+				if !anyClassicFlag && !flagAll && !flagHermes && !flagStatusline && len(flagStatuslineTools) == 0 && len(flagOTLPExport) == 0 {
+					return nil
+				}
+			}
 			// --otlp-export alone (T-537) wires only the named tools'
 			// exporters, like --hermes alone: never "init everything".
-			if len(flagOTLPExport) > 0 && !anyClassicFlag && !flagAll && !flagHermes && !flagStatusline {
+			if len(flagOTLPExport) > 0 && !anyClassicFlag && !flagAll && !flagHermes && !flagStatusline && len(flagStatuslineTools) == 0 {
 				return runOTLPExportInit(out, resolvedConfig, flagOTLPExport, flagDryRun, flagUninstall)
+			}
+			// --statusline-tools alone (AP-133) writes only the named tools'
+			// status lines, like --otlp-export alone: never "init everything".
+			statuslineToolsOpts := hook.Options{
+				BinaryPath: binary,
+				ConfigPath: resolvedConfig,
+				DryRun:     flagDryRun,
+				Force:      flagForce,
+			}
+			if len(flagStatuslineTools) > 0 && !anyClassicFlag && !flagAll && !flagHermes && !flagStatusline && len(flagOTLPExport) == 0 {
+				if !flagUninstall && !initGateFor(resolvedConfig).allow(out, true, "statusline", "integration.statusline") {
+					return nil
+				}
+				return runStatuslineToolsInit(out, statuslineToolsOpts, flagStatuslineTools, flagUninstall)
 			}
 			if !hermesOnly {
 				winHomes, winDistro, newReg := productionWindowsBrowserInputs()
@@ -210,6 +252,8 @@ func newInitCmd() *cobra.Command {
 					OnlyCodex:           flagCodex,
 					OnlyCursor:          flagCursor,
 					OnlyCline:           flagCline,
+					OnlyAntigravity:     flagAntigravity,
+					OnlyTools:           toolIDs,
 					All:                 flagAll,
 					WindowsClaudeHome:   flagWinClaudeHome,
 					WindowsCodexHome:    flagWinCodexHome,
@@ -233,7 +277,7 @@ func newInitCmd() *cobra.Command {
 					for _, line := range lines {
 						fmt.Fprintln(out, line)
 					}
-					fmt.Fprintln(out, noToolsLine("wire", flagAll, "--claude-code / --cursor / --codex / --hermes / --all"))
+					fmt.Fprintln(out, noToolsLine("wire", flagAll, "--claude-code / --cursor / --codex / --antigravity / --tool <id> / --hermes / --all"))
 					return nil
 				}
 				if len(lines) != 1 || lines[0] != "" {
@@ -273,15 +317,17 @@ func newInitCmd() *cobra.Command {
 			// follow-up; `observer guard compile` covers it).
 			if flagGuard && !flagSkipGuardDialect && !flagUninstall && !hermesOnly {
 				initGuardDialects(cmd.Context(), out,
-					initSelectedTools(binary, resolvedConfig, flagAll, flagClaudeCode, flagCodex, flagCursor, flagCline),
+					initSelectedTools(binary, resolvedConfig, flagAll, explicitTools),
 					resolvedConfig, flagDryRun)
 			}
 
 			if runHermes {
 				if err := runHermesInit(out, hook.HermesOptions{
+					HermesHome: hermesInstallHome(),
 					BinaryPath: binary,
 					ConfigPath: resolvedConfig,
 					DryRun:     flagDryRun,
+					Force:      flagForce,
 				}, flagSkipHooks, flagSkipMCP, flagUninstall); err != nil {
 					return err
 				}
@@ -297,7 +343,7 @@ func newInitCmd() *cobra.Command {
 			// still runs: removing is always allowed).
 			statuslineAllowed := flagUninstall || initGateFor(resolvedConfig).allow(out, flagStatusline, "statusline", "integration.statusline")
 			if flagStatusline && statuslineAllowed {
-				selected := initSelectedTools(binary, resolvedConfig, flagAll, flagClaudeCode, flagCodex, flagCursor, flagCline)
+				selected := initSelectedTools(binary, resolvedConfig, flagAll, explicitTools)
 				if err := runStatuslineInit(out, hook.Options{
 					BinaryPath:        binary,
 					ConfigPath:        resolvedConfig,
@@ -305,6 +351,11 @@ func newInitCmd() *cobra.Command {
 					Force:             flagForce,
 					WindowsClaudeHome: flagWinClaudeHome,
 				}, selected, flagUninstall); err != nil {
+					return err
+				}
+			}
+			if len(flagStatuslineTools) > 0 && (flagUninstall || initGateFor(resolvedConfig).allow(out, true, "statusline", "integration.statusline")) {
+				if err := runStatuslineToolsInit(out, statuslineToolsOpts, flagStatuslineTools, flagUninstall); err != nil {
 					return err
 				}
 			}
@@ -327,13 +378,17 @@ func newInitCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&flagClaudeCode, "claude-code", false, "Register hooks + MCP for Claude Code")
-	cmd.Flags().BoolVar(&flagCodex, "codex", false, "Register MCP + hooks for OpenAI Codex (sets [features].hooks=true; per-hook trust approval still required via codex /hooks one-time)")
+	cmd.Flags().BoolVar(&flagCodex, "codex", false, "Register MCP + hooks for OpenAI Codex (sets [features].hooks=true and records codex's trust for Observer's own hook entries; review in codex /hooks)")
 	cmd.Flags().BoolVar(&flagCursor, "cursor", false, "Register hooks + MCP for Cursor")
-	cmd.Flags().BoolVar(&flagCline, "cline", false, "Register for Cline / Roo Code (captured via file watcher; the ~/.cline/hooks PreToolUse guard belongs to the Cline CLI and is written by --all on macOS/Linux)")
+	cmd.Flags().BoolVar(&flagCline, "cline", false, "Register for Cline / Roo Code (captured via file watcher; the Cline CLI guard, a plugin in ~/.cline/plugins plus a no-op ~/.cline/hooks/PreToolUse keep-alive, is written by --all on macOS/Linux)")
+	cmd.Flags().BoolVar(&flagAntigravity, "antigravity", false, "Register hooks for Google Antigravity (the agy CLI's ~/.gemini/config/hooks.json, which the Antigravity App and IDE also run); an alias for --tool antigravity-cli")
+	cmd.Flags().StringSliceVar(&flagTools, "tool", nil, "Select a tool by its integration-registry id (repeatable or comma-separated, e.g. --tool copilot-cli); --claude-code / --codex / --cursor / --cline are aliases for --tool with the same id, --antigravity for --tool antigravity-cli. Selectable: "+strings.Join(initSelectableTools(), ", "))
 	cmd.Flags().BoolVar(&flagHermes, "hermes", false, "Register Python plugin + MCP entry for Nous Research's Hermes Agent (~/.hermes/plugins/superbased-observer/ + ~/.hermes/config.yaml)")
 	flagComponents.register(cmd)
 	cmd.Flags().BoolVar(&flagStatusline, "statusline", false, "Register the observer statusline (writes Claude Code settings.json's top-level \"statusLine\" key to run `observer statusline`) - a one-line cost/session status; opt-in only, never implied by --all and never registered by `observer start`")
-	cmd.Flags().BoolVar(&flagUninstall, "uninstall", false, "Uninstall instead of install - honoured for --hermes, --statusline and --otlp-export")
+	cmd.Flags().StringSliceVar(&flagStatuslineTools, "statusline-tools", nil, "Register the observer statusline in these tools' own status-line command (comma-separated: "+strings.Join(integration.StatusLineWriterTools(integration.StatusLineInitTools), ", ")+"). Opt-in only: never implied by --all and never written by `observer start`; alone it writes nothing else. --dry-run previews, --force replaces a status line you set yourself, --uninstall removes Observer's")
+	cmd.Flags().BoolVar(&flagUninstall, "uninstall", false, "Uninstall instead of install - honoured for --hermes, --statusline, --statusline-tools, --otlp-export and --ibm-bob-disable-vendor-telemetry")
+	cmd.Flags().BoolVar(&flagBobNoVendorTel, "ibm-bob-disable-vendor-telemetry", false, "Turn IBM Bob's own telemetry to IBM off (telemetry.enabled=false in ~/.bob/settings/settings.json, and the Windows .bob seen from WSL). Opt-in only: never implied by --all and never written by `observer start`. Bob gates its OTLP export on the same setting, so this refuses when this node's Bob policy exports to a receiver; it also stops Bobalytics. --uninstall hands the setting back to Bob's default")
 	cmd.Flags().StringSliceVar(&flagOTLPExport, "otlp-export", nil, "Point these tools' own OpenTelemetry exporters at this node's OTLP receiver (comma-separated, e.g. qwen-code,codex; needs [ingest.otel] enabled). Opt-in only: never implied by --all and never written by `observer start`. Edits only the exporter keys of the tool's config (a credential in the same file is never read out or changed); --dry-run previews, --uninstall removes")
 	cmd.Flags().BoolVar(&flagAll, "all", false, "Select every detected tool")
 	cmd.Flags().BoolVar(&flagDryRun, "dry-run", false, "Print intended changes without writing any files")
@@ -359,8 +414,8 @@ func newInitCmd() *cobra.Command {
 // inside wireAIClients). Detection-only: dry-run registries, zero
 // writes; any construction failure selects nothing — a detection
 // problem must never fail the init (the initGuardDialects contract).
-func initSelectedTools(binary, configPath string, all, cc, codex, cursor, cline bool) []string {
-	hookReg, err := hook.NewRegistry(hook.Options{BinaryPath: binary, DryRun: true, ConfigPath: configPath, Getenv: os.Getenv})
+func initSelectedTools(binary, configPath string, all bool, explicit []string) []string {
+	hookReg, err := hook.NewRegistry(hook.Options{BinaryPath: binary, DryRun: true, ConfigPath: configPath})
 	if err != nil {
 		return nil
 	}
@@ -368,7 +423,7 @@ func initSelectedTools(binary, configPath string, all, cc, codex, cursor, cline 
 	if err != nil {
 		return nil
 	}
-	return selectToolsForInit(all, cc, codex, cursor, cline, unionStrings(hookReg.Installed(), mcpReg.Installed()))
+	return selectToolsForInit(all, explicit, unionStrings(hookReg.Installed(), mcpReg.Installed()))
 }
 
 // initGuardDialects compiles the effective guard policy into the
@@ -454,7 +509,7 @@ func initGuardDialects(ctx context.Context, out io.Writer, tools []string, confi
 // hermesDetected reports whether Hermes' vendor home exists (the
 // out-of-band detection `observer init --all` selects Hermes by).
 func hermesDetected(binary string) bool {
-	reg, err := hook.NewRegistry(hook.Options{BinaryPath: binary, DryRun: true, Getenv: os.Getenv})
+	reg, err := hook.NewRegistry(hook.Options{BinaryPath: binary, DryRun: true})
 	if err != nil {
 		return false
 	}
@@ -479,11 +534,11 @@ func runHermesInit(out io.Writer, opts hook.HermesOptions, skipHooks, skipMCP, u
 	}
 	if uninstall {
 		if !skipHooks {
-			path, err := hook.UnregisterHermes(opts)
+			rm, err := hook.UnregisterHermes(opts)
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(out, "hermes: removed plugin dir %s\n", path)
+			printHermesRemoval(out, rm, opts.DryRun)
 			cfgPath, err := hook.UnregisterHermesPluginEnabled(opts)
 			if err != nil {
 				return err
@@ -524,6 +579,29 @@ func runHermesInit(out io.Writer, opts hook.HermesOptions, skipHooks, skipMCP, u
 		fmt.Fprintf(out, "hermes: %s mcp entry to %s\n", verb, path)
 	}
 	return nil
+}
+
+// printHermesRemoval prints what UnregisterHermes did: each file kept
+// because it is not Observer's (FU-212), and the plugin directory removed
+// or kept.
+func printHermesRemoval(out io.Writer, rm hook.HermesRemoval, dryRun bool) {
+	verb := "removed"
+	if dryRun {
+		verb = "would remove"
+	}
+	for _, p := range rm.KeptForeign {
+		fmt.Fprintf(out, "hermes: kept %s (%s)\n", p, hook.ForeignFileReason)
+	}
+	switch {
+	case rm.DirRemoved:
+		fmt.Fprintf(out, "hermes: %s plugin dir %s\n", verb, rm.PluginDir)
+	case len(rm.Removed) > 0:
+		fmt.Fprintf(out, "hermes: %s %d plugin file(s) from %s; the directory is kept\n", verb, len(rm.Removed), rm.PluginDir)
+	case len(rm.KeptForeign) > 0:
+		fmt.Fprintf(out, "hermes: kept plugin dir %s\n", rm.PluginDir)
+	default:
+		fmt.Fprintf(out, "hermes: no plugin dir at %s\n", rm.PluginDir)
+	}
 }
 
 // runStatuslineInit installs (or uninstalls when uninstall=true) the
@@ -599,6 +677,83 @@ func runStatuslineInit(out io.Writer, opts hook.Options, selected []string, unin
 	return nil
 }
 
+// runStatuslineToolsInit installs (or, with uninstall, removes) Observer's
+// status line in each named tool's own status-line command (AP-133). Called
+// only for an explicit --statusline-tools: never implied by --all, never
+// from `observer start`. Every name must be a registry row whose StatusLine
+// column names this writer; the writer dispatches on the row's shape
+// (hook.RegisterStatusLine). Like --statusline it is native-OS only: a
+// status-line command runs on every render, so no WSL bridge is written.
+func runStatuslineToolsInit(out io.Writer, opts hook.Options, tools []string, uninstall bool) error {
+	valid := integration.StatusLineWriterTools(integration.StatusLineInitTools)
+	var names []string
+	for _, raw := range tools {
+		name := strings.TrimSpace(raw)
+		if name == "" {
+			continue
+		}
+		spec := integration.StatusLineFor(name)
+		if spec.Writer && spec.InitFlag != integration.StatusLineInitTools {
+			return fmt.Errorf("observer init --statusline-tools: %s's status line is written by %s, not --statusline-tools", name, spec.InitFlag)
+		}
+		if !contains(valid, name) {
+			return fmt.Errorf("observer init --statusline-tools: %q has no status-line writer (one of: %s)", name, strings.Join(valid, ", "))
+		}
+		if !contains(names, name) {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return fmt.Errorf("observer init --statusline-tools: no tool named (one of: %s)", strings.Join(valid, ", "))
+	}
+	reg, err := hook.NewRegistry(opts)
+	if err != nil {
+		return err
+	}
+	wrote := false
+	for _, name := range names {
+		if uninstall {
+			res := reg.UnregisterStatusLine(name)
+			switch {
+			case res.Error != nil:
+				return res.Error
+			case len(res.HooksKept) > 0:
+				fmt.Fprintf(out, "statusline: %s: %s has a status line Observer did not write - left untouched\n", name, res.ConfigPath)
+			case len(res.HooksRemoved) > 0:
+				verb := "removed"
+				if opts.DryRun {
+					verb = "would remove"
+				}
+				fmt.Fprintf(out, "statusline: %s: %s %s from %s\n", name, verb, strings.Join(res.HooksRemoved, " and "), res.ConfigPath)
+			default:
+				fmt.Fprintf(out, "statusline: %s: nothing to remove\n", name)
+			}
+			continue
+		}
+		res := reg.RegisterStatusLine(name)
+		switch {
+		case res.Error != nil:
+			return res.Error
+		case res.Skipped:
+			fmt.Fprintf(out, "statusline: %s: skipped - %s\n", name, res.SkipReason)
+		case len(res.HooksAdded) == 0:
+			fmt.Fprintf(out, "statusline: %s: already set in %s\n", name, res.ConfigPath)
+		default:
+			verb := "registered"
+			if opts.DryRun {
+				verb = "would register"
+			}
+			fmt.Fprintf(out, "statusline: %s: %s %s in %s -> %s statusline --host %s\n", name, verb, strings.Join(res.HooksAdded, " and "), res.ConfigPath, opts.BinaryPath, name)
+			wrote = true
+		}
+	}
+	if wrote {
+		// §4.2: the disclaimer is said once, at registration time.
+		fmt.Fprintln(out, "statusline: dollar figures it prints are an estimated list price, not invoiced - see `observer statusline --help`")
+	}
+	return nil
+}
+
 // WireAIClientsOptions parameterises wireAIClients — the reusable
 // AI-client integration step used by both `observer init` and the
 // post-enrol auto-wire path in `observer enroll` (M4.2 of the v1.8.0
@@ -639,6 +794,12 @@ type WireAIClientsOptions struct {
 	HomeDir string
 	// Restrict the wire to a specific subset. Empty = every detected tool.
 	OnlyClaudeCode, OnlyCodex, OnlyCursor, OnlyCline bool
+	// OnlyAntigravity is `observer init --antigravity`, an alias for the
+	// antigravity-cli id (initToolAliases).
+	OnlyAntigravity bool
+	// OnlyTools adds registry tool ids to the subset (`observer init
+	// --tool <id>`); the bools above are aliases (initToolAliases).
+	OnlyTools []string
 	// WindowsOnly keeps only the cross-OS "<tool>-windows" targets of the
 	// selection: the dashboard's Windows-home control (T-421 item 4) writes
 	// the Windows side the --windows-*-home flag disambiguates, not the
@@ -735,8 +896,9 @@ func wireAIClients(opts WireAIClientsOptions) (lines []string, claudeProxyHint, 
 	regCommand := registrationCommand(binary)
 	regConfig := registrationConfigArg(opts.ConfigPath, opts.HomeDir)
 	hookReg, err := hook.NewRegistry(hook.Options{
-		Getenv:            os.Getenv,
+		WindowsPATH:       hook.PersistentWindowsPATH,
 		BinaryPath:        regCommand,
+		WSLTwinBinaryPath: registrationWSLTwinBinary(binary),
 		DryRun:            opts.DryRun,
 		Force:             opts.Force,
 		ConfigPath:        regConfig,
@@ -744,12 +906,23 @@ func wireAIClients(opts WireAIClientsOptions) (lines []string, claudeProxyHint, 
 		WindowsClaudeHome: opts.WindowsClaudeHome,
 		WindowsCursorHome: opts.WindowsCursorHome,
 		WindowsCodexHome:  opts.WindowsCodexHome,
+		// The same answer `observer start` writes with (autoRegisterOptions),
+		// so the two writers do not rewrite each other's Goose entry.
+		ToolGateFailsClosed: registrationToolGateFailsClosed(opts.ConfigPath),
+		// The same answer `observer start` writes with (AW-37).
+		WindowsBridgeFailClosed: registrationWindowsBridgeFailClosed(opts.ConfigPath),
+		// The same selection `observer start` writes with (lane sec-h).
+		Selected: registrationSelected(opts.ConfigPath, opts.HomeDir),
 	})
 	if err != nil {
 		return nil, "", "", false, err
 	}
+	mcpCommand := regCommand
+	if !opts.SkipMCP {
+		mcpCommand = mcpRegistrationCommand(binary, registrationStableMCPCommand(opts.ConfigPath))
+	}
 	mcpReg, err := mcpregister.NewRegistrar(mcpregister.RegisterOptions{
-		BinaryPath: regCommand,
+		BinaryPath: mcpCommand,
 		DryRun:     opts.DryRun,
 		Force:      opts.Force,
 		ConfigPath: regConfig,
@@ -769,6 +942,8 @@ func wireAIClients(opts WireAIClientsOptions) (lines []string, claudeProxyHint, 
 			HomeDir:           opts.HomeDir,
 			WindowsClaudeHome: opts.WindowsClaudeHome,
 			WindowsCodexHome:  opts.WindowsCodexHome,
+			// OSH-R-009: the client token form when the node wants it.
+			ClientToken: registrationProxyClientToken(opts.ConfigPath),
 		})
 		if err != nil {
 			return nil, "", "", false, err
@@ -776,6 +951,9 @@ func wireAIClients(opts WireAIClientsOptions) (lines []string, claudeProxyHint, 
 	}
 
 	installed := unionStrings(hookReg.Installed(), mcpReg.Installed())
+	// WINNODE item 5: a registry install signal (a VS Code extension, a
+	// freshly installed binary) counts before the tool's config home exists.
+	installed = unionStrings(installed, installSignalToolsFor(opts.HomeDir))
 	if routeReg != nil {
 		// Surface the cross-OS "<tool>-windows" route targets (a WSL daemon
 		// writing the route into a Windows-side .claude/.codex) the same way
@@ -784,7 +962,7 @@ func wireAIClients(opts WireAIClientsOptions) (lines []string, claudeProxyHint, 
 		// stays nil).
 		installed = unionStrings(installed, routeReg.WindowsRouteTargets())
 	}
-	tools := selectToolsForInit(opts.All, opts.OnlyClaudeCode, opts.OnlyCodex, opts.OnlyCursor, opts.OnlyCline, installed)
+	tools := selectToolsForInit(opts.All, aliasTools([]bool{opts.OnlyClaudeCode, opts.OnlyCodex, opts.OnlyCursor, opts.OnlyCline, opts.OnlyAntigravity}, opts.OnlyTools), installed)
 	if opts.WindowsOnly {
 		tools = windowsTargetsOnly(tools)
 	}
@@ -809,7 +987,7 @@ func wireAIClients(opts WireAIClientsOptions) (lines []string, claudeProxyHint, 
 	// operator's own config says the prompt-submit engine won't
 	// evaluate the hook lane at all. None of these six vendors has a
 	// dedicated `--<tool>` selector flag (only claude-code/codex/
-	// cursor/cline do, none of which is PromptLaneOnly) — they can
+	// cursor/cline/antigravity do, none of which is PromptLaneOnly): they can
 	// only ever enter `tools` via `--all` or the zero-flag
 	// auto-detect fallback (resolveTools), never by the operator
 	// "naming the tool explicitly" — so a disabled prompt lane must
@@ -934,6 +1112,7 @@ func wireAIClients(opts WireAIClientsOptions) (lines []string, claudeProxyHint, 
 			ConfigPath:         opts.ConfigPath,
 			ExtensionID:        opts.BrowserExtensionID,
 			DryRun:             opts.DryRun,
+			Force:              opts.Force,
 			WindowsHomes:       opts.WindowsBrowserHomes,
 			WSLDistro:          opts.WSLDistro,
 			NewWindowsRegistry: opts.NewWindowsRegistry,
@@ -949,7 +1128,7 @@ func wireAIClients(opts WireAIClientsOptions) (lines []string, claudeProxyHint, 
 	// did the work and a redundant "next: export ANTHROPIC_BASE_URL"
 	// would be misleading. Pre-v1.8.2 the env var was print-only,
 	// which is N4 in docs/audits/teams-test-regression-2026-06-03.md.
-	if registeredClaudeCode && !opts.DryRun && opts.SkipProxy {
+	if registeredClaudeCode && !opts.DryRun && opts.SkipProxy && !claudeRoutedTo(opts.HomeDir, port) {
 		var hint strings.Builder
 		printProxyRoutingHint(&hint, port)
 		claudeProxyHint = hint.String()
@@ -976,7 +1155,7 @@ func resolveInitConfigPath(raw string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve --config %q: %w", raw, err)
 	}
-	if _, err := os.Stat(abs); err != nil {
+	if _, err := os.Stat(abs); err != nil { //nolint:gosec // G703: a metadata read of the user's own local path; no privilege boundary is crossed
 		return "", fmt.Errorf("--config %q: %w", abs, err)
 	}
 	return abs, nil
@@ -992,6 +1171,9 @@ func printHookResult(out io.Writer, tool string, res hook.RegistrationResult, dr
 		return
 	}
 	printProbeWarning(out, tool, "hook", res.ProbeWarning)
+	for _, w := range res.Warnings {
+		printProbeWarning(out, tool, "hook", w)
+	}
 	verb := "registered"
 	if dryRun {
 		verb = "would register"
@@ -1003,6 +1185,10 @@ func printHookResult(out io.Writer, tool string, res hook.RegistrationResult, dr
 	if len(res.AlreadySet) > 0 {
 		fmt.Fprintf(out, "%-12s hook already set: %v\n", tool, res.AlreadySet)
 	}
+	if len(res.TrustRecorded) > 0 {
+		fmt.Fprintf(out, "%-12s hook recorded host trust for Observer's own entries: %v\n", tool, res.TrustRecorded)
+	}
+	printProbeWarning(out, tool, "hook", res.TrustNote)
 }
 
 func printMCPResult(out io.Writer, tool string, res mcpregister.RegistrationResult, dryRun bool) {
@@ -1065,12 +1251,24 @@ func printProbeWarning(out io.Writer, tool, kind, warning string) {
 // to api.anthropic.com directly and the only token-count source left is
 // the unreliable JSONL stream.
 func printProxyRoutingHint(out io.Writer, port int) {
+	printProxyRoutingHintFor(out, port, initHostGOOS)
+}
+
+// printProxyRoutingHintFor is printProxyRoutingHint for the shell family of
+// goos: a Windows host gets the PowerShell spelling and the %USERPROFILE%
+// settings path, never a bash export line (WINNODE2 16c).
+func printProxyRoutingHintFor(out io.Writer, port int, goos string) {
 	url := fmt.Sprintf("http://127.0.0.1:%d", port)
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "next: route Claude Code through the observer proxy for accurate token capture.")
 	fmt.Fprintln(out, "  start the proxy:    observer proxy start")
-	fmt.Fprintf(out, "  point Claude Code:  export ANTHROPIC_BASE_URL=%s\n", url)
-	fmt.Fprintln(out, "  or persist via ~/.claude/settings.json:")
+	if goos == "windows" {
+		fmt.Fprintf(out, "  point Claude Code:  $env:ANTHROPIC_BASE_URL = %q   (PowerShell, this session)\n", url)
+		fmt.Fprintf(out, "  or persist via %s:\n", `%USERPROFILE%\.claude\settings.json`)
+	} else {
+		fmt.Fprintf(out, "  point Claude Code:  export ANTHROPIC_BASE_URL=%s\n", url)
+		fmt.Fprintln(out, "  or persist via ~/.claude/settings.json:")
+	}
 	fmt.Fprintf(out, "      \"env\": { \"ANTHROPIC_BASE_URL\": %q }\n", url)
 	fmt.Fprintln(out, "  see docs/proxy-routing.md for verification + per-shell setup.")
 }
@@ -1274,6 +1472,9 @@ type browserExtStepParams struct {
 	ExtensionID string
 	// DryRun previews without writing (host files AND manifests).
 	DryRun bool
+	// Force replaces a native-messaging manifest that is not Observer's
+	// (browserhost.Options.Force, audit row 8).
+	Force bool
 	// WindowsHomes are the cross-mounted Windows user-profile dirs (e.g.
 	// "/mnt/c/Users/<u>") to offer the registry-based Windows browser path
 	// for. INJECTED by the caller (from crossmount) — never read from ambient
@@ -1319,6 +1520,7 @@ func runBrowserExtensionStep(buf *strings.Builder, p browserExtStepParams) error
 	reg, err := browserhost.NewRegistrar(browserhost.Options{
 		Home:         p.HomeDir,
 		DryRun:       p.DryRun,
+		Force:        p.Force,
 		HostPath:     launcherPath,
 		ExtensionIDs: splitExtensionIDs(p.ExtensionID),
 	})
@@ -1527,12 +1729,7 @@ func resolveWindowsBrowserTargets(buf *strings.Builder, p browserExtStepParams, 
 // the step stays testable without touching a real /mnt/c profile or registry.
 func detectWindowsBrowserHomes() (homes []string, distro string) {
 	distro = strings.TrimSpace(os.Getenv("WSL_DISTRO_NAME"))
-	for _, h := range crossmount.AllHomes() {
-		if h.OS == crossmount.OSWindows {
-			homes = append(homes, h.Path)
-		}
-	}
-	return homes, distro
+	return windowsBridgeBrowserHomes(initHostGOOS, crossmount.AllHomes()), distro
 }
 
 // productionWindowsBrowserInputs binds the ambient Windows/WSL state to the
@@ -1626,6 +1823,9 @@ type browserOnlyOptions struct {
 	DryRun      bool
 	// Interactive prompts for a missing extension id (a human on both ends).
 	Interactive bool
+	// Force replaces a native-messaging manifest that is not Observer's
+	// (`observer init --force`), keeping a .bak.
+	Force bool
 	// HomeDir overrides home resolution (tests). "" = real home.
 	HomeDir string
 	// Windows browser injection (FIX 1) — the cobra entry point supplies
@@ -1661,6 +1861,7 @@ func runBrowserOnlyInit(out io.Writer, in io.Reader, opts browserOnlyOptions) er
 		ConfigPath:         opts.ConfigPath,
 		ExtensionID:        extID,
 		DryRun:             opts.DryRun,
+		Force:              opts.Force,
 		WindowsHomes:       opts.WindowsBrowserHomes,
 		WSLDistro:          opts.WSLDistro,
 		NewWindowsRegistry: opts.NewWindowsRegistry,
@@ -1783,6 +1984,23 @@ var probeRouteWriterBindings = map[string]func(*proxyroute.Registrar) func() pro
 	"kimi-code": func(r *proxyroute.Registrar) func() proxyroute.RegistrationResult { return r.RegisterKimiCode },
 	"crush":     func(r *proxyroute.Registrar) func() proxyroute.RegistrationResult { return r.RegisterCrush },
 	"qwen-code": func(r *proxyroute.Registrar) func() proxyroute.RegistrationResult { return r.RegisterQwenCode },
+	// The Cline extension's globalState.json route (IDE-8, D9). Inert until
+	// the cline registry row carries the matching ProxyProbe: the eligible
+	// set derives from the registry (probeRouteTools).
+	"cline": func(r *proxyroute.Registrar) func() proxyroute.RegistrationResult { return r.RegisterCline },
+	// The lane w6-routes member writers (proxyroute memberroute.go). Each
+	// is built switched off behind a live check (DEC-12): the writer
+	// refuses with "not written: built, waiting on live check LC n".
+	"open-interpreter": memberRouteBinding("open-interpreter"),
+	"stakpak":          memberRouteBinding("stakpak"),
+	"poolside":         memberRouteBinding("poolside"),
+}
+
+// memberRouteBinding binds tool to its member-route writer.
+func memberRouteBinding(tool string) func(*proxyroute.Registrar) func() proxyroute.RegistrationResult {
+	return func(r *proxyroute.Registrar) func() proxyroute.RegistrationResult {
+		return func() proxyroute.RegistrationResult { return r.RegisterMemberRoute(tool) }
+	}
 }
 
 // probeRouteWriter binds a probe-route tool to its proxyroute writer, reading
@@ -1855,22 +2073,93 @@ func noToolsLine(verb string, all bool, flags string) string {
 }
 
 func selectTools(all, cc, codex, cursor, cline bool, installed []string) []string {
-	return resolveTools(all, cc, codex, cursor, cline, installed, false)
+	return resolveTools(all, aliasTools([]bool{cc, codex, cursor, cline}, nil), installed, false)
 }
 
 // selectToolsForInit is selectTools plus the init-only cross-OS union: an
-// explicit --claude-code / --codex / --cursor / --cline ALSO selects its
-// detected, wireable "<base>-windows" virtual target so `observer init` writes
-// the Windows-side home too. Init is the ONLY place this widening is safe: init
-// writes are additive + consented, whereas widening it in uninstall would be a
-// destructive scope change (F3).
-func selectToolsForInit(all, cc, codex, cursor, cline bool, installed []string) []string {
-	return resolveTools(all, cc, codex, cursor, cline, installed, true)
+// explicit selector (--claude-code / --codex / --cursor / --cline, or
+// --tool <id>) ALSO selects its detected, wireable "<base>-windows" virtual
+// target so `observer init` writes the Windows-side home too. Init is the
+// ONLY place this widening is safe: init writes are additive + consented,
+// whereas widening it in uninstall would be a destructive scope change (F3).
+// explicit is the selected tool ids (aliasTools folds the classic flags in).
+func selectToolsForInit(all bool, explicit, installed []string) []string {
+	return resolveTools(all, explicit, installed, true)
 }
 
-// resolveTools is the shared core. crossOSWindows gates the init-only union of
-// an explicit base selector with its "<base>-windows" cross-OS target.
-func resolveTools(all, cc, codex, cursor, cline bool, installed []string, crossOSWindows bool) []string {
+// initToolAlias is one per-product `observer init` flag and the registry id
+// it is an alias for (`--tool <id>`).
+type initToolAlias struct {
+	flag, tool string
+}
+
+// initToolAliases are the per-product `observer init` flags, each an alias
+// for `--tool <id>`: the classic four carry their own id, --antigravity the
+// antigravity-cli id (the one Antigravity id with an init-writable
+// capability: the agy hooks file, which the Antigravity App and IDE also run;
+// its cross-OS "-windows" target follows through selectToolsForInit like any
+// base). The table is the only place a flag name meets a tool id; selection
+// itself is id-driven.
+var initToolAliases = []initToolAlias{
+	{"claude-code", "claude-code"},
+	{"codex", "codex"},
+	{"cursor", "cursor"},
+	{"cline", "cline"},
+	{"antigravity", "antigravity-cli"},
+}
+
+// aliasTools folds the per-product flags (on, in initToolAliases order; a
+// shorter slice leaves the rest off) and the --tool ids into one explicit
+// selection.
+func aliasTools(on []bool, tools []string) []string {
+	var out []string
+	for i, a := range initToolAliases {
+		if i < len(on) && on[i] {
+			out = append(out, a.tool)
+		}
+	}
+	return unionStrings(out, tools)
+}
+
+// initSelectableTools lists every registry tool `observer init --tool` can
+// select: the ones with an init-writable capability (autoInitSupported),
+// sorted. Registry-driven (CLAUDE.md #3): a new adapter row with a hook,
+// MCP or persisted-route capability becomes selectable with no init change.
+func initSelectableTools() []string {
+	var out []string
+	for _, t := range integration.Tools() {
+		if autoInitSupported(t) {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// resolveInitToolFlag normalizes the --tool values (trimmed, lower-cased,
+// deduplicated, empties dropped) and refuses an id that names no
+// init-wireable registry tool, listing the ones that do. A cross-OS
+// "<id>-windows" target is accepted when the registry wires it.
+func resolveInitToolFlag(raw []string) ([]string, error) {
+	var out []string
+	seen := map[string]bool{}
+	for _, v := range raw {
+		id := strings.ToLower(strings.TrimSpace(v))
+		if id == "" || seen[id] {
+			continue
+		}
+		if !autoInitSupported(id) {
+			return nil, fmt.Errorf("--tool %q: not a tool `observer init` can wire (no hook, MCP or proxy-route capability in the integration registry); choose from: %s", id, strings.Join(initSelectableTools(), ", "))
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out, nil
+}
+
+// resolveTools is the shared core. explicit is the requested tool ids;
+// crossOSWindows gates the init-only union of an explicit base selector
+// with its "<base>-windows" cross-OS target.
+func resolveTools(all bool, explicit, installed []string, crossOSWindows bool) []string {
 	installedSet := map[string]bool{}
 	for _, t := range installed {
 		installedSet[t] = true
@@ -1892,7 +2181,20 @@ func resolveTools(all, cc, codex, cursor, cline bool, installed []string, crossO
 	// `observer uninstall --codex` keeps base-only scope.
 	selectBase := func(base string) {
 		requested[base] = true
-		if !crossOSWindows {
+		// An other-home target follows its base tool in init and uninstall
+		// alike: an Xcode agent home (FU-145) or a WSL distro home reached
+		// from Windows (FU-197) is a second home of the same tool on the
+		// same machine, listed only where it exists (hook.Registry.Installed:
+		// the folder Xcode created on macOS, a running distro's home
+		// crossmount finds from Windows), written only while switched on
+		// (hookSupported: today cursor-wsl of the twins), and its removal
+		// touches only Observer's entries.
+		for _, x := range hook.HomeTargetsFor(base) {
+			if installedSet[x] && hookSupported(x) {
+				requested[x] = true
+			}
+		}
+		if !crossOSWindows || strings.HasSuffix(base, "-windows") {
 			return
 		}
 		win := base + "-windows"
@@ -1900,17 +2202,8 @@ func resolveTools(all, cc, codex, cursor, cline bool, installed []string, crossO
 			requested[win] = true
 		}
 	}
-	if cc {
-		selectBase("claude-code")
-	}
-	if codex {
-		selectBase("codex")
-	}
-	if cursor {
-		selectBase("cursor")
-	}
-	if cline {
-		selectBase("cline")
+	for _, t := range explicit {
+		selectBase(t)
 	}
 	if len(requested) == 0 && !all {
 		for _, t := range installed {

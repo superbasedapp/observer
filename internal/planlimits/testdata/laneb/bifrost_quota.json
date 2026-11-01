@@ -1,0 +1,8 @@
+{"virtual_key_name":"fixture-team","is_active":true,
+ "budgets":[{"id":"month","max_limit":125,"current_usage":42.17,"reset_duration":"1M","last_reset":"2025-10-01T00:00:00Z"},
+            {"id":"hour","max_limit":10,"current_usage":2.5,"reset_duration":"1h","last_reset":"2025-10-09T08:00:00Z"},
+            {"id":"open","max_limit":0,"current_usage":5}],
+ "rate_limit":{"id":"merged","token_max_limit":9,"token_current_usage":9},
+ "rate_limits":[{"id":"rl_1","token_max_limit":1000000,"token_current_usage":345678,"token_reset_duration":"1d","request_max_limit":5000,"request_current_usage":120}],
+ "provider_configs":[{"provider":"openai","budgets":[{"id":"p1","max_limit":50,"current_usage":10,"reset_duration":"1w"}]}],
+ "model_configs":[]}

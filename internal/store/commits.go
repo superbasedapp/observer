@@ -90,6 +90,17 @@ type ScanState struct {
 	// stored value (a failed or identity-less scan never forgets the last
 	// known identity).
 	LocalAuthorHash string
+
+	// Agent migration 164 (2026-10-15): the failure kind, the last
+	// completed scan, the commit whose whole history is stored, and the
+	// resume cursor of a full-history walk still in progress. See
+	// internal/commitscan.State for the semantics; this is its mirror.
+	LastErrorKind  string
+	LastSuccessAt  time.Time
+	LastHeadSHA    string
+	HistoryPending bool
+	BackfillRev    string
+	BackfillSkip   int
 }
 
 // ProjectRoot is one active project's identity + filesystem root, the
@@ -375,14 +386,17 @@ func (s *Store) LoadCommitFiles(ctx context.Context, projectID int64, since, unt
 // this project has never been scanned.
 func (s *Store) CommitScanState(ctx context.Context, projectID int64) (ScanState, bool, error) {
 	var (
-		st                          ScanState
-		lastCommittedAt, lastScanAt string
+		st                                         ScanState
+		lastCommittedAt, lastScanAt, lastSuccessAt string
+		pending                                    int
 	)
 	st.ProjectID = projectID
 	err := s.db.QueryRowContext(ctx,
-		`SELECT last_sha, last_committed_at, last_scan_at, last_error, consecutive_failures, local_author_hash
+		`SELECT last_sha, last_committed_at, last_scan_at, last_error, consecutive_failures, local_author_hash,
+		        last_error_kind, last_success_at, last_head_sha, history_pending, backfill_rev, backfill_skip
 		   FROM project_commit_scan WHERE project_id = ?`, projectID,
-	).Scan(&st.LastSHA, &lastCommittedAt, &lastScanAt, &st.LastError, &st.ConsecutiveFailures, &st.LocalAuthorHash)
+	).Scan(&st.LastSHA, &lastCommittedAt, &lastScanAt, &st.LastError, &st.ConsecutiveFailures, &st.LocalAuthorHash,
+		&st.LastErrorKind, &lastSuccessAt, &st.LastHeadSHA, &pending, &st.BackfillRev, &st.BackfillSkip)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ScanState{}, false, nil
 	}
@@ -391,17 +405,38 @@ func (s *Store) CommitScanState(ctx context.Context, projectID int64) (ScanState
 	}
 	st.LastCommittedAt = parseCommitTime(lastCommittedAt)
 	st.LastScanAt = parseCommitTime(lastScanAt)
+	st.LastSuccessAt = parseCommitTime(lastSuccessAt)
+	st.HistoryPending = pending != 0
 	return st, true, nil
+}
+
+// optionalTimestamp formats t like timestamp, except that a ZERO time is
+// stored as "" (unknown) rather than as the current time. The scan state's
+// watermark and last-success columns need this: storing "now" for a zero
+// watermark made a project whose first scan failed (or found nothing) look
+// as if its history had been read up to that moment, so a later
+// successful scan skipped everything older (fixed 2026-10-15; migration
+// 164 clears the rows the old behaviour wrote).
+func optionalTimestamp(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return timestamp(t)
 }
 
 // SetCommitScanState upserts one project's scanner watermark. Called after
 // every scan attempt — success or failure — so the health surfaces (doctor,
 // the page's capture banner) always reflect the last attempt.
 func (s *Store) SetCommitScanState(ctx context.Context, st ScanState) error {
+	pending := 0
+	if st.HistoryPending {
+		pending = 1
+	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO project_commit_scan
-		  (project_id, last_sha, last_committed_at, last_scan_at, last_error, consecutive_failures, local_author_hash)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		  (project_id, last_sha, last_committed_at, last_scan_at, last_error, consecutive_failures, local_author_hash,
+		   last_error_kind, last_success_at, last_head_sha, history_pending, backfill_rev, backfill_skip)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(project_id) DO UPDATE SET
 			last_sha              = excluded.last_sha,
 			last_committed_at     = excluded.last_committed_at,
@@ -410,9 +445,16 @@ func (s *Store) SetCommitScanState(ctx context.Context, st ScanState) error {
 			consecutive_failures  = excluded.consecutive_failures,
 			local_author_hash     = CASE WHEN excluded.local_author_hash <> ''
 			                             THEN excluded.local_author_hash
-			                             ELSE project_commit_scan.local_author_hash END`,
-		st.ProjectID, st.LastSHA, timestamp(st.LastCommittedAt), timestamp(st.LastScanAt),
-		st.LastError, st.ConsecutiveFailures, st.LocalAuthorHash)
+			                             ELSE project_commit_scan.local_author_hash END,
+			last_error_kind       = excluded.last_error_kind,
+			last_success_at       = excluded.last_success_at,
+			last_head_sha         = excluded.last_head_sha,
+			history_pending       = excluded.history_pending,
+			backfill_rev          = excluded.backfill_rev,
+			backfill_skip         = excluded.backfill_skip`,
+		st.ProjectID, st.LastSHA, optionalTimestamp(st.LastCommittedAt), timestamp(st.LastScanAt),
+		st.LastError, st.ConsecutiveFailures, st.LocalAuthorHash,
+		st.LastErrorKind, optionalTimestamp(st.LastSuccessAt), st.LastHeadSHA, pending, st.BackfillRev, st.BackfillSkip)
 	if err != nil {
 		return fmt.Errorf("store.SetCommitScanState: %w", err)
 	}
@@ -465,31 +507,100 @@ func (s *Store) ActiveProjectRoots(ctx context.Context, sinceDays int) ([]Projec
 // a deleted or unreadable root — and no scan has succeeded since), or
 // "ok" (the last scan completed).
 func (s *Store) CommitCaptureState(ctx context.Context, projectID int64) (string, error) {
-	st, ok, err := s.CommitScanState(ctx, projectID)
+	h, err := s.CommitScanHealth(ctx, projectID)
 	if err != nil {
 		return "", err
 	}
-	if !ok {
-		return "never_scanned", nil
+	return h.State, nil
+}
+
+// CommitScanHealth is one project's commit-capture health in the shape
+// the Projects page renders: the capture State (the closed vocabulary
+// below), the failure Kind and git's own Detail when the last attempt
+// failed, when the last attempt and the last success were, and whether a
+// full-history walk is still catching up.
+type CommitScanHealth struct {
+	State          string
+	Kind           string
+	Detail         string
+	LastScanAt     time.Time
+	LastSuccessAt  time.Time
+	Failures       int
+	HistoryPending bool
+}
+
+// CommitScanHealth reads one project's capture health. A project the
+// scanner has never touched is State "never_scanned".
+func (s *Store) CommitScanHealth(ctx context.Context, projectID int64) (CommitScanHealth, error) {
+	st, ok, err := s.CommitScanState(ctx, projectID)
+	if err != nil {
+		return CommitScanHealth{}, err
 	}
-	return commitCaptureStateFor(st.LastError, st.ConsecutiveFailures), nil
+	if !ok {
+		return CommitScanHealth{State: "never_scanned"}, nil
+	}
+	h := CommitScanHealth{
+		State:          commitCaptureStateFor(st.LastErrorKind, st.LastError, st.ConsecutiveFailures, st.HistoryPending),
+		LastScanAt:     st.LastScanAt,
+		LastSuccessAt:  st.LastSuccessAt,
+		Failures:       st.ConsecutiveFailures,
+		HistoryPending: st.HistoryPending,
+	}
+	if st.LastError != "" && st.ConsecutiveFailures > 0 {
+		h.Kind, h.Detail = st.LastErrorKind, st.LastError
+		if h.Kind == "" {
+			h.Kind = "other"
+		}
+	}
+	return h, nil
+}
+
+// captureStateRule is one row of commitCaptureStates: the first row whose
+// match accepts the scan row decides the capture state.
+type captureStateRule struct {
+	state string
+	match func(kind, lastError string, failing, pending bool) bool
+}
+
+// commitCaptureStates is the ordered table behind commitCaptureStateFor
+// (2026-10-15). The states are a closed vocabulary shared with
+// web/src/lib/vocabTones.ts COMMIT_CAPTURE:
+//
+//	no_git       git is not installed (or not on PATH)
+//	no_folder    the project has no folder (a "[cursor]"-style placeholder)
+//	root_missing the folder was deleted, moved, or is not mounted
+//	not_repo     the folder is not a git repository
+//	error        the last scan failed for another named reason (Kind)
+//	catching_up  the full history is still being read; recent commits are in
+//	ok           capture is live
+//
+// Before this table every failure, including "not a git repository" and a
+// deleted folder, read as one generic "error".
+var commitCaptureStates = []captureStateRule{
+	{"no_git", func(kind, lastError string, _, _ bool) bool {
+		return kind == "git_missing" || strings.Contains(lastError, gitNotFoundMarker)
+	}},
+	{"no_folder", func(kind, _ string, failing, _ bool) bool { return failing && kind == "no_folder" }},
+	{"root_missing", func(kind, _ string, failing, _ bool) bool { return failing && kind == "root_missing" }},
+	{"not_repo", func(kind, _ string, failing, _ bool) bool { return failing && kind == "not_repo" }},
+	{"error", func(_, _ string, failing, _ bool) bool { return failing }},
+	{"catching_up", func(_, _ string, _, pending bool) bool { return pending }},
+	{"ok", func(string, string, bool, bool) bool { return true }},
 }
 
 // commitCaptureStateFor is the ONE derivation of a scanned project's
-// capture state from its persisted scan row, shared by
-// CommitCaptureState (detail) and LoadProjectListExtras (list). A
-// failing scanner is reported as "error", never hidden behind "ok"
-// (F4 of the 2026-09-22 arc review); the scanner clears last_error and
-// the failure counter on the next successful scan.
-func commitCaptureStateFor(lastError string, consecutiveFailures int) string {
-	switch {
-	case strings.Contains(lastError, gitNotFoundMarker):
-		return "no_git"
-	case lastError != "" && consecutiveFailures > 0:
-		return "error"
-	default:
-		return "ok"
+// capture state from its persisted scan row, shared by CommitScanHealth
+// (detail) and LoadProjectListExtras (list). A failing scanner is never
+// hidden behind "ok" (F4 of the 2026-09-22 arc review); the scanner clears
+// last_error and the failure counter on the next successful scan.
+func commitCaptureStateFor(kind, lastError string, consecutiveFailures int, historyPending bool) string {
+	failing := lastError != "" && consecutiveFailures > 0
+	for _, r := range commitCaptureStates {
+		if r.match(kind, lastError, failing, historyPending) {
+			return r.state
+		}
 	}
+	return "ok"
 }
 
 // parseCommitTime parses a stored RFC3339Nano stamp; an empty or
@@ -533,6 +644,27 @@ func (s *Store) ProjectsWithCommitsSince(ctx context.Context, since time.Time) (
 	return out, nil
 }
 
+// SetCommitPatchFingerprint records one commit's patch fingerprint and its
+// state (agent migration 165, commit-pr-merge-tracking plan 12.3). fp is
+// stored only with state "ok"; every other state clears it. The landing scan
+// (internal/landingscan) computes the value; this file stays the one writer
+// of project_commits.
+func (s *Store) SetCommitPatchFingerprint(ctx context.Context, commitID int64, fp, state string) error {
+	var fpVal any
+	if state == "ok" && fp != "" {
+		fpVal = fp
+	}
+	if state == "" {
+		state = "pending"
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE project_commits SET patch_fp = ?, patch_fp_state = ? WHERE id = ?`,
+		fpVal, state, commitID); err != nil {
+		return fmt.Errorf("store.SetCommitPatchFingerprint: %w", err)
+	}
+	return nil
+}
+
 // probeProjectCommits is the org-push snapshot-gate fingerprint over the
 // commit ledger (orgsnapgate.go): a new commit moves MAX(id), and a
 // reachability flip (MarkCommitsReachability, which changes no id) moves the
@@ -549,4 +681,64 @@ func (s *Store) probeProjectCommits(ctx context.Context) (string, error) {
 		                           FROM (SELECT project_id, local_author_hash FROM project_commit_scan
 		                                  WHERE local_author_hash <> '' ORDER BY project_id)), '')
 		   FROM project_commits`)
+}
+
+// commitSwapMark suffixes a sha while a clashing row steps aside during
+// moveProjectCommitsTx; no real sha ends with it.
+const commitSwapMark = "#shr-worktree2-swap"
+
+// moveProjectCommitsTx moves project fromID's project_commits rows (and so,
+// by commit id, their project_commit_files) onto project toID inside tx
+// (MoveProjectRows, lane shr-worktree2, PT-39). project_commits is unique on
+// (project_id, sha); when both projects hold one commit, the newer row (by
+// scanned_at) ends on toID and the older stays on fromID: nothing is
+// deleted. project_commit_scan, the scanner's cursor for a root, stays on
+// fromID. toID 0 counts what would move, changing nothing.
+func moveProjectCommitsTx(ctx context.Context, tx *sql.Tx, fromID, toID int64) (TableMove, error) {
+	m := TableMove{Table: "project_commits"}
+	if toID == 0 {
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM project_commits WHERE project_id = ?`, fromID).Scan(&m.Moved); err != nil {
+			return m, fmt.Errorf("store.moveProjectCommits: count: %w", err)
+		}
+		return m, nil
+	}
+	var marked int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM project_commits WHERE project_id IN (?, ?) AND substr(sha, -length(?)) = ?`,
+		fromID, toID, commitSwapMark, commitSwapMark).Scan(&marked); err != nil {
+		return m, fmt.Errorf("store.moveProjectCommits: %w", err)
+	}
+	if marked > 0 {
+		return m, fmt.Errorf("store.moveProjectCommits: %d row(s) already carry the swap mark", marked)
+	}
+	res, err := tx.ExecContext(ctx, `
+		UPDATE project_commits SET project_id = ?, sha = sha || ?
+		 WHERE project_id = ? AND EXISTS (
+		   SELECT 1 FROM project_commits s
+		    WHERE s.project_id = ? AND s.sha = project_commits.sha
+		      AND julianday(s.scanned_at) > julianday(project_commits.scanned_at))`,
+		fromID, commitSwapMark, toID, fromID)
+	if err != nil {
+		return m, fmt.Errorf("store.moveProjectCommits: step aside: %w", err)
+	}
+	m.Swapped, _ = res.RowsAffected()
+	res, err = tx.ExecContext(ctx, `
+		UPDATE project_commits SET project_id = ?
+		 WHERE project_id = ? AND substr(sha, -length(?)) != ?
+		   AND NOT EXISTS (SELECT 1 FROM project_commits t WHERE t.project_id = ? AND t.sha = project_commits.sha)`,
+		toID, fromID, commitSwapMark, commitSwapMark, toID)
+	if err != nil {
+		return m, fmt.Errorf("store.moveProjectCommits: move: %w", err)
+	}
+	m.Moved, _ = res.RowsAffected()
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE project_commits SET sha = substr(sha, 1, length(sha) - length(?))
+		 WHERE project_id = ? AND substr(sha, -length(?)) = ?`,
+		commitSwapMark, fromID, commitSwapMark, commitSwapMark); err != nil {
+		return m, fmt.Errorf("store.moveProjectCommits: restore: %w", err)
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM project_commits WHERE project_id = ?`, fromID).Scan(&m.KeptOnOld); err != nil {
+		return m, fmt.Errorf("store.moveProjectCommits: count kept: %w", err)
+	}
+	return m, nil
 }

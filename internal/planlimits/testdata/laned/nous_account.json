@@ -1,0 +1,1 @@
+{"user":{"email":"fixture@example.test"},"organisation":{"name":"Fixture Org"},"subscription":{"plan":"Ultra","monthly_credits":220,"credits_remaining":55,"rollover_credits":0,"current_period_end":"2025-10-12T04:29:00.000Z"},"purchased_credits_remaining":19.25,"paid_service_access":{"has_active_subscription":true,"total_usable_credits":74.25}}

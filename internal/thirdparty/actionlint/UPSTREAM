@@ -1,0 +1,171 @@
+# UPSTREAM: provenance of this in-module copy of actionlint (lane SEC-G5).
+#
+# This package is the MIT-licensed github.com/rhysd/actionlint release named
+# below (LICENSE.txt, unchanged), its non-test Go files only, imported by
+# internal/secscan/actionlint. It lives inside this module, with no replace
+# directive and no nested go.mod, so `go mod download` from go.mod and go.sum
+# alone and `go install ...@latest` keep working.
+#
+# Why a copy: the release is written against go.yaml.in/yaml/v4 v4.0.0-rc.3,
+# while this module requires v4.0.0-rc.4 (through github.com/google/osv-scalibr).
+# rc.4 replaced the exported decode error type (TypeError became LoadErrors) and
+# stopped exporting ParserError, so the release does not compile against it. Two
+# files are patched, only in their yaml error handlers; the diff is at the end.
+#
+# Lines: "module", "version", "module-sum" (the go.sum h1 hash of the release
+# zip the hashes were taken from), then one "file" line per file in this
+# directory: name, the sha256 of the upstream file, and "same" or "patched"
+# with the sha256 of the patched file. internal/secscan/actionlint
+# (TestThirdPartyManifest) checks every line against the files here.
+#
+# To move to a new release: copy its non-test Go files and LICENSE.txt here,
+# re-apply the patch if still needed, regenerate this file (hashes and diff),
+# and bump PinnedVersion in internal/secscan/actionlint.
+module github.com/rhysd/actionlint
+version v1.7.12
+module-sum h1:vQ4GeJN86C0QH+gTUQcs8McmK62OLT3kmakPMtEWYnY=
+file LICENSE.txt 03a26b06d224380a02bf100e05fff3b2dfc71b14d4e2fa685ec9963a87563c22 same
+file action_metadata.go 9ba2488dc83b105cbac46aaf1dc42db5238597ab6ebbdd0ad66009c58f4cb072 patched e5fa99d3622d902eb4e532873ef4aff3770b513384be49ad445b06bc656ce73d
+file all_webhooks.go 05768c4d63054d223d781418405e2c510df504302408e86caebc6374c44d8d29 same
+file ast.go 033e60ee04ec30671e32b0d71ba08f454dad771c55844b6f5b6cc027477dd3fc same
+file availability.go 4b271b8c43eebef9b4ed9ed3c87e7541a3f2d7e51b3f5095c120dac7599deda8 same
+file command.go f3730d6d3651e79ca2b5f335a1981a76dc91b8ab8128a15e43e76a28da99033b same
+file config.go 9f4e859a236b6abd41e0616184212061a3f2aa96907fc43b52c3d1025ef23af2 same
+file doc.go 206cdb0f13db3bcadd5f5908d1b1638cad02ed93c827232eec50ca5e009002f2 same
+file error.go 406c60f15c50766be2dd68b8a139e9500319f1c7011a49a3f0aa79915ac8e0a5 same
+file expr.go 39fa781952753a55bd78d01cf1688b15386129287264c47bdfc884068b0f7482 same
+file expr_ast.go 74af456937b180adef86901f01e460d5bd26ec6750b51f2321efa1dd54bbb4b7 same
+file expr_insecure.go e31d624b2bb872002aa0e9135b34684e8232cea0128e184013ca446e8e359a61 same
+file expr_lexer.go 27d5a3c233cd943d750b98f581e6634083ffdb9b99ecc379d1569a26e62b86f5 same
+file expr_parser.go ba5e9fc969c6e35b1228777044d93b84f32c12dd41bf81f7c84419f619009d72 same
+file expr_sema.go 3d6837af0b8381b464240912ee072917397b52dd5dd4fd7dd23dbc9855f9a3a3 same
+file expr_type.go 8045f33765717f716f77a756ef6318f6c55e8972c602cec00f1363a3e9b7828b same
+file glob.go 4e35c164549563209ba472c0887271f479c641c051bb9bcf0e590f7db7acbb5f same
+file linter.go 476e020ae0b04a230d91d83e4b60af4ffc6734427fdf3ec97bd437cfc2bbd453 same
+file parse.go 70682a593978c1404599950cb4e0919d1c4a4a01b0b34fa929c638420fe8da41 patched 4b216835bc794a0b464ee9022a0230c42462c2501ecf58072de6a638dd765a02
+file pass.go 1dcf3b598d90a87f0e92b05a63479324c9d280773f9b38aaff17bbd2edf9675b same
+file popular_actions.go 2e14efa75675b06e9c57892743d58a30eef6edd66bc983103f34426221381183 same
+file process.go 93431096768939a34aad0b5a7656ff39afc02d6944ce5f2d398e0e52c043ac72 same
+file project.go 9d5a5ebaaebb24728549dd7a18e6fe0956b06b3a73d1e3c23b4ebcf1545e352e same
+file quotes.go e39f11060790491309cce3e07513ac515593b5e61e4b4d1f584a1289b387674f same
+file reusable_workflow.go 2a0b112515764519ab6316b6f82776c09f424dbfdb78ef186a45ac7f4e76246b same
+file rule.go c39ce1d6bfde999ce8d05d32c887a779b8a81eb306c5f0a87a078a1f82620042 same
+file rule_action.go 75d032c84f1cf3c7f69d0714a94631a9c9c37a3cc7d76588f48ed2670b5aa5e8 same
+file rule_credentials.go 3c899cc50df722b4204038aca344a32998f62f5a10e7a0d45a606c9f03c5da8e same
+file rule_deprecated_commands.go 0d201256d6860b3a2a0a4fddd00a545b24f9ac94a75ecc013438f73598df1f66 same
+file rule_env_var.go 84059806c472e441f093ffe259fd835ef04c9c57887d8ed84c87d26d9f7f31ee same
+file rule_events.go 927475b0a76b6ff29b3303873c1f78a2fe3fb02b74b35746cb6837e6990afcde same
+file rule_expression.go 9001d23571dce02b1f0c68f3ac889d39538cd4f0f4a8596982c453d406eb7d08 same
+file rule_glob.go 79337c6e77863f0d572834fcca4cab0cdbf3eeaee2c62ee65d47dd06db323459 same
+file rule_id.go 019ce7ac7f12c9d665f241c8765781b1bd45d3d1bc0adf950ae4328604cbd3b2 same
+file rule_if_cond.go 95ecd5ab67a77f99588de4fdaea4c4e3968b237ae55680016587eb4b5e3b5c7a same
+file rule_job_needs.go 16e013e8bc709c494d7a37c6b9affe9b2f3a23bddbdfc4bf0f159bc4d02fa328 same
+file rule_matrix.go c078d8c53bc94fc3d1acd31d9587cf391f91a26c0475fda9bdf43e2c4ea0751c same
+file rule_permissions.go 5e4f177ffed89e28fd5b769698f2d09f7b726bc3e720ba573f061709aeb32930 same
+file rule_pyflakes.go 4b6927be530722ed48cd16417b421ed41614683af27f4d98bb5916e4b2b925cb same
+file rule_runner_label.go 528f7339b3247936f4f5a1b9f98b5278908b51562653cf8d31ca2df69275314d same
+file rule_shell_name.go f2bc7e0b731e57eb3c9f796569bd11c36e8781efffdb612080867757fd330f8e same
+file rule_shellcheck.go 824f0f96a1fe8bd973cbe3d1d8b8f2c10f3130b47b887c6c93533f6c9330e8c0 same
+file rule_workflow_call.go 4a01d179906d3522ca8997f3cf475eda7d59cc1acd13851d190579b1d81dd296 same
+
+# The patch, as `diff -u upstream patched`:
+--- upstream/action_metadata.go
++++ patched/action_metadata.go
+@@ -1,6 +1,7 @@
+ package actionlint
+ 
+ import (
++	"errors"
+ 	"fmt"
+ 	"io"
+ 	"os"
+@@ -268,11 +269,13 @@
+ 
+ 		// Unwrap type error when a single type error occurs to simplify the error message
+ 		var m string
+-		if te, ok := err.(*yaml.TypeError); ok {
+-			if len(te.Errors) == 1 {
+-				m = te.Errors[0].Error()
++		// Patched for go.yaml.in/yaml/v4 v4.0.0-rc.4 (see PATCHES.md).
++		var le *yaml.LoadErrors
++		if errors.As(err, &le) {
++			if len(le.Errors) == 1 {
++				m = le.Errors[0].Error()
+ 			} else {
+-				m = strings.ReplaceAll(te.Error(), "\n", "")
++				m = strings.ReplaceAll(le.Error(), "\n", "")
+ 			}
+ 		} else {
+ 			m = err.Error()
+--- upstream/parse.go
++++ patched/parse.go
+@@ -1,9 +1,11 @@
+ package actionlint
+ 
+ import (
++	"errors"
+ 	"fmt"
+ 	"iter"
+ 	"math"
++	"regexp"
+ 	"slices"
+ 	"strconv"
+ 	"strings"
+@@ -1548,9 +1550,14 @@
+ // }
+ 
+ func handleYAMLUnmarshalError(err error) []*Error {
+-	if te, ok := err.(*yaml.TypeError); ok {
+-		errs := make([]*Error, 0, len(te.Errors))
+-		for _, e := range te.Errors {
++	// Patched by SuperBased Observer for go.yaml.in/yaml/v4 v4.0.0-rc.4
++	// (see PATCHES.md): decode errors arrive as *yaml.LoadErrors, and the
++	// parser error type is no longer exported, so its line and column are
++	// read from the error text.
++	var le *yaml.LoadErrors
++	if errors.As(err, &le) {
++		errs := make([]*Error, 0, len(le.Errors))
++		for _, e := range le.Errors {
+ 			errs = append(errs, &Error{
+ 				Message: fmt.Sprintf("could not parse as YAML: %s", e.Err.Error()),
+ 				Line:    e.Line,
+@@ -1561,16 +1568,8 @@
+ 		return errs
+ 	}
+ 
+-	var m string
+-	var l int
+-	var c int
+-	if pe, ok := err.(*yaml.ParserError); ok {
+-		l = pe.Line
+-		c = pe.Column
+-		m = pe.Message
+-	} else {
+-		m = err.Error() // Fallback. I believe this line should be unreachable
+-	}
++	m := err.Error()
++	l, c := yamlErrorPosition(m)
+ 	return []*Error{&Error{
+ 		Message: fmt.Sprintf("could not parse as YAML: %s", m),
+ 		Kind:    "syntax-check",
+@@ -1579,6 +1578,20 @@
+ 	}}
+ }
+ 
++// yamlErrorPositionRe reads "line N" and an optional "column M" from a yaml
++// error message (patched, see PATCHES.md).
++var yamlErrorPositionRe = regexp.MustCompile(`line (\d+)(?:, column (\d+))?`)
++
++func yamlErrorPosition(m string) (int, int) {
++	g := yamlErrorPositionRe.FindStringSubmatch(m)
++	if g == nil {
++		return 0, 0
++	}
++	l, _ := strconv.Atoi(g[1])
++	c, _ := strconv.Atoi(g[2])
++	return l, c
++}
++
+ // Parse parses given source as byte sequence into workflow syntax tree. It returns all errors
+ // detected while parsing the input. It means that detecting one error does not stop parsing. Even
+ // if one or more errors are detected, parser will try to continue parsing and finding more errors.

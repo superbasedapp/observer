@@ -71,8 +71,9 @@ func TestAutoRegisterHooks_PromptLaneOnlyGate(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		t.Setenv("HOME", home)
-		t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on Windows
+		// Every profile root and tool home stays in the throwaway home
+		// (surface-gap S-10, FU-4).
+		pinToolHomesAt(t, home)
 		return home
 	}
 
@@ -201,7 +202,7 @@ func TestAutoRegisterHooks_PromptLaneOnlyGateAppliesToWindowsBridgeTargets(t *te
 	// prompt-submit event (session/tool-call capture) must NOT be
 	// PromptLaneOnly — a disabled prompt lane must never suppress their
 	// registration.
-	for _, tool := range []string{"claude-code-windows", "cursor-windows", "codex-windows", "qwen-code-windows", "qoder-windows", "droid-windows", "gemini-cli-windows"} {
+	for _, tool := range []string{"claude-code-windows", "cursor-windows", "codex-windows", "qwen-code-windows", "qoder-windows", "droid-windows", "gemini-cli-windows", "copilot-cli-windows"} {
 		t.Run(tool+"_not_prompt_lane_only", func(t *testing.T) {
 			t.Parallel()
 			c, _, ok := advertisedCapability(tool)

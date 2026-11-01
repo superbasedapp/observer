@@ -1,0 +1,117 @@
+[
+ {
+  "number": 14706,
+  "state": "closed",
+  "draft": false,
+  "title": "chore(deps): bump actions/create-github-app-token from 3.2.0 to 3.3.0",
+  "html_url": "https://github.com/cli/cli/pull/14706",
+  "created_at": "2026-10-15T14:05:39Z",
+  "updated_at": "2026-10-15T15:15:13Z",
+  "closed_at": "2026-10-15T15:15:11Z",
+  "merged_at": "2026-10-15T15:15:11Z",
+  "merge_commit_sha": "59e9f78eacdf2554f8534d166808c3e9b8c7ebcb",
+  "head": {
+   "sha": "1b0eb4096d53d0c8c35f76cf2aad62529083d93d",
+   "ref": "dependabot/github_actions/actions/create-github-app-token-3.3.0"
+  },
+  "base": {
+   "ref": "trunk",
+   "sha": "819f972eff771d5ec433c8d03c369cc43f1eab49"
+  },
+  "user": {
+   "login": "dependabot[bot]"
+  }
+ },
+ {
+  "number": 14678,
+  "state": "open",
+  "draft": false,
+  "title": "`gh issue artifact` stack 12/12: Add artifact URLs",
+  "html_url": "https://github.com/cli/cli/pull/14678",
+  "created_at": "2026-10-14T04:39:25Z",
+  "updated_at": "2026-10-15T15:14:09Z",
+  "closed_at": null,
+  "merged_at": null,
+  "merge_commit_sha": "61654d9346daf88199496c7e5c9b6de7723928e8",
+  "head": {
+   "sha": "ea5512228b30fe38b68b18232acc4dc8f29acd3a",
+   "ref": "bagtoad/artifact-urls"
+  },
+  "base": {
+   "ref": "bagtoad/artifact-review-feedback",
+   "sha": "e04bc0145a89bb85472ac53fa26cedc9f64a326f"
+  },
+  "user": {
+   "login": "BagToad"
+  }
+ },
+ {
+  "number": 14705,
+  "state": "closed",
+  "draft": false,
+  "title": "chore(deps): bump github.com/klauspost/compress from 1.20.1 to 1.20.3",
+  "html_url": "https://github.com/cli/cli/pull/14705",
+  "created_at": "2026-10-15T14:03:18Z",
+  "updated_at": "2026-10-15T14:56:45Z",
+  "closed_at": "2026-10-15T14:56:41Z",
+  "merged_at": "2026-10-15T14:56:41Z",
+  "merge_commit_sha": "982d09f66295f253d8cf7f0b1fd3f10f77d00e59",
+  "head": {
+   "sha": "45250aec8ba977669c62384bacaaed290c2460ad",
+   "ref": "dependabot/go_modules/github.com/klauspost/compress-1.20.3"
+  },
+  "base": {
+   "ref": "trunk",
+   "sha": "819f972eff771d5ec433c8d03c369cc43f1eab49"
+  },
+  "user": {
+   "login": "dependabot[bot]"
+  }
+ },
+ {
+  "number": 14707,
+  "state": "closed",
+  "draft": false,
+  "title": "chore(deps): bump goreleaser/goreleaser-action from 7.2.3 to 7.3.0",
+  "html_url": "https://github.com/cli/cli/pull/14707",
+  "created_at": "2026-10-15T14:06:04Z",
+  "updated_at": "2026-10-15T14:30:47Z",
+  "closed_at": "2026-10-15T14:30:44Z",
+  "merged_at": "2026-10-15T14:30:44Z",
+  "merge_commit_sha": "e523cb7f38a0d654f581a1d4b355470c8f56ed54",
+  "head": {
+   "sha": "26034fa194e3cd39b99acabbde54ed6c843d491d",
+   "ref": "dependabot/github_actions/goreleaser/goreleaser-action-7.3.0"
+  },
+  "base": {
+   "ref": "trunk",
+   "sha": "819f972eff771d5ec433c8d03c369cc43f1eab49"
+  },
+  "user": {
+   "login": "dependabot[bot]"
+  }
+ },
+ {
+  "number": 14700,
+  "state": "open",
+  "draft": false,
+  "title": "docs(gh-skill): document gh api field passing pitfalls",
+  "html_url": "https://github.com/cli/cli/pull/14700",
+  "created_at": "2026-10-15T10:31:30Z",
+  "updated_at": "2026-10-15T10:37:22Z",
+  "closed_at": null,
+  "merged_at": null,
+  "merge_commit_sha": "c8c831e1f56d6c4d3086299cb4cffdf9d5491c5d",
+  "head": {
+   "sha": "6c06828bccf3526337f40ab91dbc56ae53b4837f",
+   "ref": "docs/gh-skill-gh-api-field-passing"
+  },
+  "base": {
+   "ref": "trunk",
+   "sha": "819f972eff771d5ec433c8d03c369cc43f1eab49"
+  },
+  "user": {
+   "login": "MatiasOlivera"
+  }
+ }
+]

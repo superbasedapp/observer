@@ -78,6 +78,10 @@ type Card struct {
 	Balances   []CardBalance `json:"balances"`
 	Spend      []Spend       `json:"spend"`
 	State      *RunState     `json:"state,omitempty"`
+	// Group is the provider's catalogue group (plans | balance | usage).
+	Group string `json:"group"`
+	// Headline is the number the card leads with: what is left (D-681).
+	Headline Headline `json:"headline"`
 }
 
 // Health codes of a card.
@@ -304,6 +308,11 @@ func buildCard(u *unit, in ViewInput) Card {
 		c.Balances = append(c.Balances, CardBalance{Balance: b, Provenance: m.BalanceProv[b.Kind+"|"+string(b.Unit)]})
 	}
 	c.Spend = append(c.Spend, m.Spend...)
+	c.Group = GroupPlans
+	if p, ok := ProviderByID(u.provider); ok {
+		c.Group = p.Group
+	}
+	c.Headline = HeadlineOf(c.Group, m, in.Now)
 	c.Health = cardHealth(u, m, in.Now)
 	if c.Status == "" {
 		c.Status = StatusOK

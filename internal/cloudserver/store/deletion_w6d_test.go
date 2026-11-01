@@ -66,6 +66,7 @@ var deletionDisposition = map[string]string{
 	"deletion_requests":     "retain",
 	// Not account data (system/global).
 	"budget_pools":                 "excluded",
+	"budget_pool_spend":            "excluded", // T-946: per-pool USD sums, no account linkage
 	"kill_switches":                "excluded",
 	"plans":                        "excluded",
 	"route_registry":               "excluded",

@@ -84,7 +84,7 @@ func readStopDebugRows(t *testing.T) []cursorStopReject {
 // renamed (inputTokens vs input_tokens) must ingest no token row AND
 // leave a content-safe forensic row revealing the real key set.
 func TestStopRejectDumpsRenamedTokenFields(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 
 	sink := &fakeSink{}
 	var stdout, stderr bytes.Buffer
@@ -128,7 +128,7 @@ func TestStopRejectDumpsRenamedTokenFields(t *testing.T) {
 // payload missing generation_id is rejected with an error, and the
 // forensic row records which required field was absent.
 func TestStopRejectDumpsMissingRequiredField(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 
 	sink := &fakeSink{}
 	var stdout, stderr bytes.Buffer
@@ -177,7 +177,7 @@ func scalarString(t *testing.T, v any) string {
 // must now yield a token_usage event — net-of-cache input — alongside the
 // assistant-message action row.
 func TestAfterAgentResponseIngestsTokens(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	sink := &fakeSink{}
 	var stdout, stderr bytes.Buffer
 	body := `{
@@ -214,7 +214,7 @@ func TestAfterAgentResponseIngestsTokens(t *testing.T) {
 // were renamed leaves no token but records a content-safe debug row (tagged
 // with the event) exposing the new keys.
 func TestAfterAgentResponseNoUsageDumps(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	sink := &fakeSink{}
 	var stdout, stderr bytes.Buffer
 	body := `{
@@ -235,5 +235,25 @@ func TestAfterAgentResponseNoUsageDumps(t *testing.T) {
 	}
 	if !containsAll(rows[0].Keys, "inputTokens", "outputTokens") {
 		t.Errorf("debug row should expose the renamed keys: %v", rows[0].Keys)
+	}
+}
+
+// TestStopRejectFollowsStateDir: the cursor stop-reject log follows the
+// invocation's Observer home (SetStateDirResolver), not ~/.observer (live
+// proof 2026-10-21).
+func TestStopRejectFollowsStateDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	dir := filepath.Join(t.TempDir(), "observer-home")
+	SetStateDirResolver(func() string { return dir })
+	t.Cleanup(func() { SetStateDirResolver(nil) })
+
+	dumpCursorStopReject([]byte(`{"hook_event_name":"stop"}`), "no_usage_fields")
+	if _, err := os.Stat(filepath.Join(dir, "cursor-stop-debug.jsonl")); err != nil {
+		t.Fatalf("cursor-stop-debug.jsonl not in the Observer home: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".observer", "cursor-stop-debug.jsonl")); !os.IsNotExist(err) {
+		t.Errorf("cursor-stop-debug.jsonl also written under ~/.observer (err=%v)", err)
 	}
 }

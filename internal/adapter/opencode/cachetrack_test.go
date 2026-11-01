@@ -149,6 +149,63 @@ func TestCacheObservations_Idempotent(t *testing.T) {
 	}
 }
 
+// TestCacheObservations_IncrementalClosesEmittedDeltas pins T-930: on an
+// incremental 1.x parse the session is replayed from its first message to
+// keep the chain complete, but a step an earlier parse already emitted must
+// close its delta, so the first new step carries only the blocks written
+// since that step (here the new prompt and the new reply), not the
+// session's older blocks again. Mirrors loadCacheObservationsV2.
+func TestCacheObservations_IncrementalClosesEmittedDeltas(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "opencode.db")
+	setupOpenCodeDBForCachetrack(t, path)
+
+	a := NewWithOptions(nil, []string{root})
+	first, err := a.ParseSessionFile(context.Background(), path, 0)
+	if err != nil {
+		t.Fatalf("first parse: %v", err)
+	}
+	if len(first.CacheObservations) != 1 || len(first.CacheObservations[0].BlockHashes) != 4 {
+		t.Fatalf("first parse = %d observations, want 1 with 4 blocks", len(first.CacheObservations))
+	}
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stmts := []string{
+		`INSERT INTO message(id, session_id, time_created, time_updated, data) VALUES
+			('msg_user2', 'ses_1', 6000, 6001,
+			 '{"role":"user","agent":"build","model":{"providerID":"anthropic","modelID":"claude-sonnet-4"},"time":{"created":6000}}'),
+			('msg_assist2', 'ses_1', 7000, 7500,
+			 '{"role":"assistant","agent":"build","modelID":"claude-sonnet-4","providerID":"anthropic","path":{"cwd":"/tmp/oc"},"time":{"created":7000,"completed":7500},"finish":"stop","tokens":{"input":20,"output":10,"reasoning":0,"cache":{"read":5120,"write":64}},"cost":0.001}')`,
+		`INSERT INTO part(id, message_id, session_id, time_created, time_updated, data) VALUES
+			('prt_u2', 'msg_user2',   'ses_1', 6000, 6001, '{"type":"text","text":"And again"}'),
+			('prt_t2', 'msg_assist2', 'ses_1', 7100, 7200, '{"type":"text","text":"Still green."}')`,
+	}
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("exec %q: %v", stmt, err)
+		}
+	}
+	_ = db.Close()
+
+	later, err := a.ParseSessionFile(context.Background(), path, first.NewOffset)
+	if err != nil {
+		t.Fatalf("incremental parse: %v", err)
+	}
+	if len(later.CacheObservations) != 1 {
+		t.Fatalf("incremental observations = %d, want 1", len(later.CacheObservations))
+	}
+	obs := later.CacheObservations[0]
+	if obs.MessageID != "msg_assist2" {
+		t.Errorf("MessageID = %q, want msg_assist2", obs.MessageID)
+	}
+	if got := len(obs.BlockHashes); got != 2 {
+		t.Errorf("BlockHashes = %d, want 2 (new prompt + new reply; the already-emitted step's delta is closed)", got)
+	}
+}
+
 // TestCacheObservations_SkipsAssistantWithoutTokens pins the
 // "in-progress turn" carve-out. An assistant message whose tokens
 // bundle is fully zero (early streaming row, or a slot that never

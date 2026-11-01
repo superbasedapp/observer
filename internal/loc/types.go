@@ -30,7 +30,18 @@ package loc
 // sparsely-covered corpus (so any sidechain split has rows to fold) is an
 // operational `observer backfill --loc`, run daemon-quiesced by the
 // operator — not a classifier-version re-count.
-const Version = 2
+//
+// v3 (2026-10-21, ten-adapter wave): new ladder rows change the Stats of
+// inputs the ladder already handled. A MultiEdit `edits[]` spelled
+// oldText/newText (pi, kimchi) counted ZERO lines and now counts; a vtcode
+// apply_patch stored as a JSON string counted the patch text as a whole
+// file (plain_content) and now counts the envelope; and payloads that
+// landed `unrecognized` now count: oldText/newText and search/replace key
+// pairs (dimcode, kimchi, ibm-bob), autohand `contents` / `blocks` /
+// `patch`, ibm-bob `insert_content` (additions only), vtcode
+// `{input|patch: "*** Begin Patch"}`, dirac anchor `edit_file` and
+// `edit_ast`.
+const Version = 3
 
 // Category is the coarse bucket a path falls into. Only CategoryCode
 // contributes to the headline "lines of code" number; the others are
@@ -297,6 +308,16 @@ const (
 	ShapePathOnly       Shape = "path_only"             // cursor afterFileEdit hook
 	ShapeTruncated      Shape = "truncated"             // …[truncated] marker
 	ShapeUnrecognized   Shape = "unrecognized"          // parsed as JSON but no known keys
+
+	// 2026-10-21 wave (loc.Version 3).
+	ShapeOldNewText     Shape = "oldText/newText"     // dimcode, kimchi single edit
+	ShapeSearchReplKeys Shape = "search/replace"      // ibm-bob search_and_replace
+	ShapeContents       Shape = "contents"            // autohand write_file
+	ShapeInsertContent  Shape = "insert_content"      // ibm-bob insert_content {line, content}
+	ShapePatchDiff      Shape = "patch_unified_diff"  // autohand apply_patch {patch: unified diff}
+	ShapeWrappedPatch   Shape = "wrapped_begin_patch" // vtcode apply_patch {input|patch: "*** Begin Patch"} or a JSON string
+	ShapeAnchorEdits    Shape = "anchor_edits"        // dirac edit_file files[].edits[]
+	ShapeASTReplace     Shape = "ast_replace"         // dirac edit_ast replace targets[]
 )
 
 // FileStats is loc's per-file result: one row's worth of counts for one

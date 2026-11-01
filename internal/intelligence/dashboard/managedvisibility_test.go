@@ -62,6 +62,13 @@ func TestManagedDefaultsRefusedAtTheAPI(t *testing.T) {
 		{"security page hidden", http.MethodGet, "/api/guard/summary", "governance_hidden"},
 		{"guard policy hidden", http.MethodPut, "/api/guard/policy", "governance_hidden"},
 		{"routing page hidden", http.MethodGet, "/api/routing/status", "governance_hidden"},
+		// Code security is hidden by default (lane gov-tabs); its trust READ
+		// stays for the New Terminal dialog because Terminals is shown, and
+		// accepting trust stays with the hidden page.
+		{"code security page hidden", http.MethodGet, "/api/security/status", "governance_hidden"},
+		{"code security findings hidden", http.MethodGet, "/api/security/findings", "governance_hidden"},
+		{"trust chip read shared with terminals", http.MethodGet, "/api/security/trust", ""},
+		{"trust accept stays code security", http.MethodPost, "/api/security/trust", "governance_hidden"},
 		{"compression read: allowed", http.MethodGet, "/api/compression/events", ""},
 		{"compression experiment write: read-only", http.MethodPost, "/api/experiments", "governance_read_only"},
 		{"remote read: allowed", http.MethodGet, "/api/remote/config", ""},

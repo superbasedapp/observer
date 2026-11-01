@@ -38,8 +38,13 @@ export {
   ProcessTree,
   flattenProcessNodes,
   processHasMetrics,
+  type ProcessView,
   type RenderMessageLink,
 } from "./ProcessTree";
+// The Call stack view's two halves (ProcessTree renders both; exported for a
+// host that wants them on their own). Model: lib/processLayout.ts.
+export { ProcessFlame, type ProcessFlameProps } from "./ProcessFlame";
+export { ProcessSpawnStack, type ProcessSpawnStackProps } from "./ProcessSpawnStack";
 
 export {
   TasksTab,

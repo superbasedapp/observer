@@ -13,6 +13,8 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/marmutapp/superbased-observer/internal/hookctx"
+	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/platform/pathnorm"
 	"github.com/marmutapp/superbased-observer/internal/toolaccount"
@@ -28,8 +30,10 @@ type accountSnapshotSpec struct {
 }
 
 var accountSnapshotSpecs = map[string]accountSnapshotSpec{
-	models.ToolCodex:      {directory: "sessions", filename: "auth.json", decode: toolaccount.CodexIdentity, allowFile: codexAccountFileEnabled, binding: "turn", overrides: []string{"OPENAI_API_KEY", "CODEX_API_KEY"}},
-	models.ToolClaudeCode: {directory: "projects", filename: ".claude.json", decode: toolaccount.ClaudeIdentity, binding: "tool_call", overrides: []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"}},
+	models.ToolCodex: {directory: "sessions", filename: "auth.json", decode: toolaccount.CodexIdentity, allowFile: codexAccountFileEnabled, binding: "turn", overrides: []string{"OPENAI_API_KEY", "CODEX_API_KEY"}},
+	// The provider selectors come from the integration registry's one
+	// table (CC-10), shared with the launcher's budget-admission proof.
+	models.ToolClaudeCode: {directory: "projects", filename: ".claude.json", decode: toolaccount.ClaudeIdentity, binding: "tool_call", overrides: append([]string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"}, integration.ProviderSelectorEnvKeys(models.ToolClaudeCode)...)},
 }
 
 // LocalAccountObservations reads a login snapshot only during a live hook.
@@ -39,15 +43,24 @@ var accountSnapshotSpecs = map[string]accountSnapshotSpec{
 func LocalAccountObservations(ctx context.Context, tool, event string, body []byte) []models.ToolAccountObservation {
 	ctx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
 	defer cancel()
-	read := func(path string) ([]byte, error) { return readAccountFile(ctx, path) }
-	return localAccountObservations(tool, event, body, read, os.Getenv, time.Now().UTC())
+	// The environment and the snapshot file come through the hook context
+	// seam (internal/hookctx) the invocation filled: the one attached to
+	// ctx, else the process's own. Never the bare host default when the
+	// process has one, so a caller passing a fresh context still reads
+	// through a relay child's confined Files (plans decision log P-032).
+	hc, ok := hookctx.Attached(ctx)
+	if !ok {
+		hc = hookctx.Process()
+	}
+	read := func(path string) ([]byte, error) { return readAccountFile(ctx, hc, path) }
+	return localAccountObservations(tool, event, body, read, hc.Getenv, time.Now().UTC())
 }
 
-func readAccountFile(ctx context.Context, path string) ([]byte, error) {
+func readAccountFile(ctx context.Context, hc *hookctx.Context, path string) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	f, err := os.Open(path)
+	f, err := hc.Open(path)
 	if err != nil {
 		return nil, err
 	}

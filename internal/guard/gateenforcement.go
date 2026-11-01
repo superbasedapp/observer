@@ -91,10 +91,10 @@ func (g *Guard) GateEnforcement() GateEnforcement {
 	}
 	es := g.set.Load()
 	if !e.Tool {
-		e.Tool = es.base.Mode() == policy.ModeEnforce
+		e.Tool = es.mode == policy.ModeEnforce
 	}
 	if !e.Tool {
-		for _, r := range es.base.RuleInfos() {
+		for _, r := range es.base().RuleInfos() {
 			if r.Enforced {
 				e.Tool = true
 				break
@@ -112,6 +112,14 @@ func (g *Guard) GateEnforcement() GateEnforcement {
 		if capped {
 			e.Prompt = false
 		}
+	}
+	// An org-pinned prompt-rule decision floors the local prompt mode in the
+	// live lane (promptModeFloor), so it must also close the hook's failure
+	// posture: with a local "warn" and an org deny the live verdict blocks,
+	// and a hook timeout or crash must not then fail open (integration
+	// security review, 2026-10-15).
+	if !e.Prompt && g.cfg.Prompt.Enabled && g.cfg.Prompt.HookLane && promptEnforceActiveFor(g.cfg) {
+		e.Prompt = es.orgPromptFloorStops()
 	}
 	// A cached org bundle that exists but does not verify hides the org's
 	// floor. On a managed node (or one whose tenancy is unresolved in this

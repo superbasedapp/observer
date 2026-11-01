@@ -51,6 +51,11 @@ type Request struct {
 	Body          []byte
 	// Optional: a failure of this request does not fail the refresh.
 	Optional bool
+	// Base is the account's self-hosted gateway base URL (ledger SUBS-5).
+	// Only a UserBaseURL source sets it; the egress package checks the
+	// request against it and refuses it on any fixed-host source. It is
+	// never sent.
+	Base string
 	// Argv / Env / Timeout apply to ReqExec.
 	Argv    []string
 	Env     []string

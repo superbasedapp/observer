@@ -80,6 +80,11 @@ type Announcement struct {
 	ExpiresAt string `json:"expires_at"`
 	// Source is the originating rail (release | org).
 	Source Source `json:"source"`
+	// FixedIn, optional, is the release ("1.32.0") from which the
+	// announcement no longer applies: a node at or past it does not show
+	// it (WINNODE2 16b, a "v1.32.0 fixes ..." banner on a v1.36.0 node).
+	// Additive on every rail: an older reader ignores the field.
+	FixedIn string `json:"fixed_in,omitempty"`
 }
 
 // releaseAnnouncements is rail R1: the announcements compiled into this
@@ -129,6 +134,7 @@ var releaseAnnouncements = []Announcement{
 		URL:       "https://github.com/superbasedapp/observer/releases",
 		ExpiresAt: "2026-11-01T00:00:00Z",
 		Source:    SourceRelease,
+		FixedIn:   "1.32.0",
 	},
 	{
 		ID:        "2026-08-plugin-coverage",
@@ -137,6 +143,15 @@ var releaseAnnouncements = []Announcement{
 		Body:      "Claude Code, Codex, Cursor, Copilot, Gemini, OpenCode and 16 more now have a native SuperBased plugin. See the plugins repo for the install command for your tool.",
 		URL:       "https://github.com/superbasedapp/plugins",
 		ExpiresAt: "2026-10-01T00:00:00Z",
+		Source:    SourceRelease,
+	},
+	{
+		ID:        "v1.37.0-macos13-codesec",
+		Severity:  SeverityNotice,
+		Title:     "v1.37.0 needs macOS 13 or later, and code security is now on",
+		Body:      "This release needs macOS 13 Ventura or later. On macOS 12, stay on v1.36.0. Code security is now on by default in the developer and full editions, so an agent commit or push can ask you first. Run observer guard status to see it.",
+		URL:       "https://github.com/superbasedapp/observer/releases/tag/v1.37.0",
+		ExpiresAt: "2026-12-30T00:00:00Z",
 		Source:    SourceRelease,
 	},
 }
@@ -203,6 +218,11 @@ func Validate(a Announcement) error {
 		}
 		if u.Host == "" {
 			return fmt.Errorf("%w: url has no host", ErrInvalid)
+		}
+	}
+	if a.FixedIn != "" {
+		if _, ok := parseRelease(a.FixedIn); !ok {
+			return fmt.Errorf("%w: fixed_in %q is not a release version (1.2.3)", ErrInvalid, a.FixedIn)
 		}
 	}
 	if strings.TrimSpace(a.ExpiresAt) == "" {
@@ -393,4 +413,67 @@ func mustExpiry(s string) time.Time {
 		return time.Time{}
 	}
 	return t
+}
+
+// ForVersion drops the announcements a node running version no longer
+// needs: those whose FixedIn is at or below it. A running version that is
+// not a release (a dev build, an empty string) keeps every announcement,
+// so a developer build is never told it is fixed by guesswork.
+func ForVersion(list []Announcement, running string) []Announcement {
+	have, ok := parseRelease(running)
+	if !ok {
+		return list
+	}
+	out := list[:0:0]
+	for _, a := range list {
+		if fixed, ok := parseRelease(a.FixedIn); ok && compareRelease(have, fixed) >= 0 {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// parseRelease reads "1.2.3" (a leading "v" and any "-pre" or "+build"
+// suffix allowed) into its three numbers.
+func parseRelease(v string) ([3]int, bool) {
+	var out [3]int
+	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+	if i := strings.IndexAny(v, "-+"); i >= 0 {
+		v = v[:i]
+	}
+	parts := strings.Split(v, ".")
+	if len(parts) != 3 {
+		return out, false
+	}
+	for i, p := range parts {
+		if p == "" {
+			return out, false
+		}
+		n := 0
+		for _, r := range p {
+			if r < '0' || r > '9' {
+				return out, false
+			}
+			n = n*10 + int(r-'0')
+			if n > 1<<20 {
+				return out, false
+			}
+		}
+		out[i] = n
+	}
+	return out, true
+}
+
+// compareRelease orders two parsed releases.
+func compareRelease(a, b [3]int) int {
+	for i := range a {
+		if a[i] != b[i] {
+			if a[i] < b[i] {
+				return -1
+			}
+			return 1
+		}
+	}
+	return 0
 }

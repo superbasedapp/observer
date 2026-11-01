@@ -72,7 +72,10 @@ func (c *Client) FetchAgentConfigPolicy(ctx context.Context) (bool, error) {
 	if enr == nil {
 		return false, ErrNotEnrolled
 	}
-	if !enr.IsManaged() {
+	// Managed by enrolment or by its org's switch to enterprise (P-204).
+	if managed, merr := NodeManagedFor(ctx, c.store, enr); merr != nil {
+		return false, fmt.Errorf("orgclient.FetchAgentConfigPolicy: %w", merr)
+	} else if !managed {
 		return false, nil
 	}
 	bearer, err := c.bearers.LoadBearer()

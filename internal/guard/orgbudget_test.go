@@ -283,7 +283,7 @@ func TestSoftWindowsSurviveAnEngineRebuild(t *testing.T) {
 	}
 	// Force a rebuild through the one funnel every later build uses.
 	cur := g.set.Load()
-	base, err := g.buildEngine(cur.base.Mode(), cur.orgLayer, cur.userLayer, nil, nil)
+	base, err := g.buildEngine(cur.mode, cur.orgLayer, cur.userLayer, nil, nil)
 	if err != nil {
 		t.Fatalf("rebuild: %v", err)
 	}
@@ -452,7 +452,7 @@ func TestApplyOrgBudgetRepublishesWhenOnlyTheRequiredFlagChanges(t *testing.T) {
 	if err := g.ApplyOrgBudget(cfg.Budget, nil, true, policy.BudgetProtection{}, ""); err != nil {
 		t.Fatalf("ApplyOrgBudget(true): %v", err)
 	}
-	if !g.set.Load().base.BudgetRequired() {
+	if !g.set.Load().base().BudgetRequired() {
 		t.Fatal("the rebuilt engine does not carry the fail-closed posture")
 	}
 }
@@ -474,7 +474,7 @@ func TestApplyOrgBudgetRepublishesWhenOnlyProtectionChanges(t *testing.T) {
 	if g.set.Load() == before {
 		t.Fatal("protection-only change did not rebuild the engine")
 	}
-	if !g.set.Load().base.BudgetRuleProtected("B-622") {
+	if !g.set.Load().base().BudgetRuleProtected("B-622") {
 		t.Fatal("rebuilt engine does not carry organization budget protection")
 	}
 }

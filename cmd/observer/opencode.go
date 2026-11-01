@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -233,22 +234,37 @@ func runOpencodeLauncher(opts opencodeLauncherOptions) error {
 		// free default models) bypasses the proxy: no prompt-lane warning, no
 		// accurate tokens.
 		var zenRouted bool
-		env, zenRouted = prepareOpencodeZenRoute(env, proxyURL)
+		openaiBase := ""
+		if !preset {
+			openaiBase = baseURL
+		}
+		env, zenRouted = prepareOpencodeZenRoute(env, proxyURL, openaiBase)
 		if !zenRouted {
 			fmt.Fprintln(opts.stderr,
 				"observer opencode: OPENCODE_CONFIG_CONTENT already set in env; OpenCode Zen models are not routed through the proxy.")
 		}
 
-		if !proxyReachable(proxyURL, 250*time.Millisecond) {
+		switch {
+		case opencodeContentShadowsRoute(env, proxyURL):
+			// CLI-2: the caller's config content decides the openai
+			// provider's host; this launch proves no route and its
+			// telemetry is not marked proxied.
+			fmt.Fprintln(opts.stderr,
+				"observer opencode: not routed through the proxy: OPENCODE_CONFIG_CONTENT sets provider.openai.options.baseURL, which OpenCode reads over OPENAI_BASE_URL; point it at the proxy or remove it to route this launch")
+			preset = true
+		case !proxyReachable(proxyURL, 250*time.Millisecond):
 			fmt.Fprintf(opts.stderr,
 				"observer opencode: warning - proxy not reachable at %s (start it with `observer start`)\n", proxyURL)
-		} else {
-			fmt.Fprintf(opts.stderr, "observer opencode: routing via %s\n", baseURL)
+		default:
+			fmt.Fprintf(opts.stderr, "observer opencode: routing via %s\n", redactRouteURL(baseURL))
 		}
 	}
 	evidence := envBudgetLaunchEvidence("opencode", proxyURL,
 		map[string]string{"OPENAI_BASE_URL": strings.TrimRight(proxyURL, "/") + "/v1"},
 		env, opts.opencodeArgs)
+	if opencodeContentShadowsRoute(env, proxyURL) {
+		evidence = budgetLaunchEvidence{Route: budgetLaunchRouteUnknown}
+	}
 	evidence.Executable = bin
 	evidence.Arguments = opts.opencodeArgs
 	if err := enforceBudgetControlledLaunch(context.Background(), opts.configPath, "opencode", evidence); err != nil {
@@ -266,6 +282,7 @@ func runOpencodeLauncher(opts opencodeLauncherOptions) error {
 	child.Stderr = os.Stderr
 	discovery := prepareGenericDiscovery(context.Background(), "opencode", opts.dir)
 	if rErr := child.Start(); rErr != nil {
+		noteBoxToolLaunch(opts.stderr, "opencode", bin, opts.opencodeArgs, rErr)
 		return fmt.Errorf("exec opencode: %w", rErr)
 	}
 	// Direct process attribution (migration 086): record the child pid now
@@ -283,6 +300,7 @@ func runOpencodeLauncher(opts opencodeLauncherOptions) error {
 		defer discoverCancel()
 	}
 	if rErr := child.Wait(); rErr != nil {
+		noteBoxToolLaunch(opts.stderr, "opencode", bin, opts.opencodeArgs, rErr)
 		var ee *exec.ExitError
 		if errors.As(rErr, &ee) {
 			return exitErr(ee.ExitCode())
@@ -300,11 +318,50 @@ func runOpencodeLauncher(opts opencodeLauncherOptions) error {
 // Zen session never touched the proxy (demo node 1, 2026-10-02: no
 // prompt-lane warning on a pasted token). A caller-set
 // OPENCODE_CONFIG_CONTENT is left alone (routed=false).
-func prepareOpencodeZenRoute(parent []string, proxyURL string) (env []string, routed bool) {
-	content := fmt.Sprintf(`{"provider":{"opencode":{"options":{"baseURL":%q}}}}`,
-		strings.TrimRight(proxyURL, "/")+"/up/"+config.OpenCodeZenLane+"/v1")
-	out, _, presets := applyBaseURLEnv(parent, map[string]string{"OPENCODE_CONFIG_CONTENT": content})
+//
+// openaiBase, when set (the launcher's own OPENAI_BASE_URL, not a preset
+// one), is carried as provider.openai.options.baseURL too (surface-gap
+// CLI-2): a project or user opencode.json that sets that key outranks the
+// environment variable, and the config content outranks every file.
+func prepareOpencodeZenRoute(parent []string, proxyURL, openaiBase string) (env []string, routed bool) {
+	providers := map[string]any{
+		"opencode": map[string]any{"options": map[string]any{"baseURL": strings.TrimRight(proxyURL, "/") + "/up/" + config.OpenCodeZenLane + "/v1"}},
+	}
+	if openaiBase != "" {
+		providers["openai"] = map[string]any{"options": map[string]any{"baseURL": openaiBase}}
+	}
+	b, err := json.Marshal(map[string]any{"provider": providers})
+	if err != nil {
+		return parent, false
+	}
+	out, _, presets := applyBaseURLEnv(parent, map[string]string{"OPENCODE_CONFIG_CONTENT": string(b)})
 	return out, len(presets) == 0
+}
+
+// opencodeContentShadowsRoute reports whether a caller-set
+// OPENCODE_CONFIG_CONTENT takes the openai provider away from the proxy
+// (CLI-2): it sets provider.openai.options.baseURL to something else, which
+// OpenCode reads over OPENAI_BASE_URL, or it does not parse, so the route
+// cannot be shown to hold. Read from the child environment only.
+func opencodeContentShadowsRoute(env []string, proxyURL string) bool {
+	raw, ok := lookupEnvValue(env, "OPENCODE_CONFIG_CONTENT")
+	if !ok || strings.TrimSpace(raw) == "" {
+		return false
+	}
+	var doc struct {
+		Provider map[string]struct {
+			Options map[string]any `json:"options"`
+		} `json:"provider"`
+	}
+	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
+		return true
+	}
+	v, ok := doc.Provider["openai"].Options["baseURL"]
+	if !ok {
+		return false
+	}
+	s, _ := v.(string)
+	return !urlRoutesToProxy(s, proxyURL)
 }
 
 // prepareOpencodeEnv sets OPENAI_BASE_URL=<proxyURL>/v1 in the child env

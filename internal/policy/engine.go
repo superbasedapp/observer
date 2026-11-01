@@ -159,6 +159,32 @@ type Config struct {
 	// per engine; the guard layer rebuilds the engine when the set
 	// changes (engines are cheap to construct).
 	KnownProjectRoots []string
+	// HookSwitches are the vendor settings that turn a coding agent's
+	// hooks off, Observer's guard hooks included: the R-162 rows refuse an
+	// agent write that turns one on. The guard layer injects the table
+	// from internal/hookdisable, its one owner; nil means none (the rows
+	// are then inert), since this package never enumerates vendors.
+	HookSwitches []HookSwitch
+	// ReadFile reads the CURRENT content of a file an R-162 row judges, so
+	// an Edit is replayed onto the whole file (an edit that changes only
+	// `false` to `true` next to a hook switch carries no key in its own
+	// text). It is I/O, injected by the guard layer like ResolveLinks, and
+	// is only called for a path that names a hook-bearing settings file.
+	// ok=false means unreadable or absent; nil keeps R-162 to the text of
+	// the proposed edit alone.
+	ReadFile func(path string) (content []byte, ok bool)
+	// GitAliases returns the git aliases in force for a directory (alias
+	// name, lowercased, to its expansion), so the R-112 to R-114 rows see
+	// through `git ci` to the `commit --no-verify` it runs. The guard
+	// layer injects it from the per-project alias table the daemon
+	// precomputes; the hook never runs git. ok=false means no table covers
+	// the directory; nil leaves the rows to aliases defined on the command
+	// line itself.
+	GitAliases func(dir string) (aliases map[string]string, ok bool)
+	// ProtectedPathClasses are the R-166 path classes an agent may not
+	// write ([guard.boundary].protected_path_classes; ProtectedPathClasses
+	// lists the vocabulary). Empty, the default, leaves R-166 inert.
+	ProtectedPathClasses []string
 	// Disabled lists rule IDs turned off entirely
 	// ([guard.rules].disable).
 	Disabled []string
@@ -377,6 +403,7 @@ func New(cfg Config) (*Engine, error) {
 		}
 	}
 	rules = append(rules, cfg.ExtraRules...)
+	floor := orgFloorIDs(cfg)
 	if len(cfg.Disabled) > 0 {
 		off := setOf(cfg.Disabled...)
 		kept := rules[:0]
@@ -386,7 +413,11 @@ func New(cfg Config) (*Engine, error) {
 			// any layer below the org, and every disable (config/user/
 			// trusted-project) funnels to cfg.Disabled, so keeping the row
 			// here closes the whole class even if a merge path missed it.
-			if !off[rules[i].ID] || protectedBudgetRule(cfg, &rules[i]) || protectedIntegrityRule(&rules[i]) {
+			// The org floor is the third backstop (OSH-R-014): a rule the
+			// organization's layer defined or tuned is a strictness floor
+			// no below-org disable removes, the config-level
+			// [guard.rules] disable included, which never passes the merge.
+			if !off[rules[i].ID] || protectedBudgetRule(cfg, &rules[i]) || protectedIntegrityRule(&rules[i]) || floor[rules[i].ID] {
 				kept = append(kept, rules[i])
 			}
 		}
@@ -404,6 +435,12 @@ func New(cfg Config) (*Engine, error) {
 				continue
 			}
 			matched = true
+			if floor[rules[i].ID] && overrideRelaxesOrgFloor(&rules[i], ov) {
+				// A below-org override cannot weaken an org-floored row
+				// (OSH-R-014): the guard merge already drops it with a
+				// surfaced issue; this is the hard backstop.
+				continue
+			}
 			applyOverride(cfg, &rules[i], ov)
 		}
 		if !matched {
@@ -414,6 +451,49 @@ func New(cfg Config) (*Engine, error) {
 		return nil, fmt.Errorf("policy.New: %w", err)
 	}
 	return &Engine{cfg: cfg, rules: rules, readsBudgetStamps: resolveReadsBudgetStamps(&cfg, rules)}, nil
+}
+
+// orgFloorIDs is the set of rule IDs the organization's policy layer
+// defined (an ExtraRules row with Source == SourceOrg) or tuned (an Override
+// with Source == SourceOrg). The org layer is escalate-only, so each is a
+// strictness floor: no layer below the org may disable it or relax it
+// (OSH-R-014). The org's internal budget override (SourceOrgBudget) carries
+// the admin's own per-window mode and is not part of the floor.
+func orgFloorIDs(cfg Config) map[string]bool {
+	floor := map[string]bool{}
+	for i := range cfg.ExtraRules {
+		if cfg.ExtraRules[i].Source == SourceOrg {
+			floor[cfg.ExtraRules[i].ID] = true
+		}
+	}
+	for _, ov := range cfg.Overrides {
+		if ov.Source == SourceOrg {
+			floor[ov.RuleID] = true
+		}
+	}
+	return floor
+}
+
+// overrideRelaxesOrgFloor reports whether ov, coming from below the org,
+// would weaken row r: a strictly weaker decision than r's current enforce
+// stance, or an explicit `enforce = false`. An org override (the floor's own
+// author) and the org budget boundary are never refused here.
+func overrideRelaxesOrgFloor(r *Rule, ov Override) bool {
+	if ov.Source == SourceOrg || ov.Source == SourceOrgBudget {
+		return false
+	}
+	return (ov.Decision != nil && *ov.Decision < r.Enforce) || ov.EnforceOff
+}
+
+// strongerPin keeps the most trusted layer that pinned a rule's
+// decision: once the org layer pinned it, a later lower-trust override
+// (which the guard merge only lets through when it escalates) does not
+// take the org attribution away; otherwise the latest pin wins.
+func strongerPin(current, next string) string {
+	if current == SourceOrg {
+		return current
+	}
+	return next
 }
 
 // applyOverride applies one override to one matching rule row.
@@ -429,20 +509,24 @@ func applyOverride(cfg Config, r *Rule, ov Override) {
 		// already drops these with a surfaced issue.
 		return
 	}
+	pinBy := ov.Source
+	if pinBy == "" {
+		pinBy = SourceBuiltin
+	}
 	if ov.Decision != nil {
 		r.Observe = *ov.Decision
 		r.Enforce = *ov.Decision
+		r.DecisionPinnedBy = strongerPin(r.DecisionPinnedBy, pinBy)
 	}
 	if ov.Enforced {
 		r.Enforced = true
 		r.EnforceCappedBy = ""
+		r.DecisionPinnedBy = strongerPin(r.DecisionPinnedBy, pinBy)
 	}
 	if ov.EnforceOff {
 		r.Enforced = false
-		r.EnforceCappedBy = ov.Source
-		if r.EnforceCappedBy == "" {
-			r.EnforceCappedBy = SourceBuiltin
-		}
+		r.EnforceCappedBy = pinBy
+		r.DecisionPinnedBy = ""
 	}
 	// Org-granted override (Track B): additive-only, "false
 	// wins". A row only ever GAINS overridability, and only
@@ -512,7 +596,7 @@ func (e *Engine) BudgetRuleProtected(ruleID string) bool {
 const SourceOrgBudget = "org_budget"
 
 // IsIntegrityRuleID reports whether id names one of the guard's own
-// INTEGRITY rules — R-160 and R-161. It is a small, closed set:
+// INTEGRITY rules: R-160, R-161, R-162 and R-165. It is a small, closed set:
 //
 //   - R-160 denies an agent modifying observer/guard/hook configuration,
 //     which INCLUDES the ~/.observer trusted per-project policy dir. It is
@@ -525,20 +609,30 @@ const SourceOrgBudget = "org_budget"
 //   - R-161 flags an agent modifying the in-repo project guard file, the
 //     escalate-only, agent-writable layer whose one-way trust the merge
 //     model rests on.
+//   - R-162 (T-910, widened deliberately) denies an agent turning a coding
+//     agent's hooks off (disableAllHooks and its siblings). With a switch
+//     on, the guard hooks themselves stop running, so a layer that relaxed
+//     R-162 would let an agent remove every other rule at once.
+//   - R-165 (D-761) denies an agent approving its own guard exception
+//     (`observer guard approve`, the dashboard's approval routes, a direct
+//     write into guard_approvals). A layer that relaxed it would let an
+//     agent turn any block into a grant of its own, which removes every
+//     other rule one call at a time. Its request row only flags and stays
+//     a flag.
 //
-// Neither may be DISABLED or RELAXED by any layer BELOW the org (config,
+// None may be DISABLED or RELAXED by any layer BELOW the org (config,
 // user, trusted-project); the org may still define or escalate them (the
 // org layer is escalate-only anyway). Exported so the guard merge layer can
 // enforce this floor at every below-org layer by ID without importing the
 // rule rows. Widening this set is a deliberate edit, never an accident.
 func IsIntegrityRuleID(id string) bool {
-	return id == "R-160" || id == "R-161"
+	return id == "R-160" || id == "R-161" || id == "R-162" || id == "R-165"
 }
 
 // protectedIntegrityRule reports whether THIS ROW is an integrity rule
-// (R-160/R-161). It is the row-taking companion to IsIntegrityRuleID used
-// by New's disable filter and override loop as a hard backstop: a below-org
-// layer may never disable or weaken these two, mirroring protectedBudgetRule
+// (R-160/R-161/R-162/R-165). It is the row-taking companion to IsIntegrityRuleID
+// used by New's disable filter and override loop as a hard backstop: a
+// below-org layer may never disable or weaken these, mirroring protectedBudgetRule
 // but with no runtime provenance — the protection is intrinsic to the ID.
 func protectedIntegrityRule(r *Rule) bool {
 	return r != nil && IsIntegrityRuleID(r.ID)
@@ -614,6 +708,34 @@ func protectedBudgetRule(cfg Config, r *Rule) bool {
 // allow verdict.
 func (e *Engine) Evaluate(ev Event) Verdict {
 	return e.evaluate(ev, false, false)
+}
+
+// EvaluateRule evaluates only the rows whose ID is ruleID, under the
+// engine's mode, disables and overrides. The guard layer uses it for a
+// signal that rides beside another verdict on the same action (A-613 after
+// the deny it follows), which full evaluation would hide behind the
+// stricter row.
+func (e *Engine) EvaluateRule(ruleID string, ev Event) Verdict {
+	allow := Verdict{Decision: DecisionAllow, Source: SourceBuiltin}
+	if e == nil || e.cfg.Mode == ModeOff {
+		return allow
+	}
+	ctx := e.buildContext(&ev)
+	best := allow
+	for i := range e.rules {
+		r := &e.rules[i]
+		if r.ID != ruleID || !r.appliesTo(ev.Kind) {
+			continue
+		}
+		hit, detail, capped := applyRuleCeiling(r, ctx)
+		if !hit {
+			continue
+		}
+		if v := capUncalled(e.verdictFor(r, detail), capped); stricter(v, best) {
+			best = v
+		}
+	}
+	return best
 }
 
 // EvaluateBudget evaluates only the built-in budget and utilization admission
@@ -756,6 +878,15 @@ func (e *Engine) buildContext(ev *Event) *MatchContext {
 			ctx.Cmds = ParseArgv(ev.Args, ev.Dialect)
 		} else {
 			ctx.Cmds = ParseCommand(ev.Target, ev.Dialect)
+			if alt := ev.AltDialect; alt != "" && normDialect(alt) != normDialect(ev.Dialect) {
+				// A second reading only ADDS units: every rule sees what
+				// the command means under either shell.
+				altCmds := ParseCommand(ev.Target, alt)
+				for i := range altCmds {
+					altCmds[i].altReading = true
+				}
+				ctx.Cmds = append(ctx.Cmds, altCmds...)
+			}
 		}
 	case KindFileAccess, KindConfigChange:
 		ctx.Path = resolvePath(ev.Target, e.cfg.Home, ev.Cwd, ev.ProjectRoot)
@@ -780,24 +911,35 @@ func applyRule(r *Rule, ctx *MatchContext) (bool, string) {
 // whose body holds them (Command.uncalledDef, T-525 / D-338): such a hit
 // is capped at ASK by the caller. A hit on a unit that can run wins over
 // a capped one, so the cap never hides a real hit later in the line.
+//
+// When the event carries a second reading (Event.AltDialect), its units
+// are asked first, so the reason quotes the command as the alternate shell
+// reads it. The boundary asks for a second reading only when the host's own
+// shell may be the alternate one (a Windows working directory: PowerShell),
+// whose lexer keeps a Windows path's backslashes; the POSIX reading of
+// `C:\Users\dev` is `C:Usersdev` (WINNODE item 2). The order changes only
+// which hit names the reason: a hit in any unit is a hit, and the cap applies
+// only when no runnable unit hits, in either order.
 func applyRuleCeiling(r *Rule, ctx *MatchContext) (hit bool, detail string, capped bool) {
 	if r.MatchCmd != nil {
 		capHit, capDetail := false, ""
-		for i := range ctx.Cmds {
-			cmd := &ctx.Cmds[i]
-			if anySafe(r.SafePat, ctx, cmd) {
-				continue
-			}
-			ok, d := r.MatchCmd(ctx, cmd)
-			if !ok {
-				continue
-			}
-			if cmd.uncalledDef == "" {
-				return true, d, false
-			}
-			if !capHit {
-				capHit = true
-				capDetail = d + " (inside function " + cmd.uncalledDef + ", which this command defines but does not call)"
+		for _, alt := range [2]bool{true, false} {
+			for i := range ctx.Cmds {
+				cmd := &ctx.Cmds[i]
+				if cmd.altReading != alt || anySafe(r.SafePat, ctx, cmd) {
+					continue
+				}
+				ok, d := r.MatchCmd(ctx, cmd)
+				if !ok {
+					continue
+				}
+				if cmd.uncalledDef == "" {
+					return true, d, false
+				}
+				if !capHit {
+					capHit = true
+					capDetail = d + " (inside function " + cmd.uncalledDef + ", which this command defines but does not call)"
+				}
 			}
 		}
 		return capHit, capDetail, capHit
@@ -873,7 +1015,8 @@ func (e *Engine) verdictFor(r *Rule, detail string) Verdict {
 		Source:      source,
 		Overridable: r.Overridable,
 
-		EnforceCappedBy: r.EnforceCappedBy,
+		EnforceCappedBy:  r.EnforceCappedBy,
+		DecisionPinnedBy: r.DecisionPinnedBy,
 	}
 }
 
@@ -890,6 +1033,48 @@ func (e *Engine) ruleDecision(r *Rule) Decision {
 		d = DecisionFlag
 	}
 	return d
+}
+
+// RuleStances returns, for every row carrying ruleID, the stance a match
+// would take before any event-specific detail: the mode-selected decision,
+// the overridable bit and the layer that pinned it. The guard's gate
+// posture reads it so an org-pinned prompt-rule floor counts as enforcing
+// even when the local [guard.prompt] mode alone would not (integration
+// security review, 2026-10-15). Empty for an unknown rule or a nil engine.
+func (e *Engine) RuleStances(ruleID string) []Verdict {
+	if e == nil || ruleID == "" {
+		return nil
+	}
+	var out []Verdict
+	for i := range e.rules {
+		r := &e.rules[i]
+		if r.ID != ruleID {
+			continue
+		}
+		out = append(out, Verdict{
+			Decision: e.ruleDecision(r), RuleID: r.ID, Severity: r.Severity,
+			Overridable: r.Overridable, EnforceCappedBy: r.EnforceCappedBy, DecisionPinnedBy: r.DecisionPinnedBy,
+		})
+	}
+	return out
+}
+
+// RuleEnforceDenies reports whether some row carrying ruleID would deny in
+// enforce mode (its enforce decision is deny and no `enforce = false`
+// override caps it). The A-613 evasion tracker reads it so a flag in
+// observe mode from a rule that enforce would deny counts as a refusal
+// (plans decision log P-004). False for an unknown rule or a nil engine.
+func (e *Engine) RuleEnforceDenies(ruleID string) bool {
+	if e == nil || ruleID == "" {
+		return false
+	}
+	for i := range e.rules {
+		r := &e.rules[i]
+		if r.ID == ruleID && r.Enforce == DecisionDeny && r.EnforceCappedBy == "" {
+			return true
+		}
+	}
+	return false
 }
 
 // RuleEnforceCapped reports whether every row with ruleID is capped at

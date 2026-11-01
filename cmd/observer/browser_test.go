@@ -341,6 +341,7 @@ func TestHandleBrowserHookOverLimitRecordsKeyedDrop(t *testing.T) {
 // teardown kills the child (the exact loss the 35s work deadline exists to
 // prevent).
 func TestHandleBrowserHookOverLimitBoundedByContendedHealthLock(t *testing.T) {
+	shortenBrowserHealthLockTimeout(t)
 	tmp := t.TempDir()
 	dbPath := filepath.Join(tmp, "observer.db")
 	configPath := filepath.Join(tmp, "config.toml")
@@ -451,7 +452,7 @@ func TestRecordBrowserHealthWritesAndSurfaces(t *testing.T) {
 	if e.RecordedAt == 0 {
 		t.Errorf("recorded_at should be stamped daemon-side")
 	}
-	if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o600 {
+	if fi, _ := os.Stat(path); posixModes && fi.Mode().Perm() != 0o600 {
 		t.Errorf("health file mode = %v, want 0600", fi.Mode().Perm())
 	}
 }
@@ -1055,7 +1056,7 @@ func TestResolveBrowserIngestTokenGeneratesAndPersists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("token not persisted: %v", err)
 	}
-	if fi.Mode().Perm() != 0o600 {
+	if posixModes && fi.Mode().Perm() != 0o600 {
 		t.Errorf("token file mode = %v, want 0600", fi.Mode().Perm())
 	}
 	tok2, err := resolveBrowserIngestToken(cfg)
@@ -1525,6 +1526,11 @@ func TestLoadBrowserHealthAbortsWhenQuarantineFails(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("permission-based quarantine-failure cannot be simulated as root")
 	}
+	if runtime.GOOS == "windows" {
+		// A read-only directory mode does not deny a rename on Windows
+		// (Windows 11 Pro rerun 2026-10-25, D5 group 8).
+		t.Skip("permission-based quarantine-failure cannot be simulated on Windows")
+	}
 	dir := t.TempDir()
 	healthPath := filepath.Join(dir, browserHealthFileName)
 	if err := os.WriteFile(healthPath, []byte("{corrupt bytes"), 0o600); err != nil {
@@ -1780,6 +1786,7 @@ func TestWithBrowserHealthLockBoundedByContendedLock(t *testing.T) {
 // health-beacon event path, whose ctx is the hook's own (undeadlined)
 // cmd.Context().
 func TestWithBrowserHealthLockFallsBackToShortTimeoutWithoutCtxDeadline(t *testing.T) {
+	shortenBrowserHealthLockTimeout(t)
 	dir := t.TempDir()
 	healthPath := filepath.Join(dir, browserHealthFileName)
 	lockPath := healthPath + ".lock"
@@ -1806,7 +1813,7 @@ func TestWithBrowserHealthLockFallsBackToShortTimeoutWithoutCtxDeadline(t *testi
 	if err == nil {
 		t.Fatal("want a timeout error when the lock is contended and ctx carries no deadline, got nil")
 	}
-	if elapsed < browserHealthLockTimeout-500*time.Millisecond || elapsed > browserHealthLockTimeout+2*time.Second {
+	if elapsed < browserHealthLockTimeout-browserHealthLockTimeout/4 || elapsed > browserHealthLockTimeout+2*time.Second {
 		t.Errorf("elapsed = %s, want close to browserHealthLockTimeout (%s) - a background.Context() caller must fall back to the short bounded timeout, not block forever", elapsed, browserHealthLockTimeout)
 	}
 }
@@ -1947,6 +1954,7 @@ func TestWithBrowserHealthLockAlreadyCanceledSkipsFnEvenWhenLockIsFree(t *testin
 // pseudo-random per the language spec — so a late-freed lock could still be
 // acquired and fn started past the budget purely by chance.
 func TestWithBrowserHealthLockDoesNotRunFnPastAbsoluteExpiryOnBackgroundCtx(t *testing.T) {
+	shortenBrowserHealthLockTimeout(t)
 	dir := t.TempDir()
 	healthPath := filepath.Join(dir, browserHealthFileName)
 	lockPath := healthPath + ".lock"
@@ -1963,9 +1971,11 @@ func TestWithBrowserHealthLockDoesNotRunFnPastAbsoluteExpiryOnBackgroundCtx(t *t
 
 	// Free the lock strictly AFTER the fallback budget elapses — never
 	// before — so any successful acquisition would necessarily have
-	// happened past expiresAt.
+	// happened past expiresAt. The budget is read once here: the goroutine
+	// can outlive the test, whose cleanup restores the package variable.
+	releaseAfter := browserHealthLockTimeout + 100*time.Millisecond
 	go func() {
-		time.Sleep(browserHealthLockTimeout + 100*time.Millisecond)
+		time.Sleep(releaseAfter)
 		_ = unlockFile(holder)
 		_ = holder.Close()
 	}()
@@ -1986,7 +1996,7 @@ func TestWithBrowserHealthLockDoesNotRunFnPastAbsoluteExpiryOnBackgroundCtx(t *t
 	}
 	// Must return close to the fallback budget, not linger until (or past)
 	// the moment the holder actually releases.
-	if elapsed < browserHealthLockTimeout-500*time.Millisecond || elapsed > browserHealthLockTimeout+2*time.Second {
+	if elapsed < browserHealthLockTimeout-browserHealthLockTimeout/4 || elapsed > browserHealthLockTimeout+2*time.Second {
 		t.Errorf("elapsed = %s, want close to browserHealthLockTimeout (%s) - should give up at the absolute expiry, not wait for/past the holder's release", elapsed, browserHealthLockTimeout)
 	}
 	if _, statErr := os.Stat(healthPath); !os.IsNotExist(statErr) {
@@ -2061,4 +2071,15 @@ func TestBrowserIngestRunsPromptCaptureLane(t *testing.T) {
 			}
 		})
 	}
+}
+
+// shortenBrowserHealthLockTimeout lowers the health-lock fallback budget for
+// one test, so the three contended-lock tests wait 200ms instead of the
+// production 5s. The tests assert the wait against the variable, so what
+// they prove is unchanged: the fallback engages, and it bounds the wait.
+func shortenBrowserHealthLockTimeout(t *testing.T) {
+	t.Helper()
+	prev := browserHealthLockTimeout
+	browserHealthLockTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { browserHealthLockTimeout = prev })
 }

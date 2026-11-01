@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"runtime"
 	"sort"
 	"time"
 
@@ -91,6 +92,9 @@ func runNodeIntervention(ctx context.Context, configPath string, capture *watche
 			// to implement this capability. A dedicated privileged backend needs
 			// a separate narrow contract on platforms that require it.
 			status.State, status.Reason = "control_unavailable", "dedicated developer-user Linux controller required"
+			if line, unsupported := nodeControlUnsupported(runtime.GOOS); unsupported {
+				status.Reason = line
+			}
 		default:
 			if controlProbeAt.IsZero() || time.Since(controlProbeAt) >= time.Minute {
 				controlProbeErr = probeNodeControl(ctx)

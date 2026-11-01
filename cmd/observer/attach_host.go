@@ -48,6 +48,21 @@ type attachLauncher interface {
 	EndRunByHandle(ctx context.Context, handle string, exitCode int)
 }
 
+// markAttachEnding records child_exit as the end reason of an attach run
+// the host tears down because its wiring failed, so the -1 it then records
+// is not read as a stop from outside (Windows 11 Pro run 4, N3). A launcher
+// without the seam (a test stub) records nothing more.
+func markAttachEnding(l attachLauncher, handle string) {
+	if m, ok := l.(endingMarker); ok {
+		m.MarkEnding(handle, termrun.EndChildExit)
+	}
+}
+
+// endingMarker is the end-reason seam *termsvc.Service offers.
+type endingMarker interface {
+	MarkEnding(handle, reason string) bool
+}
+
 // attachPTYManager is the PTY-manager seam the attach Host depends on. It is
 // satisfied by *termsession.Manager. The concrete Subscribe/AcquireWriterLocal
 // return types (*Subscription / *WriterLease) are used directly because the
@@ -359,6 +374,7 @@ func (h *attachHost) LaunchAttachable(ctx context.Context, req attachsock.SpawnR
 		// uses (Manager.Close → terminate), THEN record the now-real exit and
 		// surface the failure. EndRunByHandle dedupes by handle, so this stays
 		// consistent with the manager's own OnExit.
+		markAttachEnding(h.svc, handle)
 		h.mgr.Close(handle)
 		h.svc.EndRunByHandle(ctx, handle, -1)
 		return nil, err
@@ -369,6 +385,7 @@ func (h *attachHost) LaunchAttachable(ctx context.Context, req attachsock.SpawnR
 		// record is TRUE (not a claim made while it lived), then surface the
 		// failure (B3-3).
 		h.mgr.Unsubscribe(sub)
+		markAttachEnding(h.svc, handle)
 		h.mgr.Close(handle)
 		h.svc.EndRunByHandle(ctx, handle, -1)
 		return nil, err

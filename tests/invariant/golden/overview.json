@@ -38,6 +38,6 @@
     }
   ],
   "recent_failures_24h": 0,
-  "schema_version": 163,
+  "schema_version": "\u003cSCHEMA_VERSION\u003e",
   "started_at": "\u003cTS\u003e"
 }

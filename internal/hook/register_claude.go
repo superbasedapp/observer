@@ -184,12 +184,15 @@ func observerCmdMatchesRaw(group claudeHookGroupRaw, want string) bool {
 // undocumented-to-us fields (e.g. `timeout`) survive byte-identical
 // even when observer's own entry in the SAME group is removed
 // alongside it.
-func filterClaudeGroupsRaw(groups []claudeHookGroupRaw) (out []claudeHookGroupRaw, removed, kept int) {
+//
+// mine is the uninstall's recogniser (isObserverClaudeEntry under the FU-203
+// judgement, removableEntry).
+func filterClaudeGroupsRaw(groups []claudeHookGroupRaw, mine func(string) bool) (out []claudeHookGroupRaw, removed, kept int) {
 	for _, g := range groups {
 		var survivors []json.RawMessage
 		for _, raw := range g.Hooks {
 			var probe claudeHookCommandProbe
-			if err := json.Unmarshal(raw, &probe); err == nil && probe.Type == "command" && isObserverClaudeEntry(probe.Command) {
+			if err := json.Unmarshal(raw, &probe); err == nil && probe.Type == "command" && mine(probe.Command) {
 				removed++
 				continue
 			}
@@ -204,9 +207,54 @@ func filterClaudeGroupsRaw(groups []claudeHookGroupRaw) (out []claudeHookGroupRa
 	return out, removed, kept
 }
 
+// readClaudeHookSettings reads path for registerClaudeCode: the raw bytes
+// (nil when the file does not exist), the top-level object with unknown
+// fields preserved via map[string]json.RawMessage, and the per-event hooks
+// map (never nil). The per-event value is kept as json.RawMessage (B5) so
+// an event the register loop never touches, and within an event it DOES
+// touch a sibling entry it doesn't own, round-trips byte-for-byte instead
+// of being decoded into (and truncated by) a typed struct.
+func readClaudeHookSettings(path string) ([]byte, map[string]json.RawMessage, map[string]json.RawMessage, error) {
+	raw, err := readSettingsFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, nil, nil, fmt.Errorf("hook.registerClaudeCode: read: %w", err)
+	}
+	settings := map[string]json.RawMessage{}
+	if len(raw) > 0 {
+		settings, err = decodeSettingsObject(path, raw)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("hook.registerClaudeCode: %w", err)
+		}
+	}
+	var hooksRaw map[string]json.RawMessage
+	if existing, ok := settings["hooks"]; ok {
+		if err := json.Unmarshal(existing, &hooksRaw); err != nil {
+			return nil, nil, nil, fmt.Errorf("hook.registerClaudeCode: parse hooks: %w", err)
+		}
+	}
+	if hooksRaw == nil {
+		hooksRaw = map[string]json.RawMessage{}
+	}
+	return raw, settings, hooksRaw, nil
+}
+
 func (r *Registry) registerClaudeCode() RegistrationResult {
-	res := RegistrationResult{Tool: "claude-code", DryRun: r.opts.DryRun}
-	settingsDir := filepath.Join(r.opts.HomeDir, ".claude")
+	settingsDir, err := r.claudeConfigDir()
+	if err != nil {
+		return RegistrationResult{Tool: "claude-code", DryRun: r.opts.DryRun, Error: err}
+	}
+	return r.registerClaudeCodeAt("claude-code", settingsDir, "hook.registerClaudeCode")
+}
+
+// registerClaudeCodeAt is the settings.json hook writer behind
+// registerClaudeCode, for the Claude Code config home settingsDir. tool is
+// the target label (the result's Tool and the checksum key; "claude-code",
+// or "claude-code-xcode" for the home Xcode gives its bundled Claude,
+// register_xcode.go); every entry is the same native `observer hook
+// claude-code <event>` command, so isObserverClaudeEntry owns it in either
+// home. errPrefix names the calling registrar in wrapped errors.
+func (r *Registry) registerClaudeCodeAt(tool, settingsDir, errPrefix string) RegistrationResult {
+	res := RegistrationResult{Tool: tool, DryRun: r.opts.DryRun}
 	path := filepath.Join(settingsDir, "settings.json")
 	res.ConfigPath = path
 
@@ -235,7 +283,7 @@ func (r *Registry) registerClaudeCode() RegistrationResult {
 	// concurrent observer's committed write is lost.
 	unlock, err := r.lockSettings(path)
 	if err != nil {
-		res.Error = fmt.Errorf("hook.registerClaudeCode: %w", err)
+		res.Error = fmt.Errorf(errPrefix+": %w", err)
 		return res
 	}
 	defer unlock()
@@ -243,34 +291,19 @@ func (r *Registry) registerClaudeCode() RegistrationResult {
 	// Pin the write target now, before the read — see pinnedTarget (F6).
 	pinned := pinWriteTarget(path)
 
-	raw, err := readSettingsFile(path)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		res.Error = fmt.Errorf("hook.registerClaudeCode: read: %w", err)
+	raw, settings, hooksRaw, err := readClaudeHookSettings(path)
+	if err != nil {
+		res.Error = err
 		return res
 	}
-	// Preserve unknown top-level fields via map[string]json.RawMessage.
-	settings := map[string]json.RawMessage{}
-	if len(raw) > 0 {
-		settings, err = decodeSettingsObject(path, raw)
-		if err != nil {
-			res.Error = fmt.Errorf("hook.registerClaudeCode: %w", err)
-			return res
-		}
+
+	// T-847: events whose Observer entry is ours but not in the shape this
+	// writer emits (hook_shape.go).
+	// FU-192: an entry in Observer's shape running another binary is kept.
+	if r.refusesForeignBinary(&res, errPrefix, path, identityContent, shapedHooksInText(settings["hooks"], "claude-code")) {
+		return res
 	}
-	// Per-event hooks value is kept as json.RawMessage (B5) so an event
-	// this loop never touches — and, within an event it DOES touch, a
-	// sibling entry it doesn't own — round-trips byte-for-byte instead
-	// of being decoded into (and truncated by) a typed struct.
-	var hooksRaw map[string]json.RawMessage
-	if existing, ok := settings["hooks"]; ok {
-		if err := json.Unmarshal(existing, &hooksRaw); err != nil {
-			res.Error = fmt.Errorf("hook.registerClaudeCode: parse hooks: %w", err)
-			return res
-		}
-	}
-	if hooksRaw == nil {
-		hooksRaw = map[string]json.RawMessage{}
-	}
+	shapeDrift := shapeDriftEvents(settings["hooks"], claudeShapedGroups(isObserverClaudeEntry))
 
 	for _, event := range claudeCodeEvents {
 		// Normalize Windows-shaped paths to forward slashes so the
@@ -300,11 +333,11 @@ func (r *Registry) registerClaudeCode() RegistrationResult {
 		var groups []claudeHookGroupRaw
 		if raw, ok := hooksRaw[event]; ok && len(raw) > 0 {
 			if err := json.Unmarshal(raw, &groups); err != nil {
-				res.Error = fmt.Errorf("hook.registerClaudeCode: parse hooks[%s]: %w", event, err)
+				res.Error = fmt.Errorf(errPrefix+": parse hooks[%s]: %w", event, err)
 				return res
 			}
 		}
-		idx := findClaudeGroupWithObserverRaw(groups)
+		groups, idx := dropShapeDriftedClaudeEntry(&res, event, cmd, groups, shapeDrift[event])
 		if idx >= 0 {
 			if observerCmdMatchesRaw(groups[idx], cmd) {
 				res.AlreadySet = append(res.AlreadySet, event)
@@ -327,13 +360,13 @@ func (r *Registry) registerClaudeCode() RegistrationResult {
 		}
 		// Conflict check: a non-observer hook command on "*" matcher
 		// counts as an unmanaged entry.
-		if !r.opts.Force && hasConflictingClaudeHookRaw(groups) {
-			res.Error = hookConflictError("hook.registerClaudeCode", event)
+		if r.refuses(res.ConfigPath, identityContent) && hasConflictingClaudeHookRaw(groups) {
+			res.Error = hookConflictError(errPrefix, event)
 			return res
 		}
 		entryJSON, err := json.Marshal(claudeHookCommand{Type: "command", Command: cmd})
 		if err != nil {
-			res.Error = fmt.Errorf("hook.registerClaudeCode: marshal entry: %w", err)
+			res.Error = fmt.Errorf(errPrefix+": marshal entry: %w", err)
 			return res
 		}
 		groups = append(groups, claudeHookGroupRaw{
@@ -342,7 +375,7 @@ func (r *Registry) registerClaudeCode() RegistrationResult {
 		})
 		groupsJSON, err := json.Marshal(groups)
 		if err != nil {
-			res.Error = fmt.Errorf("hook.registerClaudeCode: marshal hooks[%s]: %w", event, err)
+			res.Error = fmt.Errorf(errPrefix+": marshal hooks[%s]: %w", event, err)
 			return res
 		}
 		hooksRaw[event] = groupsJSON
@@ -355,7 +388,7 @@ func (r *Registry) registerClaudeCode() RegistrationResult {
 		if r.opts.DryRun {
 			return res
 		}
-		if err := r.recordHookChecksum("claude-code", path); err != nil {
+		if err := r.recordHookChecksum(tool, path); err != nil {
 			res.Error = err
 		}
 		return res
@@ -363,7 +396,7 @@ func (r *Registry) registerClaudeCode() RegistrationResult {
 
 	patched, err := json.Marshal(hooksRaw)
 	if err != nil {
-		res.Error = fmt.Errorf("hook.registerClaudeCode: marshal hooks: %w", err)
+		res.Error = fmt.Errorf(errPrefix+": marshal hooks: %w", err)
 		return res
 	}
 	settings["hooks"] = patched
@@ -371,15 +404,91 @@ func (r *Registry) registerClaudeCode() RegistrationResult {
 	if r.opts.DryRun {
 		return res
 	}
-	if err := r.writeHookSettingsJSON("claude-code", settingsDir, pinned, raw, settings); err != nil {
+	if err := r.writeHookSettingsJSON(tool, settingsDir, pinned, raw, settings); err != nil {
 		res.Error = err
 		return res
 	}
-	if err := r.recordHookChecksum("claude-code", path); err != nil {
+	if err := r.recordHookChecksum(tool, path); err != nil {
 		res.Error = err
 		return res
 	}
 	return res
+}
+
+// shapeRewriteRule / shapeRewriteReason name the T-847 rewrite of an
+// Observer entry whose command may be current but whose surrounding shape
+// (matcher, extra fields) is not the canonical registration.
+const (
+	shapeRewriteRule   = "hook-shape"
+	shapeRewriteReason = "the entry's matcher or fields differ from the canonical registration"
+)
+
+// claudeMatcherCanonical reports whether a group matcher is the match-all
+// Observer writes ("*"; an absent matcher also matches every tool).
+func claudeMatcherCanonical(m string) bool { return m == "" || m == "*" }
+
+// dropObserverEntriesRaw removes Observer's entries from groups[idx], keeping
+// any sibling entry (and its matcher) in place; a group left empty is dropped.
+func dropObserverEntriesRaw(groups []claudeHookGroupRaw, idx int, ours func(string) bool) []claudeHookGroupRaw {
+	var survivors []json.RawMessage
+	for _, raw := range groups[idx].Hooks {
+		var probe claudeHookCommandProbe
+		if json.Unmarshal(raw, &probe) == nil && probe.Type == "command" && ours(probe.Command) {
+			continue
+		}
+		survivors = append(survivors, raw)
+	}
+	if len(survivors) == 0 {
+		return append(groups[:idx:idx], groups[idx+1:]...)
+	}
+	groups[idx].Hooks = survivors
+	return groups
+}
+
+// dropShapeDriftedClaudeEntry finds Observer's group for event and, when the
+// entry is ours but no longer the shape Observer writes (drift: a narrowed
+// matcher, an added field such as a short timeout), records the T-847 shape
+// rewrite and drops only Observer's entry (a sibling keeps its group), so the
+// caller appends the canonical one. The command alone never made such an
+// entry "already set": that let `observer start` re-record a weakened file as
+// the new baseline. It returns the groups and Observer's group index (-1 when
+// there is none, or it was dropped).
+func dropShapeDriftedClaudeEntry(res *RegistrationResult, event, cmd string, groups []claudeHookGroupRaw, drift bool) ([]claudeHookGroupRaw, int) {
+	idx := findClaudeGroupWithObserverRaw(groups)
+	if idx < 0 || !drift {
+		return groups, idx
+	}
+	shapeRewrite(res, event, observerCommandInGroupRaw(groups[idx], isObserverClaudeEntry), cmd)
+	return dropObserverEntriesRaw(groups, idx, isObserverClaudeEntry), -1
+}
+
+// dropShapeDriftedTyped is dropShapeDriftedClaudeEntry for typed groups:
+// find locates Observer's group, ours recognises its entry.
+func dropShapeDriftedTyped(res *RegistrationResult, event, cmd string, groups []claudeHookGroup, drift bool,
+	find func([]claudeHookGroup) int, ours func(string) bool,
+) ([]claudeHookGroup, int) {
+	idx := find(groups)
+	if idx < 0 || !drift {
+		return groups, idx
+	}
+	shapeRewrite(res, event, observerCommandInGroup(groups[idx], ours), cmd)
+	return dropObserverEntriesTyped(groups, idx, ours), -1
+}
+
+// dropObserverEntriesTyped is dropObserverEntriesRaw for typed groups.
+func dropObserverEntriesTyped(groups []claudeHookGroup, idx int, ours func(string) bool) []claudeHookGroup {
+	var survivors []claudeHookCommand
+	for _, h := range groups[idx].Hooks {
+		if h.Type == "command" && ours(h.Command) {
+			continue
+		}
+		survivors = append(survivors, h)
+	}
+	if len(survivors) == 0 {
+		return append(groups[:idx:idx], groups[idx+1:]...)
+	}
+	groups[idx].Hooks = survivors
+	return groups
 }
 
 // isObserverClaudeEntry recognises a hook command as one previously
@@ -526,14 +635,23 @@ func observerCmdMatches(group claudeHookGroup, want string) bool {
 }
 
 func (r *Registry) unregisterClaudeCode() UnregistrationResult {
-	res := UnregistrationResult{Tool: "claude-code", DryRun: r.opts.DryRun}
-	settingsDir := filepath.Join(r.opts.HomeDir, ".claude")
+	settingsDir, err := r.claudeConfigDir()
+	if err != nil {
+		return UnregistrationResult{Tool: "claude-code", DryRun: r.opts.DryRun, Error: err}
+	}
+	return r.unregisterClaudeCodeAt("claude-code", settingsDir, "hook.unregisterClaudeCode")
+}
+
+// unregisterClaudeCodeAt is registerClaudeCodeAt's cleaner: it removes the
+// entries isObserverClaudeEntry owns from settingsDir's settings.json.
+func (r *Registry) unregisterClaudeCodeAt(tool, settingsDir, errPrefix string) UnregistrationResult {
+	res := UnregistrationResult{Tool: tool, DryRun: r.opts.DryRun}
 	path := filepath.Join(settingsDir, "settings.json")
 	res.ConfigPath = path
 
 	unlock, err := r.lockSettings(path)
 	if err != nil {
-		res.Error = fmt.Errorf("hook.unregisterClaudeCode: %w", err)
+		res.Error = fmt.Errorf(errPrefix+": %w", err)
 		return res
 	}
 	defer unlock()
@@ -547,13 +665,13 @@ func (r *Registry) unregisterClaudeCode() UnregistrationResult {
 			res.Skipped = true
 			return res
 		}
-		res.Error = fmt.Errorf("hook.unregisterClaudeCode: read: %w", err)
+		res.Error = fmt.Errorf(errPrefix+": read: %w", err)
 		return res
 	}
 
 	settings, err := decodeSettingsObject(path, raw)
 	if err != nil {
-		res.Error = fmt.Errorf("hook.unregisterClaudeCode: %w", err)
+		res.Error = fmt.Errorf(errPrefix+": %w", err)
 		return res
 	}
 	// Kept as json.RawMessage per event (B5) — see registerClaudeCode's
@@ -562,7 +680,7 @@ func (r *Registry) unregisterClaudeCode() UnregistrationResult {
 	hooksRaw := map[string]json.RawMessage{}
 	if existing, ok := settings["hooks"]; ok {
 		if err := json.Unmarshal(existing, &hooksRaw); err != nil {
-			res.Error = fmt.Errorf("hook.unregisterClaudeCode: parse hooks: %w", err)
+			res.Error = fmt.Errorf(errPrefix+": parse hooks: %w", err)
 			return res
 		}
 	}
@@ -571,11 +689,15 @@ func (r *Registry) unregisterClaudeCode() UnregistrationResult {
 		var groups []claudeHookGroupRaw
 		if len(raw) > 0 {
 			if err := json.Unmarshal(raw, &groups); err != nil {
-				res.Error = fmt.Errorf("hook.unregisterClaudeCode: parse hooks[%s]: %w", event, err)
+				res.Error = fmt.Errorf(errPrefix+": parse hooks[%s]: %w", event, err)
 				return res
 			}
 		}
-		newGroups, removed, kept := filterClaudeGroupsRaw(groups)
+		foreign := false
+		newGroups, removed, kept := filterClaudeGroupsRaw(groups, r.removableEntry("claude-code", isObserverClaudeEntry, &foreign))
+		if foreign {
+			noteKeptForeign(&res, event)
+		}
 		if removed > 0 {
 			res.HooksRemoved = append(res.HooksRemoved, event)
 		}
@@ -588,13 +710,14 @@ func (r *Registry) unregisterClaudeCode() UnregistrationResult {
 		}
 		newGroupsJSON, err := json.Marshal(newGroups)
 		if err != nil {
-			res.Error = fmt.Errorf("hook.unregisterClaudeCode: marshal hooks[%s]: %w", event, err)
+			res.Error = fmt.Errorf(errPrefix+": marshal hooks[%s]: %w", event, err)
 			return res
 		}
 		hooksRaw[event] = newGroupsJSON
 	}
 	sort.Strings(res.HooksRemoved)
 	sort.Strings(res.HooksKept)
+	sort.Strings(res.HooksKeptForeign)
 
 	// No observer entries to remove — skip the checksum guard entirely
 	// and treat this as a no-op regardless of file drift.
@@ -608,12 +731,12 @@ func (r *Registry) unregisterClaudeCode() UnregistrationResult {
 	// bypasses the guard.
 	match, err := r.checksumMatches(path, raw)
 	if err != nil {
-		res.Error = fmt.Errorf("hook.unregisterClaudeCode: checksum: %w", err)
+		res.Error = fmt.Errorf(errPrefix+": checksum: %w", err)
 		return res
 	}
 	res.ChecksumMatch = match
 	if !match && !r.opts.Force {
-		res.Error = safeErrorf("hook.unregisterClaudeCode: %s has been modified since install (checksum mismatch); pass --force to remove anyway", path)
+		res.Error = safeErrorf(errPrefix+": %s has been modified since install (checksum mismatch); pass --force to remove anyway", path)
 		return res
 	}
 
@@ -622,7 +745,7 @@ func (r *Registry) unregisterClaudeCode() UnregistrationResult {
 	} else {
 		patched, err := json.Marshal(hooksRaw)
 		if err != nil {
-			res.Error = fmt.Errorf("hook.unregisterClaudeCode: marshal hooks: %w", err)
+			res.Error = fmt.Errorf(errPrefix+": marshal hooks: %w", err)
 			return res
 		}
 		settings["hooks"] = patched
@@ -634,11 +757,11 @@ func (r *Registry) unregisterClaudeCode() UnregistrationResult {
 
 	if len(settings) == 0 {
 		if err := removeEmptyConfigFile(path, raw); err != nil {
-			res.Error = fmt.Errorf("hook.unregisterClaudeCode: remove empty %s: %w", path, err)
+			res.Error = fmt.Errorf(errPrefix+": remove empty %s: %w", path, err)
 			return res
 		}
 	} else {
-		if err := r.writeHookSettingsJSON("claude-code", settingsDir, pinned, raw, settings); err != nil {
+		if err := r.writeHookSettingsJSON(tool, settingsDir, pinned, raw, settings); err != nil {
 			res.Error = err
 			return res
 		}

@@ -77,9 +77,14 @@ func New(o Options) *Client {
 // ErrHostNotAllowed is returned for a URL outside the source's host table.
 var ErrHostNotAllowed = errors.New("planlimitsnet: host not allowed for this source")
 
-// CheckURL enforces the URL policy for a source: HTTPS, no user info, port
-// 443 or none, no fragment, and an exact host from the source row.
+// CheckURL enforces the URL policy for a fixed-host source: HTTPS, no user
+// info, port 443 or none, no fragment, and an exact host from the source row.
+// A self-hosted gateway source (UserBaseURL) is never allowed through here: it
+// needs the account's base URL, see CheckURLAgainstBase.
 func CheckURL(src planlimits.SourceDef, raw string) error {
+	if src.UserBaseURL {
+		return ErrHostNotAllowed
+	}
 	u, err := url.Parse(raw)
 	if err != nil {
 		return fmt.Errorf("%w: %s", ErrHostNotAllowed, err.Error())
@@ -97,6 +102,67 @@ func CheckURL(src planlimits.SourceDef, raw string) error {
 		}
 	}
 	return ErrHostNotAllowed
+}
+
+// defaultPorts gives the port a URL without one uses, by scheme.
+var defaultPorts = map[string]string{"https": "443", "http": "80"}
+
+// effectivePort returns the URL's port, or its scheme's default.
+func effectivePort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	return defaultPorts[strings.ToLower(u.Scheme)]
+}
+
+// CheckURLAgainstBase enforces the URL policy for a self-hosted gateway
+// source (ledger SUBS-5). The base must pass planlimits.CheckBaseURL (https,
+// or plain http only to a loopback host; any port; no user info, query or
+// fragment), and the request must use the base's scheme, the exact same host
+// and the exact same port, with no user info and no fragment. Every other
+// egress rule (no redirects, body cap, timeout) is unchanged.
+func CheckURLAgainstBase(src planlimits.SourceDef, base, raw string) error {
+	if !src.UserBaseURL {
+		return ErrHostNotAllowed
+	}
+	b, err := planlimits.CheckBaseURL(base)
+	if err != nil {
+		return fmt.Errorf("%w: %s", ErrHostNotAllowed, err.Error())
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("%w: %s", ErrHostNotAllowed, err.Error())
+	}
+	if u.User != nil || u.Fragment != "" || u.Opaque != "" || strings.Contains(raw, "#") {
+		return ErrHostNotAllowed
+	}
+	if !strings.EqualFold(u.Scheme, b.Scheme) {
+		return ErrHostNotAllowed
+	}
+	if !strings.EqualFold(u.Hostname(), b.Hostname()) || effectivePort(u) != effectivePort(b) {
+		return ErrHostNotAllowed
+	}
+	return nil
+}
+
+// checkRequest picks the URL policy for one request. A gateway request names
+// its base in Request.Base (never sent); a fixed-host request naming a base
+// is refused, and a gateway request without one is refused.
+func checkRequest(src planlimits.SourceDef, r planlimits.Request) (map[string]string, error) {
+	plain := make(map[string]string, len(r.Header))
+	for k, v := range r.Header {
+		plain[k] = v
+	}
+	if src.UserBaseURL {
+		if r.Base == "" {
+			return nil, ErrHostNotAllowed
+		}
+		return plain, CheckURLAgainstBase(src, r.Base, r.URL)
+	}
+	if r.Base != "" {
+		return nil, ErrHostNotAllowed
+	}
+	return plain, CheckURL(src, r.URL)
 }
 
 // Do performs every request of one refresh, sequentially, and returns the
@@ -119,7 +185,8 @@ func (c *Client) Do(ctx context.Context, src planlimits.SourceDef, reqs []planli
 
 func (c *Client) doHTTP(ctx context.Context, src planlimits.SourceDef, r planlimits.Request) planlimits.Response {
 	resp := planlimits.Response{Key: r.Key}
-	if err := CheckURL(src, r.URL); err != nil {
+	plain, err := checkRequest(src, r)
+	if err != nil {
 		resp.Err = err
 		return resp
 	}
@@ -136,7 +203,7 @@ func (c *Client) doHTTP(ctx context.Context, src planlimits.SourceDef, r planlim
 		resp.Err = fmt.Errorf("%w: %s", planlimits.ErrTransient, err.Error())
 		return resp
 	}
-	for k, v := range r.Header {
+	for k, v := range plain {
 		req.Header.Set(k, v)
 	}
 	req.Header.Set("User-Agent", "superbased-observer-plans/"+strings.TrimSpace(c.version))
@@ -162,11 +229,27 @@ func (c *Client) doHTTP(ctx context.Context, src planlimits.SourceDef, r planlim
 		return resp
 	}
 	if res.StatusCode >= 300 && res.StatusCode < 400 {
-		resp.Err = fmt.Errorf("%w: redirect refused", planlimits.ErrShape)
+		resp.Err = fmt.Errorf("%w: redirect refused", redirectOutcome(src.Kind))
 		return resp
 	}
 	resp.Body = b
 	return resp
+}
+
+// redirectOutcomes classifies a refused redirect by source kind: for a pasted
+// browser session a redirect is the vendor sending an expired session to its
+// sign-in page, so the user is asked to paste a fresh one; for any other
+// source it means the endpoint moved. Redirects are never followed.
+var redirectOutcomes = map[planlimits.SourceKind]error{
+	planlimits.KindBrowser: planlimits.ErrAuth,
+}
+
+// redirectOutcome returns the error class for a redirect from a source kind.
+func redirectOutcome(k planlimits.SourceKind) error {
+	if e, ok := redirectOutcomes[k]; ok {
+		return e
+	}
+	return planlimits.ErrShape
 }
 
 // errClass reduces a transport error to a short class, never a URL with a

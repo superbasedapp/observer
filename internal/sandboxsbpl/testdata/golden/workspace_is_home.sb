@@ -1,0 +1,61 @@
+(version 1)
+; Observer Seatbelt profile v1 (internal/sandboxsbpl): built from the bwrap plan's tables
+(deny default)
+; processes: exec and fork inherit this profile; signals and process info stay inside it
+(allow process-exec)
+(allow process-fork)
+(allow signal (target same-sandbox))
+(allow process-info* (target same-sandbox))
+(allow sysctl-read)
+(allow ipc-posix-shm-read-data ipc-posix-shm-read-metadata (ipc-posix-name "apple.shm.notification_center"))
+(allow ipc-posix-sem)
+(allow user-preference-read)
+(allow mach-lookup
+  (global-name "com.apple.system.opendirectoryd.libinfo")
+  (global-name "com.apple.system.opendirectoryd.membership")
+  (global-name "com.apple.system.logger")
+  (global-name "com.apple.logd")
+  (global-name "com.apple.system.notification_center")
+  (global-name "com.apple.trustd.agent")
+  (global-name "com.apple.bsd.dirhelper")
+  (global-name "com.apple.lsd.mapdb"))
+; files: the whole root reads, as bwrap's --ro-bind / /
+(allow file-read*)
+; home: blinded like bwrap's --tmpfs $HOME; it and the ancestors of each punch-back keep their metadata only
+(deny file-read* (subpath (param "HOME")))
+(allow file-read-metadata (literal (param "HOME")))
+(allow file-read-metadata (literal (param "ANC0")))
+; shared temp: $TMPDIR and /private/tmp hidden (other runs' temp dirs, launch files); the run's own dirs are granted below
+(deny file-read* file-write* (subpath (param "STMP0")))
+(deny file-read* file-write* (subpath (param "STMP1")))
+(allow file-read-metadata (literal (param "TANC0")))
+(allow file-read-metadata (literal (param "TANC1")))
+(allow file-read-metadata (literal (param "TANC2")))
+; read-only punch-backs: tool state, runtimes, tool binaries, extra read-only binds
+(allow file-read* (subpath (param "RO0")))
+(allow file-read* (subpath (param "RO1")))
+(allow file-read* (subpath (param "RO2")))
+(allow file-read* (subpath (param "RO3")))
+; observer dir: hidden, as the capture relay's tmpfs over it
+(deny file-read* file-write* (subpath (param "OBS")))
+; read-write: the workspace, tool state, extra read-write binds, the run's TMPDIR
+(allow file-read* file-write* (subpath (param "WS")))
+(allow file-read* file-write* (subpath (param "RW0")))
+(allow file-read* file-write* (subpath (param "RW1")))
+(allow file-read* file-write* (subpath (param "TMP")))
+(deny file-read* file-write* (subpath (param "OBS")))
+; the observer binary the hooks run
+(allow file-read* (literal (param "BIN")))
+(allow file-read* (subpath (param "BINDIR")))
+; socket dirs: every run's hidden, this run's launch record readable
+(deny file-read* file-write* (subpath (param "SOCKP")))
+(allow file-read* (subpath (param "SOCK")))
+; protect table: read-only and hidden paths, after every grant so none re-opens them
+; devices and the inherited PTY (file-ioctl: the terminal size and modes)
+(allow file-write-data file-ioctl (literal "/dev/null"))
+(allow file-write-data file-ioctl (literal "/dev/dtracehelper"))
+(allow file-read* file-write-data file-ioctl (literal "/dev/tty"))
+(allow file-read* file-write-data file-ioctl (literal (param "TTY")))
+; network: the run's relay socket, then the tier's loopback ports; nothing else
+(allow network-outbound (remote unix-socket (path-literal (param "RELAY"))))
+(allow network-outbound (remote ip "localhost:8820"))

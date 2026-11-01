@@ -1,0 +1,16 @@
+-- 210_arena_candidate_permission_lane.sql - which permission lane an Agent
+-- Arena candidate's drive ran in (lane p1arena audit F4, OSH-R-005).
+--
+-- Since OSH-R-005 a drive picks one of the harness's grounded permission
+-- lanes (internal/arena/permlane.go): "bypass" (the harness's own checks
+-- off), "edit" (edits in the worktree only) or "read_only". The candidate row
+-- records the lane its drive used so the Benchmarks page can show whether a
+-- result came from a run with checks skipped. Empty means not recorded (a
+-- row written before this column, or a drive refused before it started).
+-- Node-local like every arena_* table (privacy sentinel); no server pair.
+--
+-- Numbered 210 as this lane's assigned number on the plans line; 208 and
+-- 209 are reserved for the other P-201 lanes (reservedMigrationRanges in
+-- tests/invariant/migrations_pin_test.go). The orchestrator renumbers at
+-- merge (docs/migration-numbering.md).
+ALTER TABLE arena_candidates ADD COLUMN permission_lane TEXT NOT NULL DEFAULT '';

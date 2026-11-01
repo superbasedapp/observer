@@ -25,7 +25,14 @@ const (
 	// "Request from your organization" path of a component the node's
 	// node.components policy leaves inert or denies with a grantable entry.
 	TypeComponentEnable = "component_enable"
-	TypeOther           = "other"
+	// TypeFindingException asks the org to accept ONE code security finding
+	// on a managed node for a while (security plan 5.12 and 7.5, lane
+	// SEC-E3): the target is the finding's opaque wire handle (finding_ref,
+	// orgcontract.SecurityFindingRow.FindingRef), the rule id names its
+	// rule. The node applies an honoured grant to its local exception
+	// register (secsvc.SyncOrgExceptions); it is never rule-wide.
+	TypeFindingException = "finding_exception"
+	TypeOther            = "other"
 )
 
 // Approver permission keys. They are the org server's rbac vocabulary,
@@ -35,6 +42,9 @@ const (
 	KeyWriteBudgets    = "write:budgets"
 	KeyWritePolicy     = "write:policy"
 	KeyAdminDeployment = "admin:deployment"
+	// KeyWriteSecurity decides finding exceptions (security plan 7.6, lane
+	// SEC-E3): triage and exceptions are one grant.
+	KeyWriteSecurity = "write:security"
 )
 
 // Landing names the chokepoint a grant of a type is enforced at.
@@ -108,6 +118,15 @@ type RequestType struct {
 	MaxDuration time.Duration
 	// LegacyKind is the W6 kind a pre-design node posts for this type.
 	LegacyKind string
+	// ExpiryRequired refuses a request that names no duration (the 24h
+	// default is not applied): the developer states how long they ask for
+	// (finding exceptions, security plan 7.5).
+	ExpiryRequired bool
+	// NoSelfApproval refuses a self-approval of this type on every path,
+	// overriding the D-086 solo-super-admin carve-out: the request stays
+	// pending until another approver decides it (security plan 5.12 and
+	// 7.5: a finding exception is never its requester's own decision).
+	NoSelfApproval bool
 }
 
 // Grantable reports whether a request of this type can mint a grant.
@@ -194,6 +213,16 @@ var RequestTypes = []RequestType{
 		ID: TypeComponentEnable, Label: "Component access", ApproverKey: KeyAdminDeployment,
 		Landing: LandGrantRail, Required: []Field{FieldTarget},
 		Max: MaxFixed, MaxDuration: 90 * day,
+	},
+	{
+		// Lane SEC-E3 (security plan 5.12 and 7.5): one code finding on a
+		// managed node, for a stated while (expiry required). Decided with
+		// write:security; a perpetual or critical-finding exception needs
+		// the super admin (tierRules), never its requester (D-086), and a
+		// perpetual one falls due for re-review every 90 days (ReviewDue).
+		ID: TypeFindingException, Label: "Code finding exception", ApproverKey: KeyWriteSecurity,
+		Landing: LandGrantRail, Required: []Field{FieldRuleID, FieldTarget},
+		Max: MaxFixed, MaxDuration: 90 * day, ExpiryRequired: true, NoSelfApproval: true,
 	},
 	{
 		// T-437: an "other" ask was never grantable and landed nowhere; it

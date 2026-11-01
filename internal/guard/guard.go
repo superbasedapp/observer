@@ -5,11 +5,13 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/git"
 	"github.com/marmutapp/superbased-observer/internal/policy"
 	"github.com/marmutapp/superbased-observer/internal/scrub"
 )
@@ -34,6 +36,13 @@ const maxProjectEngines = 64
 type Options struct {
 	// Config is the loaded [guard] section.
 	Config config.GuardConfig
+	// PackRules are a module's rule pack composed in by the cmd layer
+	// (the security pillar's S-7xx rows, Source policy.SourcePackSecurity;
+	// security pillar plan section 4.7 item 1), already validated there.
+	// They join every engine before the policy layers' rules and are
+	// tuned like built-ins. Nil when no module is active, which is
+	// byte-identical to the engine before the pillar.
+	PackRules []policy.Rule
 	// Home is the daemon user's home directory (native path flavor),
 	// used for "~" expansion in policy paths and pattern matching.
 	Home string
@@ -75,6 +84,13 @@ type Options struct {
 	// cache, so a hook process only ever reads a file that already
 	// passed the full check once.
 	OrgKeyPinHash string
+	// OrgBundleExpected reports that this node has accepted a verified org
+	// bundle before (the daemon reads it from its store: an org row for the
+	// fetched bundle). A missing bundle file is then a DELETION, not "never
+	// published" (T-864 gap 1). Hook and CLI processes get the same fact
+	// from the daemon's MAC'd org lock (config.GuardOrgLock), so they leave
+	// this false.
+	OrgBundleExpected bool
 	// ManagedTenancy, when non-nil, reports whether this node runs
 	// under Enterprise-Managed Tenancy (govern.Effective.Managed -
 	// managed-class consent on the org's SIGNED enrolment grant). It
@@ -141,10 +157,12 @@ type PolicyState struct {
 // wrapper. Safe for concurrent use (immutable engines; mutex-guarded
 // caches and trackers).
 type Guard struct {
-	cfg      config.GuardConfig
-	home     string
-	roots    []string
-	readFile func(string) ([]byte, error)
+	// packRules are Options.PackRules, fixed for the Guard's lifetime.
+	packRules []policy.Rule
+	cfg       config.GuardConfig
+	home      string
+	roots     []string
+	readFile  func(string) ([]byte, error)
 
 	// budgetOrigins is the org-authored window label table (budgetorigin.go),
 	// keyed by rule id. nil = every ceiling renders as a local one.
@@ -167,6 +185,26 @@ type Guard struct {
 	// unverifiable bundle counts as enforcing (the org's floor is
 	// unknown, not absent); on an individual node it counts as absent.
 	orgBundleRejected atomic.Bool
+	// orgBundleTampered records that the cached bundle FILE did not verify at
+	// the last load, whether or not the last verified copy covered for it
+	// (T-844). Status surfaces read it; decisions read orgBundleRejected.
+	orgBundleTampered atomic.Bool
+	// orgBundleCause is the orgBundleCause of the last tamper
+	// orgBundleTampered recorded (T-889), so the status line says "missing"
+	// for a deleted file rather than "does not verify". Status only.
+	orgBundleCause atomic.Int32
+	// orgLKGInUse records that the org layer in force is the daemon's last
+	// verified copy from the MAC'd org lock, not the cached file (T-844).
+	orgLKGInUse atomic.Bool
+	// orgLastVerified is the last verified signed org bundle envelope the
+	// daemon recorded in its MAC'd org lock (config.GuardConfig.Lock.Bundle),
+	// immutable after New. nil when no valid lock carries one.
+	orgLastVerified []byte
+	// orgBundleExpected: this node accepted a verified org bundle before
+	// (Options.OrgBundleExpected, or the org lock's BundleExpected /
+	// OrgExpected), so a missing bundle file is a deletion (T-864 gap 1).
+	// Immutable after New.
+	orgBundleExpected bool
 
 	// projectRootForSession is the injected session-to-project
 	// resolver (approvals.go: SessionProjectRootLookup). nil on every
@@ -182,6 +220,11 @@ type Guard struct {
 	// exists. nil = no compiled table in this process → no R-306/R-307
 	// finding is ever stamped.
 	mcpAccess atomic.Pointer[MCPAccessLookup]
+	// gitAliases is the injected per-project git alias table
+	// (gitalias.go: SetGitAliasLookup), read by every engine through
+	// gitAliasesFor, so wiring it after construction reaches engines that
+	// already exist. nil = only aliases defined on the command line.
+	gitAliases atomic.Pointer[GitAliasLookup]
 
 	// set holds the ENTIRE org-derived engine snapshot behind ONE
 	// atomic.Pointer (P0-7 hot-reload): the base engine, the parsed
@@ -334,6 +377,10 @@ type Guard struct {
 	// (SetPromptPreSendLookup; posthocprompt.go): did a hook/proxy lane
 	// already judge this session's prompt? nil = always record.
 	promptPreSend PromptPreSendLookup
+	// promptSessionStop is the stopped-conversation lookup
+	// (SetPromptSessionStopLookup; promptsessionstop.go): did a pre-send
+	// lane already stop a prompt in this conversation? nil = never.
+	promptSessionStop PromptSessionStopLookup
 
 	// mcpPins is the §9.2 pin-status lookup (SetMCPPinLookup); nil =
 	// every MCP server marks mcp_unpinned taint (the G3 baseline).
@@ -364,6 +411,10 @@ type Guard struct {
 	// repeats is the A-610 consecutive-identical tracker (§12.2,
 	// repeat.go) feeding Event.RepeatCount on the ingest path.
 	repeats repeatTracker
+	// evasions is the A-613 tracker (evasion.go) feeding Event.EvasionOf
+	// and Event.EvasionShapes on the ingest path, while
+	// [guard.rules].evasion_window_seconds is set.
+	evasions evasionTracker
 }
 
 // New constructs a Guard from the loaded configuration. Construction
@@ -379,21 +430,33 @@ func New(opts Options) (*Guard, error) {
 		return nil, fmt.Errorf("guard.New: %w", err)
 	}
 	g := &Guard{
-		cfg:           opts.Config,
-		home:          opts.Home,
-		roots:         opts.KnownProjectRoots,
-		readFile:      opts.ReadFile,
-		onPolicyState: opts.OnPolicyState,
-		orgKeyPinHash: opts.OrgKeyPinHash,
-		orgBundlePath: OrgBundlePath(opts.Config, opts.Home),
-		taint:         newTaintTracker(opts.Config.Taint),
-		watches:       make(map[string]configWatch),
+		packRules:         append([]policy.Rule(nil), opts.PackRules...),
+		cfg:               opts.Config,
+		home:              opts.Home,
+		roots:             opts.KnownProjectRoots,
+		readFile:          opts.ReadFile,
+		onPolicyState:     opts.OnPolicyState,
+		orgKeyPinHash:     opts.OrgKeyPinHash,
+		orgBundleExpected: opts.OrgBundleExpected,
+		orgBundlePath:     OrgBundlePath(opts.Config, opts.Home),
+		taint:             newTaintTracker(opts.Config.Taint),
+		watches:           make(map[string]configWatch),
 	}
 	if g.readFile == nil {
 		g.readFile = os.ReadFile
 	}
 	if opts.ManagedTenancy != nil {
 		g.SetManagedTenancy(opts.ManagedTenancy)
+	}
+	g.applyOrgLock(opts)
+	// A module's rule pack that does not build on its own is dropped with
+	// an issue: a broken pack never takes guard down (the pack is validated
+	// by the cmd layer first; this is the backstop).
+	if len(g.packRules) > 0 {
+		if _, err := policy.New(policy.Config{ExtraRules: g.packRules}); err != nil {
+			g.issues = append(g.issues, fmt.Sprintf("rule pack dropped: %v", err))
+			g.packRules = nil
+		}
 	}
 	// [guard.alerts].min_severity: parse once; an empty/unknown value
 	// falls back to the documented "high" default (the config loader
@@ -418,6 +481,13 @@ func New(opts Options) (*Guard, error) {
 	g.promptAllow, promptAllowIssues = compilePromptAllow(opts.Config.Prompt.Allow)
 	g.issues = append(g.issues, promptAllowIssues...)
 
+	// [guard.boundary].protected_path_classes (R-166): an unknown class
+	// is dropped with a recorded issue, the policy-file failure posture
+	// (policy owns the vocabulary, so the config loader cannot check it).
+	var classIssues []string
+	g.cfg.Boundary.ProtectedPathClasses, classIssues = knownProtectedPathClasses(opts.Config.Boundary.ProtectedPathClasses)
+	g.issues = append(g.issues, classIssues...)
+
 	// Layers are accumulated into LOCALS (not g fields) and sealed
 	// into the initial engineSet at the end — the snapshot is the one
 	// owner of the engine state (P0-7).
@@ -430,11 +500,18 @@ func New(opts Options) (*Guard, error) {
 	// local-only policy with the issue recorded — the §14.2 compat
 	// posture mirrors the user-layer failure posture below.
 	if g.orgBundlePath != "" {
-		pf, st, issue, loaded := g.parseOrgBundle(g.orgBundlePath, opts.OrgKeyPinHash)
+		pf, st, issue, cause, loaded, lkg := g.loadOrgLayer(g.orgBundlePath, g.orgKeyPinHash, g.orgLastVerified, g.missingBundleIsTamper(nil))
 		if issue != "" {
 			g.issues = append(g.issues, issue)
-			g.orgBundleRejected.Store(true)
+			// With the last verified layer in force the org's floor is
+			// KNOWN, so the "unverifiable bundle counts as enforcing" and
+			// "approvals refused for every rule" readings do not apply:
+			// the layer itself decides, as it did before the tamper.
+			g.orgBundleRejected.Store(!lkg)
+			g.orgBundleTampered.Store(true)
+			g.orgBundleCause.Store(int32(cause))
 		}
+		g.orgLKGInUse.Store(lkg)
 		if loaded {
 			orgLayer = pf
 			states = append(states, st)
@@ -463,45 +540,53 @@ func New(opts Options) (*Guard, error) {
 		}
 	}
 
-	base, err := g.buildEngine(mode, orgLayer, userLayer, nil, nil)
-	if err != nil {
-		// A layer that breaks ENGINE construction (e.g. an override
-		// on an unknown rule) degrades the same way a parse failure
-		// does: drop the offending layer, keep the innocent one.
-		// Isolate the culprit by retrying without org, then without
-		// user, then without both — the first combination that builds
-		// wins, and every dropped layer records an issue (and its
-		// state, so PolicyStates never reports a dropped layer).
-		firstErr := err
-		built := false
-		if orgLayer != nil {
-			if b, e := g.buildEngine(mode, nil, userLayer, nil, nil); e == nil {
-				g.issues = append(g.issues, fmt.Sprintf("org policy layer dropped: %v", firstErr))
-				orgLayer, base, built = nil, b, true
-				states = dropLayerState(states, layerOrg)
-			}
-		}
-		if !built && userLayer != nil {
-			if b, e := g.buildEngine(mode, orgLayer, nil, nil, nil); e == nil {
-				g.issues = append(g.issues, fmt.Sprintf("user policy layer dropped: %v", firstErr))
-				userLayer, base, built = nil, b, true
-				states = dropLayerState(states, layerUser)
-			}
-		}
-		if !built {
-			if orgLayer != nil || userLayer != nil {
-				g.issues = append(g.issues, fmt.Sprintf("org+user policy layers dropped: %v", firstErr))
-			}
-			orgLayer, userLayer, states = nil, nil, nil
-			b, e := g.buildEngine(mode, nil, nil, nil, nil)
-			if e != nil {
-				return nil, fmt.Errorf("guard.New: built-in engine: %w", e)
-			}
-			base = b
-		}
+	_, _, v3 := decodeOrgProjectEnvelope(orgLayer)
+	var lazyNotes []string
+	lazy := false
+	if v3 {
+		lazy, lazyNotes = g.layersBuild(orgLayer, userLayer)
 	}
-
-	g.set.Store(newEngineSet(base, orgLayer, userLayer, states, buildRuleCategories(orgLayer, userLayer), g.budgetBinding(), g.budgetCalendars()))
+	if lazy {
+		// The project audience is in force (lane sec-p2a, P-052 finding 5):
+		// the base engine is built on first use, so a hook in a project root
+		// whose org project sections load builds only the folded project
+		// engine. The layers were checked to build; should the build fail
+		// anyway, the same ladder runs then and records what it dropped.
+		// The merge notes a base build records are recorded now, so a status
+		// surface reading LoadIssues sees them without building the engine.
+		g.issues = append(g.issues, lazyNotes...)
+		g.set.Store(newLazyEngineSet(mode, func() (*policy.Engine, []string) {
+			b, keptOrg, keptUser, issues, err := g.buildBaseLadder(mode, orgLayer, userLayer)
+			g.recordIssues(issues)
+			if err != nil {
+				g.recordIssues([]string{fmt.Sprintf("built-in engine: %v", err)})
+			}
+			// The layers the ladder dropped, so no status surface reports
+			// them loaded (P-058; the eager branch drops their states).
+			var dropped []string
+			if keptOrg == nil && orgLayer != nil {
+				dropped = append(dropped, layerOrg)
+			}
+			if keptUser == nil && userLayer != nil {
+				dropped = append(dropped, layerUser)
+			}
+			return b, dropped
+		}, orgLayer, userLayer, states, buildRuleCategories(orgLayer, userLayer), g.budgetBinding(), g.budgetCalendars()))
+	} else {
+		base, keptOrg, keptUser, issues, err := g.buildBaseLadder(mode, orgLayer, userLayer)
+		if err != nil {
+			return nil, fmt.Errorf("guard.New: built-in engine: %w", err)
+		}
+		g.issues = append(g.issues, issues...)
+		if keptOrg == nil && orgLayer != nil {
+			states = dropLayerState(states, layerOrg)
+		}
+		if keptUser == nil && userLayer != nil {
+			states = dropLayerState(states, layerUser)
+		}
+		orgLayer, userLayer = keptOrg, keptUser
+		g.set.Store(newEngineSet(base, orgLayer, userLayer, states, buildRuleCategories(orgLayer, userLayer), g.budgetBinding(), g.budgetCalendars()))
+	}
 
 	// Fire OnPolicyState for the SURVIVING layer states (a dropped
 	// layer is never reported as loaded). Project layers load lazily
@@ -512,6 +597,69 @@ func New(opts Options) (*Guard, error) {
 		}
 	}
 	return g, nil
+}
+
+// buildBaseLadder builds the base engine from the org and user layers. A
+// layer that breaks ENGINE construction (e.g. an override on an unknown rule)
+// degrades the same way a parse failure does: drop the offending layer, keep
+// the innocent one. It isolates the culprit by retrying without org, then
+// without user, then without both: the first combination that builds wins,
+// and every dropped layer is named in issues. The returned layers are the
+// ones kept (nil when dropped). err is set only when the built-in engine
+// itself does not build.
+func (g *Guard) buildBaseLadder(mode policy.Mode, org, user *policyFile) (*policy.Engine, *policyFile, *policyFile, []string, error) {
+	base, err := g.buildEngine(mode, org, user, nil, nil)
+	if err == nil {
+		return base, org, user, nil, nil
+	}
+	firstErr := err
+	if org != nil {
+		if b, e := g.buildEngine(mode, nil, user, nil, nil); e == nil {
+			return b, nil, user, []string{fmt.Sprintf("org policy layer dropped: %v", firstErr)}, nil
+		}
+	}
+	if user != nil {
+		if b, e := g.buildEngine(mode, org, nil, nil, nil); e == nil {
+			return b, org, nil, []string{fmt.Sprintf("user policy layer dropped: %v", firstErr)}, nil
+		}
+	}
+	var issues []string
+	if org != nil || user != nil {
+		issues = append(issues, fmt.Sprintf("org+user policy layers dropped: %v", firstErr))
+	}
+	b, e := g.buildEngine(mode, nil, nil, nil, nil)
+	if e != nil {
+		return nil, nil, nil, issues, e
+	}
+	return b, nil, nil, issues, nil
+}
+
+// layersBuild reports, without building an engine, whether the org and user
+// layers would build: every override they carry names a rule the engine will
+// hold (a built-in, a rule pack row, or a rule a layer defines) and not one
+// the config disables. It is the check that lets New defer the base engine
+// build (newLazyEngineSet) and keep its build-failure ladder for the rare
+// layer set that would not build. notes are the merge's load notes, the ones
+// a base build would record.
+func (g *Guard) layersBuild(org, user *policyFile) (ok bool, notes []string) {
+	extra, overrides, _, notes := mergeLayersWithPack(g.packRules, org, user, nil, nil)
+	known := map[string]bool{}
+	for _, info := range policy.Catalog() {
+		known[info.ID] = true
+	}
+	for i := range extra {
+		known[extra[i].ID] = true
+	}
+	disabled := map[string]bool{}
+	for _, id := range effectiveConfigDisable(org, g.cfg.Rules.Disable) {
+		disabled[id] = true
+	}
+	for _, ov := range overrides {
+		if !known[ov.RuleID] || disabled[ov.RuleID] {
+			return false, nil
+		}
+	}
+	return true, notes
 }
 
 // modeOrDefault maps an empty config mode to the D2 default.
@@ -572,10 +720,17 @@ func (g *Guard) localBudgetInputs() engineBudgetInputs {
 	return engineBudgetInputs{budget: g.cfg.Budget}
 }
 
+// engineBuilds counts engine builds in this process (one per buildEngineWith
+// call). Tests read it to pin that a hook builds one engine per load
+// (lane sec-p2a, P-052 finding 5); nothing else does.
+var engineBuilds atomic.Int64
+
 // buildEngineWith is buildEngine over an explicit set of budget inputs.
 func (g *Guard) buildEngineWith(mode policy.Mode, org, user, project, trusted *policyFile, in engineBudgetInputs) (*policy.Engine, error) {
-	extra, overrides, layerDisable, mergeIssues := mergeLayers(org, user, project, trusted)
+	engineBuilds.Add(1)
+	extra, overrides, layerDisable, mergeIssues := mergeLayersWithPack(g.packRules, org, user, project, trusted)
 	g.recordIssues(mergeIssues)
+	g.recordIssues(configDisableOrgFloorIssues(org, g.cfg.Rules.Disable))
 	budget := in.budget
 	budgetSoft := in.soft
 	// Boundary slices pass through as-is: nil (section absent) lets
@@ -586,12 +741,25 @@ func (g *Guard) buildEngineWith(mode policy.Mode, org, user, project, trusted *p
 		Home:              g.home,
 		AllowPaths:        g.cfg.Boundary.AllowPaths,
 		ProtectedBranches: g.cfg.Boundary.ProtectedBranches,
-		KnownProjectRoots: g.roots,
-		ResolveLinks:      resolveExistingLinks,
+		// R-166 (D-761): the opt-in protected path classes; empty keeps
+		// the rows inert.
+		ProtectedPathClasses: g.cfg.Boundary.ProtectedPathClasses,
+		KnownProjectRoots:    g.roots,
+		ResolveLinks:         resolveExistingLinks,
+		// R-162 (T-910): the hook-switch table and the reader that lets
+		// an edit be judged on the whole file it produces.
+		HookSwitches: hookSwitchesForPolicy(),
+		ReadFile:     readHookSwitchFile,
+		// R-112 to R-114 (D-761): the daemon's per-project git alias
+		// table, so an alias that expands to a hook bypass is judged as
+		// what it runs.
+		GitAliases: g.gitAliasesFor,
 		// Config-level disables ([guard.rules] disable) unioned with the
 		// trusted per-project layer's `disable` list (empty on New /
 		// ReloadOrgLayer, where trusted is nil — byte-identical to the
 		// pre-arc Disabled: g.cfg.Rules.Disable).
+		// policy.New keeps every org-floored row whatever this lists
+		// (OSH-R-014); configDisableOrgFloorIssues above says so.
 		Disabled:   unionDisable(g.cfg.Rules.Disable, layerDisable),
 		ExtraRules: extra,
 		Overrides:  appendOverrides(overrides, budgetSoft),
@@ -662,11 +830,11 @@ func (g *Guard) PolicyStates() []PolicyState {
 }
 
 // Mode returns the active global mode.
-func (g *Guard) Mode() policy.Mode { return g.set.Load().base.Mode() }
+func (g *Guard) Mode() policy.Mode { return g.set.Load().mode }
 
 // RuleCount returns the base engine's active rule-row count (status
 // surfaces).
-func (g *Guard) RuleCount() int { return g.set.Load().base.RuleCount() }
+func (g *Guard) RuleCount() int { return g.set.Load().base().RuleCount() }
 
 // MaybeAlert fires a desktop notification for a verdict that meets
 // the [guard.alerts] threshold (desktop enabled at construction +
@@ -704,16 +872,24 @@ func (g *Guard) MaybeAlert(v ActionVerdict) {
 	if line := HumanBlockLine(v, v.Input.SessionID); line != "" {
 		body = line
 	}
+	// The request form's link rides the notification, which only a human
+	// reads; the in-band reason names the dashboard page instead (WINNODE2
+	// 16d).
+	if link := RequestAccessLink(v); link != "" {
+		body += " Request: " + link
+	}
 	g.notifier.Notify(title, body)
 }
 
-// alertsRegardlessOfSeverity is the one-row exception table to the
+// alertsRegardlessOfSeverity is the exception table to the
 // [guard.alerts].min_severity gate: an enforced deny of a rule the
-// organization marked overridable. Every other verdict — including a
-// hard org-locked deny and every verdict on an individual node —
+// organization marked overridable, and an enforced stop whose channel
+// showed the developer no reason in band (ActionVerdict.SilentStop: the
+// toast is the only signal they get). Every other verdict, including a
+// hard org-locked deny and every other verdict on an individual node,
 // returns false and keeps the configured threshold.
 func alertsRegardlessOfSeverity(v ActionVerdict) bool {
-	return v.Enforced && v.Overridable && v.Verdict.Decision == policy.DecisionDeny
+	return v.Enforced && (v.SilentStop || (v.Overridable && v.Verdict.Decision == policy.DecisionDeny))
 }
 
 // EffectiveRules returns the BASE engine's effective rule rows
@@ -721,7 +897,7 @@ func alertsRegardlessOfSeverity(v ActionVerdict) bool {
 // guard rules --effective`. Project layers are per-root and lazy;
 // the CLI surfaces the base set plus the loaded project states.
 func (g *Guard) EffectiveRules() []policy.RuleInfo {
-	return g.set.Load().base.RuleInfos()
+	return g.set.Load().base().RuleInfos()
 }
 
 // CategoryFor returns the category of a rule ID for audit-row
@@ -766,7 +942,7 @@ func (g *Guard) evaluateWith(es *engineSet, ev policy.Event) (verdict policy.Ver
 	// event copy before the engine runs — the ONE place every KindMCPCall
 	// channel (hook, ingest, proxy inspection) passes through.
 	g.stampMCPAccess(&ev)
-	return g.displayVerdict(es.engineFor(g, ev.ProjectRoot).Evaluate(ev)), nil
+	return g.displayVerdict(es.engineForEvent(g, projectLookupRoot(&ev), ev.Cwd).Evaluate(ev)), nil
 }
 
 // evaluateBudgetWith is evaluateWith's budget-only sibling for proxy
@@ -841,14 +1017,221 @@ func UserPolicyPath(cfg config.GuardConfig, home string) string {
 }
 
 // ProjectPolicyPath resolves a project root's policy-file location
-// ([guard.rules] project_policy, relative to the root) — the exact
-// resolution loadProjectEngine applies. Empty when either part is
-// unconfigured.
+// ([guard.rules] project_policy, relative to the root): the main
+// checkout's copy, the file the dashboard editor shows. Empty when either
+// part is unconfigured. The engine reads ProjectPolicyPaths.
 func ProjectPolicyPath(cfg config.GuardConfig, projectRoot string) string {
 	if projectRoot == "" || cfg.Rules.ProjectPolicy == "" {
 		return ""
 	}
 	return filepath.Join(projectRoot, filepath.FromSlash(cfg.Rules.ProjectPolicy))
+}
+
+// maxWorktreePolicyFiles caps the linked worktrees whose in-repo policy
+// file one project engine reads.
+const maxWorktreePolicyFiles = 32
+
+// ProjectPolicyPaths is every in-repo policy file the project engine for
+// projectRoot reads: the main checkout's (ProjectPolicyPath) first, then
+// the same file in each linked worktree of the project, found from git's
+// back pointers by file reads only (git.LinkedWorktreeCheckouts, at most
+// maxWorktreePolicyFiles). The in-repo file is a checkout file (the
+// internal/git doc rule: identity reads Root, file reads the checkout),
+// and the engine is one per project root, so a worktree's own file
+// applies with the main checkout's; the layer is escalate-only, so the
+// strictest wins in every checkout (lane shr-worktree2, PT-39). For a
+// repository with no linked worktree it is exactly the one main path. The
+// trusted per-project file stays keyed on Root (TrustedProjectPolicyPath).
+func ProjectPolicyPaths(cfg config.GuardConfig, projectRoot string) []string {
+	main := ProjectPolicyPath(cfg, projectRoot)
+	if main == "" {
+		return nil
+	}
+	out := []string{main}
+	for _, checkout := range git.LinkedWorktreeCheckouts(projectRoot, maxWorktreePolicyFiles) {
+		out = append(out, filepath.Join(checkout, filepath.FromSlash(cfg.Rules.ProjectPolicy)))
+	}
+	return out
+}
+
+// checkoutPolicyPaths is the in-repo policy files the engine of one
+// checkout of projectRoot reads (lane LEFT-SHARED, SHR-8 residual): the main
+// checkout's file, then the checkout's own when it is a linked worktree. A
+// worktree's file therefore applies in that worktree only, never in the main
+// checkout or a sibling worktree. checkout "" (not known) is every
+// checkout's file (ProjectPolicyPaths), the strictest, so an event whose
+// checkout cannot be told evaluates exactly as before.
+func checkoutPolicyPaths(cfg config.GuardConfig, projectRoot, checkout string) []string {
+	if checkout == "" {
+		return ProjectPolicyPaths(cfg, projectRoot)
+	}
+	main := ProjectPolicyPath(cfg, projectRoot)
+	if main == "" {
+		return nil
+	}
+	out := []string{main}
+	if !sameDir(checkout, projectRoot) {
+		out = append(out, filepath.Join(checkout, filepath.FromSlash(cfg.Rules.ProjectPolicy)))
+	}
+	return out
+}
+
+// checkoutOf is the checkout of projectRoot that cwd sits in: projectRoot
+// for the main checkout, a linked worktree's own top level for that
+// worktree (git.Info.CheckoutRoot, P-041), and "" (not known) when cwd is
+// empty, is not in a git checkout, or is in a checkout of another project.
+// File reads only, no git process.
+func checkoutOf(projectRoot, cwd string) string {
+	if projectRoot == "" || cwd == "" || !filepath.IsAbs(cwd) {
+		return ""
+	}
+	c, ok := git.FindCheckoutRoot(cwd)
+	if !ok || c == "" {
+		return ""
+	}
+	if sameDir(c, projectRoot) {
+		return projectRoot
+	}
+	if target, ok := git.CheckoutRootTarget(c); ok && sameDir(target, projectRoot) {
+		return c
+	}
+	return ""
+}
+
+// engineKey is the project engine cache key of one checkout of a root: the
+// root alone for the every-checkout engine (checkout "").
+func engineKey(projectRoot, checkout string) string {
+	if checkout == "" {
+		return projectRoot
+	}
+	return projectRoot + "\x00" + checkout
+}
+
+// sameDir reports whether a and b name the same directory (equal cleaned
+// paths, or the same file on disk).
+func sameDir(a, b string) bool {
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
+	ia, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	ib, err := os.Stat(b)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(ia, ib)
+}
+
+// foldInRepoPolicyFiles folds the parsed in-repo policy files of a
+// project's checkouts (ProjectPolicyPaths order) into the one in-repo
+// layer the merge takes: every rule row and override, in order. Both are
+// escalate-only (applyProject drops a relaxing override, and a later
+// override below an earlier one's decision reads as relaxing), so the
+// strictest stance wins.
+func foldInRepoPolicyFiles(files []*policyFile) *policyFile {
+	switch len(files) {
+	case 0:
+		return nil
+	case 1:
+		return files[0]
+	}
+	out := &policyFile{layer: files[0].layer}
+	for _, f := range files {
+		out.rules = append(out.rules, f.rules...)
+		out.overrides = append(out.overrides, f.overrides...)
+		out.notes = append(out.notes, f.notes...)
+	}
+	return out
+}
+
+// inRepoOverrideTargets returns the predicate an in-repo override's rule id
+// must pass: some layer of the project engine carries a row for it (the
+// built-in catalog, the module rule pack, or a [[rule]] of the org layer as
+// composed with the org project sections, the user layer, the trusted
+// layer or any in-repo file) and no disable removes that row. A disable
+// counts from the config list and from the trusted layer's list, except on
+// an integrity rule (never removable) and, for the trusted list, on an
+// org-floored rule (the merge drops that disable). Pillar ids (S-7xx) pass,
+// so dropUnloadedPackOverride keeps reporting an inactive module the way it
+// words it. Conservative by construction: a row kept only by budget
+// protection reads as disabled, which drops at most one in-repo escalation
+// and never fails the build.
+func inRepoOverrideTargets(pack []policy.Rule, cfgDisable []string, org, user, trusted *policyFile, inRepo []*policyFile) func(string) bool {
+	rows := map[string]bool{}
+	for _, info := range policy.Catalog() {
+		rows[info.ID] = true
+	}
+	for i := range pack {
+		rows[pack[i].ID] = true
+	}
+	layers := append([]*policyFile{org, user, trusted}, inRepo...)
+	for _, f := range layers {
+		if f == nil {
+			continue
+		}
+		for i := range f.rules {
+			rows[f.rules[i].ID] = true
+		}
+	}
+	floored := map[string]bool{}
+	if org != nil {
+		for i := range org.rules {
+			floored[org.rules[i].ID] = true
+		}
+		for _, ov := range org.overrides {
+			floored[ov.RuleID] = true
+		}
+	}
+	off := map[string]bool{}
+	for _, id := range cfgDisable {
+		off[id] = true
+	}
+	if trusted != nil {
+		for _, id := range trusted.disable {
+			if !floored[id] {
+				off[id] = true
+			}
+		}
+	}
+	return func(id string) bool {
+		if strings.HasPrefix(id, policy.SecurityRuleIDPrefix) {
+			return true
+		}
+		if !rows[id] {
+			return false
+		}
+		return !off[id] || policy.IsIntegrityRuleID(id)
+	}
+}
+
+// dropUnloadedInRepoOverrides returns pf without the overrides whose rule id
+// fails loaded, and one load issue per dropped override naming the file
+// (path) and the rule, the dropUnloadedPackOverride pattern. pf is not
+// modified; a file with nothing to drop is returned as is.
+func dropUnloadedInRepoOverrides(pf *policyFile, path string, loaded func(string) bool) (*policyFile, []string) {
+	if pf == nil {
+		return nil, nil
+	}
+	var kept []rawOverride
+	var issues []string
+	for _, ov := range pf.overrides {
+		if loaded(ov.RuleID) {
+			kept = append(kept, ov)
+			continue
+		}
+		issues = append(issues, fmt.Sprintf(
+			"project policy %s: override on %s dropped: rule %s is not loaded (an in-repo file may only tune a loaded rule)",
+			path, ov.RuleID, ov.RuleID,
+		))
+	}
+	if len(issues) == 0 {
+		return pf, nil
+	}
+	out := *pf
+	out.overrides = kept
+	return &out, issues
 }
 
 // TrustedProjectPolicyPath resolves the daemon-local trusted per-project
@@ -929,4 +1312,19 @@ func expandUserPath(p, home string) string {
 		return filepath.Join(home, p[2:])
 	}
 	return p
+}
+
+// knownProtectedPathClasses keeps the R-166 classes the policy vocabulary
+// knows, in order, and reports each unknown one.
+func knownProtectedPathClasses(classes []string) ([]string, []string) {
+	known := policy.ProtectedPathClasses()
+	var kept, issues []string
+	for _, c := range classes {
+		if slices.Contains(known, c) {
+			kept = append(kept, c)
+			continue
+		}
+		issues = append(issues, fmt.Sprintf("guard.boundary.protected_path_classes: unknown class %q dropped (known: %s)", c, strings.Join(known, ", ")))
+	}
+	return kept, issues
 }

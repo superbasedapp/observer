@@ -71,6 +71,12 @@ const observerBinPlaceholder = "{{OBSERVER_BIN_DEFAULT}}"
 //   - Directory: 0o755 (rwxr-xr-x)
 //   - Files:     0o644 (rw-r--r--)
 //
+// WritePlugin overwrites whatever is at each path. It has one caller,
+// hook.RegisterHermes, which runs the foreign-file guard first (FU-207): a
+// file that is not Observer's plugin file, or a bridge whose OBSERVER_BIN
+// default is not an observer binary, is kept byte for byte and refused
+// without --force. Any new caller must take that guard too.
+//
 // Hermes's plugin loader only needs read access; the conservative
 // modes match the cursor adapter's hook-file writes and the
 // `observer init --claude-code` settings-file writes already in

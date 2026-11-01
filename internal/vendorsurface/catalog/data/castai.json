@@ -1,0 +1,555 @@
+{
+ "group": "castai",
+ "research_file": "docs/plans/native-console-wave-2026-10-21-phase0.md",
+ "checked_on": "2026-10-23",
+ "surfaces": [
+  {
+   "id": "castai.ai_optimizer.billing_model_usage_report",
+   "vendor_group": "castai",
+   "vendor": "castai",
+   "plane": "castai.ai_optimizer",
+   "reach": "pull_api",
+   "transport": "api",
+   "auth": {
+    "kind": "header_key",
+    "doc": "X-API-Key (or a Bearer JWT)"
+   },
+   "paging": {
+    "style": "none",
+    "doc": "one report per period"
+   },
+   "rate": {
+    "documented": false,
+    "doc": "undocumented"
+   },
+   "tier": {
+    "doc": "Cast AI organization"
+   },
+   "freshness_doc": "undocumented",
+   "lookback_doc": "undocumented",
+   "per_user_doc": "none (per model)",
+   "mechanism_doc": "GET /ai-optimizer/v1beta/organizations/{id}:generateBillingModelUsageReport?startTime&endTime: serverlessModels[] (model, requestCount, rateLimitHitsTotal over the trailing 30 days, inputTokenCost, outputTokenCost, totalCost) and selfHostedModels[] (model, clusterName, clusterId, gpuHours, totalCost, requestCount)",
+   "read_write_doc": "R",
+   "class_doc": "Usage, Cost",
+   "grain_doc": "OrgDay (per model, one period per request)",
+   "build": "buildable",
+   "build_doc": "Driverable; served today by the legacy-shaped poller internal/orgserver/kimchianalytics (AP-135)",
+   "sensitivity": "metadata",
+   "secret_class": "never_returns_secret",
+   "supplies": [
+    {
+     "class": "Usage",
+     "grain": "org_day",
+     "unit": "requests",
+     "accuracy": "aggregate",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "Cost",
+     "grain": "org_day",
+     "unit": "usd_micros",
+     "accuracy": "aggregate",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    }
+   ],
+   "controls": [],
+   "hosts": [
+    {
+     "scheme": "https",
+     "host": "api.cast.ai",
+     "port": 443
+    },
+    {
+     "scheme": "https",
+     "host": "api.eu.cast.ai",
+     "port": 443
+    }
+   ],
+   "sources": [
+    {
+     "url": "https://docs.cast.ai/reference/analyticsapi_generatebillingmodelusagereport",
+     "checked_on": "2026-10-23"
+    }
+   ],
+   "notes": "AP-135 (2026-10-23): read one UTC day at a time by the org-server poller internal/orgserver/kimchianalytics ([kimchi_analytics], off by default) into kimchi_analytics_daily (server migration 261 / PostgreSQL 0128). ORG-WIDE Cast AI LLM usage with no product dimension: shown as Cast AI (org-wide, includes Kimchi), never as Kimchi spend; never in spendCTE. The currency of the cost strings is not stated (read as USD, Inferred). Code-complete, gated on live credentials: synthesized fixtures only.",
+   "derivation": {
+    "reach_rule": "phase0",
+    "build_rule": "ap135",
+    "source_rule": "literal_url",
+    "auth_rule": "plane: cast ai api reference"
+   },
+   "status": "synthetic, awaiting live validation"
+  },
+  {
+   "id": "castai.ai_optimizer.chat_completions_usage_report",
+   "vendor_group": "castai",
+   "vendor": "castai",
+   "plane": "castai.ai_optimizer",
+   "reach": "pull_api",
+   "transport": "api",
+   "auth": {
+    "kind": "header_key",
+    "doc": "X-API-Key"
+   },
+   "paging": {
+    "style": "unspecified",
+    "doc": "n/a"
+   },
+   "rate": {
+    "documented": false,
+    "doc": "undocumented"
+   },
+   "tier": {
+    "doc": "Cast AI organization"
+   },
+   "freshness_doc": "undocumented",
+   "lookback_doc": "undocumented",
+   "per_user_doc": "per API key",
+   "mechanism_doc": "GET /v1/llm/openai/chat-completions/reports/usage: daily cost per key and per category (deprecated)",
+   "read_write_doc": "R",
+   "class_doc": "Usage, Cost",
+   "grain_doc": "OrgDay",
+   "build": "catalog_only",
+   "build_doc": "CatalogOnly: deprecated by the vendor",
+   "sensitivity": "metadata",
+   "secret_class": "unclassified",
+   "supplies": [
+    {
+     "class": "Cost",
+     "grain": "org_day",
+     "unit": "usd_micros",
+     "accuracy": "aggregate",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "catalog_only",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    }
+   ],
+   "controls": [],
+   "sources": [
+    {
+     "url": "https://docs.cast.ai/reference/aienablerapi_getchatcompletionsusagereport",
+     "checked_on": "2026-10-23"
+    }
+   ],
+   "notes": "Not read: deprecated, and its per-key split names API keys.",
+   "derivation": {
+    "reach_rule": "phase0",
+    "build_rule": "ap135",
+    "source_rule": "literal_url",
+    "auth_rule": "plane: cast ai api reference"
+   },
+   "status": "synthetic, awaiting live validation"
+  },
+  {
+   "id": "castai.ai_optimizer.cli_analytics",
+   "vendor_group": "castai",
+   "vendor": "castai",
+   "plane": "castai.ai_optimizer",
+   "reach": "pull_api",
+   "transport": "api",
+   "auth": {
+    "kind": "header_key",
+    "doc": "the CLI's API key"
+   },
+   "paging": {
+    "style": "unspecified",
+    "doc": "n/a"
+   },
+   "rate": {
+    "documented": false,
+    "doc": "undocumented"
+   },
+   "tier": {
+    "doc": "Cast AI organization"
+   },
+   "freshness_doc": "unknown",
+   "lookback_doc": "unknown",
+   "per_user_doc": "unknown",
+   "mechanism_doc": "endpoints the kimchi 1.17.0 CLI calls but the public reference does not list: /ai-optimizer/v1beta/analytics, organizations/{id}:generateBreakdown, productivity-metrics, organizations/{id}/quotas:usage, organizations/{id}/llm-requests",
+   "read_write_doc": "R",
+   "class_doc": "Usage, Cost, Limits",
+   "grain_doc": "unknown",
+   "build": "awaiting_reference",
+   "build_doc": "AwaitingReference: bundle-only, no public reference",
+   "sensitivity": "pii",
+   "secret_class": "unclassified",
+   "supplies": [
+    {
+     "class": "Usage",
+     "grain": "unspecified",
+     "unit": "unspecified",
+     "accuracy": "unassessed",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "awaiting_reference",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "Limits",
+     "grain": "unspecified",
+     "unit": "unspecified",
+     "accuracy": "unassessed",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "awaiting_reference",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    }
+   ],
+   "controls": [],
+   "sources": [
+    {
+     "url": "https://github.com/getkimchi/kimchi",
+     "checked_on": "2026-10-23"
+    }
+   ],
+   "notes": "Not built: a parser from bundle field names alone would be a guess.",
+   "derivation": {
+    "reach_rule": "phase0",
+    "build_rule": "ap135",
+    "source_rule": "literal_url",
+    "auth_rule": "plane: bundle"
+   },
+   "status": "synthetic, awaiting live validation"
+  },
+  {
+   "id": "castai.kimchi.otlp_export",
+   "vendor_group": "castai",
+   "vendor": "castai",
+   "plane": "castai.kimchi",
+   "reach": "push_otlp",
+   "transport": "otlp",
+   "auth": {
+    "kind": "unclassified",
+    "doc": "telemetry.headers in ~/.config/kimchi/config.json; when unset the CLI sends its own API key as Bearer to the configured endpoint"
+   },
+   "paging": {
+    "style": "unspecified",
+    "doc": "n/a"
+   },
+   "rate": {
+    "documented": false,
+    "doc": "undocumented"
+   },
+   "tier": {
+    "doc": "Kimchi CLI"
+   },
+   "freshness_doc": "real time",
+   "lookback_doc": "collector's",
+   "per_user_doc": "per session (session.id)",
+   "mechanism_doc": "OTLP/HTTP JSON logs and metrics (service.name kimchi) to api.cast.ai /ai-optimizer/v1beta/logs:ingest and metrics:ingest by default, redirectable with telemetry.endpoint / telemetry.metricsEndpoint; metrics reuse Claude Code's names (claude_code.token.usage, claude_code.cost.usage, ...) plus kimchi.pr_cost.*",
+   "read_write_doc": "push",
+   "class_doc": "Telemetry, Usage, Cost",
+   "grain_doc": "Event / cumulative sums",
+   "build": "buildable",
+   "build_doc": "Node side: served by AP-131's node OTLP ingest after a live capture",
+   "sensitivity": "metadata",
+   "secret_class": "may_return_secret",
+   "supplies": [
+    {
+     "class": "Telemetry",
+     "grain": "event",
+     "unit": "unspecified",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "Usage",
+     "grain": "per_session",
+     "unit": "tokens",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    }
+   ],
+   "controls": [],
+   "sources": [
+    {
+     "url": "https://docs.kimchi.dev/docs/kimchi-cli",
+     "checked_on": "2026-10-23"
+    }
+   ],
+   "notes": "may_return_secret: a redirect without telemetry.headers would carry the CLI's API key to the endpoint; a receiver must never store request headers. Key on service.name = kimchi, the metric names collide with Claude Code's.",
+   "derivation": {
+    "reach_rule": "phase0",
+    "build_rule": "ap135",
+    "source_rule": "repo_path",
+    "auth_rule": "plane: otlp collector"
+   },
+   "status": "synthetic, awaiting live validation"
+  },
+  {
+   "id": "castai.kimchi.org_policy",
+   "vendor_group": "castai",
+   "vendor": "castai",
+   "plane": "castai.kimchi",
+   "reach": "manual_only",
+   "transport": "ui",
+   "auth": {
+    "kind": "console_session",
+    "doc": "Kimchi console admin"
+   },
+   "paging": {
+    "style": "unspecified",
+    "doc": "n/a"
+   },
+   "rate": {
+    "documented": false,
+    "doc": "undocumented"
+   },
+   "tier": {
+    "doc": "Cast AI organization"
+   },
+   "freshness_doc": "resolved at CLI start",
+   "lookback_doc": "n/a",
+   "per_user_doc": "per org",
+   "mechanism_doc": "org settings (kimchiAllowedPermissionModes, kimchiUsageReporting USER_CHOICE / FORCE_ON / FORCE_OFF, kimchiResources) authored in the console, resolved server-side by /organizations/{id}/settings:resolve and cached unsigned in ~/.config/kimchi/org-policy.json",
+   "read_write_doc": "UI",
+   "class_doc": "Policy",
+   "grain_doc": "Snapshot",
+   "build": "catalog_only",
+   "build_doc": "CatalogOnly: nothing to generate (server-resolved); the cache file is never read",
+   "sensitivity": "metadata",
+   "secret_class": "never_returns_secret",
+   "supplies": [
+    {
+     "class": "Policy",
+     "grain": "snapshot",
+     "unit": "unspecified",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "catalog_only",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    }
+   ],
+   "controls": [
+    {
+     "class": "FeatureToggle",
+     "facet": "U",
+     "caps": {
+      "read": false,
+      "write": false,
+      "readback": false,
+      "effect_evidence": false,
+      "idempotency": false,
+      "local_file": false,
+      "repository": false
+     },
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "ApprovalPolicy",
+     "facet": "U",
+     "caps": {
+      "read": false,
+      "write": false,
+      "readback": false,
+      "effect_evidence": false,
+      "idempotency": false,
+      "local_file": false,
+      "repository": false
+     },
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    }
+   ],
+   "sources": [
+    {
+     "url": "https://github.com/getkimchi/kimchi/pull/1380",
+     "checked_on": "2026-10-23"
+    }
+   ],
+   "notes": "",
+   "derivation": {
+    "reach_rule": "phase0",
+    "build_rule": "ap135",
+    "source_rule": "literal_url",
+    "auth_rule": "plane: console"
+   },
+   "status": "synthetic, awaiting live validation"
+  },
+  {
+   "id": "castai.console.spend_caps",
+   "vendor_group": "castai",
+   "vendor": "castai",
+   "plane": "castai.console",
+   "reach": "manual_only",
+   "transport": "ui",
+   "auth": {
+    "kind": "console_session",
+    "doc": "Kimchi / Cast AI console admin"
+   },
+   "paging": {
+    "style": "unspecified",
+    "doc": "n/a"
+   },
+   "rate": {
+    "documented": false,
+    "doc": "undocumented"
+   },
+   "tier": {
+    "doc": "Cast AI organization"
+   },
+   "freshness_doc": "immediate",
+   "lookback_doc": "n/a",
+   "per_user_doc": "per API key, user, team and org",
+   "mechanism_doc": "spend caps per API key, user, team and organization, and usage / cost reports by user, tag, key and team, in the console",
+   "read_write_doc": "UI",
+   "class_doc": "Limits, Usage, Cost",
+   "grain_doc": "Snapshot",
+   "build": "catalog_only",
+   "build_doc": "CatalogOnly: no documented API for the caps or the per-user reports",
+   "sensitivity": "metadata",
+   "secret_class": "never_returns_secret",
+   "supplies": [
+    {
+     "class": "Limits",
+     "grain": "snapshot",
+     "unit": "usd_micros",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "catalog_only",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    }
+   ],
+   "controls": [
+    {
+     "class": "SpendLimitUser",
+     "facet": "U",
+     "caps": {
+      "read": false,
+      "write": false,
+      "readback": false,
+      "effect_evidence": false,
+      "idempotency": false,
+      "local_file": false,
+      "repository": false
+     },
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "SpendLimitGroup",
+     "facet": "U",
+     "caps": {
+      "read": false,
+      "write": false,
+      "readback": false,
+      "effect_evidence": false,
+      "idempotency": false,
+      "local_file": false,
+      "repository": false
+     },
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "SpendLimitOrg",
+     "facet": "U",
+     "caps": {
+      "read": false,
+      "write": false,
+      "readback": false,
+      "effect_evidence": false,
+      "idempotency": false,
+      "local_file": false,
+      "repository": false
+     },
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "SpendLimitCredential",
+     "facet": "U",
+     "caps": {
+      "read": false,
+      "write": false,
+      "readback": false,
+      "effect_evidence": false,
+      "idempotency": false,
+      "local_file": false,
+      "repository": false
+     },
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    }
+   ],
+   "sources": [
+    {
+     "url": "https://kimchi.dev/castai-users",
+     "checked_on": "2026-10-23"
+    }
+   ],
+   "notes": "",
+   "derivation": {
+    "reach_rule": "phase0",
+    "build_rule": "ap135",
+    "source_rule": "literal_url",
+    "auth_rule": "plane: console"
+   },
+   "status": "synthetic, awaiting live validation"
+  }
+ ]
+}

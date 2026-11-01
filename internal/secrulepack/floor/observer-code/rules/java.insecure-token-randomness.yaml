@@ -1,0 +1,28 @@
+rules:
+  - id: java.insecure-token-randomness
+    languages: [java]
+    severity: WARNING
+    message: A secret value (a token, key, password or nonce) is made with java.util.Random or Math.random, which are predictable; use SecureRandom.
+    metadata:
+      category: code_vuln
+      cwe: CWE-338
+    patterns:
+      - pattern-either:
+          - pattern: (java.util.Random $R).$NEXT(...)
+          - pattern: new Random().$NEXT(...)
+          - pattern: new Random($SEED).$NEXT(...)
+          - pattern: Math.random()
+          - pattern: ThreadLocalRandom.current().$NEXT(...)
+          - pattern: RandomStringUtils.$RS(...)
+      - pattern-either:
+          - patterns:
+              - pattern-inside: $T $TOK = <... $EXPR ...>;
+              - metavariable-regex:
+                  metavariable: $TOK
+                  regex: (?i)^\w*(token|secret|nonce|otp|password|passwd|apikey|sessionid|salt|resetcode)\w*$
+          - patterns:
+              - pattern-inside: |
+                  $RT $FN(...) { ... }
+              - metavariable-regex:
+                  metavariable: $FN
+                  regex: (?i)^\w*(token|secret|nonce|otp|password|passwd|apikey|sessionid|salt|resetcode)\w*$

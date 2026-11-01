@@ -28,6 +28,8 @@ const (
 	credFileHermes     = "~/.hermes/config.yaml: the plugins.enabled entry the hook plugin needs shares the file with provider api_key values and request headers (catalogue Secret rows)."
 	credFileZcode      = "~/.zcode/cli/config.json: the vendor stores hooks alongside plaintext provider keys (docs/zcode-adapter.md); Observer edits only the hooks key."
 	credFileKimiCode   = "~/.kimi-code/config.toml: the vendor's only hooks file ([[hooks]] tables) also holds [providers.<name>].api_key and services.*.api_key as plaintext (catalogue Secret rows); Observer edits only its own [[hooks]] tables (T-378, D-270)."
+	credFileAutohand   = "~/.autohand/config.json: the vendor's only user-level hooks location (hooks.hooks[]) shares the file with provider API keys, auth.token and api.companySecret (autohand-cli 0.9.8, hook probe 2026-10-21); Observer splices only the hooks member."
+	credFileCodeBuddy  = "~/.codebuddy/settings.json: Claude Code's settings schema, whose env block can carry the CODEBUDDY_API_KEY the CLI reads (codebuddy 2.171.0, hook probe 2026-10-21); Observer splices only the hooks member."
 )
 
 // The MCP half of the exception (MCPTarget.SharesCredentialFile, review
@@ -47,6 +49,59 @@ const (
 	mcpCredDroid       = "~/.factory/mcp.json: mcpServers.<name>.env and headers hold literal tokens for the user's other servers."
 	mcpCredCommandCode = "~/.commandcode/mcp.json: mcpServers.<name>.env and headers hold literal tokens for the user's other servers."
 )
+
+// The route half of the exception (ProxyRoute.SharesCredentialFile,
+// surface-gap FU-33 / D9): every persisted route writer whose file also
+// holds plaintext credentials. A launcher that writes its own provider entry
+// before exec (cline-cli, pi, prime-agent, hermes) counts too: it is a
+// writer into that file all the same.
+//
+//nolint:gosec // G101: grounding prose that names a credential slot, not a credential.
+const (
+	routeCredClaudeCode      = credFileClaudeCode
+	routeCredCodex           = "~/.codex/config.toml: [model_providers.<id>] and the feature tables can hold literal keys and bearer tokens (catalogue Secret rows) beside the provider Observer adds."
+	routeCredCline           = "~/.cline/data/globalState.json: extension-managed state beside the provider settings, credential-adjacent (D9); Observer sets only the active provider's base-URL member."
+	routeCredClineCLI        = "~/.cline/data/settings/providers.json: OAuth tokens and provider API keys (a file the catalogue lists as never readable); the launcher sets only settings.baseUrl."
+	routeCredPi              = "~/.pi/agent/models.json: a provider apiKey may be a literal key (catalogue Secret row pi providers); the launcher writes only its own observer provider."
+	routeCredPrimeAgent      = "~/.prime/agent/models.json: a provider apiKey may be a literal key (catalogue Secret row, live 2026-10-03); the launcher writes only its own observer provider."
+	routeCredHermes          = credFileHermes
+	routeCredQwenCode        = credFileQwenCode
+	routeCredKimiCode        = credFileKimiCode
+	routeCredCrush           = credFileCrush
+	routeCredOpenInterpreter = "~/.openinterpreter/config.toml (INTERPRETER_HOME): provider settings that hold plaintext keys (the registry never reads it; D16 allows a member-only route write)."
+	routeCredStakpak         = "~/.stakpak/config.toml: each profile's api_key and provider auth are plaintext (catalogue row stakpak/user-config, never read)."
+	routeCredGoose           = "~/.config/goose/config.yaml (GOOSE_PATH_ROOT): a provider key can sit there as a plaintext root key (catalogue note); the default-provider writer edits only OPENAI_HOST."
+)
+
+// RouteSharesCredentialFile reports whether tool's route writer (its
+// ProxyProbe binding or its verified Proxy route) is declared under the
+// credential-file exception. A "-windows" cross-OS target answers for its
+// base row.
+func RouteSharesCredentialFile(tool string) bool {
+	c, ok := For(strings.TrimSuffix(tool, "-windows"))
+	if !ok {
+		return false
+	}
+	for _, r := range []*ProxyRoute{c.Proxy, c.ProxyProbe} {
+		if r != nil && r.SharesCredentialFile {
+			return true
+		}
+	}
+	return false
+}
+
+// CredentialFileRouteTools lists, sorted, every registry row whose route
+// writer carries the credential-file exception.
+func CredentialFileRouteTools() []string {
+	var out []string
+	for _, c := range Capabilities() {
+		if RouteSharesCredentialFile(c.Tool) {
+			out = append(out, c.Tool)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
 
 // MCPSharesCredentialFile reports whether tool's MCP config file is declared
 // under the credential-file exception. A "-windows" cross-OS target answers

@@ -1,0 +1,30 @@
+[
+ {
+  "sha": "d73d3d8537642bc9195760aa1c1bd1ba996edd0e",
+  "parents": [
+   {
+    "sha": "819f972eff771d5ec433c8d03c369cc43f1eab49"
+   }
+  ],
+  "commit": {
+   "message": "chore(deps): bump actions/create-github-app-token from 3.2.0 to 3.3.0",
+   "committer": {
+    "date": "2026-10-15T14:05:33Z"
+   }
+  }
+ },
+ {
+  "sha": "1b0eb4096d53d0c8c35f76cf2aad62529083d93d",
+  "parents": [
+   {
+    "sha": "d73d3d8537642bc9195760aa1c1bd1ba996edd0e"
+   }
+  ],
+  "commit": {
+   "message": "Restore generated workflow locks",
+   "committer": {
+    "date": "2026-10-15T15:04:43Z"
+   }
+  }
+ }
+]

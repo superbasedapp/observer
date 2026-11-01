@@ -1,0 +1,62 @@
+rules:
+  - id: go.ssrf-request-url
+    languages: [go]
+    severity: ERROR
+    message: A URL taken from a web request is fetched by the server, so a caller can make it reach internal hosts; check the host against an allow-list first.
+    metadata:
+      category: code_vuln
+      cwe: CWE-918
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: $R.URL.Query()
+              - pattern: $R.FormValue(...)
+              - pattern: $R.PostFormValue(...)
+              - pattern: $R.PathValue(...)
+              - pattern: $R.Form
+              - pattern: $R.PostForm
+          - metavariable-regex:
+              metavariable: $R
+              regex: ^(r|req|request|httpReq)$
+      - pattern: mux.Vars(...)
+      - patterns:
+          - pattern-either:
+              - pattern: $C.Query(...)
+              - pattern: $C.Param(...)
+              - pattern: $C.PostForm(...)
+              - pattern: $C.DefaultQuery(...)
+              - pattern: $C.QueryParam(...)
+              - pattern: $C.FormValue(...)
+          - metavariable-regex:
+              metavariable: $C
+              regex: ^(c|ctx|gc|ec)$
+    pattern-sanitizers:
+      - pattern: url.QueryEscape(...)
+      - pattern: url.PathEscape(...)
+      - patterns:
+          - pattern-either:
+              - pattern: '"$LIT" + $X'
+              - pattern: fmt.Sprintf("$LIT", ...)
+          - metavariable-regex:
+              metavariable: $LIT
+              regex: ^https?://[^/?#%]+[/?#]
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: http.Get($U)
+              - pattern: http.Head($U)
+              - pattern: http.Post($U, ...)
+              - pattern: http.PostForm($U, ...)
+              - pattern: http.NewRequest($M, $U, ...)
+              - pattern: http.NewRequestWithContext($CTX, $M, $U, ...)
+          - focus-metavariable: $U
+      - patterns:
+          - pattern-either:
+              - pattern: $CL.Get($U)
+              - pattern: $CL.Post($U, ...)
+              - pattern: $CL.Head($U)
+          - metavariable-regex:
+              metavariable: $CL
+              regex: (?i)^(.*client.*|http\.DefaultClient)$
+          - focus-metavariable: $U

@@ -1,0 +1,2 @@
+{"policyId":"fixture-policy","budget":{"configured":true,"ledger":"durable_object","windowKey":"openclaw/fixture-policy/2025-10","limitMicros":25000000,"spentMicros":6000,"remainingMicros":24994000},
+ "usage":{"ledger":"ready","summary":{"requestCount":6,"totalTokens":54191,"actualCostMicros":6000},"providers":[],"events":[]}}

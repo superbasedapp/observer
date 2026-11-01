@@ -1,0 +1,25 @@
+[
+ {
+  "number": 100206,
+  "state": "closed",
+  "draft": false,
+  "title": "Make error overlay editor actions easier to discover",
+  "html_url": "https://github.com/vercel/next.js/pull/100206",
+  "created_at": "2026-10-14T21:13:52Z",
+  "updated_at": "2026-10-15T15:35:03Z",
+  "closed_at": "2026-10-15T15:35:00Z",
+  "merged_at": "2026-10-15T15:35:00Z",
+  "merge_commit_sha": "fb20d9af8b89e2507466702d6844f9e984012fb8",
+  "head": {
+   "sha": "b917a818dbc744e97dca72e7ae395c2080c410ef",
+   "ref": "codex/overlay-open-in-editor"
+  },
+  "base": {
+   "ref": "canary",
+   "sha": "2a40e648f6b8ea51388f5bedbf0ae87affb95311"
+  },
+  "user": {
+   "login": "samselikoff"
+  }
+ }
+]

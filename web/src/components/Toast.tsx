@@ -1,10 +1,10 @@
 import { useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import clsx from "clsx";
-import { Icon } from "@/components/primitives";
+import { Button, Icon } from "@/components/primitives";
 import { X } from "lucide-react";
 
-// Toast — a small, generic, module-level toast store rendered as
+// Toast: a small, generic, module-level toast store rendered as
 // stacked auto-dismiss notices bottom-right. Kept deliberately generic
 // (text + optional variant) so any surface can raise one: the
 // session-attach writer-takeover notices (LaunchTerminal §6 decision 5),
@@ -21,7 +21,33 @@ import { X } from "lucide-react";
 
 export type ToastVariant = "info" | "success" | "warn" | "danger";
 
-type Toast = { id: number; text: string; variant: ToastVariant };
+/** ToastAction is one button on a toast (Open, Reply). Pressing it runs
+ *  onClick and dismisses the toast. */
+export type ToastAction = { label: string; onClick: () => void; primary?: boolean };
+
+/** ToastOptions is the richer toast: a small kicker line, a bold title,
+ *  the text, an avatar (initials) and action buttons. pushToast(text,
+ *  variant) stays the plain form every existing caller uses. */
+export type ToastOptions = {
+  text: string;
+  variant?: ToastVariant;
+  kicker?: string;
+  title?: string;
+  avatar?: string;
+  actions?: ToastAction[];
+  /** How long it stays before auto-dismiss (default ~4s). */
+  durationMs?: number;
+};
+
+type Toast = {
+  id: number;
+  text: string;
+  variant: ToastVariant;
+  kicker?: string;
+  title?: string;
+  avatar?: string;
+  actions?: ToastAction[];
+};
 
 const DISMISS_MS = 4000;
 
@@ -37,13 +63,21 @@ function emit() {
  *  call from anywhere (event handlers, ws frames) — it's a plain module
  *  function, so long-lived closures capture a stable reference. */
 export function pushToast(text: string, variant: ToastVariant = "info") {
+  pushToastWith({ text, variant });
+}
+
+/** pushToastWith raises a toast with an optional kicker, title, avatar and
+ *  actions (the admin message toast, T-854). Returns its id. */
+export function pushToastWith(opts: ToastOptions): number {
   const id = ++counter;
-  toasts = [...toasts, { id, text, variant }];
+  const { durationMs, variant, ...rest } = opts;
+  toasts = [...toasts, { id, variant: variant ?? "info", ...rest }];
   emit();
   setTimeout(() => {
     toasts = toasts.filter((t) => t.id !== id);
     emit();
-  }, DISMISS_MS);
+  }, durationMs ?? DISMISS_MS);
+  return id;
 }
 
 function dismiss(id: number) {
@@ -95,7 +129,7 @@ export function ToastViewport() {
   const items = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   if (items.length === 0) return null;
   return createPortal(
-    <div className="pointer-events-none fixed bottom-5 right-5 z-[90] flex flex-col items-end gap-2">
+    <div className="pointer-events-none fixed bottom-5 left-4 right-4 z-[90] flex flex-col items-end gap-2 sm:left-auto sm:right-5">
       {items.map((t) => (
         <div
           key={t.id}
@@ -106,11 +140,41 @@ export function ToastViewport() {
             BORDER[t.variant],
           )}
         >
-          <span
-            aria-hidden
-            className={clsx("mt-1 h-2 w-2 shrink-0 rounded-pill", DOT[t.variant])}
-          />
-          <span className="text-fg-1">{t.text}</span>
+          {t.avatar ? (
+            <span
+              aria-hidden
+              className="grid h-6 w-6 shrink-0 place-items-center rounded-pill bg-accent text-[9.5px] font-semibold text-accent-on"
+            >
+              {t.avatar}
+            </span>
+          ) : (
+            <span
+              aria-hidden
+              className={clsx("mt-1 h-2 w-2 shrink-0 rounded-pill", DOT[t.variant])}
+            />
+          )}
+          <span className="min-w-0 flex-1">
+            {t.kicker && <span className="block text-[11px] text-fg-3">{t.kicker}</span>}
+            {t.title && <span className="block break-words text-[13px] font-semibold text-fg-0">{t.title}</span>}
+            <span className={clsx("block break-words", t.title ? "mt-0.5 text-fg-2" : "text-fg-1")}>{t.text}</span>
+            {t.actions && t.actions.length > 0 && (
+              <span className="mt-2 flex flex-wrap gap-1.5">
+                {t.actions.map((a) => (
+                  <Button
+                    key={a.label}
+                    size="sm"
+                    variant={a.primary ? "primary" : "secondary"}
+                    onClick={() => {
+                      dismiss(t.id);
+                      a.onClick();
+                    }}
+                  >
+                    {a.label}
+                  </Button>
+                ))}
+              </span>
+            )}
+          </span>
           <button
             type="button"
             onClick={() => dismiss(t.id)}

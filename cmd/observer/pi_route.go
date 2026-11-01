@@ -35,14 +35,22 @@ func piObserverModelIDs() []string {
 	return out
 }
 
-// piAgentDir is pi's agent directory (~/.pi/agent), the home of models.json
-// and settings.json. "" when the home directory cannot be resolved.
+// piAgentDir is pi's agent directory (~/.pi/agent, or $PI_CODING_AGENT_DIR:
+// the pi/user-models artifact's rule, S-17), the home of models.json and
+// settings.json. "" when it cannot be named (no home directory, or a
+// relative PI_CODING_AGENT_DIR); piAgentDirErr says why.
 func piAgentDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return ""
+	d, _ := piAgentDirErr()
+	return d
+}
+
+// piAgentDirErr is piAgentDir with the reason it cannot be named.
+func piAgentDirErr() (string, error) {
+	p, err := launcherArtifactPath("pi/user-models")
+	if err != nil {
+		return "", err
 	}
-	return filepath.Join(home, ".pi", "agent")
+	return filepath.Dir(p), nil
 }
 
 // readPiDefaults returns pi's own configured default provider and model

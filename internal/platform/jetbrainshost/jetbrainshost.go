@@ -100,19 +100,23 @@ var products = []Product{
 // <sessionId>.ndjson filename carries the exact ACP pointer sid (no
 // truncation, no transform) — see internal/adapter/poolside.
 //
+// cortex-code, stakpak and codebuddy-code gained Observer adapters on
+// 2026-10-21 but are still NOT here: the one cortex-code pointer on the
+// grounding host (sid ca8ac860-…) matches no session in either OS's
+// ~/.snowflake/cortex/conversations, and no stakpak or codebuddy-code
+// .agentsession pointer exists yet, so pointer sid == sessions.id is
+// unproven for all three. Add a row only after one JetBrains run proves it,
+// or as an ALIAS when the registry id runs the very package a mapped row was
+// proven with (github-copilot-cli, below). Every other unmapped agent of an
+// Observer adapter is listed in unmappedACPAgents with its live check.
+//
 // The registry also lists agents with no Observer adapter at all
-// (cortex-code, stakpak, auggie, codebuddy-code) and agents the operator
-// confirmed broken on 2026-09-04 (kimi, qwen-code, factory-droid,
-// glm-acp-agent, grok-build, goose) — none belong here. cortex-code in
-// particular was investigated 2026-09-05: the vendor binary (`cortex.exe`,
-// version 1.0.73) IS downloaded under the JetBrains acp-agents dir, but no
-// capturable local session store exists ANYWHERE on the grounding host
-// (no ~/.cortex, ~/.config/cortex, %APPDATA%/%LOCALAPPDATA%\cortex*, no
-// env var, no registry key) despite a live .agentsession pointer proving
-// the operator drove a session — the tool never actually ran to
-// completion, or writes somewhere genuinely undiscovered. Building an
-// adapter with no grounded store would be exactly the fabricated-capture
-// mistake this package's honesty rule forbids.
+// (auggie) and agents the operator confirmed broken on 2026-09-04 (kimi,
+// qwen-code, factory-droid, glm-acp-agent, grok-build, goose) — none
+// belong here. (History: the 2026-09-05 cortex-code investigation found
+// the JetBrains-downloaded cortex.exe 1.0.73 wrote no local store; the
+// standalone 1.2.18 install's ~/.snowflake/cortex store is what the
+// 2026-10-21 adapter reads, and that pointer predates it.)
 // acpAgentMapping is an acpAgents value: the owning Observer tool plus an
 // optional session-id normalizer. NormalizeSessionID is nil for every
 // agent whose pointer sid IS the owner's sessions.id verbatim (the common
@@ -146,6 +150,71 @@ var acpAgents = map[string]acpAgentMapping{
 	// conversation uuid (== trajectory_meta.cascade_id) is the pointer sid
 	// verbatim, so no normalizer is needed.
 	"antigravity-acp": {Tool: models.ToolAntigravityCLI},
+	// github-copilot-cli (surface-gap S-1, lane w8-registry, 2026-10-28) is
+	// an ALIAS, not a new agent: the registry now ships two Copilot
+	// entries, github-copilot = @github/copilot-language-server and
+	// github-copilot-cli = @github/copilot (inventory 2026-10-25 X2), and
+	// @github/copilot is the package the 2026-09-03 live run proved under
+	// the old github-copilot id (Copilot CLI 1.0.79, ~/.copilot/session-state,
+	// pointer sid == sessions.id). The pointer sid is minted by that agent
+	// binary, so the proof follows the package. A pointer run under the new
+	// id re-confirms it (LCR-63); a mismatch is a miss (no session with that
+	// id), never a stamp on someone else's session.
+	"github-copilot-cli": {Tool: models.ToolCopilotCLI},
+}
+
+// unmappedACPAgents are the ACP registry agents of Observer adapters that
+// acpAgents deliberately does NOT map yet, each with why and the live check
+// that would add it (surface-gap S-1, FU-58; the ACP registry read of
+// 2026-10-25, docs/audits/vendor-surface-inventory-2026-10-25.md section 5).
+// Their sessions are still captured by their own adapters; only the
+// ide/jetbrains-* stamp is missing. Never consulted by ParseAgentSession.
+var unmappedACPAgents = map[string]UnmappedACPAgent{
+	"opencode-v2":    {Tool: models.ToolOpenCode, Reason: "OpenCode V2 (2.x, `opencode acp`) is a separate registry entry beside opencode 1.x, not a rename; the 2.x line changed its plugin contract (FU-121), so its session id is not assumed to round trip", LiveCheck: "LCR-63"},
+	"cursor":         {Tool: models.ToolCursor, Reason: "no JetBrains pointer run yet (`cursor-agent acp`)", LiveCheck: "LCR-63"},
+	"gemini":         {Tool: models.ToolGeminiCLI, Reason: "no JetBrains pointer run yet (`@google/gemini-cli`)", LiveCheck: "LCR-63"},
+	"autohand":       {Tool: models.ToolAutohand, Reason: "no JetBrains pointer run yet; the registry ships a separate adapter package (`@autohandai/autohand-acp`)", LiveCheck: "LCR-63"},
+	"bob":            {Tool: models.ToolIBMBob, Reason: "no JetBrains pointer run yet (`@ibm/bob`)", LiveCheck: "LCR-63"},
+	"dimcode":        {Tool: models.ToolDimCode, Reason: "no JetBrains pointer run yet (`dimcode`)", LiveCheck: "LCR-63"},
+	"dirac":          {Tool: models.ToolDirac, Reason: "no JetBrains pointer run yet (`dirac-cli`)", LiveCheck: "LCR-63"},
+	"kimchi":         {Tool: models.ToolKimchi, Reason: "no JetBrains pointer run yet (`kimchi --mode acp`)", LiveCheck: "LCR-63"},
+	"qoder":          {Tool: models.ToolQoder, Reason: "no JetBrains pointer run yet (`@qoder-ai/qodercli`)", LiveCheck: "LCR-63"},
+	"vtcode":         {Tool: models.ToolVTCode, Reason: "no JetBrains pointer run yet (`vtcode acp`); its hooks run only in the TUI", LiveCheck: "LCR-63"},
+	"deepagents":     {Tool: models.ToolDeepAgentsCode, Reason: "the registry package is the JS deepagentsjs line, not dcode, so whether it writes the store the adapter reads is unknown", LiveCheck: "LCR-63"},
+	"cortex-code":    {Tool: models.ToolCortexCode, Reason: "the one pointer seen (2026-09-05) matched no session: the JetBrains-downloaded cortex 1.0.73 wrote no local store", LiveCheck: "LCR-63"},
+	"stakpak":        {Tool: models.ToolStakpak, Reason: "no .agentsession pointer seen yet", LiveCheck: "LCR-63"},
+	"codebuddy-code": {Tool: models.ToolCodeBuddy, Reason: "no .agentsession pointer seen yet", LiveCheck: "LCR-63"},
+	"goose":          {Tool: models.ToolGoose, Reason: "confirmed broken in the 2026-09-04 run", LiveCheck: "LCR-63"},
+	"grok-build":     {Tool: models.ToolGrok, Reason: "confirmed broken in the 2026-09-04 run", LiveCheck: "LCR-63"},
+	"qwen-code":      {Tool: models.ToolQwenCode, Reason: "confirmed broken in the 2026-09-04 run", LiveCheck: "LCR-63"},
+	"factory-droid":  {Tool: models.ToolDroid, Reason: "confirmed broken in the 2026-09-04 run", LiveCheck: "LCR-63"},
+	"pi-acp":         {Tool: models.ToolPi, Reason: "JetBrains writes no .agentsession pointer for pi-acp (confirmed 2026-09-04)", LiveCheck: "LCR-63"},
+	// kimi (FU-58 X1): the registry's kimi entry downloads the ARCHIVED
+	// Python kimi-cli (MoonshotAI/kimi-cli, data in ~/.kimi), not Kimi Code
+	// (~/.kimi-code), so a registry-installed Kimi is not captured at all,
+	// which fits the 2026-09-04 "broken" note. Tool is empty on purpose.
+	"kimi": {Tool: "", Reason: "the registry kimi entry is the archived Python Kimi CLI, whose ~/.kimi store no adapter reads; Kimi Code (~/.kimi-code) is a different product", LiveCheck: "LCR-66"},
+}
+
+// UnmappedACPAgent is one unmappedACPAgents value.
+type UnmappedACPAgent struct {
+	// Tool is the Observer tool whose product the registry entry is, or ""
+	// when no adapter captures it.
+	Tool string
+	// Reason says why it is not mapped.
+	Reason string
+	// LiveCheck names the pending live check that would map it.
+	LiveCheck string
+}
+
+// UnmappedACPAgents returns the unmapped agent table as a fresh copy, for
+// the doctor and the coding-surface rows.
+func UnmappedACPAgents() map[string]UnmappedACPAgent {
+	out := make(map[string]UnmappedACPAgent, len(unmappedACPAgents))
+	for k, v := range unmappedACPAgents {
+		out[k] = v
+	}
+	return out
 }
 
 // truncateAtHyphen returns s up to (not including) the first '-', or s

@@ -114,6 +114,35 @@ const (
 	// the share directive class (ExtractionAuthority excludes it).
 	AuthorityEnforceMCPAccess = "enforce.mcp_access"
 
+	// AuthorityEnforceSandbox is the sandbox module's managed-only authority
+	// (sandbox plan v2 section 8.2, D-749 Q31): on a managed node holding it,
+	// the org's signed per-caller sandbox pull (GET /api/agent/sandbox,
+	// domain sbo-sandbox-managed-v1) may set the enabling direction of the
+	// sandbox settings; it never enables a capture-losing mode and never
+	// ships a credential. It maps to NO policy family (its own ruling, M10;
+	// JSP-1: not an enforce.budget precedent).
+	//
+	// Lane sbx-p1a declared the constant; the governance kit lane shr-kit
+	// (roadmap F0-7, D-791) wired it through the whole touch list: Known,
+	// Managed, SuperAdmin, EnforcementAuthorities (proxy-resident false),
+	// the family exemption with its reason, the grant-replacement broadcast
+	// row (super-admin only) and the consent copy. It is in no default
+	// authority set (never auto-granted).
+	AuthorityEnforceSandbox = "enforce.sandbox"
+
+	// AuthorityEnforceSecurity is the security module's managed-only
+	// authority (security plan 4.9 and 7.2, Q11): on a managed node holding
+	// it, the org's signed per-caller security pull (GET /api/agent/security,
+	// domain sbo-security-managed-v1) may switch pillar components and
+	// drivers ON, with the org mirror as their source. It never carries a
+	// credential, an executable path or arguments, never switches on the
+	// online check without the developer disclosure and never installs git
+	// hooks. It maps to NO policy family (its own ruling, M10): the
+	// security.scanning floors are raise-only and need no authority. Like
+	// enforce.sandbox it is super-admin to mint and never auto-granted
+	// (roadmap F0-7, lane shr-kit).
+	AuthorityEnforceSecurity = "enforce.security"
+
 	// The HIGH-SENSITIVITY per-tier extraction authorities (Arc 4 P5f-h).
 	// Unlike the umbrella extract.managed (which raises the headline tiers —
 	// tool bodies, full traces, project folders, cache, routing, predictions),
@@ -251,6 +280,17 @@ const (
 	AuthorityExtractPolicyState   = "extract.policy_state"
 	AuthorityExtractObsEgress     = "extract.obs_egress"
 
+	// AuthorityExtractHookActivity raises the hook_activity tier (surface-gap
+	// review 2026-10-25, OBS-7, decision DEC-5): the node's per-session hook
+	// liveness counts (agent migration 198 hook_activity) shipped as tool,
+	// event, count, first/last time and the coarse route env classes. The
+	// CLAUDE_CONFIG_DIR path hash is a SECOND gate on top of this one
+	// (shipsRawContent()), so this token alone never discloses a path hash.
+	// Umbrella-eligible like routing_summary (grantsExtractionOrManaged): it
+	// is a metadata tier with no content, so an admin who already granted
+	// extract.managed need not re-grant it.
+	AuthorityExtractHookActivity = "extract.hook_activity"
+
 	// AuthorityComponentsGovern lets the org govern which components a
 	// managed node runs through the node.components policy family (modular
 	// packaging plan 6.2 / 6.2.1, lane MP-GOV). Operator ruling Q9 (D-374):
@@ -276,6 +316,7 @@ func KnownAuthority(tok string) bool {
 		AuthorityCaptureRaise, AuthorityCapturePin, AuthorityFeatureLock,
 		AuthorityEnforceRouting, AuthorityEnforceAdmission, AuthorityEnforceEgress,
 		AuthorityEnforceBudget, AuthorityEnforceMCPAccess,
+		AuthorityEnforceSandbox, AuthorityEnforceSecurity,
 		AuthorityExtractManaged, AuthorityExtractCodeintel,
 		AuthorityExtractProcess, AuthorityExtractTerminal,
 		AuthorityExtractTasks, AuthorityExtractToolAccounts,
@@ -285,6 +326,7 @@ func KnownAuthority(tok string) bool {
 		AuthorityExtractRouting, AuthorityExtractPredictions,
 		AuthorityExtractTargetActions, AuthorityExtractScope,
 		AuthorityExtractPolicyState, AuthorityExtractObsEgress,
+		AuthorityExtractHookActivity,
 		AuthorityComponentsGovern:
 		return true
 	}
@@ -295,7 +337,11 @@ func KnownAuthority(tok string) bool {
 // super admin (operator ruling Q9, D-374). It is the single owner of that
 // classification: every org-server mint path consults it.
 func SuperAdminAuthority(tok string) bool {
-	return tok == AuthorityComponentsGovern
+	switch tok {
+	case AuthorityComponentsGovern, AuthorityEnforceSandbox, AuthorityEnforceSecurity:
+		return true
+	}
+	return false
 }
 
 // ManagedAuthority reports whether tok is one of the managed-only tokens,
@@ -307,7 +353,8 @@ func ManagedAuthority(tok string) bool {
 	switch tok {
 	case AuthorityEnforceRouting, AuthorityEnforceAdmission,
 		AuthorityEnforceEgress, AuthorityEnforceBudget,
-		AuthorityEnforceMCPAccess, AuthorityExtractManaged,
+		AuthorityEnforceMCPAccess, AuthorityEnforceSandbox, AuthorityEnforceSecurity,
+		AuthorityExtractManaged,
 		AuthorityExtractCodeintel, AuthorityExtractProcess,
 		AuthorityExtractTerminal, AuthorityExtractTasks,
 		AuthorityExtractToolAccounts, AuthorityExtractIntel,
@@ -316,7 +363,8 @@ func ManagedAuthority(tok string) bool {
 		AuthorityExtractCache, AuthorityExtractRouting,
 		AuthorityExtractPredictions, AuthorityExtractTargetActions,
 		AuthorityExtractScope, AuthorityExtractPolicyState,
-		AuthorityExtractObsEgress, AuthorityComponentsGovern:
+		AuthorityExtractObsEgress, AuthorityExtractHookActivity,
+		AuthorityComponentsGovern:
 		return true
 	}
 	return false
@@ -342,7 +390,8 @@ func ExtractionAuthority(tok string) bool {
 		AuthorityExtractTraces, AuthorityExtractCache,
 		AuthorityExtractRouting, AuthorityExtractPredictions,
 		AuthorityExtractTargetActions, AuthorityExtractScope,
-		AuthorityExtractPolicyState, AuthorityExtractObsEgress:
+		AuthorityExtractPolicyState, AuthorityExtractObsEgress,
+		AuthorityExtractHookActivity:
 		return true
 	}
 	return false
@@ -429,6 +478,7 @@ func EnterpriseAuthoritySet() []string {
 		AuthorityExtractRouting, AuthorityExtractPredictions,
 		AuthorityExtractTargetActions, AuthorityExtractScope,
 		AuthorityExtractPolicyState, AuthorityExtractObsEgress,
+		AuthorityExtractHookActivity,
 	}
 	sort.Strings(set)
 	return set
@@ -509,6 +559,121 @@ func ManagedConsent(mode string) bool {
 	return mode == ConsentManaged || mode == ConsentIdP
 }
 
+// Enrolment tenancy classes, mirrored from orgcontract.TenancyIndividual and
+// orgcontract.TenancyManaged (internal/govern stays free of the contract
+// package; TestTenancyNamesMirrorOrgcontract keeps the copy honest).
+const (
+	TenancyIndividual = "individual"
+	TenancyManaged    = "managed"
+)
+
+// TenancyFacts are the facts that decide whether managed-class consent may
+// stand on an enrolment (OSH-R-013, operator ruling P-204). They are resolved
+// at the boundary (node: the enrolment row and the verified stored grant;
+// org server: the member's redeemed enrolments and the org's posture), so
+// this package decides on plain data.
+type TenancyFacts struct {
+	// Tenancy is the tenancy of the enrolment the node holds now (the
+	// member's LATEST redeemed enrolment on the server). Empty means not
+	// stated, which keeps the behaviour a caller had before this check.
+	Tenancy string
+	// OtherOrg is true when the grant or document comes from a different
+	// org than the one the enrolment belongs to: a managed-class grant
+	// never crosses orgs.
+	OtherOrg bool
+	// OrgSwitched is true when the enrolment's OWN org switched from teams
+	// to enterprise: the org's decision to manage its members (P-204). On
+	// the node it is a verified, org-signed managed-consent replacement grant
+	// from that same org that carries authority (an empty-authority
+	// replacement is the narrowing document DowngradeToTeams issues when the
+	// org switches back). On the org server it is the posture: enterprise,
+	// or a teams to enterprise flip pending.
+	OrgSwitched bool
+}
+
+// ManagedTenancy reports whether the enrolment is managed: same org, and
+// either the enrolment itself is managed (or not stated) or its org switched
+// to enterprise.
+func ManagedTenancy(f TenancyFacts) bool {
+	if f.OtherOrg {
+		return false
+	}
+	return f.Tenancy != TenancyIndividual || f.OrgSwitched
+}
+
+// ConsentWithinTenancy reports whether a grant or document recorded under
+// consentMode and carrying authority may stand on an enrolment with the
+// given facts. It is the ONE seam the node resolver (GrantIsManaged), the
+// grant-replacement accept path and the org server's fleet issue,
+// redemption and delivery all ask. The defect it closes is a grant CROSSING
+// tenancy: a managed-class grant from another org, or reaching an enrolment
+// that is neither managed nor in an org that switched to enterprise. An org
+// converting its own members by switching to enterprise is not a crossing.
+// Consent that is not managed-class, or a document that carries no
+// authority (it grants nothing managed), always stands.
+func ConsentWithinTenancy(consentMode string, authority []string, f TenancyFacts) bool {
+	if !ManagedConsent(consentMode) || len(authority) == 0 {
+		return true
+	}
+	return ManagedTenancy(f)
+}
+
+// GrantTenancyFacts derives the node-side facts from a stored grant the
+// boundary filled (Tenancy, EnrolmentOrgID, ReplacementGeneration,
+// Integrity): the switch path is a replacement (generation >= 1) whose
+// stored copy still verifies, or could not be checked, under the org key it
+// was accepted with, and that carries authority. A replacement is signature-
+// and key-pin-checked when it is accepted (orgclient.AcceptGrantReplacement
+// never trusts an unpinned key), so "unchecked" here means no key material
+// to re-check against, never "tampered"; an invalid one never counts.
+func GrantTenancyFacts(g *Grant) TenancyFacts {
+	if g == nil {
+		return TenancyFacts{}
+	}
+	return TenancyFacts{
+		Tenancy:  g.Tenancy,
+		OtherOrg: g.EnrolmentOrgID != "" && g.OrgID != "" && g.EnrolmentOrgID != g.OrgID,
+		OrgSwitched: g.ReplacementGeneration > 0 && g.Integrity != GrantIntegrityInvalid &&
+			len(g.Authority) > 0,
+	}
+}
+
+// GrantIsManaged reports whether a grant carries managed-tenancy authority:
+// managed-class consent on an enrolment that is managed by tenancy or by
+// its org's switch to enterprise.
+func GrantIsManaged(grant *Grant) bool {
+	return grant != nil && ManagedConsent(grant.ConsentMode) && ManagedTenancy(GrantTenancyFacts(grant))
+}
+
+// Managed-consent refusal reasons (ManagedConsentRefusal), plain words the
+// node prints so a refused grant is never demoted silently.
+const (
+	RefusalOtherOrg            = "the grant comes from a different organization than this machine's enrolment"
+	RefusalIndividualEnrolment = "this machine enrolled as an individual and its organization has not switched to enterprise"
+	RefusalUnverifiedSwitch    = "the organization's switch to enterprise could not be verified (the stored grant no longer matches the organization's signature)"
+	refusalNone                = ""
+)
+
+// ManagedConsentRefusal names why a grant that CLAIMS managed-class consent
+// and carries authority is not honoured as managed, or returns "" when it
+// is honoured (or claims nothing managed). An org that switched back to
+// teams leaves a narrowing grant with no authority, which is not a refusal
+// and prints nothing.
+func ManagedConsentRefusal(g *Grant) string {
+	if g == nil || !ManagedConsent(g.ConsentMode) || len(g.Authority) == 0 || GrantIsManaged(g) {
+		return refusalNone
+	}
+	f := GrantTenancyFacts(g)
+	switch {
+	case f.OtherOrg:
+		return RefusalOtherOrg
+	case g.ReplacementGeneration > 0 && g.Integrity == GrantIntegrityInvalid:
+		return RefusalUnverifiedSwitch
+	default:
+		return RefusalIndividualEnrolment
+	}
+}
+
 // Grant is the node-side record of the bounded authority this machine handed
 // to an organization at enrolment. It is the consent boundary: a directive
 // outside it is dropped and reported, so widening authority requires a new
@@ -532,8 +697,23 @@ type Grant struct {
 	Authority    []string
 	ConsentMode  string
 	ConsentActor string
-	GrantedAt    time.Time
-	ExpiresAt    time.Time
+	// Tenancy is the tenancy of the enrolment this grant belongs to, as the
+	// node recorded it at enrolment (orgcontract.TenancyIndividual or
+	// TenancyManaged), filled at the cmd boundary. GrantIsManaged reads it
+	// with EnrolmentOrgID and ReplacementGeneration (GrantTenancyFacts,
+	// OSH-R-013, P-204). Empty means not stated.
+	Tenancy string
+	// EnrolmentOrgID is the org id of the enrolment the node holds, filled
+	// at the cmd boundary; a grant from another org is never managed.
+	// Empty means not stated.
+	EnrolmentOrgID string
+	// ReplacementGeneration is the stored grant's fleet grant-replacement
+	// generation: 0 for the enrolment-time grant, >= 1 once the org's
+	// signed replacement (the teams to enterprise switch, a reissue, or the
+	// switch back) superseded it.
+	ReplacementGeneration int64
+	GrantedAt             time.Time
+	ExpiresAt             time.Time
 	// Signature is the base64url Ed25519 signature over the grant's canonical
 	// signing message. Kept as EVIDENCE (an operator, an auditor, or a court
 	// can verify what the organization actually asked for) — it is verified
@@ -955,6 +1135,15 @@ func (e Effective) GrantsObsEgressExtraction() bool {
 	return e.grantsExtractionOrManaged(AuthorityExtractObsEgress)
 }
 
+// GrantsHookActivityExtraction authorizes the RAISE of the hook_activity
+// share tier (the per-session hook liveness counts,
+// internal/orgcontract/hookactivity.go). Satisfied by extract.hook_activity
+// OR the umbrella: the tier carries counts and coarse classes only. The
+// CLAUDE_CONFIG_DIR path hash still needs the node's raw-content posture.
+func (e Effective) GrantsHookActivityExtraction() bool {
+	return e.grantsExtractionOrManaged(AuthorityExtractHookActivity)
+}
+
 // GrantsEnterpriseContent reports whether this resolved posture's grant
 // counts as the Enterprise-Managed-Tenancy equivalent of a node operator's
 // own full_content / admin_managed opt-in (design §5.4's enterpriseGranted
@@ -1064,6 +1253,21 @@ func (e Effective) GrantsMCPAccessEnforcement() bool {
 	return e.grantsExtraction(AuthorityEnforceMCPAccess)
 }
 
+// GrantsSecurityEnforcement authorizes applying the org's signed security
+// managed pull (GET /api/agent/security) on this node: managed tenancy AND
+// enforce.security. Without it a verified pull body stays inert
+// (not_preauthorized); inert on the individual plane like every sibling.
+func (e Effective) GrantsSecurityEnforcement() bool {
+	return e.grantsExtraction(AuthorityEnforceSecurity)
+}
+
+// GrantsSandboxEnforcement authorizes applying the org's signed sandbox
+// managed pull (GET /api/agent/sandbox) on this node: managed tenancy AND
+// enforce.sandbox.
+func (e Effective) GrantsSandboxEnforcement() bool {
+	return e.grantsExtraction(AuthorityEnforceSandbox)
+}
+
 // EnforcementAuthorities is the closed enforce.* family — the ONE owner of
 // "which tokens switch an enforcement MODE" (CLAUDE.md #4). GrantsAnyEnforcement
 // walks it, and the org server's replacement-authority table is pinned
@@ -1075,7 +1279,8 @@ func EnforcementAuthorities() []string {
 	set := []string{
 		AuthorityEnforceRouting, AuthorityEnforceAdmission,
 		AuthorityEnforceEgress, AuthorityEnforceBudget,
-		AuthorityEnforceMCPAccess,
+		AuthorityEnforceMCPAccess, AuthorityEnforceSandbox,
+		AuthorityEnforceSecurity,
 	}
 	sort.Strings(set)
 	return set
@@ -1107,6 +1312,47 @@ func EnforcementAuthority(tok string) bool {
 func (e Effective) GrantsAnyEnforcement() bool {
 	for _, tok := range EnforcementAuthorities() {
 		if e.grantsExtraction(tok) {
+			return true
+		}
+	}
+	return false
+}
+
+// proxyResidentEnforcement says, for every enforce.* authority
+// (EnforcementAuthorities), whether the enforcement point that token switches
+// runs inside the node's API proxy, so it only acts on AI traffic that is
+// routed through that proxy (CLAUDE.md #5: a table, one row per token). A test
+// pins a row for every token, so a new sibling must say where it enforces.
+var proxyResidentEnforcement = map[string]bool{
+	// The model router rewrites a proxied request's model.
+	AuthorityEnforceRouting: true,
+	// Input admission runs on proxied requests (the proxy admission gate).
+	AuthorityEnforceAdmission: true,
+	// The egress routing guardrail runs on the same proxied request path.
+	AuthorityEnforceEgress: true,
+	// The proxy refuses a proxied request over the cap (phase 2 of its guard).
+	AuthorityEnforceBudget: true,
+	// The MCP relay and the org MCP gateway, not the API proxy.
+	AuthorityEnforceMCPAccess: false,
+	// The sandbox managed pull and the terminal launcher, not the API proxy.
+	AuthorityEnforceSandbox: false,
+	// The security managed pull and the pillar's scanners, not the API proxy.
+	AuthorityEnforceSecurity: false,
+}
+
+// RequiresProxyRoute reports whether this node is MANAGED and the
+// organization is authoritative over at least one enforcement point that
+// lives in the API proxy (proxyResidentEnforcement). On such a node an AI tool
+// that is not routed through the Observer proxy escapes that enforcement, so
+// the daemon keeps every routable tool routed and the managed-integrity probe
+// reads a missing route on a routable tool as drift.
+//
+// It is narrower than GrantsAnyEnforcement on purpose: an organization that
+// only governs MCP access gains nothing from the API proxy, so its nodes are
+// neither rewritten nor reported for a route they do not need.
+func (e Effective) RequiresProxyRoute() bool {
+	for _, tok := range EnforcementAuthorities() {
+		if proxyResidentEnforcement[tok] && e.grantsExtraction(tok) {
 			return true
 		}
 	}

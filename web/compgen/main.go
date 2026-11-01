@@ -79,6 +79,10 @@ var pages = []page{
 	// and [observability.egress]; both read only /api/obs, so they leave the
 	// developer distro with obs (D-389).
 	{"security", "security", "Security", "SecurityPage", "guard"},
+	// Code security (the security pillar, security pillar plan section
+	// 4.10): its own page id beside Guard's, owned by component `security`
+	// (the component id and Guard's page id are different namespaces).
+	{"code-security", "code-security", "CodeSecurity", "CodeSecurityPage", "security"},
 	{"egress", "egress", "Egress", "EgressPage", "obs"},
 	{"policies", "policies", "Policies", "PoliciesPage", "obs"},
 	{"agent-config", "agent-config", "AgentConfig", "AgentConfigPage", "integration.agent-config"},
@@ -91,6 +95,7 @@ var pages = []page{
 	{"discovery", "discovery", "Discovery", "DiscoveryPage", "analytics"},
 	{"patterns", "patterns", "Patterns", "PatternsPage", "analytics"},
 	{"privacy", "privacy", "Privacy", "PrivacyPage", "core"},
+	{"messages", "messages", "Messages", "MessagesPage", "org.client"},
 	{"requests", "requests", "Requests", "RequestsPage", "org.client"},
 	{"settings", "settings", "Settings", "SettingsPage", "core"},
 	{"", "settings/components", "Components", "ComponentsPage", "core"},
@@ -113,6 +118,10 @@ type feature struct {
 
 var features = []feature{
 	{"LAUNCH_TERMINAL", "components/LaunchTerminal", "LaunchTerminal", "terminals"},
+	// The Sandboxes and VMs module's Terminals > Settings card and the New
+	// Terminal dialog's Isolation picker (sandbox plan v2 section 11.1).
+	{"SANDBOX_SETTINGS_CARD", "components/SandboxSettingsCard", "SandboxSettingsCard", "terminals.sandbox"},
+	{"SANDBOX_ISOLATION_PICKER", "components/SandboxIsolationPicker", "SandboxIsolationPicker", "terminals.sandbox"},
 }
 
 // packages maps an npm package that only a component's pages and features

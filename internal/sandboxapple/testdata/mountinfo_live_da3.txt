@@ -1,0 +1,17 @@
+47 34 254:16 / / rw,relatime - ext4 /dev/vdb rw
+48 47 0:31 / /proc rw,relatime - proc proc rw
+49 47 0:24 / /sys rw,nosuid,nodev,noexec,relatime - sysfs sysfs rw
+50 47 0:6 / /dev rw,nosuid,relatime - devtmpfs none rw,size=561360k,nr_inodes=140340,mode=755
+51 50 0:30 / /dev/mqueue rw,nosuid,nodev,noexec,relatime - mqueue mqueue rw
+52 50 0:32 / /dev/shm rw,nosuid,nodev,noexec,relatime - tmpfs tmpfs rw,size=65536k
+53 50 0:33 / /dev/pts rw,nosuid,noexec,relatime - devpts devpts rw,gid=5,mode=620,ptmxmode=666
+54 49 0:25 / /sys/fs/cgroup rw,nosuid,nodev,noexec,relatime - cgroup2 none rw
+55 47 0:29 /b27777acde308e843a2233403e29ad15e9af /Users/dev/src/app rw,relatime - virtiofs virtiofs rw
+56 55 0:29 /06d348863205ee986e8df603e6d51a13db29/config /Users/dev/src/app/.git/config ro,relatime - virtiofs virtiofs rw
+35 48 0:6 /null /proc/keys rw,nosuid,relatime - devtmpfs none rw,size=561360k,nr_inodes=140340,mode=755
+36 48 0:6 /null /proc/timer_list rw,nosuid,relatime - devtmpfs none rw,size=561360k,nr_inodes=140340,mode=755
+37 49 0:34 / /sys/firmware ro,nosuid,nodev,noexec,relatime - tmpfs tmpfs ro
+38 48 0:31 /bus /proc/bus ro,relatime - proc proc rw
+39 48 0:31 /fs /proc/fs ro,relatime - proc proc rw
+40 48 0:31 /irq /proc/irq ro,relatime - proc proc rw
+41 48 0:31 /sys /proc/sys ro,relatime - proc proc rw

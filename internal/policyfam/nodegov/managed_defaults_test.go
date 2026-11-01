@@ -65,6 +65,9 @@ func TestManagedDefaultsClassification(t *testing.T) {
 		"terminals": VisibilityVisible, "privacy": VisibilityVisible, "settings": VisibilityVisible,
 		"security": VisibilityHidden, "egress": VisibilityHidden, "routing": VisibilityHidden,
 		"policies": VisibilityHidden, "compression": VisibilityReadOnly, "remote": VisibilityReadOnly,
+		// Code security is hidden by default like Guard's page (roadmap
+		// section 8 item 4, lane gov-tabs); the organization exposes it.
+		"code-security": VisibilityHidden,
 	}
 	for id, want := range nav {
 		if got := ManagedNavDefault(id); got != want {

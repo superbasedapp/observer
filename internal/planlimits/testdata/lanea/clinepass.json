@@ -1,0 +1,1 @@
+{"success":true,"data":{"limits":[{"type":"five_hour","percentUsed":12.5,"resetsAt":"2025-10-09T12:00:00Z"},{"type":"weekly","percentUsed":40,"resetsAt":"2025-10-12T00:00:00Z"},{"type":"monthly","percentUsed":61,"resetsAt":"2025-11-01T00:00:00Z"},{"type":"future_kind","percentUsed":5}]}}

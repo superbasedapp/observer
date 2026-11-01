@@ -42,7 +42,7 @@ func TestBareLauncherHonoursAToolGrant(t *testing.T) {
 	})
 	var cfg config.Config
 	cfg.Observer.DBPath = dbPath
-	makeFeaturesSidecarWriter(cfg, "v-test", nil)([]string{"codex", "crush"})
+	makeFeaturesSidecarWriter(cfg, "v-test", nil)([]string{"codex", "crush"}, nil)
 
 	var errBuf bytes.Buffer
 	if err := refuseIfToolDisallowedCfg(cfg, "codex", &errBuf); err != nil {

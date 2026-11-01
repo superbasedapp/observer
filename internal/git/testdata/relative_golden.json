@@ -1,0 +1,119 @@
+{
+  "resolve": [
+    {
+      "name": "repo_root",
+      "resolve": {
+        "root": "$BASE/repo",
+        "is_git": true,
+        "branch": "main",
+        "remote": "git@github.com:Example/Repo.git"
+      },
+      "find_root": "$BASE/repo",
+      "find_checkout_root": "$BASE/repo"
+    },
+    {
+      "name": "repo_pkg",
+      "resolve": {
+        "root": "$BASE/repo",
+        "is_git": true,
+        "branch": "main",
+        "remote": "git@github.com:Example/Repo.git"
+      },
+      "find_root": "$BASE/repo",
+      "find_checkout_root": "$BASE/repo"
+    },
+    {
+      "name": "submodule_relative_gitdir",
+      "resolve": {
+        "root": "$BASE/repo/sub",
+        "is_git": true,
+        "branch": "",
+        "remote": ""
+      },
+      "find_root": "$BASE/repo/sub",
+      "find_checkout_root": "$BASE/repo/sub"
+    },
+    {
+      "name": "worktrees_pointer_no_back_pointer",
+      "resolve": {
+        "root": "$BASE/nobp",
+        "is_git": true,
+        "branch": "",
+        "remote": ""
+      },
+      "find_root": "$BASE/nobp",
+      "find_checkout_root": "$BASE/nobp"
+    },
+    {
+      "name": "worktrees_pointer_back_pointer_elsewhere",
+      "resolve": {
+        "root": "$BASE/planted",
+        "is_git": true,
+        "branch": "",
+        "remote": ""
+      },
+      "find_root": "$BASE/planted",
+      "find_checkout_root": "$BASE/planted"
+    },
+    {
+      "name": "dangling_relative_pointer",
+      "resolve": {
+        "root": "$BASE/dangling",
+        "is_git": true,
+        "branch": "",
+        "remote": ""
+      },
+      "find_root": "$BASE/dangling",
+      "find_checkout_root": "$BASE/dangling"
+    },
+    {
+      "name": "non_git",
+      "resolve": {
+        "root": "$BASE/plain",
+        "is_git": false,
+        "branch": "",
+        "remote": ""
+      },
+      "find_root": "",
+      "find_checkout_root": ""
+    }
+  ],
+  "paths": [
+    {
+      "name": "in_repo",
+      "rel": "pkg/a.go"
+    },
+    {
+      "name": "repo_root_itself",
+      "rel": "."
+    },
+    {
+      "name": "missing_in_repo",
+      "rel": "pkg/new.go"
+    },
+    {
+      "name": "in_submodule",
+      "rel": "sub/s.go"
+    },
+    {
+      "name": "outside_repo",
+      "rel": "[external]/$BASE/plain/n.txt"
+    },
+    {
+      "name": "in_planted_pointer",
+      "rel": "[external]/$BASE/planted/x.go"
+    },
+    {
+      "name": "empty_target",
+      "rel": ""
+    },
+    {
+      "name": "non_git_root",
+      "rel": "n.txt"
+    },
+    {
+      "name": "symlinked_target",
+      "rel": "pkg/a.go"
+    }
+  ]
+}

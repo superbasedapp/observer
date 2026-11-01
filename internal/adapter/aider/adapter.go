@@ -61,12 +61,33 @@ type discovery struct {
 	at      time.Time
 	done    bool
 	running bool
+	// background makes the first call return the empty set at once and run
+	// the first walk in the background (ConfigureDiscovery, D-MU1): the
+	// daemon's listeners must never wait on a home walk, which on macOS can
+	// block indefinitely on a privacy prompt.
+	background bool
+}
+
+func (d *discovery) setBackground(on bool) {
+	d.mu.Lock()
+	d.background = on
+	d.mu.Unlock()
 }
 
 // current returns the discovered roots, walking synchronously on first use
+// (or, in background mode, starting the first walk and returning at once)
 // and refreshing in the background once the set is older than interval.
 func (d *discovery) current() []string {
 	d.mu.Lock()
+	if !d.done && d.background {
+		out := d.roots
+		if !d.running {
+			d.running = true
+			d.spawn(d.refresh)
+		}
+		d.mu.Unlock()
+		return out
+	}
 	if !d.done {
 		d.roots = d.walk()
 		d.at = d.now()
@@ -91,6 +112,7 @@ func (d *discovery) refresh() {
 	d.mu.Lock()
 	d.roots = roots
 	d.at = d.now()
+	d.done = true
 	d.running = false
 	d.mu.Unlock()
 }

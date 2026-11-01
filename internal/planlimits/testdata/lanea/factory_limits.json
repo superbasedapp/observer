@@ -1,0 +1,1 @@
+{"usesTokenRateLimitsBilling":true,"extraUsageBalanceCents":2500,"overagePreference":"core","limits":{"standard":{"fiveHour":{"usedPercent":12,"secondsRemaining":3600},"weekly":{"usedPercent":34,"secondsRemaining":7200},"monthly":{"usedPercent":56,"secondsRemaining":10800}},"core":{"fiveHour":{"usedPercent":0},"weekly":{"usedPercent":0},"monthly":{"usedPercent":0}}}}

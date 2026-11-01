@@ -245,7 +245,7 @@ func branchGone(t *testing.T, repo, branch string) bool {
 // kept provenance, and prunes worktree + branch.
 func TestKeepJudgeMerge_LandsAndStamps(t *testing.T) {
 	repo := initArenaRepo(t)
-	r := startTestRunner(t, repo)
+	r := allowSkip(startTestRunner(t, repo)) // judge_merge runs only in the skip lane (audit F3)
 	ctx := context.Background()
 
 	prep, err := r.StartRun(ctx, RunSpec{
@@ -319,7 +319,7 @@ echo "merged sha $(git rev-parse HEAD)"
 // error and leaves the repository exactly as it was.
 func TestKeepJudgeMerge_NoLandIsHonestError(t *testing.T) {
 	repo := initArenaRepo(t)
-	r := startTestRunner(t, repo)
+	r := allowSkip(startTestRunner(t, repo)) // judge_merge runs only in the skip lane (audit F3)
 	ctx := context.Background()
 	flatJudge := fakeBin(t, t.TempDir(), "flat-judge", `cat <<'JSON'
 {"type":"result","result":"{\"correctness\":1,\"completeness\":1,\"code_quality\":1,\"performance\":1,\"risk\":9,\"overall\":1,\"verdict_rationale\":\"refused\"}"}
@@ -366,7 +366,7 @@ exit 0
 
 func TestKeepJudgeMerge_AdmissionFailureNeverStartsJudge(t *testing.T) {
 	repo := initArenaRepo(t)
-	r := startTestRunner(t, repo)
+	r := allowSkip(startTestRunner(t, repo)) // judge_merge runs only in the skip lane (audit F3)
 	r.opts.ProxyURL = "http://127.0.0.1:8820"
 	marker := filepath.Join(t.TempDir(), "judge-started")
 	judge := fakeBin(t, t.TempDir(), "blocked-judge", `

@@ -16,6 +16,9 @@ type Meta struct {
 	Branch    string    `json:"branch,omitempty"`
 	RunID     string    `json:"run_id"`
 	CreatedAt time.Time `json:"created_at"`
+	// Kept, for a worktree run the end of the run kept, says why (shown by
+	// `observer workspaces ls`); empty otherwise.
+	Kept string `json:"kept,omitempty"`
 }
 
 // MarshalMeta renders m as indented JSON. It is pure — the caller

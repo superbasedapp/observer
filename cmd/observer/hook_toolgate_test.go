@@ -43,6 +43,39 @@ func servedToolGates(t *testing.T) []struct {
 	return out
 }
 
+// toolGatesForTier is servedToolGates in the full tier. Under -short (the
+// lane tier) it keeps the first binding of each (dialect, receiver) pair, so
+// every reply shape and every receiver path is still driven; the full tier
+// (no -short, which the release gate runs under -race) drives every
+// binding, including each vendor's own native tool name.
+func toolGatesForTier(t *testing.T) []struct {
+	tool string
+	b    integration.HookBinding
+} {
+	t.Helper()
+	all := servedToolGates(t)
+	if !testing.Short() {
+		return all
+	}
+	seen := map[string]bool{}
+	out := all[:0:0]
+	for _, g := range all {
+		recv := "binding-route"
+		if c, ok := integration.For(g.tool); ok {
+			if _, own := toolGateOwnReceiver[c.Hook.Mechanism]; own {
+				recv = string(c.Hook.Mechanism)
+			}
+		}
+		key := fmt.Sprint(g.b.Dialect) + "|" + recv
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, g)
+	}
+	return out
+}
+
 // driveToolGateReceiver runs the real receiver an `observer hook <tool>
 // <event>` invocation reaches for a tool gate, with body on stdin.
 func driveToolGateReceiver(t *testing.T, tool, event, body, configPath string) {
@@ -63,6 +96,8 @@ func driveToolGateReceiver(t *testing.T, tool, event, body, configPath string) {
 // panic} x {enforced, not enforced}. Under enforcement each failure BLOCKS
 // in the dialect's own shape; otherwise it answers with the dialect's own
 // allow (never the legacy decision:"approve") or, on a timeout, exits 0.
+// Under -short it runs one binding per dialect and receiver
+// (toolGatesForTier).
 func TestToolGateFailureSemantics(t *testing.T) {
 	huge := `{"session_id":"s1","tool_name":"Bash","tool_input":{"command":"` + strings.Repeat("a", promptSubmitBodyLimit+16) + `"}}`
 	kinds := []struct {
@@ -85,7 +120,7 @@ func TestToolGateFailureSemantics(t *testing.T) {
 			}()
 		}},
 	}
-	for _, g := range servedToolGates(t) {
+	for _, g := range toolGatesForTier(t) {
 		for _, enforced := range []bool{true, false} {
 			for _, k := range kinds {
 				name := fmt.Sprintf("%s %s/enforced=%v/%s", g.tool, g.b.NativeEvent, enforced, k.name)
@@ -97,6 +132,7 @@ func TestToolGateFailureSemantics(t *testing.T) {
 						mode = "enforce"
 					}
 					writeFileT(t, cp, fmt.Sprintf("[observer]\ndb_path = %q\n[guard]\nenabled = true\nmode = %q\n", filepath.Join(dir, "o.db"), mode))
+					preseedMigratedDB(t, filepath.Join(dir, "o.db"))
 					if enforced {
 						writePosture(t, cp, enforcedPosture)
 					} else {
@@ -208,6 +244,9 @@ func toolGateE2EFixture(tool, event, dialect, dir string) string {
 	case hook.ToolGateDialectCline:
 		// T-342: served under cline-cli, so the CLI's tool vocabulary.
 		return fmt.Sprintf(`{"hookName":"tool_call","sessionContext":{"sessionId":"s1"},"workspaceRoots":[%q],"tool_call":{"id":"t1","name":"run_commands","input":{"command":"rm -rf ~/"}}}`, dir)
+	case hook.ToolGateDialectClinePlugin:
+		// Guard-fix lane B: the Cline plugin's beforeTool envelope.
+		return fmt.Sprintf(`{"host":"cline-cli","event":"beforeTool","session_id":"s1","cwd":%q,"tool_name":"run_commands","tool_input":{"commands":["rm -rf ~/"]}}`, dir)
 	case hook.ToolGateDialectCascade:
 		info := map[string]string{
 			"pre_run_command":  fmt.Sprintf(`{"command_line":"rm -rf ~/","cwd":%q}`, dir),
@@ -216,6 +255,10 @@ func toolGateE2EFixture(tool, event, dialect, dir string) string {
 			"pre_mcp_tool_use": `{"mcp_server_name":"shell","mcp_tool_name":"exec","mcp_tool_arguments":{}}`,
 		}[event]
 		return fmt.Sprintf(`{"agent_action_name":%q,"trajectory_id":"s1","tool_info":%s}`, event, info)
+	case hook.ToolGateDialectDirac:
+		return fmt.Sprintf(`{"hookName":"PreToolUse","taskId":"s1","workspaceRoots":[%q],"preToolUse":{"toolName":"execute_command","parameters":{"command":"rm -rf ~/"}}}`, dir)
+	case hook.ToolGateDialectKimchiBash:
+		return fmt.Sprintf(`{"tool_name":"bash","input":{"command":"rm -rf ~/"},"cwd":%q}`, dir)
 	}
 	native := map[string]string{
 		"codex": "Bash", "qwen-code": "run_shell_command", "droid": "Execute",
@@ -223,6 +266,18 @@ func toolGateE2EFixture(tool, event, dialect, dir string) string {
 		"grok": "run_terminal_command", "mistral-code": "bash", "poolside": "shell",
 		"junie": "bash", "crush": "bash", "zcode": "Bash", "command-code": "Bash",
 		"open-interpreter": "Bash", "muse": "bash", "devin": "exec", "kimi-code": "Bash",
+		"kiro-cli": "shell",
+		// The 2026-10-21 wave (hook-payload spellings, live).
+		"ibm-bob": "execute_command", "codebuddy": "Bash", "deepagents-code": "Bash",
+		"dimcode": "exec", "vtcode": "exec_command", "autohand": "run_command",
+		"kimchi": "Bash", "cortex-code": "Bash",
+		// DeepSeek Harness through its Claude hook bridge: tool_name is the
+		// harness's own (dsh-hooks-claude-code 0.2.1-rc.3, surface-gap S-20).
+		"deepseek": "bash",
+		// The Copilot CLI runtime's Claude-compatible PreToolUse replay
+		// (R-194 G2): Copilot's vocabulary first, so its own shell tool name
+		// (live check 12). Copilot's native preToolUse has its own fixture.
+		"copilot-cli": "bash",
 	}[tool]
 	input := `{"command":"rm -rf ~/"}`
 	if tool == "cursor" {
@@ -231,12 +286,28 @@ func toolGateE2EFixture(tool, event, dialect, dir string) string {
 	return fmt.Sprintf(`{"session_id":"s1","sessionId":"s1","conversation_id":"s1","cwd":%q,"hook_event_name":%q,"tool_name":%q,"tool_input":%s}`, dir, event, native, input)
 }
 
+// TestToolGateE2EFixtureNamesATool: every served tool gate's end-to-end
+// fixture names the tool it runs. A served gate whose tool has no entry in
+// toolGateE2EFixture's native name table gets an empty tool_name, which no
+// rule judges, so the registry-driven tests would read the dialect's allow
+// and report a gate that does not block (the copilot-cli Claude replay gate
+// of R-194 G2 hit exactly that before its entry was added).
+func TestToolGateE2EFixtureNamesATool(t *testing.T) {
+	for _, g := range servedToolGates(t) {
+		body := toolGateE2EFixture(g.tool, g.b.NativeEvent, g.b.Dialect, t.TempDir())
+		if strings.Contains(body, `"tool_name":""`) {
+			t.Errorf("%s %s: the fixture names no tool; add the tool's shell tool name to toolGateE2EFixture", g.tool, g.b.NativeEvent)
+		}
+	}
+}
+
 // TestToolGateReceiversAnswerEndToEnd drives each served tool gate's real
 // receiver with a guard-enforced config and a destructive command fixture:
 // the reply is the dialect's deny (or Qwen/Droid/Qoder's native ask for an
-// ask rule) and the allow fixture writes the dialect's allow.
+// ask rule) and the allow fixture writes the dialect's allow. Under -short
+// it runs one binding per dialect and receiver (toolGatesForTier).
 func TestToolGateReceiversAnswerEndToEnd(t *testing.T) {
-	for _, g := range servedToolGates(t) {
+	for _, g := range toolGatesForTier(t) {
 		t.Run(g.tool+" "+g.b.NativeEvent, func(t *testing.T) {
 			if g.b.NativeEvent == "pre_mcp_tool_use" {
 				// No builtin rule judges an arbitrary MCP call; the MCP
@@ -247,6 +318,7 @@ func TestToolGateReceiversAnswerEndToEnd(t *testing.T) {
 			dir := t.TempDir()
 			cp := filepath.Join(dir, "config.toml")
 			writeFileT(t, cp, fmt.Sprintf("[observer]\ndb_path = %q\n[guard]\nenabled = true\nmode = \"enforce\"\n", filepath.Join(dir, "o.db")))
+			preseedMigratedDB(t, filepath.Join(dir, "o.db"))
 			writePosture(t, cp, enforcedPosture)
 			body := toolGateE2EFixture(g.tool, g.b.NativeEvent, g.b.Dialect, dir)
 			h := newFailureHarness(t, resolveHookFailurePlan(g.tool, g.b.NativeEvent, cp))

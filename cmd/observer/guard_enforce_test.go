@@ -21,6 +21,9 @@ import (
 // here, never ships stale.
 func TestGuardRulesDocInSync(t *testing.T) {
 	t.Parallel()
+	if guardRulesDocPacksOmitted {
+		t.Skip("a build tag (sbo_omit_security or sbo_omit_security_deps) removed a rule pack the generated doc carries; the doc is checked in the full build")
+	}
 	want := renderRuleCatalogMarkdown(policy.Catalog())
 	raw, err := os.ReadFile(filepath.Join("..", "..", "docs", "guard-rules.md"))
 	if err != nil {
@@ -97,7 +100,10 @@ func TestSetGuardConfigMode(t *testing.T) {
 // TestGuardApproveRevokeCmds drives the approvals register CLI
 // end-to-end against a temp DB: grant, list, revoke.
 func TestGuardApproveRevokeCmds(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it pins the home (t.Setenv). The approve path reads the
+	// org bundle under the home, and the process temp home's .observer is a
+	// file (FU-20), which reads as an unverifiable org layer that locks R-110.
+	pinToolHomes(t)
 	cfgPath, dbPath := writeGuardTestConfig(t)
 
 	out, err := runGuardCmd(t, "approve", "R-110", "--global", "--ttl", "1h", "--config", cfgPath)

@@ -27,7 +27,7 @@ func TestResolveTools_AllReturnsLongTailVendors(t *testing.T) {
 	longTail := []string{"gemini-cli", "qwen-code", "droid", "qoder", "poolside", "devin", "command-code"}
 	installed := append([]string{"claude-code"}, longTail...)
 
-	got := resolveTools(true, false, false, false, false, installed, false)
+	got := resolveTools(true, nil, installed, false)
 
 	for _, tool := range longTail {
 		wantSelected := autoInitSupported(tool)

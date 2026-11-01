@@ -214,6 +214,7 @@ func reconcileNodeIntervention(ctx context.Context, st *store.Store, cfg config.
 		_, err := intervention.RevalidateBinding(actionCtx, manifest, w.Identity, w.SurfaceID, opts)
 		return err
 	}, Decide: func(actionCtx context.Context, w intervention.Workload) (intervention.PolicyDecision, error) {
+		//nolint:staticcheck // SA4023: on Windows intervention.RevalidateBinding (binding_other.go) always returns a non-nil error; process intervention is Linux-only (P-175), so this check is a tautology there but correct on Linux.
 		if _, err := intervention.RevalidateBinding(actionCtx, manifest, w.Identity, w.SurfaceID, opts); err != nil {
 			return intervention.PolicyDecision{}, err
 		}

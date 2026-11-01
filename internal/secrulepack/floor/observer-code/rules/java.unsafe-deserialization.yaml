@@ -1,0 +1,24 @@
+rules:
+  - id: java.unsafe-deserialization
+    languages: [java]
+    severity: ERROR
+    message: Data is deserialized with a loader that can build arbitrary classes (Java serialization, XMLDecoder, XStream, SnakeYAML's default constructor or Jackson default typing), so crafted input can run code; use a safe format or an allow-list filter.
+    metadata:
+      category: code_vuln
+      cwe: CWE-502
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: (ObjectInputStream $O).readObject()
+              - pattern: (ObjectInputStream $O).readUnshared()
+              - pattern: new ObjectInputStream(...).readObject()
+          - pattern-not-inside: |
+              $O.setObjectInputFilter(...);
+              ...
+      - pattern: (XMLDecoder $D).readObject()
+      - pattern: new XMLDecoder(...).readObject()
+      - pattern: (XStream $X).fromXML(...)
+      - pattern: new Yaml().load(...)
+      - pattern: new Yaml().loadAll(...)
+      - pattern: $M.enableDefaultTyping(...)
+      - pattern: $M.activateDefaultTyping(...)

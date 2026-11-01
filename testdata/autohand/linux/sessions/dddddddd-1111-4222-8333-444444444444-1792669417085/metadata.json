@@ -1,0 +1,24 @@
+{
+  "sessionId": "dddddddd-1111-4222-8333-444444444444-1792669417085",
+  "createdAt": "2026-10-22T11:43:37.086Z",
+  "lastActiveAt": "2026-10-22T11:44:03.291Z",
+  "projectPath": "/home/user/proj",
+  "projectName": "proj",
+  "model": "minimax/minimax-m3.1-flash:free",
+  "messageCount": 4,
+  "status": "completed",
+  "client": "terminal",
+  "usage": {
+    "promptTokens": 28825,
+    "completionTokens": 203,
+    "totalTokens": 29028,
+    "cacheReadTokens": 314,
+    "cacheWriteTokens": 0,
+    "turnCount": 1,
+    "tokenUsageStatus": "actual",
+    "longestTurnDurationMs": 24662,
+    "updatedAt": "2026-10-22T11:44:03.273Z"
+  },
+  "closedAt": "2026-10-22T11:44:03.291Z",
+  "summary": "Run exactly this shell command with your shell tool: echo ob"
+}

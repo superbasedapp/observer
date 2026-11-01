@@ -29,6 +29,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/pidbridge"
 	"github.com/marmutapp/superbased-observer/internal/proxy"
+	"github.com/marmutapp/superbased-observer/internal/proxyauth"
 	"github.com/marmutapp/superbased-observer/internal/selfobs/emit"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -80,6 +81,10 @@ func newProxyStartCmd() *cobra.Command {
 				return err
 			}
 			defer cleanup()
+			// Lane P1: recorded route lanes resolve before the listener accepts.
+			if lanePort, ok := proxyPortFromAddr(addr); ok {
+				_ = installRouteLanesAtStart(p, lanePort, cmd.ErrOrStderr())
+			}
 
 			// Plane-A P0-5 §6.5 / R2-B3: standalone `observer proxy start` must
 			// load verified LKG BEFORE binding the listener, and run the
@@ -396,6 +401,12 @@ func buildProxy(ctx context.Context, configPath, recipeName string, portOverride
 	// exactly as before. internal/proxy never imports internal/quiesce — the
 	// concrete gate is bound here, the Sink/Admitter/CostComputer pattern.
 	opts.DrainGate = updateDrainGate()
+	// Proxy client authentication (OSH-R-009, proxy_clientauth.go): the
+	// token the proxy accepts and whether a plain request is refused, decided
+	// once here. Both switches off (the default): no token, nothing read.
+	var clientEnf proxyauth.Enforcement
+	opts.ClientToken, clientEnf = wireProxyClientAuth(cfg, port, logger)
+	opts.RequireClientAuth = clientEnf.Enforce
 
 	p, err := proxy.New(opts)
 	if err != nil {

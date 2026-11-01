@@ -1,0 +1,16 @@
+{
+  "api_conversation_history.json": [
+    "cline:asst:1780707193340:1:0:ecea3bcad54b4d30\tI'll read the middleware file first.",
+    "cl_01\t/tmp/superbased-fixture-cline/auth.go",
+    "cl_02\t/tmp/superbased-fixture-cline/auth.go",
+    "cl_03\tgo test ./..."
+  ],
+  "api_conversation_history_xml.json": [
+    "cline:user:1780707193341:0:3639efcd08abb273\tHi",
+    "1:xml:0\tHi there! I'm ready to help. What would you like me to work on?",
+    "cline:asst:1780707193341:3:0:3b8535d93ce3f554\tSure — let me open that file.",
+    "3:xml:0\t[external]/$CWD/notes/readme.md",
+    "5:xml:0\tls notes",
+    "7:xml:0\tThe readme is a short project description."
+  ]
+}

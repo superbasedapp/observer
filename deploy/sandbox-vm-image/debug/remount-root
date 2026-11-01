@@ -1,0 +1,26 @@
+#!/bin/bash
+# remount-root: the debug image set's guest-root remount check (R-016,
+# never shipped), run by debugd as guest root for LIN-8. For every
+# read-only mount in the guest (the verified rootfs and every read-only
+# share), it tries to remount it read-write and then to write and rename a
+# witness file there. Every line must say "refused": a line saying ALLOWED
+# is a finding. The writable tmpfs roots are skipped.
+set -u
+echo "remount-root: as uid $(id -u) at $(date -u +%FT%TZ)"
+while read -r _ mp fstype opts _; do
+	case ",$opts," in *,ro,*) ;; *) continue ;; esac
+	case "$fstype" in proc | sysfs | devtmpfs | devpts | tmpfs) continue ;; esac
+	if mount -o remount,rw "$mp" 2>/dev/null; then
+		echo "remount $mp ($fstype): ALLOWED"
+	else
+		echo "remount $mp ($fstype): refused"
+	fi
+	w="$mp/.observer-debug-witness"
+	if (: >"$w") 2>/dev/null; then
+		echo "write $w: ALLOWED"
+		if mv "$w" "$w.renamed" 2>/dev/null; then echo "rename $w: ALLOWED"; else echo "rename $w: refused"; fi
+	else
+		echo "write $w: refused"
+	fi
+done </proc/mounts
+echo "remount-root: done"

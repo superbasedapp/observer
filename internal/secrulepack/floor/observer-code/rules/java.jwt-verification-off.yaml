@@ -1,0 +1,14 @@
+rules:
+  - id: java.jwt-verification-off
+    languages: [java]
+    severity: ERROR
+    message: A JWT is accepted without a signature check (the none algorithm, an unsecured parser or an unsigned-claims parse); verify with a key and a fixed algorithm.
+    metadata:
+      category: code_vuln
+      cwe: CWE-347
+    pattern-either:
+      - pattern: Algorithm.none()
+      - pattern: $P.unsecured()
+      - pattern: $P.parseClaimsJwt(...)
+      - pattern: $P.parseUnsecuredClaims(...)
+      - pattern: PlainJWT.parse(...)

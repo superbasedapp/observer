@@ -3,14 +3,14 @@ package govern
 import "sort"
 
 // The [org_client.share] key -> extraction-tier ownership table (W-8). ONE
-// owner maps each of the 21 internal/policyfam/nodegov.ShareKeys keys to the
+// owner maps each of the 22 internal/policyfam/nodegov.ShareKeys keys to the
 // extraction authority that authorizes RAISING it on a managed node — the
 // same authority governance_wire.go's lowerShareOptions gates its RaiseBool
 // calls on, so the push seam and every transparency surface (the Privacy
 // page's "in force" column, P4-2's node.governance ExtractionEffective wire
 // field) read the raise gate off ONE table and can never disagree.
 //
-// The 21 key-string literals are duplicated here rather than imported from
+// The 22 key-string literals are duplicated here rather than imported from
 // internal/policyfam/nodegov, following the same convention
 // authorityFamilyTable already uses (see authorityfamilies.go's doc comment)
 // for a small closed vocabulary owned by a sibling package: govern already
@@ -60,6 +60,7 @@ var shareTierTable = []shareTierRow{
 	{Key: "obs.egress", Authority: AuthorityExtractObsEgress, Authorized: Effective.GrantsObsEgressExtraction},
 	{Key: "policy_state", Authority: AuthorityExtractPolicyState, Authorized: Effective.GrantsPolicyStateExtraction},
 	{Key: "target_action_allowlist", Authority: AuthorityExtractTargetActions, Authorized: Effective.GrantsTargetActionsExtraction},
+	{Key: "hook_activity", Authority: AuthorityExtractHookActivity, Authorized: Effective.GrantsHookActivityExtraction},
 }
 
 // shareTierExempt is the "known and consciously unmapped" set. It is empty
@@ -141,7 +142,7 @@ func ShareTierKeys() []string {
 	return out
 }
 
-// KnownShareTierKey reports whether key is one of the 21
+// KnownShareTierKey reports whether key is one of the 22
 // [org_client.share] keys this package knows about: mapped in
 // shareTierTable, or named in shareTierExempt as a conscious exemption. It
 // lets a caller (and the drift test) distinguish "structurally exempt from

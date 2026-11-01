@@ -120,12 +120,12 @@ func TestProcStartTimeParsesCommWithSpaces(t *testing.T) {
 }
 
 func contains(s, sub string) bool {
-	return len(sub) == 0 || (len(s) >= len(sub) && (func() bool {
+	return len(sub) == 0 || (len(s) >= len(sub) && func() bool {
 		for i := 0; i+len(sub) <= len(s); i++ {
 			if s[i:i+len(sub)] == sub {
 				return true
 			}
 		}
 		return false
-	})())
+	}())
 }

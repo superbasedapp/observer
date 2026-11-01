@@ -74,6 +74,9 @@ func checkClaudeCodePlugin(homeDir, homeOverride string) Check {
 		plugin  []pluginSide
 	)
 	for _, s := range sides {
+		if s.Unnamed != "" {
+			details = append(details, fmt.Sprintf("%s: %s", s.Label, s.Unnamed))
+		}
 		switch {
 		case s.Detection.Uncertain:
 			details = append(details, fmt.Sprintf("%s: %s", s.Label, s.Detection.Warning()))
@@ -167,6 +170,10 @@ type pluginSide struct {
 	// InitWiring describes the observer-written entries `observer init`
 	// put in THIS side's config. Empty when init wrote nothing here.
 	InitWiring []string
+	// Unnamed says why a config this side would hold has no path (a
+	// relocation variable with a relative value, FU-130), "" otherwise:
+	// reported, never skipped silently.
+	Unnamed string
 }
 
 func sideLabels(sides []pluginSide) string {
@@ -188,10 +195,12 @@ func nativePluginSide(homeDir string) pluginSide {
 		s.InitWiring = append(s.InitWiring,
 			fmt.Sprintf("%d hook event(s) in %s (%s)", len(events), hooksPath, strings.Join(events, ", ")))
 	}
-	if mcpPath := claudeCodeMCPConfigPath(homeDir); mcpPath != "" && observerMCPEntryRegistered(mcpPath) {
+	mcpPath, unnamed := claudeCodeMCPConfigPath(homeDir)
+	if mcpPath != "" && observerMCPEntryRegistered(mcpPath) {
 		s.InitWiring = append(s.InitWiring,
 			fmt.Sprintf("the %q MCP server in %s", mcpregister.ServerName, mcpPath))
 	}
+	s.Unnamed = unnamed
 	return s
 }
 
@@ -271,10 +280,12 @@ func observerMCPEntryRegistered(path string) bool {
 }
 
 // claudeCodeMCPConfigPath resolves claude-code's user-level MCP config
-// through the shared locate table (the one owner of those paths).
-func claudeCodeMCPConfigPath(homeDir string) string {
+// through the shared locate table (the one owner of those paths). With no
+// path, reason says why (locate.Location.Reason: a relocation variable
+// holding a relative value, FU-130), "" when there is simply no row.
+func claudeCodeMCPConfigPath(homeDir string) (path, reason string) {
 	if loc, ok := locate.ForClient("claude-code", homeDir); ok {
-		return loc.Path
+		return loc.Path, loc.Reason()
 	}
-	return ""
+	return "", ""
 }

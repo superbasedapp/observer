@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/marmutapp/superbased-observer/internal/cloudserver/foundry"
+	"github.com/marmutapp/superbased-observer/internal/cloudserver/inference"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/store"
 )
 
@@ -89,7 +89,15 @@ type ExecResult struct {
 	TerminalReason string
 	TokensIn       int64
 	TokensOut      int64
-	Detail         string
+	// CostUSD is the priced cost of a provider call that produced no accepted
+	// result (an invalid output). The worker adds it to the job's budget pool
+	// spend (T-946); an accepted result carries its cost in its provenance.
+	CostUSD float64
+	Detail  string
+	// TitleFallback is set on an accepted result whose title the deterministic
+	// fallback supplied because the model returned none (T-967). The worker's
+	// per-job log line carries it, so the rate can be counted.
+	TitleFallback bool
 	// ParkReason, when non-empty, means the FINAL pre-dispatch gate (FA1/FA2/FA7)
 	// found the job no longer admissible at the dispatch seam (route mutated /
 	// deactivated, a kill switch flipped, evidence expired, attestation went
@@ -136,7 +144,7 @@ type NoopExecutor struct{}
 
 // Execute always declines.
 func (NoopExecutor) Execute(context.Context, *store.LeasedJob, store.RouteInfo, string, int, func() time.Time, FinalGate) (ExecResult, error) {
-	return ExecResult{Outcome: ExecProviderError, Detail: "no-op executor (no Foundry provider wired)"}, nil
+	return ExecResult{Outcome: ExecProviderError, Detail: "no-op executor (no inference provider wired)"}, nil
 }
 
 // Config configures a Worker.
@@ -248,7 +256,63 @@ func (w *Worker) Run(ctx context.Context) error {
 // deleting its evidence + bytes) WITHOUT a provider call; a provider error or
 // invalid output retries within MaxAttempts, then fails terminally with a
 // refund; success settles exactly one user unit.
+//
+// Every leased job ends in exactly one INFO log line (T-968, logJobOutcome):
+// the job id prefix, feature, route id, attempts, final state, reason, the
+// summed provider tokens and whether the title fallback was applied. Never
+// content, never an account or email, never session text.
 func (w *Worker) ProcessOnce(ctx context.Context, now time.Time) (Outcome, error) {
+	var run jobRun
+	out, err := w.processOnce(ctx, now, &run)
+	if run.jobID != "" {
+		w.cfg.Logger.Info("cloudserver/jobs: job finished", jobOutcomeAttrs(run, out, err)...)
+	}
+	return out, err
+}
+
+// jobRun is what one ProcessOnce learned about the job it leased, for the
+// per-job log line. It holds identifiers and counters only.
+type jobRun struct {
+	jobID         string
+	feature       string
+	routeID       string
+	attempts      int
+	tokensIn      int64
+	tokensOut     int64
+	titleFallback bool
+}
+
+// jobIDLogPrefix is how much of a job id the per-job log line carries: enough
+// to find the job, not the whole identifier.
+const jobIDLogPrefix = 8
+
+// jobOutcomeAttrs renders the per-job log line's attributes (T-968). A run that
+// ended in an error before reaching a state is reported as state "error"; the
+// error itself is logged by Run.
+func jobOutcomeAttrs(run jobRun, out Outcome, err error) []any {
+	state := out.State
+	if err != nil || state == "" {
+		state = "error"
+	}
+	id := run.jobID
+	if len(id) > jobIDLogPrefix {
+		id = id[:jobIDLogPrefix]
+	}
+	return []any{
+		"job", id,
+		"feature", run.feature,
+		"route_id", run.routeID,
+		"attempts", run.attempts,
+		"state", state,
+		"reason", out.Reason,
+		"tokens_in", run.tokensIn,
+		"tokens_out", run.tokensOut,
+		"title_fallback", run.titleFallback,
+	}
+}
+
+// processOnce is ProcessOnce's body; it fills run as it goes.
+func (w *Worker) processOnce(ctx context.Context, now time.Time, run *jobRun) (Outcome, error) {
 	// FA2: a fresh instant per revalidation/dispatch. The default clock returns
 	// the caller-supplied `now`, so a fixed test now stays authoritative; a real
 	// clock (or an injected advancing fake) re-samples so a slow first attempt
@@ -268,6 +332,7 @@ func (w *Worker) ProcessOnce(ctx context.Context, now time.Time) (Outcome, error
 	// Stamp the lease owner so the completion CAS can require it to be unchanged
 	// (FA8). The worker leased with its own id, so this is authoritative.
 	lj.LeaseWorker = w.cfg.WorkerID
+	run.jobID, run.feature, run.routeID = lj.JobID, lj.Feature, lj.RouteID
 
 	// W5: dispatch by feature through the small table. A job whose feature has
 	// no wired Executor fails terminal — never silently succeeds and never
@@ -299,9 +364,15 @@ func (w *Worker) ProcessOnce(ctx context.Context, now time.Time) (Outcome, error
 		finalGate := func(ctx context.Context, now time.Time) (store.RouteInfo, string, string, error) {
 			return w.revalidate(ctx, lj, now)
 		}
+		run.attempts++
 		res, err := executor.Execute(ctx, lj, route, apiKey, attempt, clock, finalGate)
 		if err != nil {
 			return Outcome{}, fmt.Errorf("execute: %w", err)
+		}
+		run.tokensIn += res.TokensIn
+		run.tokensOut += res.TokensOut
+		if res.Outcome == ExecSucceeded {
+			run.titleFallback = res.TitleFallback
 		}
 		if res.Terminal {
 			return w.fail(ctx, lj, res.TerminalReason, clock())
@@ -326,6 +397,11 @@ func (w *Worker) ProcessOnce(ctx context.Context, now time.Time) (Outcome, error
 			if err := w.store.RecordProviderAttempt(ctx, lj.AccountID, lj.JobID,
 				res.TokensIn, res.TokensOut, lj.RouteVersion, attempt, `{"scope":"attempt","detail":"`+jsonSafe(res.Detail)+`"}`); err != nil {
 				return Outcome{}, fmt.Errorf("record attempt: %w", err)
+			}
+			if res.CostUSD > 0 {
+				if err := w.store.AddReservationSpend(ctx, lj.AccountID, lj.ReservationID, res.CostUSD, clock()); err != nil {
+					return Outcome{}, fmt.Errorf("record attempt spend: %w", err)
+				}
 			}
 		}
 	}
@@ -367,6 +443,17 @@ func (w *Worker) revalidate(ctx context.Context, lj *store.LeasedJob, now time.T
 		return store.RouteInfo{}, "", store.ReasonKillSwitched, nil
 	}
 
+	// Gate 2b: the budget pool's USD spend ceiling (T-946). A job admitted
+	// before its pool reached the day's or the month's ceiling is parked here
+	// (its unit refunded) instead of being sent to the provider.
+	reached, err := w.store.SpendCeilingReachedForReservation(ctx, lj.AccountID, lj.ReservationID, now)
+	if err != nil {
+		return store.RouteInfo{}, "", "", fmt.Errorf("read spend ceiling: %w", err)
+	}
+	if reached {
+		return store.RouteInfo{}, "", store.ReasonBudgetExhausted, nil
+	}
+
 	// Gate 3: evidence TTL headroom (and a deleted/missing object ⇒ expired).
 	eo, err := w.store.GetEvidence(ctx, lj.AccountID, lj.EvidencePK)
 	if err != nil {
@@ -399,11 +486,20 @@ func (w *Worker) revalidate(ctx context.Context, lj *store.LeasedJob, now time.T
 		return store.RouteInfo{}, "", store.ReasonProviderPolicyUnverified, nil
 	}
 
-	// Gate 4: dialect verification — responses_store_false stays dark without a
-	// live operator verification record BOUND to this exact route snapshot
+	// Gate 4: dialect. The route's dialect must be a row of the inference
+	// dialect table (an unknown dialect is never executable), and a dialect
+	// whose row requires an operator verification record (responses_store_false)
+	// stays dark without a live record BOUND to this exact route snapshot
 	// (plan §2.3 / FA5). Passing the resolved route (not just id+dialect) binds
-	// the check to the route generation + api_version + deployment.
-	if route.Dialect == string(foundry.DialectResponsesStoreFalse) {
+	// the check to the route generation + api_version + deployment. The
+	// anthropic_messages dialect is a stateless single call with no persistence
+	// flag to verify, so its row requires no record; what it does require is the
+	// disclosed attestation at gate 6.
+	spec, known := inference.SpecFor(route.Dialect)
+	if !known {
+		return store.RouteInfo{}, "", store.ReasonDialectUnverified, nil
+	}
+	if spec.RequiresVerificationRecord {
 		ok, err := w.store.DialectVerified(ctx, route, now)
 		if err != nil {
 			return store.RouteInfo{}, "", "", fmt.Errorf("dialect verification: %w", err)
@@ -413,10 +509,11 @@ func (w *Worker) revalidate(ctx context.Context, lj *store.LeasedJob, now time.T
 		}
 	}
 
-	// Gate 5: credential-absence boundary (plan §2.1) — no provisioned key ⇒ no
-	// provider call, ever. This is the pre-approval gate that a normal account's
-	// evidence can never bypass.
-	apiKey, ok, err := w.creds.ProviderKey(ctx, route.RouteID)
+	// Gate 5: credential-absence boundary (plan §2.1): no provisioned key FOR
+	// THIS ROUTE'S PROVIDER FAMILY ⇒ no provider call, ever. This is the gate a
+	// normal account's evidence can never bypass, and the reason a deployment
+	// keyed for one provider parks every route of another.
+	apiKey, ok, err := w.creds.ProviderKey(ctx, route)
 	if err != nil {
 		return store.RouteInfo{}, "", "", fmt.Errorf("credential source: %w", err)
 	}

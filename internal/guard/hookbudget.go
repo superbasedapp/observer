@@ -172,10 +172,9 @@ func budgetRequestLine(ruleID, base string) string {
 	if interventionUSDBudgetRule(ruleID) {
 		amount = "--usd <amount>"
 	}
+	// No URL in band (WINNODE2 16d): the agent relays the instruction; the
+	// desktop notification carries the link (RequestAccessLink).
 	dash := "the Observer dashboard under " + BudgetIncreaseRequestLabel
-	if base != "" {
-		dash += " (" + base + BudgetIncreaseRequestPath + ")"
-	}
 	return "Ask for more in " + dash + ", or run `observer request budget " + amount + " \"<why>\"`."
 }
 

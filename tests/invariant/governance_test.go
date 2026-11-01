@@ -12,6 +12,8 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 
+	"github.com/marmutapp/superbased-observer/internal/components"
+	"github.com/marmutapp/superbased-observer/internal/componentstate"
 	"github.com/marmutapp/superbased-observer/internal/db"
 	"github.com/marmutapp/superbased-observer/internal/govern"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/dashboard"
@@ -290,10 +292,18 @@ func TestSoloNodeUnchangedByGovernance(t *testing.T) {
 		}
 	}
 
-	// (iv) nothing is refused.
+	// (iv) nothing is refused. A route whose component this build compiled
+	// out (a published edition: the minimal one has no benchmark) answers
+	// the build's own 404 "not in this build" (reason not_compiled), which
+	// is the build, not governance; every other 404 or 409 is a refusal.
 	for _, path := range []string{"/api/status", "/api/benchmarks", "/api/sessions", "/api/config"} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		var body componentstate.NotActiveBody
+		if rec.Code == http.StatusNotFound && json.Unmarshal(rec.Body.Bytes(), &body) == nil &&
+			body.Error == componentstate.NotActiveError && body.Reason == components.ReasonNotCompiled {
+			continue
+		}
 		if rec.Code == http.StatusNotFound || rec.Code == http.StatusConflict {
 			t.Fatalf("solo node refused %s with %d", path, rec.Code)
 		}

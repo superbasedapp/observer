@@ -122,7 +122,7 @@ func TestNodeDigestSendDryRunCLI(t *testing.T) {
 
 	dbPath := seedDigestDB(t)
 	cfgPath := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(cfgPath, []byte("[observer]\ndb_path = \""+dbPath+"\"\n\n[digest]\nenabled = true\nfrequency = \"weekly\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("[observer]\ndb_path = \""+filepath.ToSlash(dbPath)+"\"\n\n[digest]\nenabled = true\nfrequency = \"weekly\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cmd := newDigestCmd()

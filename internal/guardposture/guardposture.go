@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 	"unicode/utf8"
 
@@ -94,6 +95,47 @@ type Posture struct {
 	// closed. The hook re-checks the file itself, so this is a mode, not a
 	// verdict. Only meaningful while Enforced.
 	UserPolicyFailClosed bool `json:"user_policy_fail_closed,omitempty"`
+	// OrgLock says the daemon that wrote this posture also writes
+	// guard-org-lock.json (orglock.go). It is the anchor that makes a MISSING
+	// lock read as tampered rather than as "an older daemon": a posture from
+	// a daemon that predates the lock never carries it.
+	OrgLock bool `json:"org_lock,omitempty"`
+	// Managed is the tenancy the daemon resolved (T-864 gap 1). It is the
+	// anchor a reader falls back to when the org lock itself is gone: a
+	// MAC'd posture that says "managed, org layer in force" keeps the
+	// organization's floor (and its locked rules) in force while the daemon
+	// repairs the lock, and an individual node's posture keeps local control.
+	Managed bool `json:"managed,omitempty"`
+	// TenancyRecorded says this daemon records its tenancy in Managed (so a
+	// false Managed means "individual", not "an older daemon that never
+	// said").
+	TenancyRecorded bool `json:"tenancy_recorded,omitempty"`
+	// SecurityActive is whether the security pillar's module (component
+	// `security`) is active on this node, and SecurityRecorded says this
+	// daemon records it (so a false SecurityActive means "inactive", not
+	// "an older daemon that never said"). The hook reads a missing security
+	// posture file as unknown only while this says active (security pillar
+	// plan section 4.3: the module's inactive state is signed into the
+	// guard posture). Both are covered by the MAC.
+	SecurityActive   bool `json:"security_active,omitempty"`
+	SecurityRecorded bool `json:"security_recorded,omitempty"`
+	// SecurityPacks is the node's active security pack set (the component
+	// ids of the security tree that are active, the root included) while
+	// SecurityActive. The hook uses it whenever a project's own posture
+	// file cannot be used (missing, unverified, expired, over the cap, or
+	// the read failed), so the commit gate and the content rows keep
+	// firing on an unknown state (lane SEC-GATEFIX, P-014 item 1). Sorted,
+	// deduplicated and covered by the MAC; empty while not active.
+	SecurityPacks []string `json:"security_packs,omitempty"`
+	// CommitGateFloorHeld says a managed node holds the security.scanning
+	// family in effect with a commit gate floor (require.commit_gate =
+	// quick_scan) in force org-wide or in at least one project section it
+	// holds (audit SEC-P4 F2). The hook reads it only when a project's own
+	// posture file cannot answer for the floor (missing, unverifiable, or a
+	// read that overran): the floor then fails closed instead of reading as
+	// no floor. Covered by the MAC; false while the module is not active or
+	// the node is not managed.
+	CommitGateFloorHeld bool `json:"commit_gate_floor_held,omitempty"`
 	// WrittenAt is when the daemon wrote the file.
 	WrittenAt time.Time `json:"written_at"`
 	// MAC is the daemon's HMAC-SHA256 over every other field (auth.go,
@@ -134,6 +176,20 @@ func (p *Posture) Stale(now, configModified time.Time) string {
 		return "config.toml changed after it was written"
 	}
 	return ""
+}
+
+// StaleOnlyByConfig reports whether p is stale at now for exactly one reason:
+// the config file changed after the daemon wrote it, while the posture is
+// otherwise fresh (inside MaxAge, no clock skew). On a managed node that is
+// the window between a local config edit and the daemon's next re-sign; a
+// reader there keeps the posture's answer as well as the config's (T-864 gap
+// 2), so a local edit cannot open a gate the organization holds closed.
+func (p *Posture) StaleOnlyByConfig(now, configModified time.Time) bool {
+	if p == nil || configModified.IsZero() || !configModified.After(p.WrittenAt) {
+		return false
+	}
+	age := now.Sub(p.WrittenAt)
+	return age <= MaxAge && age >= -MaxFutureSkew
 }
 
 // UserPolicyClosesGate reports whether, under the organization's fail_closed
@@ -216,8 +272,29 @@ func normalize(p Posture) Posture {
 		p.GateCaps = nil
 		p.UserPolicyFailClosed = false
 	}
+	if !p.SecurityActive || !p.Managed {
+		p.CommitGateFloorHeld = false
+	}
+	if !p.SecurityActive {
+		p.SecurityPacks = nil
+	} else {
+		p.SecurityPacks = sortedPacks(p.SecurityPacks)
+	}
 	p.WrittenAt = p.WrittenAt.UTC()
 	return p
+}
+
+// sortedPacks returns packs sorted, deduplicated and without empty ids
+// (nil when none remain): the one spelling Encode and the MAC agree on.
+func sortedPacks(packs []string) []string {
+	var out []string
+	for _, id := range packs {
+		if id != "" && !slices.Contains(out, id) {
+			out = append(out, id)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // Encode renders p (normalized, MAC as given) as the bytes Write stores.
@@ -246,6 +323,11 @@ func Write(path string, p Posture, key []byte) ([]byte, error) {
 	}
 	if err := writeAtomic(path, data, ".guard-posture-*.tmp"); err != nil {
 		return nil, fmt.Errorf("guardposture.Write: %w", err)
+	}
+	// A posture now exists: from here on a missing one is a tamper, so the
+	// key's not-yet-published marker goes (auth.go, UnpublishedFilename).
+	if err := os.Remove(unpublishedPath(filepath.Dir(path))); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("guardposture.Write: clear the unpublished marker: %w", err)
 	}
 	return data, nil
 }

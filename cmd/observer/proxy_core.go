@@ -24,6 +24,10 @@ import (
 type daemonProxy interface {
 	SetLaneTable(upstreams map[string]string, autoDefaultLane string) error
 	LaneTable() (upstreams map[string]string, autoDefaultLane string)
+	// SetRouteLanes / ResolvableLanes are the node-local route-lane seam of
+	// managed route maintenance (route_maintenance.go, lane P1).
+	SetRouteLanes(lanes map[string]string) error
+	ResolvableLanes() map[string]bool
 	SetRoutingSnapshotWithFallback(upstreams map[string]string, autoDefaultLane, mode, primary string, fallbacks []string, terminal string, custodyAck bool) error
 	CacheEngine() *cachetrack.Engine
 	Handler() http.Handler

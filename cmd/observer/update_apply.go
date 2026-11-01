@@ -10,9 +10,12 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/fsatomic"
 	"github.com/marmutapp/superbased-observer/internal/quiesce"
 	"github.com/marmutapp/superbased-observer/internal/store"
 	"github.com/marmutapp/superbased-observer/internal/update"
@@ -46,6 +49,7 @@ type updateStateStore interface {
 	AppendUpdateEvent(ctx context.Context, ev store.UpdateEventRow) error
 	TransitionUpdateState(ctx context.Context, next update.State, mutate func(*store.UpdateStateRow), ev store.UpdateEventRow) error
 	SchemaVersion(ctx context.Context) (int, error)
+	AppliedMigrationSteps(ctx context.Context) (int, error)
 	SnapshotDatabase(ctx context.Context, dest string) error
 }
 
@@ -73,6 +77,16 @@ type applyDeps struct {
 	ProbeComponents func(ctx context.Context, binPath string) (string, error)
 	// Supervise is the fork-exec-and-watch handshake (§3.7 step 7).
 	Supervise func(ctx context.Context, exePath, stateDir string, timeout time.Duration) (handshakeResult, error)
+	// WarmUp runs the swapped-in binary once after a successful apply
+	// whose handshake started nothing, on Windows only (warmUpNeeded,
+	// update_handshake_warmup.go), so the first-run Defender scan is not
+	// paid by a hook. Nil runs nothing. It runs after the applied event is
+	// recorded, so its time is not in that event's DurationMS.
+	WarmUp func(ctx context.Context, exePath string)
+	// WarmUpNotice, when set, receives one line (warmUpNoticeLine) just
+	// before WarmUp runs, so the pause has a reason on screen. Nil prints
+	// nothing.
+	WarmUpNotice io.Writer
 	// FS is the swap seam.
 	FS swapFS
 	// GOOS selects the swap strategy.
@@ -146,6 +160,14 @@ type applyOptions struct {
 	// explicitly rather than resolved here because a snapshot restored over
 	// the wrong file is unrecoverable.
 	DBPath string
+	// ConfigPath is the live config.toml. Step 5 snapshots its exact bytes
+	// beside the preserved binary and every rollback that restores the
+	// previous binary restores them too (lane SEC-E milestone 4): the new
+	// binary may write keys at its first start (a policy family the managed
+	// accept-list backfill adds, a migrated block) that the older binary's
+	// strict loader refuses, so a rolled-back node would not start. Empty
+	// skips the snapshot (a caller with no config file).
+	ConfigPath string
 	// CeilingInvalid is set when the OS-pinned local component ceiling exists
 	// but failed a check (managedconfig.Result.UpdatesAllowed false): every
 	// apply is refused before a byte is downloaded (plan 6.2.2). It is
@@ -234,8 +256,170 @@ type applyRun struct {
 // snapshot (empty when the plan needs none).
 type applyStage struct {
 	schemaBefore int
-	snapshotPath string
-	snapshotAt   time.Time
+	// appliedBefore is store.AppliedMigrationSteps before the swap: the
+	// rollback's "did the target change the schema" baseline (T-979).
+	appliedBefore int
+	snapshotPath  string
+	snapshotAt    time.Time
+}
+
+// configFileSnapshot is one pre-apply snapshot of config.toml.
+type configFileSnapshot struct {
+	// Path is the live config file, Backup the snapshot; both empty when no
+	// snapshot was taken.
+	Path, Backup string
+	// Existed is false when there was no config file before the apply: a
+	// rollback then moves aside whatever the new binary created.
+	Existed bool
+}
+
+// configSnapshotPathFor is the snapshot's path beside the preserved binary
+// (<state_dir>/rollback/config-<version>.toml), derived from the rollback
+// binary path so `observer update rollback` finds it from the update state
+// alone.
+func configSnapshotPathFor(rollbackBinaryPath string) string {
+	if strings.TrimSpace(rollbackBinaryPath) == "" {
+		return ""
+	}
+	base := strings.TrimPrefix(filepath.Base(rollbackBinaryPath), "observer-")
+	return filepath.Join(filepath.Dir(rollbackBinaryPath), "config-"+base+".toml")
+}
+
+// configAbsentMarker is written as the snapshot when there was no config
+// file, so a rollback knows "absent" from "never snapshotted".
+const configAbsentMarker = "# observer: no config.toml existed before this update\n"
+
+// snapshotConfigFile copies configPath's exact bytes to backup (0600,
+// fsynced). An absent config file is recorded as the absent marker.
+func snapshotConfigFile(configPath, backup string) (configFileSnapshot, error) {
+	if strings.TrimSpace(configPath) == "" || strings.TrimSpace(backup) == "" {
+		return configFileSnapshot{}, nil
+	}
+	snap := configFileSnapshot{Path: configPath, Backup: backup}
+	data, err := os.ReadFile(configPath) //nolint:gosec // G304: the node's own config.toml
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		data = []byte(configAbsentMarker)
+	case err != nil:
+		return configFileSnapshot{}, fmt.Errorf("reading %s: %w", configPath, err)
+	default:
+		snap.Existed = true
+	}
+	if err := fsatomic.WriteFile(backup, data, fsatomic.Options{Fsync: true}); err != nil {
+		return configFileSnapshot{}, fmt.Errorf("snapshotting %s: %w", configPath, err)
+	}
+	return snap, nil
+}
+
+// updateConfigPathFor resolves the live config.toml an apply snapshots ("" on
+// an unresolvable home: no snapshot).
+func updateConfigPathFor(configPath string) string {
+	p, err := config.ResolveGlobalPath(configPath)
+	if err != nil {
+		return ""
+	}
+	return p
+}
+
+// configSnapshotFrom reads back a snapshot written by snapshotConfigFile.
+func configSnapshotFrom(configPath, backup string) (configFileSnapshot, bool) {
+	data, err := os.ReadFile(backup) //nolint:gosec // G304: Observer's own snapshot under state_dir
+	if err != nil || strings.TrimSpace(configPath) == "" {
+		return configFileSnapshot{}, false
+	}
+	return configFileSnapshot{Path: configPath, Backup: backup, Existed: string(data) != configAbsentMarker}, true
+}
+
+// restoreConfigFile puts the pre-apply config.toml back, byte for byte. The
+// file the new binary left is kept as a displaced copy beside it (never
+// deleted), so nothing a developer wrote after the snapshot is lost.
+func restoreConfigFile(snap configFileSnapshot, now time.Time) error {
+	if snap.Path == "" || snap.Backup == "" {
+		return nil
+	}
+	if cur, err := os.ReadFile(snap.Path); err == nil { //nolint:gosec // G304: the node's own config.toml
+		if _, kerr := fsatomic.KeepDisplacedCopy(snap.Path, cur, now, 5); kerr != nil {
+			return fmt.Errorf("keeping the updated config.toml aside: %w", kerr)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("reading %s: %w", snap.Path, err)
+	}
+	if !snap.Existed {
+		if err := os.Remove(snap.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("removing the config.toml the update created: %w", err)
+		}
+		return nil
+	}
+	data, err := os.ReadFile(snap.Backup) //nolint:gosec // G304: Observer's own snapshot under state_dir
+	if err != nil {
+		return fmt.Errorf("reading the config snapshot: %w", err)
+	}
+	if err := fsatomic.WriteFile(snap.Path, data, fsatomic.Options{Fsync: true}); err != nil {
+		return fmt.Errorf("restoring %s: %w", snap.Path, err)
+	}
+	return nil
+}
+
+// rollbackConfigResult is what restoreRollbackConfig did.
+type rollbackConfigResult struct {
+	// Restored is true when a snapshot was found and put back.
+	Restored bool
+	// Backup is the snapshot path, kept on a failure for the operator.
+	Backup string
+	// Err is a failed restore; nil when restored or when no snapshot exists.
+	Err error
+}
+
+// failureNote is the outcome-detail clause for a failed restore, "" when
+// nothing failed.
+func (r rollbackConfigResult) failureNote() string {
+	if r.Err == nil {
+		return ""
+	}
+	return fmt.Sprintf("; config.toml could not be restored: %v (the snapshot is preserved at %s)", r.Err, r.Backup)
+}
+
+// markOutcome turns a rollback outcome into a failure naming the config
+// restore, keeping what the binary and database restores reported: the
+// binary is back (RolledBack stays), so the detail says both outcomes.
+func (r rollbackConfigResult) markOutcome(out *applyOutcome) {
+	if r.Err == nil {
+		return
+	}
+	out.State = update.StateFailed
+	out.ErrorClass = update.ErrorPermission
+	out.Detail += r.failureNote()
+}
+
+// restoreRollbackConfig is the ONE config.toml restore every rollback path
+// runs right after the previous binary is back: the failed-handshake step 8,
+// the daemon's operator rollback (dashboard Roll back, `observer update
+// rollback` with a daemon) and the no-daemon CLI rollback (merge audit
+// finding 1). It finds the snapshot from the preserved binary's path alone
+// (configSnapshotPathFor), so no caller needs state from the apply. No
+// snapshot on disk (an apply from before the snapshot existed, or one with
+// no config file) is a no-op; a snapshot that exists but cannot be read or
+// put back is an error. Callers report the error and still restore the
+// database (merge audit finding 2): an older binary on a migrated schema is
+// the worse state.
+func restoreRollbackConfig(configPath, rollbackBinaryPath string, now time.Time) rollbackConfigResult {
+	backup := configSnapshotPathFor(rollbackBinaryPath)
+	if strings.TrimSpace(configPath) == "" || backup == "" {
+		return rollbackConfigResult{}
+	}
+	if _, err := os.Stat(backup); errors.Is(err, os.ErrNotExist) {
+		return rollbackConfigResult{}
+	} else if err != nil {
+		return rollbackConfigResult{Backup: backup, Err: fmt.Errorf("reading the config snapshot: %w", err)}
+	}
+	snap, ok := configSnapshotFrom(configPath, backup)
+	if !ok {
+		return rollbackConfigResult{Backup: backup, Err: fmt.Errorf("reading the config snapshot %s failed", backup)}
+	}
+	if err := restoreConfigFile(snap, now); err != nil {
+		return rollbackConfigResult{Backup: backup, Err: err}
+	}
+	return rollbackConfigResult{Restored: true, Backup: backup}
 }
 
 // runUpdateApply performs §3.7 steps 0-8.
@@ -275,6 +459,8 @@ func runUpdateApply(ctx context.Context, deps applyDeps, opts applyOptions) (app
 		if _, err := os.Stat(r.plan.StagedBinaryPath); err == nil {
 			_ = os.Remove(r.plan.StagedBinaryPath)
 		}
+		// And the staged companion files (update_bundle.go).
+		_ = os.RemoveAll(stagedBundleRoot(r.plan.StagedBinaryPath))
 	}()
 
 	// Steps 1-4: fetch, verify, extract, probe.
@@ -539,10 +725,18 @@ func (r *applyRun) probeStagedBinary(ctx context.Context) (applyOutcome, bool, e
 func (r *applyRun) afterDrain(ctx context.Context, res quiesce.Result, derr error) (applyOutcome, bool, error) {
 	switch {
 	case derr != nil && errors.Is(derr, quiesce.ErrLiveWork):
+		reason := update.ReasonWindow
+		hint := "use --force inside a maintenance window to proceed after warning the owners"
+		if slices.ContainsFunc(res.Busy, func(b string) bool { return strings.HasPrefix(b, liveSandboxWorkName) }) {
+			// The posture names the sandbox deferral, so the org sees a
+			// node waiting for its sandboxed runs, not a stranded one; and
+			// --force does not end them (I10).
+			reason = update.ReasonDeferredLiveSandbox
+			hint = "the update applies when the sandboxed runs end; --force does not end them"
+		}
 		out := applyOutcome{
-			State: update.StateAvailable, Reason: update.ReasonWindow, Deferred: true,
-			Detail: fmt.Sprintf("deferred: %s still live (use --force inside a maintenance window to proceed after warning the owners)",
-				strings.Join(res.Busy, ", ")),
+			State: update.StateAvailable, Reason: reason, Deferred: true,
+			Detail: fmt.Sprintf("deferred: %s still live (%s)", strings.Join(res.Busy, ", "), hint),
 		}
 		return out, true, r.record(ctx, out)
 	case derr != nil && errors.Is(derr, quiesce.ErrDrainTimeout):
@@ -572,6 +766,21 @@ func (r *applyRun) stageRollback(ctx context.Context) (applyStage, applyOutcome,
 		return stage, out, true, oerr
 	}
 	stage.schemaBefore = schemaBefore
+	// config.toml is snapshotted on every apply, beside the preserved
+	// binary: a schema-neutral release can still write keys the older
+	// binary refuses. A snapshot that cannot be written aborts the apply,
+	// like the database snapshot below.
+	if _, err := snapshotConfigFile(r.opts.ConfigPath, configSnapshotPathFor(r.plan.RollbackBinaryPath)); err != nil {
+		out, oerr := r.fail(ctx, update.ErrorPermission,
+			fmt.Sprintf("the pre-apply config.toml snapshot could not be written, so the apply was abandoned before touching the running binary: %v", err))
+		return stage, out, true, oerr
+	}
+	appliedBefore, err := r.deps.Store.AppliedMigrationSteps(ctx)
+	if err != nil {
+		out, oerr := r.fail(ctx, update.ErrorPermission, err.Error())
+		return stage, out, true, oerr
+	}
+	stage.appliedBefore = appliedBefore
 	if r.plan.NeedsDBSnapshot {
 		if err := r.deps.Store.SnapshotDatabase(ctx, r.plan.DBBackupPath); err != nil {
 			// A snapshot that cannot be written ABORTS the apply before the
@@ -584,7 +793,7 @@ func (r *applyRun) stageRollback(ctx context.Context) (applyStage, applyOutcome,
 		stage.snapshotPath = r.plan.DBBackupPath
 		stage.snapshotAt = r.now()
 	}
-	if err := markApplying(ctx, r.deps, r.opts, r.plan, stage.schemaBefore, stage.snapshotPath, r.now()); err != nil {
+	if err := markApplying(ctx, r.deps, r.opts, r.plan, stage.schemaBefore, stage.appliedBefore, stage.snapshotPath, r.now()); err != nil {
 		return stage, applyOutcome{}, true, err
 	}
 	return stage, applyOutcome{}, false, nil
@@ -613,12 +822,21 @@ func (r *applyRun) swapAndHandshake(ctx context.Context, stage applyStage) (appl
 			ManifestVersion: r.opts.Manifest.ManifestVersion, State: update.StateApplied,
 			Detail: out.Detail, DurationMS: r.now().Sub(r.started).Milliseconds(),
 		})
+		// The warm-up runs after the history event, so the DurationMS
+		// `observer update history` shows is the apply alone, and it says
+		// why the command pauses while it runs.
+		if run, _ := warmUpNeeded(r.deps.GOOS, hs); run && r.deps.WarmUp != nil {
+			if r.deps.WarmUpNotice != nil {
+				fmt.Fprintln(r.deps.WarmUpNotice, warmUpNoticeLine)
+			}
+			r.deps.WarmUp(ctx, r.opts.Installed.ExecPath)
+		}
 		return out, nil
 	}
 
 	// Step 8: the child failed, exited or hung — and the OLD process is
 	// still alive to act on it.
-	return rollbackAfterFailedHandshake(ctx, r.deps, r.opts, r.plan, stage.schemaBefore,
+	return rollbackAfterFailedHandshake(ctx, r.deps, r.opts, r.plan, stage.schemaBefore, stage.appliedBefore,
 		stage.snapshotPath, stage.snapshotAt, hs.Detail, r.started)
 }
 
@@ -638,7 +856,7 @@ func (r *applyRun) fail(ctx context.Context, class update.ErrorClass, detail str
 // silent hang — because the parent's response to each is identical.
 func rollbackAfterFailedHandshake(
 	ctx context.Context, deps applyDeps, opts applyOptions, plan update.ApplyPlan,
-	schemaBefore int, snapshotPath string, snapshotAt time.Time, detail string, started time.Time,
+	schemaBefore, appliedBefore int, snapshotPath string, snapshotAt time.Time, detail string, started time.Time,
 ) (applyOutcome, error) {
 	// No clock is resolved here on purpose: every timestamp this step reports
 	// was taken BEFORE the swap (snapshotAt) or is stamped by recordOutcome
@@ -648,11 +866,17 @@ func rollbackAfterFailedHandshake(
 	if err != nil {
 		schemaNow = schemaBefore
 	}
+	appliedNow, err := deps.Store.AppliedMigrationSteps(ctx)
+	if err != nil {
+		appliedNow = appliedBefore
+	}
 	decision := update.DecideRollback(update.RollbackInput{
 		State:                 update.StateApplying,
 		HasPreviousBinary:     fileExists(plan.RollbackBinaryPath),
 		PreviousSchemaVersion: schemaBefore,
 		CurrentSchemaVersion:  schemaNow,
+		PreviousAppliedSteps:  appliedBefore,
+		CurrentAppliedSteps:   appliedNow,
 		HasDBBackup:           snapshotPath != "" && fileExists(snapshotPath),
 	})
 
@@ -664,6 +888,7 @@ func rollbackAfterFailedHandshake(
 		return out, recordOutcome(ctx, deps, opts, out, started)
 	}
 
+	var cfgRes rollbackConfigResult
 	if decision.RestoreBinary {
 		if err := restoreBinary(deps.FS, deps.GOOS, plan.RollbackBinaryPath, opts.Installed.ExecPath, opts.Installed.Version); err != nil {
 			out := applyOutcome{
@@ -672,6 +897,11 @@ func rollbackAfterFailedHandshake(
 			}
 			return out, recordOutcome(ctx, deps, opts, out, started)
 		}
+		// The previous binary is back, so its config.toml comes back too
+		// (lane SEC-E milestone 4): the failed child may have written keys
+		// the older binary refuses. A failed restore is reported below and
+		// never skips the database restore (merge audit finding 2).
+		cfgRes = restoreRollbackConfig(opts.ConfigPath, plan.RollbackBinaryPath, time.Now())
 	}
 	if decision.RestoreDB {
 		// CLOSE FIRST. The next two lines rename the live database aside and
@@ -689,8 +919,8 @@ func rollbackAfterFailedHandshake(
 		if err := restoreDatabaseSnapshot(snapshotPath, opts.DBPath); err != nil {
 			out := applyOutcome{
 				State: update.StateFailed, ErrorClass: update.ErrorHealthcheck,
-				Detail: fmt.Sprintf("%s; the previous binary was restored but the database snapshot could not be: %v (it is preserved at %s)",
-					detail, err, snapshotPath),
+				Detail: fmt.Sprintf("%s; the previous binary was restored but the database snapshot could not be: %v (it is preserved at %s)%s",
+					detail, err, snapshotPath, cfgRes.failureNote()),
 			}
 			deps.Store = reopenedStore(deps)
 			return out, recordOutcome(ctx, deps, opts, out, started)
@@ -711,6 +941,7 @@ func rollbackAfterFailedHandshake(
 		out.DiscardedWindowFrom = snapshotAt
 		out.Detail += fmt.Sprintf(" (rows ingested after %s were discarded)", snapshotAt.UTC().Format(time.RFC3339))
 	}
+	cfgRes.markOutcome(&out)
 	return out, recordOutcome(ctx, deps, opts, out, started)
 }
 
@@ -931,12 +1162,13 @@ func markState(ctx context.Context, deps applyDeps, next update.State, opts appl
 // markApplying writes the rollback triple. Everything a restore needs is on
 // disk and in the row BEFORE the swap, because the process that performs the
 // restore may not be the process that planned it.
-func markApplying(ctx context.Context, deps applyDeps, opts applyOptions, plan update.ApplyPlan, schemaBefore int, snapshotPath string, at time.Time) error {
+func markApplying(ctx context.Context, deps applyDeps, opts applyOptions, plan update.ApplyPlan, schemaBefore, appliedBefore int, snapshotPath string, at time.Time) error {
 	return moveUpdateState(ctx, deps.Store, update.StateApplying, func(row *store.UpdateStateRow) {
 		row.TargetVersion = plan.TargetVersion
 		row.PreviousVersion = opts.Installed.Version
 		row.PreviousBinaryPath = plan.RollbackBinaryPath
 		row.PreviousSchemaVersion = schemaBefore
+		row.PreviousAppliedSteps = appliedBefore
 		row.PreviousDBBackupPath = snapshotPath
 		row.ApplyingStartedAt = at.UTC().Format(time.RFC3339)
 		row.Reason = ""

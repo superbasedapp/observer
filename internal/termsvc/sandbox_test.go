@@ -181,6 +181,11 @@ func TestLaunchFreshSandboxManagedWorkspaceSuccess(t *testing.T) {
 	if run.ProjectRootHash == termrun.HashProjectRoot(wantValidatedRoot) {
 		t.Fatal("ProjectRootHash should NOT equal the original project root's hash for a managed workspace")
 	}
+	// The Launcher learns the source the clone came from, so the inner
+	// launcher's repository trust check honours its accepts.
+	if l.lastReq.SourceDir != wantValidatedRoot {
+		t.Fatalf("SourceDir = %q, want the validated project root %q", l.lastReq.SourceDir, wantValidatedRoot)
+	}
 }
 
 // TestLaunchFreshSandboxLiveSourceSkipsManagedCheck: when the Sandboxer
@@ -223,6 +228,18 @@ func TestLaunchFreshSandboxLiveSourceSkipsManagedCheck(t *testing.T) {
 	}
 	if !l.lastReq.Sandboxed {
 		t.Fatal("Sandboxed = false, want true")
+	}
+	if l.lastReq.SourceDir != "" {
+		t.Fatalf("SourceDir = %q for a live source, want empty", l.lastReq.SourceDir)
+	}
+	// The update drain's counter (sandbox plan v2 section 5.5): live while
+	// the run is, zero once it ends.
+	if n := svc.LiveSandboxedCount(); n != 1 {
+		t.Fatalf("LiveSandboxedCount = %d, want 1", n)
+	}
+	svc.EndRunByHandle(context.Background(), "H4", 0)
+	if n := svc.LiveSandboxedCount(); n != 0 {
+		t.Fatalf("LiveSandboxedCount after the run ended = %d, want 0", n)
 	}
 }
 

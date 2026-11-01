@@ -278,14 +278,14 @@ func (s *Server) handleGuardPromptStatus(w http.ResponseWriter, r *http.Request)
 			continue
 		}
 		wireState := "documented_only"
-		if c.Hook.Mechanism != integration.HookNone && c.Hook.AutoWired {
+		if c.Hook.AutoWiredNow() {
 			wireState = "auto_wired"
 		}
 		clients = append(clients, promptClientJSON{
 			Tool:       c.Tool,
 			PromptLane: string(c.PromptLane),
 			Mechanism:  string(c.Hook.Mechanism),
-			AutoWired:  c.Hook.AutoWired,
+			AutoWired:  c.Hook.AutoWiredNow(),
 			WireState:  wireState,
 		})
 	}

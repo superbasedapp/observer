@@ -362,6 +362,13 @@ func TestAlertsRegardlessOfSeverity(t *testing.T) {
 			Enforced: true, Overridable: true,
 			Verdict: policy.Verdict{Decision: policy.DecisionAsk},
 		}, false},
+		{"enforced silent stop (no in-band reason) always toasts", ActionVerdict{
+			Enforced: true, SilentStop: true,
+			Verdict: policy.Verdict{Decision: policy.DecisionDeny},
+		}, true},
+		{"unenforced silent stop keeps the gate", ActionVerdict{
+			SilentStop: true, Verdict: policy.Verdict{Decision: policy.DecisionDeny},
+		}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

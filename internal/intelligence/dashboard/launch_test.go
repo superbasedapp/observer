@@ -709,6 +709,35 @@ func TestTerminalSessionsIncludesShellEnabled(t *testing.T) {
 	}
 }
 
+// TestTerminalSessionsSaysWhenWindowsPathsAreTranslated (Windows 11 Pro live
+// run, B4): the sessions meta says whether a Windows custom root is
+// translated to its WSL form, true only for a daemon inside WSL, so the
+// dialog never promises the translation on a native Windows daemon.
+func TestTerminalSessionsSaysWhenWindowsPathsAreTranslated(t *testing.T) {
+	h := newManageServerWithLaunch(t, &fakeLaunchManager{})
+	saved := daemonInWSL
+	t.Cleanup(func() { daemonInWSL = saved })
+	for _, inWSL := range []bool{false, true} {
+		daemonInWSL = func() bool { return inWSL }
+		req := httptest.NewRequest(http.MethodGet, "/api/terminal/sessions", nil)
+		req.Host = "127.0.0.1:8080"
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /api/terminal/sessions = %d", rec.Code)
+		}
+		var out struct {
+			WindowsPathsToWSL *bool `json:"windows_paths_to_wsl"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if out.WindowsPathsToWSL == nil || *out.WindowsPathsToWSL != inWSL {
+			t.Fatalf("windows_paths_to_wsl = %v, want %v", out.WindowsPathsToWSL, inWSL)
+		}
+	}
+}
+
 // --- GET /api/launch/sessions + DELETE /api/launch/<handle> ---
 
 func TestLaunchAdminListAndDelete(t *testing.T) {

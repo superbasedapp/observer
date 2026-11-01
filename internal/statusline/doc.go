@@ -28,10 +28,13 @@
 //   - wordmark.go defines the single Wordmark constant printed on every
 //     render, degraded or not.
 //   - input.go defines Input (the parsed Claude Code statusLine stdin-JSON
-//     shape) and ParseInput, a tolerant parser: unknown fields are
-//     ignored, every field is optional-representable (nil, never a
-//     fabricated zero), and malformed/non-JSON input returns an error
-//     alongside a still-usable zero Input the caller can render from.
+//     shape) and ParseInput / ParsePayload, a tolerant parser: unknown
+//     fields are ignored, every field is optional-representable (nil,
+//     never a fabricated zero), and malformed/non-JSON input returns an
+//     error alongside a still-usable zero Input the caller can render
+//     from. The other hosts' payloads (Kimchi's nested session{}, VT
+//     Code's session-less payload) are detected by a table of shapes and
+//     normalized onto the same Input.
 //   - segments.go defines DaemonTile (the small slice of the lean
 //     `/api/statusline` daemon response this package needs), the ordered
 //     segment-kind vocabulary ("wordmark", "session", "today", "model"),

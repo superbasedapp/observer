@@ -1,0 +1,22 @@
+{
+  "files_in_context": [],
+  "model_usage": [
+    {
+      "ts": 1792563515546,
+      "model_id": "gpt-5.6-luna",
+      "model_provider_id": "openai-codex",
+      "mode": "act"
+    }
+  ],
+  "environment_history": [
+    {
+      "ts": 1792563515541,
+      "os_name": "linux",
+      "os_version": "6.6.87.2-microsoft-standard-WSL2",
+      "os_arch": "x64",
+      "host_name": "Dirac CLI - Node.js",
+      "host_version": "0.5.22",
+      "dirac_version": "0.5.22"
+    }
+  ]
+}

@@ -21,12 +21,40 @@ func Base(cwd, projectRoot string, now time.Time) policy.Event {
 	}
 }
 
-// Command is base as a shell command.
+// Command is base as a shell command whose shell the dry run does not name:
+// read as POSIX, and on a Windows working directory also as PowerShell, the
+// reading a hook gives a generic shell tool there
+// (policy.UnstatedShellAltDialect). Without that second reading a dry run on
+// Windows lexed `C:\Users\dev` as `C:Usersdev` (WINNODE item 2).
 func Command(base policy.Event, command string) policy.Event {
+	return CommandIn(base, command, "")
+}
+
+// CommandIn is base as a shell command read under dialect. An empty dialect
+// is Command's unstated shell.
+func CommandIn(base policy.Event, command string, dialect policy.Dialect) policy.Event {
 	base.Kind = policy.KindShellExec
 	base.ActionType = "run_command"
 	base.Target = command
+	base.Dialect = dialect
+	base.AltDialect = policy.UnstatedShellAltDialect(base.Kind, dialect, base.Cwd)
 	return base
+}
+
+// shellDialects maps the `observer guard test --shell` values onto the
+// dialect a command is read under.
+var shellDialects = map[string]policy.Dialect{
+	"":           "",
+	"posix":      policy.DialectPosix,
+	"powershell": policy.DialectPowerShell,
+	"cmd":        policy.DialectCmd,
+}
+
+// ShellDialect resolves a --shell value ("" is the unstated shell). ok is
+// false for a value the guard does not read.
+func ShellDialect(name string) (policy.Dialect, bool) {
+	d, ok := shellDialects[name]
+	return d, ok
 }
 
 // FileWrite is base as a write to path.

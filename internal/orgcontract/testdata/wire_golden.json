@@ -530,6 +530,76 @@
       }
     ]
   },
+  "push_envelope_security_managed": {
+    "agent_version": "1.37.0",
+    "cursor_from": 90501,
+    "cursor_to": 90510,
+    "sessions": null,
+    "actions": null,
+    "api_turns": null,
+    "token_usage": null,
+    "security_posture": [
+      {
+        "org_id": "org-acme",
+        "user_email": "dev@acme.example",
+        "day": "2026-10-21",
+        "share_level": "findings",
+        "findings": [
+          {
+            "category": "secret",
+            "severity": "high",
+            "status": "open",
+            "count": 1
+          }
+        ],
+        "projects": 1,
+        "detectors": [
+          "security",
+          "security.secrets"
+        ],
+        "scan_freshness": "under_1h",
+        "online_checks": "off",
+        "commit_gate": [
+          {
+            "rule": "S-791",
+            "decision": "ask",
+            "events": 2
+          }
+        ],
+        "floor_keys": [
+          {
+            "key": "require.commit_gate",
+            "state": "applied"
+          }
+        ]
+      }
+    ],
+    "security_findings": [
+      {
+        "org_id": "org-acme",
+        "user_email": "dev@acme.example",
+        "finding_ref": "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+        "rule_id": "S-721.aws",
+        "category": "secret",
+        "severity": "high",
+        "confidence": "high",
+        "scope": "pre_write",
+        "project_identity_hash": "sha256:2b1c",
+        "evidence_hash": "9a8b7c6d5e4f3a2b",
+        "baseline": "new",
+        "attribution": "ai",
+        "session_id": "sess-abc123",
+        "tool": "claude-code",
+        "status": "open",
+        "first_seen": "2026-10-21T09:00:00Z",
+        "last_seen": "2026-10-21T10:00:00Z",
+        "rel_path": "src/config.go",
+        "start_line": 12,
+        "end_line": 12,
+        "evidence_redacted": "aws_key = [aws_access_key]"
+      }
+    ]
+  },
   "push_envelope_with_update_posture": {
     "agent_version": "1.30.0",
     "update_posture": {

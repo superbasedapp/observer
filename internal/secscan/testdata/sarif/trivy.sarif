@@ -1,0 +1,2 @@
+{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"Trivy","version":"0.58.0","rules":[{"id":"CVE-2024-0001","shortDescription":{"text":"x"},"properties":{"security-severity":"7.5"}}]}},
+ "results":[{"ruleId":"CVE-2024-0001","ruleIndex":0,"level":"error","message":{"text":"Package: openssl"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"go.mod"},"region":{"startLine":1}}}]}]}]}

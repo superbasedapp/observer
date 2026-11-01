@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/execevidence"
+	vocab "github.com/marmutapp/superbased-observer/internal/sandboxvocab"
 	"github.com/marmutapp/superbased-observer/internal/store"
 	"github.com/marmutapp/superbased-observer/internal/termfeed"
 	"github.com/marmutapp/superbased-observer/internal/termoob"
@@ -40,7 +42,74 @@ func (r termRunRecorder) RecordRun(ctx context.Context, run termrun.Run) error {
 		ProjectRootHash:      run.ProjectRootHash,
 		CorrelationTokenHash: run.CorrelationTokenHash,
 		LaunchedAt:           run.LaunchedAt,
+		Isolation:            runIsolationRecord(run),
 	})
+}
+
+// runIsolationRecord turns a run's G19 isolation evidence into its stored
+// row and seals the execution evidence envelope over it (sandbox plan v2
+// section 8.4, roadmap F0-13). A run that recorded nothing stores nothing,
+// not even a digest. An envelope that does not validate (an unknown enum
+// slipped through) keeps its facts but gets no digest, so nothing can cite
+// evidence that was never valid.
+func runIsolationRecord(run termrun.Run) store.TerminalRunIsolation {
+	iso := run.Isolation
+	rec := store.TerminalRunIsolation{
+		Class: iso.Class, Stack: iso.Stack, EgressTier: iso.EgressTier,
+		CaptureLevel: iso.CaptureLevel, CaptureRule: iso.CaptureRule,
+		CaptureOrigin: iso.CaptureOrigin, CaptureDegraded: iso.CaptureDegraded,
+		NativeSandboxState: iso.NativeSandboxState, Verification: iso.Verification,
+		KeyCustody: iso.KeyCustody,
+	}
+	if iso.Class == "" && iso.CaptureLevel == "" && iso.CaptureOrigin == "" {
+		return rec
+	}
+	component := "terminals"
+	if len(iso.Stack) > 0 {
+		component = "terminals.sandbox"
+	}
+	env := isolationEnvelope(run.RunID, component, version, rec)
+	if d, err := env.Seal(); err == nil {
+		rec.EvidenceDigest = d
+		rec.EvidenceProducer = string(env.Producer.Kind)
+		rec.EvidenceComponent = env.Producer.Component
+		rec.EvidenceComponentVersion = env.Producer.ComponentVersion
+	}
+	return rec
+}
+
+// isolationEnvelope is the execution evidence envelope of a stored run's
+// isolation facts, sealed under the given producer (one builder, so the
+// launch seal and a later reseal cover the same fields).
+func isolationEnvelope(runID, component, componentVersion string, iso store.TerminalRunIsolation) execevidence.Envelope {
+	return execevidence.Envelope{
+		RunID:    runID,
+		Producer: execevidence.Producer{Kind: execevidence.KindTerminalRun, Component: component, ComponentVersion: componentVersion},
+		Isolation: execevidence.Isolation{
+			Class: vocab.IsoClass(iso.Class), Stack: iso.Stack, EgressTier: vocab.Tier(iso.EgressTier),
+			CaptureLevel: vocab.CaptureLevel(iso.CaptureLevel), CaptureRule: iso.CaptureRule,
+			GatewayGuarded: iso.CaptureRule == "C6" && iso.CaptureLevel == string(vocab.CaptureFull),
+			CaptureOrigin:  vocab.CaptureOrigin(iso.CaptureOrigin), CaptureDegraded: iso.CaptureDegraded,
+			NativeSandboxState: vocab.NativeSandboxState(iso.NativeSandboxState),
+			Verification:       vocab.Verification(iso.Verification), KeyCustody: vocab.KeyCustody(iso.KeyCustody),
+		},
+	}
+}
+
+// resealRunEvidence is the digest of a stored run's evidence after its
+// capture was lowered (store.LowerTerminalRunCapture): the envelope is
+// rebuilt from the row, under the producer the row recorded at launch
+// (never this build's), so the digest can still be recomputed from the
+// row. An envelope that does not validate gets no digest.
+func resealRunEvidence(runID string, iso store.TerminalRunIsolation) string {
+	if iso.EvidenceProducer != string(execevidence.KindTerminalRun) {
+		return ""
+	}
+	d, err := isolationEnvelope(runID, iso.EvidenceComponent, iso.EvidenceComponentVersion, iso).Seal()
+	if err != nil {
+		return ""
+	}
+	return d
 }
 
 func (r termRunRecorder) EndRun(ctx context.Context, runID string, endedAt time.Time, exitCode int, reason string) error {
@@ -159,6 +228,11 @@ func argvModeForKind(kind termrun.Kind) termsession.ArgvMode {
 // end reports EOF when the child exits, and a goroutine drains framed OOB
 // signals (which the launcher wrapper begins emitting in F3).
 func (l *ptyLauncher) Spawn(req termsvc.LaunchRequest) (string, error) {
+	// A sandboxed run's relay record learns the stored run it belongs to,
+	// so the relay can lower that run's capture evidence (lane sbx-p2c).
+	if req.Sandboxed {
+		bindSandboxRelayRun(req.WrapArgv, req.RunID)
+	}
 	authToken, err := termoob.NewSessionToken()
 	if err != nil {
 		return "", err
@@ -199,6 +273,9 @@ func (l *ptyLauncher) Spawn(req termsvc.LaunchRequest) (string, error) {
 		// <verb>` launch runs inside the isolation boundary. Empty for every
 		// non-sandboxed launch → argv byte-identical to today.
 		WrapArgv: req.WrapArgv,
+		// A sandboxed run's OSC 52 clipboard sequences are removed from its
+		// output (ruling P-175) unless [terminal.sandbox].allow_osc52_clipboard.
+		StripOSC52: sandboxStripsOSC52(req.Sandboxed, req.SandboxAllowOSC52),
 	}
 	if len(req.SSHArgv) > 0 {
 		// An outbound SSH remote-system session (plan §2). Like SpecShell it
@@ -224,7 +301,19 @@ func (l *ptyLauncher) Spawn(req termsvc.LaunchRequest) (string, error) {
 		_ = oobRead.Close()
 		return "", cerr
 	}
+	if note := sandboxOSC52Notice(req.Sandboxed, req.SandboxAllowOSC52); note != "" {
+		l.mgr.Notice(handle, note+"\r\n")
+	}
 	go l.drainOOB(req.RunID, req.Tool, oobRead, authToken)
+	// A sandbox driver whose PTY child cannot inherit the pipe above (the
+	// ConPTY child on Windows inherits no handles) hands its own OOB
+	// stream instead (lane SBX-P6, sandbox plan section 5.6); none for
+	// every other launch.
+	if req.Sandboxed {
+		if src, ok := sandboxOOBSourceFor(req.WrapArgv); ok {
+			go l.drainOOB(req.RunID, req.Tool, src, authToken)
+		}
+	}
 	l.auditEnv(req, spec.Env)
 	return handle, nil
 }
@@ -303,7 +392,12 @@ func launchChildEnv(req termsvc.LaunchRequest, authToken string) []string {
 	// so a user env can never spoof OBSERVER_SANDBOX=1 into a non-sandboxed
 	// child (U9 finding). Never set on an unsandboxed launch → honest zero.
 	if req.Sandboxed {
-		out = append(out, sandboxEnvMarker+"=1")
+		out = sandboxTierChildEnv(out, req.WrapArgv)
+		// The names the box's allow-list adds (WINFIX2 R-167).
+		out = sandboxLaunchEnv(out, req)
+		// A sandboxed launch in a managed clone: the inner launcher's
+		// repository trust check honours the source repository's accepts.
+		out = append(out, repoTrustChildEnv(req.SourceDir)...)
 	}
 	// Windows env keys are case-insensitive, so the layering above can leave
 	// both `Path=` (inherited) and `PATH=` (ExtraEnv) in one block and "last
@@ -374,7 +468,7 @@ func (l *ptyLauncher) auditEnv(req termsvc.LaunchRequest, env []string) {
 // them to the status feed as TRUSTED events (the channel is authenticated and
 // unforgeable — §2.1b). Any framing violation poisons the decoder (fail-closed)
 // and ends the drain; it never affects the PTY session.
-func (l *ptyLauncher) drainOOB(runID, tool string, r *os.File, authToken string) {
+func (l *ptyLauncher) drainOOB(runID, tool string, r io.ReadCloser, authToken string) {
 	defer func() { _ = r.Close() }()
 	dec := termoob.NewDecoder(r, authToken)
 	for {
@@ -473,10 +567,14 @@ func (l *ptyLauncher) publishOOB(runID, tool string, frame termoob.Frame) {
 		})
 	case termoob.TypeLifecycle:
 		if frame.Lifecycle != nil {
-			l.feed.Publish(termfeed.Event{
+			ev := termfeed.Event{
 				Kind: "oob:" + string(frame.Lifecycle.Phase), RunID: runID, Tool: tool,
 				Trust: termfeed.TrustTrusted, At: time.Now().UTC(),
-			})
+			}
+			if c := frame.Lifecycle.Count; c != nil && *c > 0 {
+				ev.Count = *c
+			}
+			l.feed.Publish(ev)
 		}
 	}
 }

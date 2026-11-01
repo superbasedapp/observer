@@ -60,7 +60,22 @@ import (
 //
 // Force deliberately does NOT lift the gate: a --force test would otherwise
 // re-open precisely the hole this closes.
+//
+// # An isolated home counts as a pinned one (R-013, 2026-10-25)
+//
+// When the process itself is isolated (IsolationReason: HOME other than the
+// real user home, --no-crossmount, a --config outside the real home, or
+// EnvDisableForeignHomes) the resolved home stands in for the pin: no
+// auto-detection, and a named foreign home is honoured only when it lives
+// under that home. A process that is not isolated is unchanged.
 func AutoDetectSuppressed(localHomeOverride, foreignHomeOverride string) bool {
+	if localHomeOverride == "" && IsolationReason() != "" {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			localHomeOverride = home
+		} else {
+			return true // isolated with no resolvable home: write nothing foreign
+		}
+	}
 	if localHomeOverride == "" {
 		return false // production shape: nothing was pinned, nothing is suppressed
 	}

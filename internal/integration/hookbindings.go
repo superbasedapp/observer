@@ -119,6 +119,27 @@ const (
 	// <reason>") and an empty stdout let ls run.
 	hookLiveAgyPreInvocation     = "hook-parity live-ground 2026-10-06 (T-476): agy 1.3.0 on demo node 1, API-key mode, throwaway HOME, loopback mock model, hooks written by observer init"
 	hookLiveAgyPreInvocationDate = "2026-10-06"
+	// hookLiveAgyGuardFix (guard-enforcement fix, 2026-10-15, lead-verified):
+	// agy 1.3.5 on demo node 1, isolated HOME, loopback mock, zero cost.
+	// PreToolUse: deny+reason blocks (the model reads "tool call denied by
+	// pre-tool hook: <reason>"); force_ask+reason raises agy's NATIVE prompt
+	// with a "Reason:" line in the TUI (even for an in-workspace read),
+	// auto-denies under headless -p and RUNS the tool under
+	// --dangerously-skip-permissions; plain ask respects default grants;
+	// allow defers to policy; auto_approve skips the developer's prompt;
+	// overwrite shallow-merges args; an empty stdout falls through to agy's
+	// own flow; {}, exit 1/2, invalid JSON and a timeout all DENY.
+	// PreInvocation: injectSteps userMessage is shown to the developer as a
+	// "> ..." user line (and becomes a user turn), ephemeralMessage /
+	// systemMessage reach the model only; {"injectSteps":[{}]} aborts the
+	// turn before the main model request ("unknown injected step type", -p
+	// exits 3, the TUI shows a warning and the session survives) and no
+	// message can accompany it; any other bad output fails OPEN. agy's
+	// title-generation request carrying the prompt is sent BEFORE any hook,
+	// and an aborted prompt stays in the conversation and is resent with the
+	// next turn. A SessionStart event exists.
+	hookLiveAgyGuardFix     = "guard-enforcement fix live probe 2026-10-15: agy 1.3.5 on demo node 1, isolated HOME, loopback mock model, zero cost"
+	hookLiveAgyGuardFixDate = "2026-10-15"
 	// hookLiveGrokToolGate: grok 1.0.46 on demo node 1 in a throwaway HOME
 	// (hook-parity Lane A6): rm -rf ~/x was denied and the reason reached
 	// the model; {"decision":"allow"} let ls run; an ask under
@@ -138,12 +159,17 @@ const (
 	// hook-parity Lane D node 1 live tests (deny + allow captured per event).
 	hookLivePluginShim     = "docs/guard.md \"Plugin shim gates\" live record (demo node 1: opencode 1.18.31, kilo 7.8.3, pi 1.0.0)"
 	hookLivePluginShimDate = "2026-10-03"
+	// Guard-enforcement research on demo node 1 (2026-10-15): the seams the
+	// shim's prompt and ask mapping rely on, probed live per host.
+	hookLivePluginEnforceDate = "2026-10-15"
+	hookLiveOpenCodeThrow     = "guard-enforcement research, demo node 1 (opencode 1.18.31): a chat.message throw rejects the prompt before it is stored, 0 upstream requests; client.tui.showToast shows in the TUI, no-op headless; permission.ask has no trigger site"
+	hookLivePiInput           = "guard-enforcement research, demo node 1 (pi 1.0.0): an input handler returning {action:\"handled\"} sends no request, {action:\"transform\"} rewrites, a throw FAILS OPEN; ctx.ui.confirm / ctx.ui.notify work when ctx.hasUI (TUI, RPC), print/json mode has no UI"
 	// Vendor SOURCE read from the installed build on demo node 1 (read-only,
 	// 2026-10-03, hook-parity Lanes B/E): a doc-kind grounding stronger than
 	// a fetched page, still not a live capture.
 	hookSrcKimiInstalled  = "kimi-code 2.1.1 bundled source (agent-core-v2 externalHooks runHook.ts, userPrompt.ts) on demo node 1"
 	hookSrcQwenInstalled  = "qwen-code 0.24.7 bundled source (todoWrite chunk, hook event descriptions) on demo node 1"
-	hookSrcClineInstalled = "cline 3.0.68 bundled source (@cline/core hub daemon entry.js: prompt_submit runs with detached: detachAsyncHooks ?? true) on demo node 1"
+	hookSrcClineInstalled = "cline 3.0.68 on demo node 1: the CLI runs its embedded Bun bundle (@cline/cli-linux-x64/bin/cline; @cline/core's hub daemon entry.js carries the same prompt_submit detached: detachAsyncHooks ?? true)"
 	hookSrcLaneDate       = "2026-10-03"
 	// hookLiveGooseToolGate / hookLiveClineToolGate: live-ground lane on
 	// demo node 1, 2026-10-04, throwaway HOME, hooks written by `observer
@@ -188,6 +214,35 @@ const (
 	// 92 ms, allow 37 ms.
 	hookLiveDevinCLIToolGate     = "LIVE-GROUND-3 2026-10-07 (T-478): devin 3000.11.3 on demo node 1, throwaway HOME, loopback mock model, hook written by observer init"
 	hookLiveDevinCLIToolGateDate = "2026-10-07"
+	// hookLiveGuardFixB is the guard-enforcement fix lane B live run on demo
+	// node 1 (2026-10-15): throwaway HOME / COPILOT_HOME / CLINE_DIR, a
+	// loopback mock model, zero model cost, Observer's own receivers.
+	hookLiveGuardFixBDate = "2026-10-15"
+	// hookLiveCopilotCLIPrompt: copilot 1.0.96 userPromptSubmitted. A stub
+	// hook proved the wire (handled+responseContent: zero requests, the text
+	// printed as the reply; modifiedPrompt: the request and the history carry
+	// the replacement; a handled prompt WITHOUT modifiedPrompt was sent
+	// upstream on the next resumed turn, with it the history held the
+	// replacement; exit 2 does not block). Then Observer's own receiver,
+	// registered by `observer init`, with a fake GitHub token: block mode
+	// made zero requests and printed the house message, and the next
+	// resumed turn carried the withheld marker, not the token; ask-once
+	// printed the resend instruction and the identical resend in the same
+	// session reached the model; redact mode sent [REDACTED:github_pat] with
+	// the reason as additionalContext.
+	hookLiveCopilotCLIPrompt = "guard-fix lane B live run 2026-10-15: copilot 1.0.96 -p on demo node 1, BYOK offline against a loopback mock, throwaway COPILOT_HOME"
+	// hookLiveClinePlugin: cline 3.0.68 Plugin API. spawn / spawnSync of an
+	// executable work inside the plugin sandbox (Node); beforeModel {stop}
+	// sent zero requests and showed no reason; a stopped or rewritten
+	// message stayed in the history (the next turn carried it raw) unless
+	// rewritten again; beforeTool {skip, reason} refused one call and the
+	// model got the reason; setup ctx.session.sessionId is the session-store
+	// id; the TUI kept one session across a stop and a resend. Then the
+	// plugin `observer init` wrote: a fake-token prompt made zero requests
+	// (block), redact mode sent [REDACTED:github_pat], and a model-issued
+	// `rm -rf ~/` was skipped per call (the victim file survived, the model
+	// got the R-101 reason and the run continued to its next request).
+	hookLiveClinePlugin = "guard-fix lane B live run 2026-10-15: cline 3.0.68 on demo node 1, throwaway HOME and CLINE_DIR, private CLINE_HUB_PORT, loopback mock openai-compatible provider"
 )
 
 // hgSource is a binding grounded on the vendor's own source as shipped in
@@ -196,6 +251,25 @@ const (
 func hgSource(src string) Grounding {
 	return Grounding{Kind: GroundingDoc, Source: src, Date: hookSrcLaneDate}
 }
+
+// hgSourceAt is hgSource with its own date.
+func hgSourceAt(src, date string) Grounding {
+	return Grounding{Kind: GroundingDoc, Source: src, Date: date}
+}
+
+// Kiro CLI vendor research (guard-enforcement fix gfiD): kiro-cli 2.28.0 on
+// demo node 1 in a throwaway HOME, offline (KIRO_API_KEY=<fake> plus
+// KIRO_MOCK_CHAT_RESPONSE), PROBE hooks in a custom agent JSON. It settled
+// the vendor's semantics live; Observer's own writer and receiver have not
+// had a live run, so the bindings carry doc-kind grounding and `observer
+// start` does not write them (the live gate).
+const (
+	hookSrcKiroResearch  = "kiro-cli 2.28.0 vendor research on demo node 1 (probe hooks in ~/.kiro/agents/<agent>.json, offline mock model); Observer's own writer not yet live-run"
+	hookKiroResearchDate = "2026-10-15"
+)
+
+// kiroResearch overrides a Kiro binding's grounding with the vendor research.
+var kiroResearch hbOpt = func(b *HookBinding) { b.Grounding = hgSourceAt(hookSrcKiroResearch, hookKiroResearchDate) }
 
 // Reply dialect ids for the bindings Observer registers. Prompt dialects
 // are internal/hook's PromptDialect* keys (spelled here because this
@@ -225,10 +299,20 @@ const (
 	// Lane B prompt dialects (internal/hook promptsubmit.go).
 	hookDialectKimiCode = "kimi-code"
 	hookDialectDevinCLI = "devin-cli"
+	// Guard-fix lane B prompt dialects (internal/hook promptcopilot.go,
+	// promptclineplugin.go) and the Cline plugin tool gate
+	// (toolgate_clineplugin.go).
+	hookDialectCopilotPrompt     = "copilot-cli-prompt"
+	hookDialectClinePluginPrompt = "cline-plugin-prompt"
+	hookDialectClinePluginTool   = "cline-plugin-pretool"
+	hookDialectKiroCLI           = "kiro-cli"
 	// Tool-gate dialects (internal/hook toolgate.go ToolGateDialect*).
 	hookDialectClaudeJSONPreTool = "claude-json-pretool"
 	hookDialectGeminiBeforeTool  = "gemini-beforetool"
 	hookDialectCursorPreTool     = "cursor-pretool"
+	// hookDialectCursorReplay is cursor's preToolUse reached through
+	// Observer's Claude Code hooks (FU-122): judges every class.
+	hookDialectCursorReplay = "cursor-pretool-replay"
 	// Lane A4-A6 tool-gate dialects.
 	hookDialectAgyPreTool      = "antigravity-pretool"
 	hookDialectGrokPreTool     = "grok-pretool"
@@ -258,7 +342,10 @@ const (
 	hookCrushHostTimeout        = 30 * time.Second
 	hookZcodeRegisteredTimeout  = 30 * time.Second
 	hookCommandCodeShellTimeout = 30 * time.Second
-	hookKiroHostTimeout         = 60 * time.Second
+	// hookKiroHostTimeout is the timeout Observer registers on its Kiro
+	// entries (timeout_ms 30000 in an agent JSON, timeout 30 in the V3
+	// standalone file, whose documented default is 60 s).
+	hookKiroHostTimeout = 30 * time.Second
 	// hookMuseRegisteredTimeout is the "timeout" Observer registers on its
 	// Muse handlers.
 	hookMuseRegisteredTimeout = 30 * time.Second
@@ -282,7 +369,64 @@ const (
 	// shim and the Hermes Python plugin.
 	hookDialectPluginShim       = "plugin-shim"
 	hookDialectPluginShimPrompt = "plugin-shim-prompt"
+	// hookDialectPluginShimPromptConfirm is the plugin prompt seam that
+	// also has a native confirm and a rewrite (pi `input`).
+	hookDialectPluginShimPromptConfirm = "plugin-shim-prompt-confirm"
 )
+
+// Post-tool feedback dialects (security pillar plan sections 4.7 and
+// 5.11 (c), spike JSP-6, lane SEC-H): the reply writer internal/secfeedback
+// uses to put the security feedback line into the host's post-tool reply.
+// One id per reply shape, never per tool.
+const (
+	// hookDialectFeedbackClaude: hookSpecificOutput.additionalContext
+	// beside the kept "decision":"approve" (Claude Code, Qoder).
+	hookDialectFeedbackClaude = "feedback-claude"
+	// hookDialectFeedbackCodex: hookSpecificOutput.additionalContext, a
+	// separate developer message, after a successful tool only.
+	hookDialectFeedbackCodex = "feedback-codex"
+	// hookDialectFeedbackGemini: hookSpecificOutput.additionalContext
+	// appended to the tool result (Gemini CLI AfterTool, Qwen Code).
+	hookDialectFeedbackGemini = "feedback-gemini"
+	// hookDialectFeedbackCline: a file hook's contextModification, a
+	// <hook_context> user message after the tool results.
+	hookDialectFeedbackCline = "feedback-cline"
+	// hookDialectFeedbackPlugin: the plugin shim appends the reply's
+	// context to output.output in tool.execute.after (OpenCode, Kilo).
+	hookDialectFeedbackPlugin = "feedback-plugin"
+	// hookDialectFeedbackCursor: additional_context on postToolUse,
+	// size-capped by the host.
+	hookDialectFeedbackCursor = "feedback-cursor"
+)
+
+// hookFeedbackComponent is the component whose selection registers the
+// post-tool feedback events no other binding registers (RegisterWhen).
+const hookFeedbackComponent = "security.feedback"
+
+// JSP-6 grounding of the post-tool context rows.
+const (
+	hookJSP6LiveDate = "2026-10-20"
+	hookJSP6Live     = "docs/plans/spikes/JSP-6-per-tool-grounding-2026-10.md \"Live half\" (the model quoted the probe's injected marker; evidence _spikes/jsp-6/live/)"
+	hookJSP6Source   = "docs/plans/spikes/JSP-6-per-tool-grounding-2026-10.md and _spikes/jsp-6/vendor-grounding.md (vendor source at a named release; live pending)"
+)
+
+// hgSourceOpt overrides a binding's grounding with the JSP-6 vendor-source
+// reading.
+func hgSourceOpt(src string) hbOpt {
+	return func(b *HookBinding) { b.Grounding = hgSourceAt(src, hookJSP6LiveDate) }
+}
+
+// feedbackPost marks a post-phase context_inject row: the reply dialect, a
+// context-only decision, and, where no other binding registers the event,
+// the component that registers it.
+func feedbackPost(dialect string, optIn bool) hbOpt {
+	return func(b *HookBinding) {
+		b.Dialect, b.Decisions = dialect, []string{HookDecisionContext}
+		if optIn {
+			b.RegisterWhen = hookFeedbackComponent
+		}
+	}
+}
 
 // hbOpt mutates one binding under construction.
 type hbOpt func(*HookBinding)
@@ -363,6 +507,26 @@ func laneCLive(src string) hbOpt {
 
 func guardChannel(ch string) hbOpt { return func(b *HookBinding) { b.GuardChannel = ch } }
 
+// hookWarnSystemMessage is the Claude-shaped common output field the host
+// shows the developer as a warning (code.claude.com/docs/en/hooks "Warning
+// message shown to the user"; Codex "surfaced as a warning in the UI";
+// Gemini CLI "shown to the user in the terminal"; Qwen Code and Factory
+// Droid take the Claude-compatible common field).
+const hookWarnSystemMessage = "systemMessage"
+
+// warnField declares the allow reply's developer-visible notice field
+// (HookBinding.WarnField).
+func warnField(f string) hbOpt { return func(b *HookBinding) { b.WarnField = f } }
+
+// hookWarnPluginMessage is the plugin dialect's allow-reply notice field
+// (internal/hook PluginReply.Message): the shim shows it to the developer
+// on hosts whose plugin has a notice channel (a TUI toast, pi's notify).
+const hookWarnPluginMessage = "message"
+
+// adminCaveat sets the binding's short admin-facing coverage caveat
+// (HookBinding.AdminCaveat).
+func adminCaveat(s string) hbOpt { return func(b *HookBinding) { b.AdminCaveat = s } }
+
 // all applies several options at once (a per-vendor default set).
 func all(opts ...hbOpt) hbOpt {
 	return func(b *HookBinding) {
@@ -416,11 +580,14 @@ var hookBindingsClaudeCode = []HookBinding{
 	claudeB(HookCapUserMessage, HookPhasePre, "UserPromptSubmit", reg(hookDialectClaudeCode), wired(), dec(HookDecisionMessage)),
 	claudeB(HookCapEnvironmentObserve, HookPhaseNone, "UserPromptExpansion", reg(hookDialectClaudeCode), wired()),
 	hb(HookCapToolGate, HookPhasePre, "PreToolUse", hgLive(hookLiveClaude, hookLiveClaudeDate), claudeCodeOpts,
-		reg(hookDialectClaudePreTool), wired(),
+		reg(hookDialectClaudePreTool), wired(), warnField(hookWarnSystemMessage),
 		dec(HookDecisionAllow, HookDecisionAsk, HookDecisionDeny, HookDecisionModify),
-		note("native ask via permissionDecision; payload carries cwd but no project root, so boundary rules defer to the watcher")),
+		note("native ask via permissionDecision alone (the legacy decision:block is sent only beside a deny: beside an ask it turned the ask into a block, live audit 2026-10-15); a flag is shown to the developer through systemMessage on the allow; payload carries cwd but no project root, so boundary rules defer to the watcher")),
 	claudeB(HookCapToolRewrite, HookPhasePre, "PreToolUse", reg(hookDialectClaudePreTool), wired(), dec(HookDecisionModify)),
 	claudeB(HookCapToolObserve, HookPhasePost, "PostToolUse", reg(hookDialectClaudeCode), wired()),
+	hb(HookCapContextInject, HookPhasePost, "PostToolUse", hgLive(hookJSP6Live, hookJSP6LiveDate), claudeCodeOpts,
+		feedbackPost(hookDialectFeedbackClaude, false),
+		note("security feedback (lane SEC-H): hookSpecificOutput.additionalContext beside the kept decision approve; live on Claude Code 2.1.304 (JSP-6 live half), also after a PowerShell call on Windows. The event is already registered for tool_observe, so nothing new is written")),
 	claudeB(HookCapToolFailureObserve, HookPhasePost, "PostToolUseFailure", reg(hookDialectClaudeCode), wired()),
 	claudeB(HookCapToolObserve, HookPhasePost, "PostToolBatch", reg(hookDialectClaudeCode), wired()),
 	claudeB(HookCapPermissionObserve, HookPhasePre, "PermissionRequest", reg(hookDialectClaudeCode), wired()),
@@ -462,12 +629,16 @@ var hookBindingsCodex = []HookBinding{
 		dec(HookDecisionAllow, HookDecisionAsk, HookDecisionDeny, HookDecisionContext, HookDecisionMessage),
 		note("legacy {decision:block,reason} shown to the developer; prompt cannot be modified")),
 	hb(HookCapToolGate, HookPhasePre, "PreToolUse", hgLive(hookLiveCodexToolGate, hookLiveLaneADate), codexOpts,
-		reg(hookDialectClaudeJSONPreTool), wired(),
+		reg(hookDialectClaudeJSONPreTool), wired(), warnField(hookWarnSystemMessage),
 		host(hookCodexHostTimeout, HostProceeds),
+		adminCaveat("Sub-agents started with spawn_agent bypass the gate, and some unified_exec shell calls are not intercepted."),
 		dec(HookDecisionAllow, HookDecisionDeny, HookDecisionModify),
 		note("hookSpecificOutput.permissionDecision deny with a reason (Codex shows the model \"Command blocked by PreToolUse hook: <reason>\"); covers Bash, apply_patch (every file in the patch) and MCP tools; no ask: Codex rejects permissionDecision:ask and fails open (openai/codex #28437), so an enforced ask is a deny that says how to confirm; unified_exec shell calls are only partly intercepted (#20204) and spawn_agent sub-agents bypass hooks (#49736)")),
 	codexB(HookCapPermissionObserve, HookPhasePre, "PermissionRequest", reg(hookDialectCodex), wired()),
 	codexB(HookCapToolObserve, HookPhasePost, "PostToolUse", reg(hookDialectCodex), wired()),
+	hb(HookCapContextInject, HookPhasePost, "PostToolUse", hgLive(hookJSP6Live, hookJSP6LiveDate), codexOpts,
+		feedbackPost(hookDialectFeedbackCodex, false),
+		note("security feedback (lane SEC-H): hookSpecificOutput.additionalContext becomes a separate developer message right after the tool, and Codex runs PostToolUse only after a successful tool; live on codex 0.144.4 (JSP-6 live half). Already registered for tool_observe")),
 	codexB(HookCapTurnLifecycle, HookPhaseEnd, "Stop", reg(hookDialectCodex), wired(), dec(HookDecisionDeny)),
 	codexB(HookCapSessionLifecycle, HookPhaseEnd, "SessionEnd", reg(hookDialectLifecycle), wired(), laneCLive(hookLiveCodexLC)),
 	codexB(HookCapSubagentLifecycle, HookPhaseStart, "SubagentStart", reg(hookDialectLifecycle), wired(), laneCLive(hookLiveCodexLC),
@@ -519,7 +690,20 @@ var hookBindingsCursor = []HookBinding{
 		host(hookCursorHostTimeout, HostFailureUnknown),
 		dec(HookDecisionAllow, HookDecisionDeny, HookDecisionModify),
 		note("permission allow|deny with user_message + agent_message; judges the classes the per-tool before* events do not (writes, edits, deletes, content search, web); ask is accepted but not enforced on this event (vendor docs), so an enforced ask is a deny that says how to confirm")),
+	// Cursor IDE's Agents window also runs ~/.claude/settings.json hooks
+	// (FU-122, Mac round 4): a fallback the claude-code receiver serves under
+	// cursor only while Observer's own preToolUse registration above is
+	// absent (internal/hook foreignhost.go, the copilot-cli G2 rule). While
+	// it is present the replay answers neutral and the registered gate
+	// judges. Listed after the registered gate so Binding("preToolUse") is
+	// still that gate.
+	cursorB(HookCapToolGate, HookPhasePre, "preToolUse", dialectOnly(hookDialectCursorReplay), wired(), replayedVia(replayClaudeCode), standsInFor("preToolUse"),
+		host(hookCursorHostTimeout, HostFailureUnknown), dec(HookDecisionAllow, HookDecisionDeny),
+		note("reached through Observer's Claude Code hooks: cursor-agent runs ~/.claude/settings.json hooks with its own preToolUse payload (cursor_version, conversation_id, hook_event_name preToolUse; Mac round 4, Cursor IDE Agents window). The claude-code receiver answers it with Cursor's neutral {} while Observer's cursor registration holds preToolUse, and otherwise gates it as cursor with the permission deny, every action class included (no before* event is replayed there). The payload is live-captured on macOS; a deny on this path is not yet live-run")),
 	cursorB(HookCapToolObserve, HookPhasePost, "postToolUse", reg(hookDialectCursor), wired()),
+	hb(HookCapContextInject, HookPhasePost, "postToolUse", hgSourceAt("installed cursor-agent bundle 2026.08.25 read in the JSP-6 live half (_spikes/jsp-6/live/cursor/cursor1.out.txt); no live turn", hookJSP6LiveDate), cursorOpts,
+		feedbackPost(hookDialectFeedbackCursor, false),
+		note("security feedback (lane SEC-H): additional_context on the postToolUse reply, size-capped by the host; installed-code grounded, live pending. Already registered for tool_observe")),
 	cursorB(HookCapToolObserve, HookPhasePost, "afterShellExecution", reg(hookDialectCursor), wired()),
 	cursorB(HookCapToolObserve, HookPhasePost, "afterMCPExecution", reg(hookDialectCursor), wired()),
 	cursorB(HookCapModelCallObserve, HookPhasePost, "afterAgentThought", reg(hookDialectCursor), wired()),
@@ -539,11 +723,14 @@ var hookBindingsGeminiCLI = []HookBinding{
 		dec(HookDecisionAllow, HookDecisionAsk, HookDecisionDeny, HookDecisionContext, HookDecisionMessage),
 		note("decision:deny discards the message; both reason and systemMessage are set (vendor docs call systemMessage user-visible in the terminal, and reason also renders when denying). Live (gemini 0.62.0, demo node 1): the block held with zero model requests and the developer saw \"Agent execution blocked: <reason>\"; because the reply also exits 2, gemini additionally prints \"Hook(s) failed for event BeforeAgent\" beside the block")),
 	geminiB(HookCapUserMessage, HookPhasePre, "BeforeAgent", reg(hookDialectGemini), wired(), liveAt(hookLiveGeminiGates, hookLiveGeminiGatesDate), dec(HookDecisionMessage)),
-	geminiB(HookCapToolGate, HookPhasePre, "BeforeTool", reg(hookDialectGeminiBeforeTool), wired(), liveAt(hookLiveGeminiGates, hookLiveGeminiGatesDate),
+	geminiB(HookCapToolGate, HookPhasePre, "BeforeTool", reg(hookDialectGeminiBeforeTool), wired(), liveAt(hookLiveGeminiGates, hookLiveGeminiGatesDate), warnField(hookWarnSystemMessage),
 		host(hookGeminiHostTimeout, HostFailureUnknown),
-		dec(HookDecisionDeny, HookDecisionModify),
-		note("decision:deny with reason (sent to the agent as the tool error) and systemMessage (shown to the developer); ask is implemented but undocumented (google-gemini/gemini-cli #28046): deny-only until probed, so an enforced ask is a deny that says how to confirm")),
+		dec(HookDecisionAsk, HookDecisionDeny, HookDecisionModify),
+		note("decision:deny with reason (sent to the agent as the tool error) and systemMessage (shown to the developer); decision:ask forces a confirmation even under YOLO (live 0.53.1, source the same at 0.64.0, JSP-6 live half), but a headless ask hangs the run (-p --yolo stalled until killed at 180 s), so the ask is offered only when the per-call probe finds the gemini process with a terminal (integration.AskHost, AskNeedsTerminal); anywhere else an ask is a deny that says how to confirm")),
 	geminiB(HookCapToolObserve, HookPhasePost, "AfterTool"),
+	hb(HookCapContextInject, HookPhasePost, "AfterTool", hgLive(hookJSP6Live, hookJSP6LiveDate), geminiOpts,
+		feedbackPost(hookDialectFeedbackGemini, true),
+		note("security feedback (lane SEC-H): hookSpecificOutput.additionalContext is escaped and appended to the tool result as <hook_context>...</hook_context>; live on gemini 0.53.1 (JSP-6 live half). AfterTool is registered only while security.feedback is selected")),
 	geminiB(HookCapSessionLifecycle, HookPhaseStart, "SessionStart", dec(HookDecisionContext, HookDecisionMessage)),
 	geminiB(HookCapSessionLifecycle, HookPhaseEnd, "SessionEnd"),
 	geminiB(HookCapTurnLifecycle, HookPhaseEnd, "AfterAgent", dec(HookDecisionDeny)),
@@ -572,10 +759,13 @@ var hookBindingsQwenCode = []HookBinding{
 		dec(HookDecisionAllow, HookDecisionAsk, HookDecisionDeny, HookDecisionContext, HookDecisionMessage),
 		note("documented decision enum is allow|deny|block|ask; observer emits \"block\" (the verb every sibling top-level-block vendor's docs confirm) rather than guessing a semantic split between deny/block/ask the docs don't draw")),
 	hb(HookCapToolGate, HookPhasePre, "PreToolUse", hgLive(hookLiveQwenToolGate, hookLiveT357Date), sess(), proc(ProcDescendant),
-		reg(hookDialectClaudeJSONPreTool), wired(),
+		reg(hookDialectClaudeJSONPreTool), wired(), warnField(hookWarnSystemMessage),
 		dec(decDenyAskModify...),
 		note("hookSpecificOutput.permissionDecision deny|ask with permissionDecisionReason (Claude-shaped); live (qwen 0.24.7 --yolo): the deny reason reached the model, {} let the call run, and an ask was NOT run headless (qwen showed the reason); the interactive ask prompt is not probed. The payload names the native tool (run_shell_command, read_file, glob, write_file) with tool_input")),
 	qwenB(HookCapSessionLifecycle, HookPhaseStart, "SessionStart", reg(hookDialectLifecycle), wired(), dec(decContext...), laneCLive(hookLiveQwenStartLC)),
+	hb(HookCapContextInject, HookPhasePost, "PostToolUse", hgSourceAt(hookJSP6Source, hookJSP6LiveDate), sess(), proc(ProcDescendant),
+		feedbackPost(hookDialectFeedbackGemini, true),
+		note("security feedback (lane SEC-H): hookSpecificOutput.additionalContext is appended to the function response sent to the model (qwen-code 0.25.3 source, coreToolScheduler.ts); live pending (the JSP-6 live turns stalled on HTTP 429). PostToolUse is registered only while security.feedback is selected")),
 	// Owed a live run (Lane C node 1: every qwen turn 404'd on the free
 	// model, so no end event fired); the lifecycle handler would serve them,
 	// but they are not registered until a capture grounds them.
@@ -600,7 +790,7 @@ var hookBindingsDroid = []HookBinding{
 		dec(HookDecisionAllow, HookDecisionAsk, HookDecisionDeny, HookDecisionContext, HookDecisionMessage),
 		note("same legacy {decision:block,reason} shape as Codex; vendor docs state outright \"hook feedback goes to the user, not the agent\". Not live: on node 1 (2026-10-04) `droid exec` 0.233.0 fired PreToolUse from the same hooks.json but never UserPromptSubmit; the interactive TUI is not probed")),
 	hb(HookCapToolGate, HookPhasePre, "PreToolUse", hgLive(hookLiveDroidToolGate, hookLiveT357Date), sess(), proc(ProcDescendant),
-		reg(hookDialectClaudeJSONPreTool), wired(),
+		reg(hookDialectClaudeJSONPreTool), wired(), warnField(hookWarnSystemMessage),
 		dec(HookDecisionDeny, HookDecisionModify),
 		note("hookSpecificOutput.permissionDecision deny with permissionDecisionReason (Claude-shaped); the deny reached the model live. Ask is NOT listed: the vendor documents permissionDecision ask, but live on droid 0.233.0 an ask under `droid exec --auto high` ran the command, so an enforced ask is a deny that says how to confirm. hooks.json keeps its events at the ROOT (a {\"hooks\":{}} wrapper is ignored by droid; Observer's writer repairs it)")),
 	// Droid's lifecycle events stay vendor-only (not registered): the earlier
@@ -621,8 +811,11 @@ var hookBindingsQoder = []HookBinding{
 	hb(HookCapToolGate, HookPhasePre, "PreToolUse", hgLive(hookLiveQoderToolGate, hookLiveLaneADate), sess(), proc(ProcDescendant),
 		reg(hookDialectClaudeJSONPreTool), wired(),
 		dec(HookDecisionDeny, HookDecisionModify, HookDecisionContext),
-		note("hookSpecificOutput.permissionDecision deny with permissionDecisionReason (Claude-shaped JSON on this event, unlike the exit-code-only UserPromptSubmit); the deny reached the model live. Ask is NOT listed: the vendor documents permissionDecision ask, but live on qodercli 1.1.65 an ask under --yolo ran the command without asking, so an enforced ask is a deny that says how to confirm")),
+		note("hookSpecificOutput.permissionDecision deny with permissionDecisionReason (Claude-shaped JSON on this event, unlike the exit-code-only UserPromptSubmit); the deny reached the model live. Ask is NOT listed: the vendor documents permissionDecision ask, but live on qodercli 1.1.65 an ask under --yolo ran the command without asking, and re-grounded on 1.1.5 (JSP-6 live half, 2026-10-20) a headless ask failed closed (\"Permission confirmation required but no interactive handler is available\", also under --dangerously-skip-permissions); no interactive turn has been measured on a current build, so an enforced ask stays a deny that says how to confirm (the D-791 outcome, integration.AskHost)")),
 	qoderB(HookCapSessionLifecycle, HookPhaseStart, "SessionStart", reg(hookDialectLifecycle), wired(), dec(decContext...), laneCLive(hookLiveQoderLC)),
+	hb(HookCapContextInject, HookPhasePost, "PostToolUse", hgLive(hookJSP6Live, hookJSP6LiveDate), sess(), proc(ProcDescendant),
+		feedbackPost(hookDialectFeedbackClaude, true),
+		note("security feedback (lane SEC-H): Claude-shaped hookSpecificOutput.additionalContext; live on qodercli 1.1.5 (JSP-6 live half: quoted for Write, Edit and Bash). PostToolUse is registered only while security.feedback is selected")),
 	qoderB(HookCapSessionLifecycle, HookPhaseEnd, "SessionEnd", reg(hookDialectLifecycle), wired(), laneCLive(hookLiveQoderLC)),
 	qoderB(HookCapTurnLifecycle, HookPhaseEnd, "Stop", reg(hookDialectLifecycle), wired(), dec(decDeny...), laneCLive(hookLiveQoderLC)),
 	qoderB(HookCapSubagentLifecycle, HookPhaseStart, "SubagentStart", reg(hookDialectLifecycle), wired(), laneCLive(hookLiveQoderLC)),
@@ -637,6 +830,8 @@ var hookBindingsQoder = []HookBinding{
 
 var poolsideB = cloneB(hookSrcPoolside)
 
+// Poolside's "pool CLI only" caveat (W-5) is the ide row of hookSurfaces
+// (hooksurface.go), rendered by HookSpec.SurfaceCaveat beside both gates.
 var hookBindingsPoolside = []HookBinding{
 	poolsideB(HookCapPromptGate, HookPhasePre, "UserPromptSubmit", reg(hookDialectPoolside), wired(),
 		dec(HookDecisionAllow, HookDecisionAsk, HookDecisionDeny, HookDecisionModify, HookDecisionContext),
@@ -696,7 +891,7 @@ var hookBindingsDevin = []HookBinding{
 		dec(HookDecisionAllow, HookDecisionDeny),
 		note("Part B item 2, phase-3a - live-fetched 2026-09-07 (docs.devin.ai/desktop/cascade/hooks): Windsurf/Devin Desktop Cascade's pre_user_prompt, exit code 2 blocks, no JSON reply and no user-visible message channel at all (show_output does not apply to this event, so ask-once degrades to a hard block); no session_id field is documented either - trajectory_id (the conversation identifier) is used as the session-scoping key instead; registered at ~/.codeium/windsurf/hooks.json")),
 	cascadeB(HookCapToolGate, HookPhasePre, "pre_run_command", reg(hookDialectCascadePreTool), wired(), host(0, HostProceeds), dec(decDeny...),
-		note("Cascade: exit code 2 blocks and stderr (the reason, nothing else) is shown to the developer; no JSON reply, no ask, so an enforced ask is a deny that says how to confirm; any other exit lets the action proceed. The command is tool_info.command_line. Windows: the vendor runs `command` through PowerShell; Observer writes no Windows target for Cascade. Not installed on demo node 1: doc-grounded, `observer init` only")),
+		note("Cascade: exit code 2 blocks and stderr (the reason after \"Blocked by Observer guard:\" on one first line, nothing else) is shown to the developer; no JSON reply, no ask, so an enforced ask is a deny that says how to confirm; any other exit lets the action proceed. The command is tool_info.command_line. Windows: the vendor runs `command` through PowerShell; Observer writes no Windows target for Cascade. Not installed on demo node 1: doc-grounded, `observer init` only")),
 	cascadeB(HookCapToolGate, HookPhasePre, "pre_write_code", reg(hookDialectCascadePreTool), wired(), host(0, HostProceeds), dec(decDeny...),
 		note("Cascade: judged as an edit of tool_info.file_path; exit 2 + stderr")),
 	cascadeB(HookCapToolGate, HookPhasePre, "pre_read_code", reg(hookDialectCascadePreTool), wired(), host(0, HostProceeds), dec(decDeny...),
@@ -725,10 +920,15 @@ var (
 )
 
 var hookBindingsKiroCLI = []HookBinding{
-	kiroB(HookCapToolGate, HookPhasePre, "preToolUse", dialectOnly(hookDialectKiroPreTool), host(hookKiroHostTimeout, HostProceeds), dec(decDeny...),
-		note("exit code 2 blocks and stderr returns to the agent (2.x reference); no JSON decision, no ask. The dialect is built and tested, but Observer writes NO registration: 2.x hooks live inside a per-agent JSON (\"hooks\" field of ~/.kiro/agents/<agent>.json, user path third-party sourced) and the 3.0 global ~/.kiro/hooks/ location is only third-party sourced (CLI 2.13 --v3 early access), so either writer would guess a path. kiro-cli 2.28.0 on demo node 1 (2026-10-07, T-477): the kiro-cli-chat binary names preToolUse, postToolUse, userPromptSubmit, agentSpawn and stop and the global agent directory .kiro/agents/, and none of its three binaries names a .kiro/hooks path, so this build reads 2.x per-agent hooks only; every agent command needs kiro-cli login, so nothing fired and no writer is built. Windows: not stated")),
-	kiroB(HookCapPromptGate, HookPhasePre, "userPromptSubmit", dec(decDeny...),
-		note("probe_required: a shell-action non-zero exit is documented to block the submission, but the 2.x CLI reference documents exit codes for preToolUse only and no stdin field names, and kirodotdev/Kiro #11050 (open, Kiro IDE 1.0.337) reports the prompt is committed BEFORE the hook runs, so an exit 2 does not stop it. No dialect row until a live capture settles the payload and whether the block holds (hook-parity Lane B, 2026-10-03)")),
+	kiroB(HookCapToolGate, HookPhasePre, "preToolUse", kiroResearch, reg(hookDialectKiroPreTool), wired(),
+		host(hookKiroHostTimeout, HostProceeds), dec(decDeny...),
+		adminCaveat("Gates only the agent in use: Observer installs its own default agent and merges into the developer's agents, but workspace agents are not covered."),
+		note("exit code 2 blocks and the model gets \"PreToolHook blocked the tool execution: <stderr>\"; exit 1 runs the tool (stderr is only a TUI warning); no JSON decision, no ask, no modify, so an enforced ask is a deny that says how to confirm. Payload {hook_event_name, cwd, session_id, tool_name, tool_input}; tool names code, glob, goal, grep, introspect, knowledge, read (operations[].path), shell, subagent, todo_list, use_aws, write, and V3 MCP tools mcp_<server>_<tool>. "+
+			"2.x hooks fire ONLY for the agent in use (--agent, else chat.defaultAgent in ~/.kiro/settings/cli.json, else the built-in kiro_default), so Observer writes its own agent ~/.kiro/agents/superbased-observer.json (tools [\"*\"], never allowedTools), sets chat.defaultAgent to it only when unset, merges the same entries (keyed on the command) into every other ~/.kiro/agents/*.json, and writes the V3 standalone ~/.kiro/hooks/superbased-observer.json that 2.28 does not read. Vendor semantics live-proven with probe hooks on demo node 1 (kiro-cli 2.28.0, KIRO_API_KEY=<fake> + KIRO_MOCK_CHAT_RESPONSE, offline); Observer's own writer has not had a live run, so `observer init` only. Workspace agents (<cwd>/.kiro/agents) are not merged. Windows: not stated")),
+	kiroB(HookCapPromptGate, HookPhasePre, "userPromptSubmit", kiroResearch, reg(hookDialectKiroCLI), wired(), dec(decContext...),
+		host(hookKiroHostTimeout, HostProceeds),
+		adminCaveat("The hook cannot stop a prompt: the finding is added to the model's context and sent to the developer as a desktop notice."),
+		note("WARN-ONLY (settled 2026-10-15): stdin {hook_event_name, cwd, session_id, prompt} and $USER_PROMPT; the hook CANNOT block (live: exit 1 and exit 2 both let the prompt through, matching kirodotdev/Kiro #11050 and the V3 docs), and an exit-0 stdout is added to the model's context only. The dialect replies with one plain-text line telling the model about a finding (never claiming a block) and an empty stdout otherwise; every finding is also recorded and toasted")),
 	kiroB(HookCapSessionLifecycle, HookPhaseStart, "agentSpawn", dec(decContext...)),
 	kiroB(HookCapTurnLifecycle, HookPhaseEnd, "stop"),
 }
@@ -810,7 +1010,8 @@ var (
 var hookBindingsGoose = []HookBinding{
 	gooseB(HookCapToolGate, HookPhasePre, "PreToolUse", hgLiveOpt(hookLiveGooseToolGate), reg(hookDialectGoosePreTool), wired(),
 		host(hookGooseHostTimeout, HostProceeds), dec(decDeny...),
-		note("{\"decision\":\"block\",\"reason\"} from Observer's Open Plugin (~/.agents/plugins/superbased-observer: plugin.json + hooks/hooks.json, no trust step); the model gets \"Tool call denied by policy hook\"; the allow is an empty stdout; no ask. The cwd is working_dir. Host default on_failure is allow (fail open); no sub-agent events. Windows: not stated (commands run through sh -c)")),
+		adminCaveat("Code Mode scripts are judged as one command; the tool calls inside them bypass the gate."),
+		note("{\"decision\":\"block\",\"reason\"} from Observer's Open Plugin (~/.agents/plugins/superbased-observer: plugin.json + hooks/hooks.json, no trust step); the model gets \"Tool call denied by policy hook\"; the allow is an empty stdout; no ask. The cwd is working_dir. Host default on_failure is allow (fail open), so under guard enforcement Observer writes \"on_failure\":\"block\" on its PreToolUse action (an Observer crash, timeout or unparseable reply then blocks; goose reads it on PreToolUse only). goose 1.53 resolves model-mangled names before the hook; the gate also folds developer__X / developer.X / functions.X onto X, judges Code Mode's execute_typescript script as one command (its inner tool calls bypass hooks) and reads any other <extension>__<tool> as the MCP call mcp__<extension>__<tool>. No sub-agent events. Windows: not stated (commands run through sh -c)")),
 	gooseB(HookCapPromptGate, HookPhasePre, "UserPromptSubmit", note("observe only: the vendor states hooks cannot inject, so no dialect row; prompt coverage is the proxy route (opt-in) or the post-hoc capture lane (hook-parity Lane B)")),
 	gooseB(HookCapSessionLifecycle, HookPhaseStart, "SessionStart"),
 	gooseB(HookCapSessionLifecycle, HookPhaseEnd, "SessionEnd"),
@@ -820,7 +1021,8 @@ var hookBindingsGoose = []HookBinding{
 var hookBindingsCrush = []HookBinding{
 	crushB(HookCapToolGate, HookPhasePre, "PreToolUse", reg(hookDialectCrushPreTool), wired(),
 		host(hookCrushHostTimeout, HostProceeds), dec(HookDecisionDeny, HookDecisionModify, HookDecisionContext),
-		note("the ONE crush.json hook event (global ~/.config/crush/crush.json): {\"decision\":\"deny\",\"reason\"}; the allow is an empty object because decision:allow would skip Crush's permission prompt; exit 49 halts the whole turn (never used); no ask; sub-agents bypass hooks by design (main agent only). Timeouts and other exits fail open. Windows: yes (embedded POSIX shell). Installed on demo node 1 (crush v0.97.1, 2026-10-07) but it has no provider configured and exposes no base-URL env knob, so a run needs a provider key or a hand-written crush.json: doc-grounded, `observer init` only")),
+		adminCaveat("Main agent only: sub-agents bypass hooks by design."),
+		note("the ONE crush.json hook event (global ~/.config/crush/crush.json): {\"decision\":\"deny\",\"reason\"}; the allow is an empty object because decision:allow would skip Crush's permission prompt; exit 49 halts the whole turn (never used); no ask; sub-agents bypass hooks by design (main agent only). Timeouts and other exits fail open. Windows: yes (embedded POSIX shell). Tool names include web_fetch, web_search, agentic_fetch, job_output, job_kill, and MCP tools as mcp_<server>_<tool> (one underscore), which the gate reads as mcp__<server>__<tool> (split at the first underscore after the prefix: a server name holding an underscore is ambiguous). Installed on demo node 1 (crush v0.97.1, 2026-10-07); a run needs a provider: there is no base-URL ENV knob, but a provider's base_url in crush.json (providers.<id>.base_url) routes it (a config-file proxy route Observer does not write yet). Vendor research 2026-10-15 (0.97.1 and 0.98.1): the hook loads from ~/.config/crush/crush.json, ~/.local/share/crush/crush.json and a project .crush.json; UserPromptSubmit does not exist (a configured one never fires). Observer's own writer has not had a live run: doc-grounded, `observer init` only")),
 }
 
 var hookBindingsMistralCode = []HookBinding{
@@ -839,21 +1041,54 @@ var agyB = func(c HookCap, phase, event string, opts ...hbOpt) HookBinding {
 
 var hookBindingsAntigravityCLI = []HookBinding{
 	agyB(HookCapPromptGate, HookPhasePre, "PreInvocation", reg(hookDialectAgyPreInvoke), wired(),
-		liveAt(hookLiveAgyPreInvocation, hookLiveAgyPreInvocationDate),
-		host(hookAgyToolGateTimeout, HostFailureUnknown), dec(decContext...),
-		note("WARN-ONLY (restored by T-476): the stdin carries no prompt text, so the receiver reads the latest USER_INPUT step from the transcriptPath file (transcript.jsonl on agy 1.2.16, transcript_full.jsonl on 1.3.0) and replies injectSteps with one ephemeralMessage telling the model about the finding; it never blocks, judges each prompt once, and an empty object is the allow. Live on agy 1.3.0 the prompt was already in the transcript at invocationNum 0 and the notice reached the model before its first agent reply. On agy 1.2.16 (2026-10-03) the transcript held the prompt only after the reply, so the seam could not warn; an older agy degrades to {} (no warn). agy also sends one tool-less side request with the prompt that no hook sees")),
-	agyB(HookCapToolGate, HookPhasePre, "PreToolUse", liveAt(hookLiveAgyToolGate, hookLiveLaneADate), reg(hookDialectAgyPreTool), wired(),
-		host(hookAgyToolGateTimeout, HostFailureUnknown), dec(HookDecisionDeny, HookDecisionModify),
-		note("top-level decision deny with reason; the deny reached the model live (agy 1.2.16, demo node 1, a shell command and a write to ~/.ssh). The allow is an EMPTY stdout: live, an empty object {} DENIED the call (decision is required), while an empty stdout leaves the call to agy's own permission flow (and decision:allow is documented to auto-approve past the developer's prompt). Ask is NOT listed: force_ask under --dangerously-skip-permissions ran the command (headless default mode auto-denied it), so an enforced ask is a deny that says how to confirm. camelCase payload: toolCall.{name,args} (args keys PascalCase, e.g. CommandLine), conversationId, workspacePaths; no cwd. The desktop app and the IDE read the same ~/.gemini/config/hooks.json. Windows: the vendor runs hooks through cmd /c; Observer writes no Windows target")),
+		liveAt(hookLiveAgyGuardFix, hookLiveAgyGuardFixDate),
+		host(hookAgyToolGateTimeout, HostProceeds),
+		dec(HookDecisionAllow, HookDecisionDeny, HookDecisionContext, HookDecisionMessage),
+		adminCaveat("Runs before each model call, not on send: agy's title request has already carried the prompt, and after a stop the conversation stays stopped until the developer starts a new one."),
+		note("PRE-MODEL-CALL gate, not pre-send: the stdin carries no prompt text, so the receiver reads the latest USER_INPUT step from the transcriptPath file (transcript.jsonl on agy 1.2.16, transcript_full.jsonl on 1.3.x) and judges each prompt once. A flag replies injectSteps with a userMessage the developer sees in the TUI as a \"> SuperBased Observer: ...\" line (it also becomes a user turn) plus an ephemeralMessage for the model. A block (deny, and an ask: the abort is atomic, so no confirm or resend-to-confirm can ride it) replies {\"injectSteps\":[{}]}, which aborts the turn before the main model request on agy 1.3.5 through an UNDOCUMENTED error path (\"unknown injected step type\"; -p exits 3, the TUI shows a warning and the session survives); no message can accompany it, so the reason is the desktop toast. The abort is offered only when the hook's agy ancestor reports a version >= 1.3.5; otherwise the block degrades to the warning (recorded as a degrade). agy's title-generation request carrying the prompt is sent BEFORE any hook (only the proxy can stop it), and the stopped prompt stays in the conversation and is resent with every later turn, so the conversation is TAINTED: every later PreInvocation of it aborts and toasts \"start a new conversation\" (read from the first stop's guard_events row). Any bad output (exit code, invalid JSON, unknown key, timeout) fails OPEN; an empty object is the allow. On agy 1.2.16 (2026-10-03) the transcript held the prompt only after the reply, so the seam could not act; an older agy degrades to {}")),
+	agyB(HookCapToolGate, HookPhasePre, "PreToolUse", liveAt(hookLiveAgyGuardFix, hookLiveAgyGuardFixDate), reg(hookDialectAgyPreTool), wired(),
+		host(hookAgyToolGateTimeout, HostBlocks), dec(HookDecisionDeny, HookDecisionAsk, HookDecisionModify),
+		adminCaveat("The ask reaches the developer only in an interactive agy, not in the desktop app, the IDE, a headless run or under --dangerously-skip-permissions."),
+		note("top-level decision deny with reason (the model reads \"tool call denied by pre-tool hook: <reason>\"). An ask is force_ask with the reason: agy's NATIVE prompt with a \"Reason:\" line in the TUI (agy 1.3.5), sent only when the hook's ancestor is an interactive agy; under --dangerously-skip-permissions force_ask RUNS the tool and under headless -p it auto-denies silently, so there (and whenever no agy ancestor can be read: the desktop app, the IDE, an OS without /proc) an enforced ask is a deny that says how to confirm. Plain ask (respects default grants) and auto_approve (skips the developer's prompt) are never sent. The allow is an EMPTY stdout, which falls through to agy's own permission flow; decision:allow defers to policy. FAIL-CLOSED host: {}, exit 1/2, invalid JSON and a timeout all DENY (Observer registers a 30 s timeout and its own watchdog fires before it). No developer-visible warn field on the allow, so a flag is recorded and stays silent. camelCase payload: toolCall.{name,args} (args keys PascalCase, e.g. CommandLine), conversationId, workspacePaths; no cwd. The desktop app and the IDE read the same ~/.gemini/config/hooks.json; their payloads (transcriptPath under ~/.gemini/antigravity or ~/.gemini/antigravity-ide) are served and recorded under the antigravity row (surface-gap W-2c). Windows: the vendor runs hooks through cmd /c; Observer writes no Windows target")),
+	agyB(HookCapSessionLifecycle, HookPhaseStart, "SessionStart", liveAt(hookLiveAgyGuardFix, hookLiveAgyGuardFixDate),
+		note("vendor event seen live on agy 1.3.5 (2026-10-15); not registered: no Observer feature acts on it yet")),
 	agyB(HookCapToolObserve, HookPhasePost, "PostToolUse"),
 	agyB(HookCapModelCallObserve, HookPhasePost, "PostInvocation"),
 	agyB(HookCapTurnLifecycle, HookPhaseEnd, "Stop"),
 }
 
+// hookSrcAntigravityIDE is the vendor page that says the Antigravity App and
+// IDE read the agy hooks.json and names each surface's app_data_dir, the
+// directory every hook payload's transcriptPath lies under (surface-gap W-2c).
+const (
+	hookSrcAntigravityIDE     = "https://antigravity.google/docs/hooks?tab=ide"
+	hookSrcAntigravityIDEDate = "2026-10-26"
+	// replayAntigravityCLI is the antigravity-cli registry id (this package
+	// imports nothing project-internal; replayClaudeCode's precedent).
+	replayAntigravityCLI = "antigravity-cli"
+)
+
+// agyAppIDEReplay marks an antigravity gate reached through the
+// antigravity-cli registration: the App and the IDE run the hooks of
+// ~/.gemini/config/hooks.json, and the antigravity-cli receiver serves a
+// payload whose transcriptPath lies under their app_data_dir as this row's
+// call (internal/hook SurfaceTool, cmd/observer hookSurfaceBinding).
+func agyAppIDEReplay() hbOpt {
+	return all(wired(), replayedVia(replayAntigravityCLI), func(b *HookBinding) {
+		b.Grounding = hgSourceAt(hookSrcAntigravityIDE, hookSrcAntigravityIDEDate)
+	})
+}
+
 var hookBindingsAntigravity = []HookBinding{
-	agyB(HookCapToolGate, HookPhasePre, "PreToolUse", dec(decDenyAsk...),
-		note("desktop 2.0 and the IDE honour the agy hooks.json, so the antigravity-cli registration (`observer hook antigravity-cli PreToolUse`) gates them too; its verdicts are recorded under antigravity-cli")),
-	agyB(HookCapContextInject, HookPhasePre, "PreInvocation", dec(decContext...)),
+	agyB(HookCapToolGate, HookPhasePre, "PreToolUse", dialectOnly(hookDialectAgyPreTool), agyAppIDEReplay(),
+		host(hookAgyToolGateTimeout, HostBlocks), dec(HookDecisionDeny, HookDecisionAsk, HookDecisionModify),
+		adminCaveat("Runs through the Antigravity CLI's hook registration, and the ask never reaches the developer here: in the App and the IDE an enforced ask is a deny that says how to confirm."),
+		note("the Antigravity App and IDE read the agy ~/.gemini/config/hooks.json, so the antigravity-cli registration (`observer hook antigravity-cli PreToolUse`) gates them too. A payload whose transcriptPath lies under ~/.gemini/antigravity or ~/.gemini/antigravity-ide (the vendor's app_data_dir for the App and the IDE) is served, recorded and counted under antigravity, in the agy dialect; ~/.gemini/antigravity-cli stays the CLI's. No agy ancestor runs these hooks, so an ask is a deny. Not live-checked on either surface (pending tracker LCX-5)")),
+	agyB(HookCapPromptGate, HookPhasePre, "PreInvocation", dialectOnly(hookDialectAgyPreInvoke), agyAppIDEReplay(),
+		host(hookAgyToolGateTimeout, HostProceeds),
+		dec(HookDecisionAllow, HookDecisionDeny, HookDecisionContext, HookDecisionMessage),
+		adminCaveat("Runs through the Antigravity CLI's hook registration, before each model call; the turn abort is offered only to a proven agy build, so in the App and the IDE a stop is a warning."),
+		note("reached through the antigravity-cli registration like PreToolUse and judged under antigravity from the transcript the payload names. The {\"injectSteps\":[{}]} abort is offered only when an agy ancestor reports >= 1.3.5, which the App and the IDE never are, so a stop degrades to the injected warning (recorded as a degrade). Not live-checked (pending tracker LCX-5)")),
 	agyB(HookCapTurnLifecycle, HookPhaseEnd, "Stop"),
 }
 
@@ -918,6 +1153,8 @@ var junieB = cloneB(hookSrcJunie)
 var hookBindingsJunie = []HookBinding{
 	junieB(HookCapToolGate, HookPhasePre, "PreToolUse", reg(hookDialectJuniePreTool), wired(),
 		host(hookJunieRegisteredTimeout, HostProceeds), dec(HookDecisionDeny, HookDecisionAsk, HookDecisionModify, HookDecisionContext),
+		// W-5: the "CLI only" caveat is the ide row of hookSurfaces
+		// (hooksurface.go), rendered by HookSpec.SurfaceCaveat.
 		note("CLI only: hooks do not run in ACP/IDE mode. Top-level decision deny|ask with reason in ~/.junie/config.json \"hooks\" (the reason reaches the model as an error); Observer registers a 10 s timeout because the PreToolUse default is 2 s; a timeout or crash lets the tool continue. Windows: yes (cmd /c). Installed on demo node 1 (junie 3579.5, 2026-10-07) but it needs a JetBrains account or JUNIE_API_KEY, and it refuses to start with HOME pointed at a throwaway dir: doc-grounded, `observer init` only")),
 	junieB(HookCapPromptGate, HookPhasePre, "UserPromptSubmit", dec(decDenyContext...)),
 	junieB(HookCapSessionLifecycle, HookPhaseStart, "SessionStart", dec(decMessage...)),
@@ -937,6 +1174,30 @@ var hookBindingsDeepSeek = []HookBinding{
 	deepseekB(HookCapSessionLifecycle, HookPhaseStart, "agent/created"),
 	deepseekB(HookCapTurnLifecycle, HookPhaseEnd, "agent/turn-stopping"),
 	deepseekB(HookCapModelCallObserve, HookPhasePre, "agent/pre-step"),
+	deepseekB(HookCapToolGate, HookPhasePre, "PreToolUse", deepseekClaudeReplay(), dialectOnly(hookDialectClaudeWirePreTool),
+		host(0, HostFailureUnknown), dec(HookDecisionDeny, HookDecisionAsk),
+		adminCaveat("Only where the experimental dsh-hooks-claude-code plugin is configured with a configPath to the Claude Code settings file that holds Observer's hooks."),
+		note("reached through Observer's Claude Code hooks: DeepSeek Harness's experimental @deepseek-ai/dsh-hooks-claude-code plugin (tools/pre-execute) runs the hooks of the Claude settings file its configPath names, with session_id (the agent session header id), transcript_path always \"\" and tool_name verbatim from the harness (bash, pwsh, edit); the claude-code receiver recognises the empty transcript path and gates the call as deepseek, DeepSeek's vocabulary first. The plugin honours a deny and an ask; allow does not pre-approve. Vendor source only (0.2.1-rc.3 lib/index.js and README), not live-run (pending tracker LCX-4)")),
+	deepseekB(HookCapPromptGate, HookPhasePre, "UserPromptSubmit", deepseekClaudeReplay(), dialectOnly(hookDialectClaudeCode),
+		host(0, HostFailureUnknown), dec(HookDecisionDeny, HookDecisionContext),
+		adminCaveat("Only where the experimental dsh-hooks-claude-code plugin is configured with a configPath to the Claude Code settings file that holds Observer's hooks."),
+		note("reached through Observer's Claude Code hooks like PreToolUse (agent/pre-step): the prompt is the text blocks of the step's messages; a deny rejects the step (the prompt is discarded) and additionalContext reaches the model; judged as deepseek. Vendor source only, not live-run (pending tracker LCX-4)")),
+}
+
+// hookSrcDeepSeekClaudeBridge is the vendor source of DeepSeek Harness's
+// Claude Code hook bridge (surface-gap S-20).
+const (
+	hookSrcDeepSeekClaudeBridge     = "@deepseek-ai/dsh-hooks-claude-code 0.2.1-rc.3 lib/index.js and README.md (unpkg)"
+	hookSrcDeepSeekClaudeBridgeDate = "2026-10-26"
+)
+
+// deepseekClaudeReplay marks a deepseek gate reached through Observer's
+// Claude Code registration (the dsh-hooks-claude-code bridge spawns the hook
+// command, so it is a descendant of the harness process).
+func deepseekClaudeReplay() hbOpt {
+	return all(wired(), replayedVia(replayClaudeCode), sess(), proc(ProcDescendant), func(b *HookBinding) {
+		b.Grounding = hgSourceAt(hookSrcDeepSeekClaudeBridge, hookSrcDeepSeekClaudeBridgeDate)
+	})
 }
 
 // --- copilot-cli / copilot (VS Code agent hooks) ----------------------------
@@ -958,9 +1219,23 @@ var hookBindingsCopilotCLI = []HookBinding{
 	copilotCLIB(HookCapToolGate, HookPhasePre, "preToolUse", reg(hookDialectCopilotPreTool), wired(),
 		liveAt(hookLiveCopilotCLIToolGate, hookLiveCopilotCLIToolGateDate),
 		dec(decDenyAskModify...), host(hookCopilotCLIHostTimeout, HostBlocks),
-		note("top-level permissionDecision deny|ask with permissionDecisionReason, in ~/.copilot/hooks/superbased-observer.json (version 1, the command in \"bash\"); toolArgs may arrive as a JSON-encoded string and is decoded. The allow is an empty object because permissionDecision:allow skips Copilot's own prompt. A crash or non-zero exit DENIES on the host side (a timeout fails open). A deny-not-blocking report exists (github/copilot-cli #3874, closed); camelCase and PascalCase event names are both accepted. Windows: yes via the handler's powershell field, which Observer does not write")),
-	copilotCLIB(HookCapPromptGate, HookPhasePre, "userPromptSubmitted",
-		note("observe only for Observer: modifiedPrompt is honoured ONLY for SDK programmatic hooks; command and HTTP config-file userPromptSubmitted hooks have their output dropped (docs.github.com hooks-reference, fetched 2026-10-03), and no block exists, so there is no redact or block seam for a shell hook; prompt coverage is the proxy lane (hook-parity Lane B)")),
+		adminCaveat("A headless run (copilot -p) refuses an ask, so the call does not run."),
+		note("top-level permissionDecision deny|ask with permissionDecisionReason, in ~/.copilot/hooks/superbased-observer.json (version 1, the command in \"bash\"); toolArgs may arrive as a JSON-encoded string and is decoded. The allow is an empty object because permissionDecision:allow skips Copilot's own prompt. A crash or non-zero exit DENIES on the host side (a timeout fails open). A deny-not-blocking report exists (github/copilot-cli #3874, closed); camelCase and PascalCase event names are both accepted. Windows: Copilot runs the handler's powershell field there, so a Windows target (a native observer.exe, or the copilot-cli-windows wsl.exe bridge) also carries one. Live check 12 (2026-10-26): VS Code 1.143.1's Copilot Chat local agent IS this runtime (Copilot CLI 1.0.100-1, the session in ~/.copilot/session-state) and runs this file too, so the gate covers it; its hook environment carries COPILOT_CLI and COPILOT_HOOK_DIR and no VS Code variable, so its verdicts land under copilot-cli without an ide/vscode stamp (an agent-host.db surface enricher is a follow-up). Live 2026-10-28 (Windows demo node, managed enforce, WINNODE2 item 10): VS Code Copilot Chat agent mode's file and shell tool calls were stopped by this gate (an R-153 .env read, and every call under a B-602 budget stop); the guard reason reached the chat, the budget stop read as a pre-tool hook error. GitHub's hooks reference: exit 0 with permissionDecision/permissionDecisionReason shows the reason, exit 2 denies without it, any other non-zero exit is \"hook errored\". So this dialect writes nothing on stderr and the powershell command ends with `; if ($LASTEXITCODE -is [int]) { exit $LASTEXITCODE } else { exit 1 }` (observer's exit code, and 1 when observer.exe never ran, so a missing binary still denies); the reason reaching VS Code is owed a live check")),
+	copilotCLIB(HookCapPromptGate, HookPhasePre, "userPromptSubmitted", reg(hookDialectCopilotPrompt), wired(), sess(),
+		liveAt(hookLiveCopilotCLIPrompt, hookLiveGuardFixBDate),
+		dec(HookDecisionAllow, HookDecisionDeny, HookDecisionAsk, HookDecisionModify, HookDecisionContext),
+		host(hookCopilotCLIHostTimeout, HostProceeds),
+		adminCaveat("A block's reason is printed as the assistant's reply; no request reaches the model."),
+		note("live 2026-10-15 (copilot 1.0.96), superseding the hooks-reference page's \"command hooks have their output dropped\": a block is {handled:true, responseContent:<reason>, modifiedPrompt:<marker>} (zero model requests, the reason printed as the assistant reply; modifiedPrompt is required because a handled prompt otherwise stays in the session history and reaches the model on the next turn), a resend in the same session confirms an ask, a redact is modifiedPrompt (the request and the history carry the masked text), a warning is additionalContext (the model only, so a flag also toasts). Exit code 2 does not block; a timeout fails open. Registered in ~/.copilot/hooks/superbased-observer.json beside preToolUse")),
+	// The Copilot CLI runtime's Claude-compatible PreToolUse (live check 12,
+	// 2026-10-26) reaching Observer's Claude Code hooks: a fallback the
+	// claude-code receiver serves under copilot-cli only while Observer's
+	// own preToolUse registration above is absent (internal/hook
+	// foreignhost.go; surface-gap Wave 5 audit finding 2, G2). While it is
+	// present the replay answers neutral and the registered gate judges.
+	copilotCLIB(HookCapToolGate, HookPhasePre, "PreToolUse", dialectOnly(hookDialectClaudeWirePreTool), wired(), replayedVia(replayClaudeCode), standsInFor("preToolUse"), sess(),
+		host(hookCopilotCLIHostTimeout, HostFailureUnknown), dec(HookDecisionDeny, HookDecisionAsk),
+		note("reached through Observer's Claude Code hooks: the Copilot CLI runtime (the standalone CLI and VS Code's local agent) runs a repository's .claude/settings(.local).json hooks (surface-gap S-8) with a Claude-compatible payload: hook_event_name PreToolUse, session_id (the Copilot CLI session id), cwd, tool_name in Claude's vocabulary (Read for view) and tool_input, NO transcript_path, and COPILOT_CLI plus COPILOT_HOOK_DIR in the hook environment (live check 12, VS Code 1.143.1, Copilot CLI 1.0.100-1). The claude-code receiver answers it neutral while Observer's copilot-cli registration holds the preToolUse entry, and otherwise gates it as copilot-cli with the Claude JSON deny, Copilot's vocabulary first. The payload is live-captured; a deny on this path is not yet live-run")),
 	copilotCLIB(HookCapSessionLifecycle, HookPhaseStart, "sessionStart", dec(decContext...)),
 	copilotCLIB(HookCapSessionLifecycle, HookPhaseEnd, "sessionEnd"),
 	copilotCLIB(HookCapTurnLifecycle, HookPhaseEnd, "agentStop", dec(decDeny...)),
@@ -971,7 +1246,7 @@ var hookBindingsCopilotCLI = []HookBinding{
 
 var hookBindingsCopilot = []HookBinding{
 	vscodeB(HookCapToolGate, HookPhasePre, "PreToolUse", dec(decDenyAskModify...),
-		note("VS Code agent hooks (Preview, chat.useHooks on by default) also replay ~/.claude/settings.json (audit section 4.4)")),
+		note("VS Code agent hooks (Preview, chat.useHooks on by default). Live check 12 (VS Code 1.143.1, 2026-10-26): the Copilot Chat LOCAL agent is the Copilot CLI runtime, reads ~/.copilot/hooks/*.json (Observer's copilot-cli registration gates it, verdicts under copilot-cli) and fires a PascalCase entry with a Claude-compatible payload (no transcript_path) beside the camelCase one; a Claude-shaped payload from that runtime reaching Observer's Claude Code hooks is answered neutral while Observer's copilot-cli registration holds the gate, and otherwise gated as copilot-cli (internal/hook foreignhost.go). Whether VS Code also runs ~/.claude/settings.json hooks (chat.useClaudeHooks) is untested (live check 12b)")),
 	vscodeB(HookCapPromptGate, HookPhasePre, "UserPromptSubmit", dec(decContext...), note("context only; block unstated")),
 	vscodeB(HookCapSessionLifecycle, HookPhaseStart, "SessionStart", dec(decContext...)),
 	vscodeB(HookCapTurnLifecycle, HookPhaseEnd, "Stop"),
@@ -986,17 +1261,18 @@ var clineB = cloneB(hookSrcCline)
 
 // hookNoteClineGate is the shared vendor fact about the SDK hook runtime's
 // PreToolUse file, stated once for both rows that see it.
-const hookNoteClineGate = "file-per-event executables: the SDK hook runtime reads ~/.cline/hooks/PreToolUse. A block is {\"cancel\":true,\"errorMessage\"}, which STOPS THE RUN (no per-call deny exists); exit codes are ignored; the allow is an empty stdout; no ask (review has no effect). Timeout 120 s, fail open. macOS/Linux only (Windows .ps1 detached hooks broken, cline/cline #14767): Observer writes no Windows target"
+const hookNoteClineGate = "file-per-event executables: the SDK hook runtime reads ~/.cline/hooks/PreToolUse. A file-hook block is {\"cancel\":true,\"errorMessage\"}, which STOPS THE RUN (a file hook has no per-call deny); exit codes are ignored; the allow is an empty stdout; no ask from a file hook (review has no effect). Timeout 120 s, fail open. The Cline Plugin API's beforeTool does have a per-call deny and a native ask (the cline-cli row's beforeTool gate). macOS/Linux only (Windows .ps1 detached hooks broken, cline/cline #14767): Observer writes no Windows target"
 
 var hookBindingsCline = []HookBinding{
 	// T-342 (2026-10-04): the registration moved to the cline-cli row, the
-	// surface live-verified to read ~/.cline/hooks. Whether the VS Code
-	// extension reads that directory is unconfirmed, so this row keeps the
+	// surface live-verified to read ~/.cline/hooks. The VS Code
+	// extension's scan set on cline/cline main does not include it (source,
+	// 2026-10-25; a shipped build is live check 26), so this row keeps the
 	// vendor surface only.
 	clineB(HookCapToolGate, HookPhasePre, "PreToolUse", host(hookClineHostTimeout, HostProceeds), dec(decDenyModify...),
-		note("vendor doc only: the extension shares the SDK hook runtime, but whether it reads ~/.cline/hooks is unconfirmed, so Observer registers this gate on the cline-cli row and records its verdicts under cline-cli. "+hookNoteClineGate)),
+		note("vendor doc only: the extension shares the SDK hook runtime, but its getAllHooksDirs on cline/cline main (source, 2026-10-25) scans --hooks-dir, <Documents>/Cline/Hooks and <ws>/.clinerules/hooks, not ~/.cline/hooks (a shipped build is live check 26), so Observer registers this gate on the cline-cli row and records its verdicts under cline-cli. "+hookNoteClineGate)),
 	clineB(HookCapPromptGate, HookPhasePre, "UserPromptSubmit",
-		note("probe_required: the installed cline 3.0.68 SDK (demo node 1, 2026-10-03) runs prompt_submit hooks DETACHED (detached: detachAsyncHooks ?? true) and also fires them after the user message is added, with payload {hookName:\"prompt_submit\", userPromptSubmit:{prompt, attachments}}; a cancel reply cannot stop the prompt there, so no dialect row (the VS Code extension's detach setting is unconfirmed). Observe-only until a host is shown to wait on the hook (hook-parity Lane B)")),
+		note("probe_required: the installed cline 3.0.68 SDK (demo node 1, 2026-10-03) runs prompt_submit hooks DETACHED (detached: detachAsyncHooks ?? true), with payload {hookName:\"prompt_submit\", userPromptSubmit:{prompt, attachments}}; live on Cline CLI 3.0.68 (2026-10-15) the file hook never fired for the initial prompt at all, and TaskStart is detached too. A cancel reply cannot stop the prompt there, so no dialect row (the VS Code extension's detach setting is unconfirmed). The Cline CLI's prompt gate is the Plugin API's beforeModel (the cline-cli row)")),
 	clineB(HookCapSessionLifecycle, HookPhaseStart, "TaskStart"),
 	clineB(HookCapSessionLifecycle, HookPhaseStart, "TaskResume"),
 	clineB(HookCapSessionLifecycle, HookPhaseEnd, "SessionShutdown"),
@@ -1018,14 +1294,43 @@ var hookBindingsClineCLI = []HookBinding{
 	// T-342 / D-230: the live grounding of fix/live-ground-2026-10-04
 	// (e951c73e0, 32c46db65, 0764620f2) was taken with Cline CLI 3.0.68, so it
 	// sits on this row; the extension's cline row stays vendor doc.
-	clineB(HookCapToolGate, HookPhasePre, "PreToolUse", hgLiveOpt(hookLiveClineToolGate), reg(hookDialectClinePreTool), wired(),
-		host(hookClineHostTimeout, HostProceeds), dec(decDenyModify...),
-		note("Observer writes ~/.cline/hooks/PreToolUse, a bash script that execs `observer hook cline-cli PreToolUse`, so Cline CLI gate verdicts are recorded under cline-cli (T-342: the CLI reads this directory, live 2026-10-04; a script an earlier version wrote for `observer hook cline` is recognised and rewritten). "+
-			"Live, Cline CLI 3.0.68 names tools in the CLI vocabulary (run_commands with a list or a bare string in commands, read_files with files[]); the cancel reply aborted the run before rm -rf ~/x ran and the CLI printed \"[abort] aborted by another client\". "+hookNoteClineGate)),
+	// Guard-fix lane B (2026-10-15): the gate moved to the Plugin API. The
+	// plugin (internal/hook/pluginshim "cline" shape) is placed at
+	// $CLINE_DIR/plugins/superbased-observer-guard.js (default
+	// ~/.cline/plugins) and calls `observer hook cline-cli beforeModel|
+	// beforeTool` with its own deadline (no timeout wraps a plugin hook).
+	clineB(HookCapPromptGate, HookPhasePre, "beforeModel", reg(hookDialectClinePluginPrompt), wired(), sess(),
+		liveAt(hookLiveClinePlugin, hookLiveGuardFixBDate),
+		dec(HookDecisionAllow, HookDecisionDeny, HookDecisionModify),
+		adminCaveat("Through Observer's Cline plugin (macOS and Linux only); Cline shows no stop reason, so the desktop notice carries it."),
+		note("Cline Plugin API beforeModel, before EVERY model call; the plugin judges each user message once (setup ctx.session.sessionId keys it). A deny is {stop:true, reason} (zero model requests; the reason is shown nowhere, so an ask is a block and a flag is recorded and toasted); a redact returns {messages} with the masked text. A returned {messages} lasts one request and a stopped message stays in the history, so the plugin re-applies every withhold and redaction on every later call. macOS/Linux only (the plugin sandbox is untested on Windows)")),
+	clineB(HookCapToolGate, HookPhasePre, "beforeTool", reg(hookDialectClinePluginTool), wired(), sess(),
+		liveAt(hookLiveClinePlugin, hookLiveGuardFixBDate),
+		dec(decDenyAsk...),
+		adminCaveat("Through Observer's Cline plugin; an ask is Cline's own y/N approval in a terminal, and a headless run refuses it."),
+		note("Cline Plugin API beforeTool: a deny is {skip:true, reason}, a per-call refusal the run survives (the model gets the reason, the CLI prints error: {\"error\":<reason>}); an ask is {policy:{autoApprove:false}}, Cline's own y/N approval under a TTY (refused headless: \"requires approval in a TTY session\"). Tools arrive in the CLI vocabulary (run_commands, read_files, editor, apply_patch). Input rewriting ({input}) exists in the API but Observer's tool gate issues no modify verdict here")),
+	// The file gate (FU-154): Cline CLI 3.0.3 runs hook files named after
+	// the event from ~/.cline/hooks (and ~/Documents/Cline/Hooks,
+	// .clinerules/hooks, .cline/hooks), reads the verdict from the hook's
+	// stdout and never loads plugins, so the plugin above never runs there.
+	// Observer writes ~/.cline/hooks/PreToolUse as a script that execs
+	// `observer hook cline-cli PreToolUse` (live PASS on MAC-6, 2026-10-30,
+	// with a verdict file in this shape). On a Cline that also loads the
+	// plugin a call is judged by both.
+	// The runtime's fixed 120 s file-hook timeout (hookNoteClineGate) is
+	// not a HostTimeout here: Observer writes no timeout into the file, and
+	// the one config the cline-cli writer also writes (the plugin) carries
+	// the shim's own deadlines (TestRegistrationWritersWriteTheHostTimeout).
+	clineB(HookCapToolGate, HookPhasePre, "PreToolUse", hgLiveOpt(hookLiveClineToolGate), reg(hookDialectClinePreTool), wired(), sess(),
+		host(0, HostProceeds), dec(decDenyModify...),
+		note("the Cline CLI's file gate: ~/.cline/hooks/PreToolUse execs `observer hook cline-cli PreToolUse`, which prints {\"cancel\":true,\"errorMessage\"} to block and nothing to allow. Cline CLI 3.0.3 runs that file and no plugin (MAC-6, 2026-10-30: a {\"cancel\":true} verdict file stopped the task, \"[abort] aborted by another client\"; FU-154); the cancel aborts the whole run, not one call (live 2026-10-04 on 3.0.68). A Cline that also loads Observer's plugin judges the call twice (the plugin's beforeTool is a per-call deny). "+hookNoteClineGate)),
 	clineCLITailB(HookCapSessionLifecycle, HookPhaseStart, "agent_start"),
 	clineCLITailB(HookCapSessionLifecycle, HookPhaseEnd, "session_shutdown"),
 	clineCLITailB(HookCapTurnLifecycle, HookPhaseEnd, "agent_end"),
 	clineCLITailB(HookCapToolObserve, HookPhasePost, "tool_result"),
+	hb(HookCapContextInject, HookPhasePost, "PostToolUse", hgSourceAt(hookJSP6Source, hookJSP6LiveDate), sess(), proc(ProcDescendant),
+		host(hookClineHostTimeout, HostProceeds), feedbackPost(hookDialectFeedbackCline, true),
+		note("security feedback (lane SEC-H): the ~/.cline/hooks/PostToolUse file hook's contextModification is queued and sent as one <hook_context source=PostToolUse> user message after the tool results (cline 4.1.25 SDK source); macOS and Linux only like the other Cline file hook; live pending. Written only while security.feedback is selected")),
 }
 
 // --- in-process TS plugin hosts: kilo-code(-cli), opencode, pi, prime-agent,
@@ -1052,12 +1357,22 @@ var (
 // session id and its own pid.
 var (
 	// pluginShimGate: the tool gate through the shim.
-	pluginShimGate = all(reg(hookDialectPluginShim), wired(), sess())
-	// pluginShimPrompt: OpenCode / Kilo chat.message. The seam is
-	// modify-only; the shim delivers a block by replacing the message text
-	// before the model sees it, so the reply can express deny and modify.
+	// A flagged call is allowed with the shim's notice (a TUI toast, pi's
+	// notify), so the gate declares the plugin reply's message field.
+	pluginShimGate = all(reg(hookDialectPluginShim), wired(), sess(), warnField(hookWarnPluginMessage))
+	// pluginShimPrompt: OpenCode / Kilo chat.message. The shim throws to
+	// stop the prompt (the model is never called) and toasts the reason; a
+	// warning is a toast on an allow. No native confirm: an ask is a stop
+	// the developer resends to confirm.
 	pluginShimPrompt = all(reg(hookDialectPluginShimPrompt), wired(), sess(),
-		dec(HookDecisionAllow, HookDecisionDeny, HookDecisionModify))
+		dec(HookDecisionAllow, HookDecisionDeny, HookDecisionMessage),
+		adminCaveat("Notices are toasts in the terminal UI; a headless run shows none."))
+	// pluginShimPromptConfirm: pi `input`. {action:"handled"} stops the
+	// prompt, ctx.ui.confirm asks (a stop to resend where there is no UI),
+	// {action:"transform"} rewrites, ctx.ui.notify warns.
+	pluginShimPromptConfirm = all(reg(hookDialectPluginShimPromptConfirm), wired(), sess(),
+		dec(HookDecisionAllow, HookDecisionAsk, HookDecisionDeny, HookDecisionModify, HookDecisionMessage),
+		adminCaveat("Without a UI (print or json mode) an ask stops the prompt and the developer resends it to confirm."))
 	// pluginShimRendered: the shim renders this host's gate (dialect set)
 	// but Observer does not place it: the host's plugin install location is
 	// not grounded, so the binding is neither registered nor wired.
@@ -1065,8 +1380,10 @@ var (
 )
 
 const (
-	notePluginChatMessage  = "modify-only seam: the plugin shim replaces the message text with the block reason before the model sees it, and tells the developer with the host's TUI toast (client.tui.showToast, @opencode-ai/sdk 1.18.31 / Kilo CLI 7.8.3; a headless `run` has no TUI, so no toast; the dashboard post-hoc toast still applies); the session id keys resend-to-confirm"
-	notePluginOpenCodeTool = "plugin shim: throw = deny; no native ask (an ask is a deny with a reason); sub-agent coverage disputed (#5894); the Desktop app never dispatches plugin hooks (#38604)"
+	notePluginChatMessage  = "plugin shim: a deny or ask THROWS, which rejects the prompt before it is stored, so the model is never called (the host itself shows only a generic server error), paired with the host's TUI toast carrying the reason (client.tui.showToast, @opencode-ai/sdk 1.18.31 / Kilo CLI 7.8.3); a warning is a toast on an allow, the prompt untouched; a headless `run` has no TUI, so no toast there (the dashboard post-hoc toast still applies to a stop). No native ask (permission.ask has no trigger site in 1.18.31): an ask is a stop the developer resends to confirm, keyed by the session id"
+	notePluginOpenCodeTool = "plugin shim: throw = deny, paired with a TUI toast; no native ask (an ask is a deny with a reason); a flagged call is allowed with a warning toast; sub-agent coverage disputed (#5894); the Desktop app never dispatches plugin hooks (#38604)"
+	notePiToolCall         = "plugin shim at ~/.pi/agent/extensions/: {block, reason}; a handler failure blocks the tool (pi fail-safe); an ask opens ctx.ui.confirm when ctx.hasUI (TUI, RPC) and blocks only on a no or a timeout, and is a block with the reason where there is no UI (print / json mode); a flagged call is allowed with ctx.ui.notify"
+	notePiInput            = "plugin shim: a deny returns {action:\"handled\"} (no request is sent) with ctx.ui.notify (stderr where there is no UI); an ask opens ctx.ui.confirm when ctx.hasUI, else is handled and the developer resends to confirm; a redact returns {action:\"transform\"}; a warning is ctx.ui.notify on a continue. Extension-sourced input is skipped. A throw in pi's input handler FAILS OPEN, so the shim catches everything and follows its fail-closed posture rule"
 )
 
 // kiloBindings returns Kilo's plugin bindings. The CLI row gets the shim
@@ -1074,10 +1391,10 @@ const (
 func kiloBindings(shim bool) []HookBinding {
 	gate, prompt := []hbOpt{dec(decDenyModify...), note("in-process plugin: throw = deny (OpenCode contract)")}, []hbOpt{dec(decModify...), note("modify only")}
 	if shim {
-		gate = []hbOpt{dec(decDenyModify...), pluginShimGate, pluginShimLive, note("plugin shim at ~/.config/kilo/plugin/: throw = deny (OpenCode contract); no native ask")}
+		gate = []hbOpt{dec(decDenyModify...), pluginShimGate, pluginShimLive, note("plugin shim at ~/.config/kilo/plugin/: throw = deny (OpenCode contract), paired with a TUI toast; no native ask; a flagged call is allowed with a warning toast")}
 		prompt = []hbOpt{pluginShimPrompt, pluginShimLive, note(notePluginChatMessage)}
 	}
-	return []HookBinding{
+	rows := []HookBinding{
 		kiloB(HookCapToolGate, HookPhasePre, "tool.execute.before", gate...),
 		kiloB(HookCapPromptGate, HookPhasePre, "chat.message", prompt...),
 		kiloB(HookCapSessionLifecycle, HookPhaseStart, "session.created"),
@@ -1085,10 +1402,17 @@ func kiloBindings(shim bool) []HookBinding {
 		kiloB(HookCapCompactLifecycle, HookPhasePre, "experimental.session.compacting"),
 		kiloB(HookCapContextInject, HookPhasePre, "experimental.chat.system.transform", dec(decContext...)),
 	}
+	if shim {
+		rows = append(rows, kiloB(HookCapContextInject, HookPhasePost, "tool.execute.after", sess(), liveAt(hookJSP6Live, hookJSP6LiveDate),
+			feedbackPost(hookDialectFeedbackPlugin, true),
+			note("security feedback (lane SEC-H): the plugin shim appends the reply's context to output.output in tool.execute.after, which the model reads as the tool result; live on Kilo CLI 7.3.54 (JSP-6 live half). The shim subscribes only while security.feedback is selected")))
+	}
+	return rows
 }
 
 var hookBindingsOpenCode = []HookBinding{
 	opencodeB(HookCapToolGate, HookPhasePre, "tool.execute.before", dec(decDenyModify...), pluginShimGate, pluginShimLive,
+		adminCaveat("Notices are TUI toasts; sub-agent coverage is disputed and the Desktop app never runs plugin hooks."),
 		note(notePluginOpenCodeTool)),
 	opencodeB(HookCapPromptGate, HookPhasePre, "chat.message", pluginShimPrompt, pluginShimLive, note(notePluginChatMessage)),
 	opencodeB(HookCapSessionLifecycle, HookPhaseStart, "session.created"),
@@ -1097,12 +1421,17 @@ var hookBindingsOpenCode = []HookBinding{
 	opencodeB(HookCapCompactLifecycle, HookPhasePre, "experimental.session.compacting"),
 	opencodeB(HookCapCompactLifecycle, HookPhasePost, "session.compacted"),
 	opencodeB(HookCapContextInject, HookPhasePre, "experimental.chat.system.transform", dec(decContext...)),
+	opencodeB(HookCapContextInject, HookPhasePost, "tool.execute.after", sess(), hgSourceOpt(hookJSP6Source),
+		feedbackPost(hookDialectFeedbackPlugin, true),
+		note("security feedback (lane SEC-H): the plugin shim appends the reply's context to output.output in tool.execute.after (opencode 1.19.3 source, tools.ts; only on success); live pending (JSP-6: Kilo, its fork, is live). The shim subscribes only while security.feedback is selected")),
 }
 
 var hookBindingsPi = []HookBinding{
-	piB(HookCapToolGate, HookPhasePre, "tool_call", dec(decDenyModify...), pluginShimGate, pluginShimLive,
-		note("plugin shim at ~/.pi/agent/extensions/: {block, reason}; a handler failure blocks the tool (pi fail-safe); ask only via the TUI confirm, so an ask is a deny with a reason")),
-	piB(HookCapPromptGate, HookPhasePre, "input", dec(decDenyModify...)),
+	piB(HookCapToolGate, HookPhasePre, "tool_call", dec(decDenyAskModify...), pluginShimGate, pluginShimLive,
+		adminCaveat("Without a UI (print or json mode) an ask blocks the call."),
+		note(notePiToolCall)),
+	piB(HookCapPromptGate, HookPhasePre, "input", pluginShimPromptConfirm,
+		liveAt(hookLivePiInput, hookLivePluginEnforceDate), note(notePiInput)),
 	piB(HookCapSessionLifecycle, HookPhaseStart, "session_start"),
 	piB(HookCapSessionLifecycle, HookPhaseEnd, "session_shutdown"),
 	piB(HookCapTurnLifecycle, HookPhaseEnd, "turn_end"),

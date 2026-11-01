@@ -158,6 +158,15 @@ var tierRules = []tierRule{
 				p.Effect == orgcontract.AccessGrantEffectExempt
 		},
 	},
+	{
+		// Security plan 7.2 (lane SEC-E3): a critical code finding's
+		// exception is the super admin's; a finding whose severity the org
+		// cannot read is treated as critical.
+		reason: "an exception for a critical code finding needs a super-admin",
+		needs: func(p Proposal, f Facts, _ Settings) bool {
+			return p.Type == TypeFindingException && (strings.EqualFold(f.Rule.Severity, "critical") || !f.Rule.Known)
+		},
+	},
 }
 
 // decideStage is one step of Decide; the stages run in order and each adds
@@ -215,8 +224,16 @@ func decideApprover(d *Decision, t RequestType, p Proposal, f Facts, _ Settings)
 	// the grant is FOR (the grantee) and with whoever asked, so a route with
 	// no request row (proactive, extend) cannot skip the check. There is no
 	// org setting that switches it off; the one exception is the solo
-	// super-admin, audited self_approved.
+	// super-admin, audited self_approved, and a type marked NoSelfApproval
+	// (a finding exception) does not have even that one.
 	if !selfApproval(p, f) {
+		return
+	}
+	if t.NoSelfApproval {
+		d.Problems = append(d.Problems, Problem{
+			Field: "approver", Code: CodeSelf,
+			Message: fmt.Sprintf("you cannot approve a %s for yourself, even as the only approver; it stays pending until another approver decides it", strings.ToLower(t.Label)),
+		})
 		return
 	}
 	if f.Approver.SuperAdmin && f.Approver.OnlyKeyHolder {

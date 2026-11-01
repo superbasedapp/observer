@@ -1,0 +1,3 @@
+{"mode":"unrestricted","isValid":true,"planName":"Team plan","remaining":8,"unit":"USD","balance":8,
+ "subscription":{"daily_usage_usd":2,"weekly_usage_usd":10,"monthly_usage_usd":30,"daily_limit_usd":10,"weekly_limit_usd":40,"monthly_limit_usd":100},
+ "rate_limits":[{"window":"5h","limit":20,"used":5,"remaining":15,"reset_at":"2025-10-09T12:30:00Z"},{"window":"7d","limit":200,"used":40,"remaining":160}]}

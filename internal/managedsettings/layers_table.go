@@ -45,6 +45,7 @@ const (
 	refCoworkConfig   = "https://claude.com/docs/third-party/claude-desktop/configuration"
 	refCoworkSupport  = "https://support.claude.com/en/articles/12622667-enterprise-configuration"
 	refCursorDeploy   = "https://cursor.com/docs/enterprise/deployment-patterns"
+	refDeepAgentsMgd  = "https://docs.langchain.com/oss/python/deepagents/code/configuration.md"
 )
 
 // Layers returns the managed-layer table.
@@ -77,8 +78,8 @@ var layerRows = []Layer{
 	{
 		FileID: "codex/system-config", Modes: defaults, Strength: StrengthDefaultOnly, Header: true,
 		Sources: []string{refCodexConfig}, Verified: false,
-		Note: "Codex's system config.toml (Linux and macOS) is below the user's config.toml: a default only. The path is from the catalogue's " +
-			"config-reference grounding and was not re-confirmed on 2026-10-06.",
+		Note: "Codex's system config.toml (/etc/codex on Linux and macOS, %ProgramData%\\OpenAI\\Codex on Windows) is below the user's " +
+			"config.toml: a default only. The paths are from Codex's config loader source (re-grounded 2026-10-25).",
 	},
 	{
 		FileID: "codex/managed-config", Modes: enforced, Strength: StrengthLaunchReset, Header: true,
@@ -195,6 +196,19 @@ var layerRows = []Layer{
 		Sources:    []string{refGrokEnterprise}, Verified: true,
 		Note: "Pins that beat config.toml, environment variables and remote settings (Linux and macOS; no Windows path is documented). " +
 			"Observer pins the sandbox profile from an enforced sandbox.profile.",
+	},
+
+	// --- LangChain Deep Agents Code (dcode): managed_config.toml outranks
+	// every environment variable and the user's config.toml (surface-gap
+	// S-19). A remote [managed_config] source can replace it.
+	{
+		FileID: "deepagents-code/managed-config", Modes: enforced, Strength: StrengthTamperProof, Header: true,
+		Weak: map[string]string{"windows": `A standard user can create %ProgramData%\dcode before an administrator does; ` +
+			`create it and lock it (administrators write, users read) before deploying.`},
+		Sources: []string{refDeepAgentsMgd}, Verified: false,
+		Note: "dcode applies managed_config.toml over every environment variable and the user's config.toml ([models] allowed is the documented " +
+			"lock). The file is replaced by a remote source when it sets [managed_config] source = https://...; no hooks or MCP keys are " +
+			"documented. Doc-grounded from the location matrix (2026-10-25), not re-fetched: test on one machine first.",
 	},
 
 	// --- Claude Desktop (cowork): flat policy keys, every MDM value a

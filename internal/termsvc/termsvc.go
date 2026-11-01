@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/integration"
+	vocab "github.com/marmutapp/superbased-observer/internal/sandboxvocab"
 	"github.com/marmutapp/superbased-observer/internal/sshspec"
 	"github.com/marmutapp/superbased-observer/internal/termcore"
 	"github.com/marmutapp/superbased-observer/internal/termfeed"
@@ -23,9 +24,9 @@ import (
 // cmd layer (the existing narrow consent, deliberately untouched).
 var (
 	// ErrFreshLaunchDisabled — [terminal.launch].allow_fresh_agent is false.
-	ErrFreshLaunchDisabled = errors.New("termsvc: fresh-agent launch is disabled (set [terminal.launch].allow_fresh_agent)")
+	ErrFreshLaunchDisabled = termcore.ErrFreshLaunchDisabled
 	// ErrToolNotAllowed — the tool is not in [terminal.launch].allowed_tools.
-	ErrToolNotAllowed = errors.New("termsvc: tool is not in the fresh-launch allow-list")
+	ErrToolNotAllowed = termcore.ErrToolNotAllowed
 	// ErrShellLaunchDisabled — [terminal.launch].allow_shell is false.
 	ErrShellLaunchDisabled = errors.New("termsvc: plain-shell launch is disabled (set [terminal.launch].allow_shell)")
 	// ErrNoLauncher — the service was constructed without a Launcher.
@@ -66,6 +67,13 @@ var (
 	// minted, same fail-closed posture as ErrSandboxUnavailable. The dashboard
 	// maps this to a 500.
 	ErrWorkspacePrepFailed = termcore.ErrWorkspacePrepFailed
+	// ErrSignInConsentNeeded re-exports termcore's (lane BOXSIGNIN).
+	ErrSignInConsentNeeded = termcore.ErrSignInConsentNeeded
+	// ErrTerminalNotAllowed: the org's terminals decision (Options.
+	// TerminalGate: terminals.enabled, sandbox_required, an isolation
+	// floor) refuses this launch. Returned before a run is minted
+	// (OSH-R-003); the wrapping error carries the decision's own reason.
+	ErrTerminalNotAllowed = errors.New("termsvc: terminal refused by organization policy")
 )
 
 // Policy is the resolved fresh-launch authorization, built from the operator's
@@ -125,6 +133,14 @@ func (p Policy) toolAllowed(tool string) bool {
 		}
 	}
 	return false
+}
+
+// AuthorizeAgent is termcore.AuthorizeAgent over this policy: the
+// [terminal.launch] authorization of an AI agent launch (fresh agents
+// allowed, the tool on the allow-list, projectRoot under an allowed root),
+// shared with the Agent Arena admission (OSH-R-004).
+func (p Policy) AuthorizeAgent(tool, projectRoot string) (string, error) {
+	return termcore.AuthorizeAgent(p.AllowFresh, p.AllowedTools, p.AllowedProjectRoots, tool, projectRoot)
 }
 
 // reasonChildExit is the durable end-reason termsvc stamps for a natural
@@ -220,6 +236,25 @@ type LaunchRequest struct {
 	// (B9). Carried alongside WrapArgv so the Launcher/recorder can label the
 	// run without re-deriving it from WrapArgv's mere presence.
 	Sandboxed bool
+	// SourceDir is the project root a sandboxed launch's managed workspace
+	// was prepared from, set only when that workspace is not the project
+	// root itself (a clone). The Launcher tells the inner launcher, so its
+	// repository trust check honours the source repository's accepts.
+	SourceDir string
+	// SandboxEnvAllow and SandboxEnvPassed are PrepareResult.EnvAllow and
+	// EnvPassed for a sandboxed launch (WINFIX2 R-167): variable NAMES the
+	// Launcher hands the box helper. Empty for every other launch.
+	SandboxEnvAllow  []string
+	SandboxEnvPassed []string
+	// SandboxAllowOSC52 is PrepareResult.AllowOSC52Clipboard for a
+	// sandboxed launch: the Launcher strips OSC 52 from the run's output
+	// unless it is set (ruling P-175).
+	SandboxAllowOSC52 bool
+	// SandboxSignInShared is PrepareResult.SignInShared for a sandboxed
+	// launch: the Launcher names the tool to the box (sandboxenv
+	// .EnvSignInShared), whose launcher says on the run's terminal that the
+	// tool's sign-in is shared with the box (operator ruling P-183).
+	SandboxSignInShared string
 	// LoginPathDirs are the login-shell-only PATH dirs the Launcher prepends to
 	// the child's PATH (audit DI-04b). They are populated from the tool
 	// resolution taken at the launch decision point (toolresolve.Resolution.
@@ -281,6 +316,27 @@ type PrepareRequest struct {
 	// WorkspaceBranch is an optional branch to check out after clone/worktree.
 	// Ignored for "live".
 	WorkspaceBranch string
+	// ToolArgs are the tool's own arguments the inner launcher receives
+	// (the CLI path's remaining argv), so the Sandboxer can read the same
+	// effective route the launcher will (a --settings flag, say). Empty for
+	// a dashboard launch, whose extra args are server-derived. Additive.
+	ToolArgs []string
+	// Backend is the isolation row chosen for this launch ("" lets the
+	// Sandboxer's selection pick, which never takes a beta row, ruling
+	// P-062). A chosen row is never substituted (I1). Additive.
+	Backend string
+	// DeferSlowPrep reports that the launch is served by the daemon, which
+	// outlives the call: a driver may finish a slow step (pulling
+	// Observer's default container image) after the terminal opens, so what
+	// it says before the step reaches the terminal before the step starts
+	// (R-037). The CLI path leaves it false and runs every step inline.
+	// Additive.
+	DeferSlowPrep bool
+	// SignInSeed and SignInAsk are FreshRequest's (lane BOXSIGNIN): the
+	// per-launch answer to copying the tool's sign-in, and whether the
+	// caller can ask. Additive.
+	SignInSeed *bool
+	SignInAsk  bool
 }
 
 // PrepareResult is what a successful Sandboxer.Prepare returns.
@@ -296,6 +352,23 @@ type PrepareResult struct {
 	// was used, or a workspace-prep caveat) for logging; never surfaced to the
 	// authorization decision.
 	Note string
+	// Isolation is the run's isolation evidence (sandbox plan v2 section
+	// 8.4): what the Sandboxer built and the capture level it computed. It
+	// is recorded on the run; it never changes the authorization decision.
+	Isolation termrun.Isolation
+	// EnvAllow names (never values) the variables the box may receive from
+	// the launching environment beyond its OS table: the tool's provider
+	// variables and the user's pass_env (WINFIX2 R-167). EnvPassed is the
+	// pass_env part alone, for the run's posture. Additive.
+	EnvAllow  []string
+	EnvPassed []string
+	// AllowOSC52Clipboard is [terminal.sandbox].allow_osc52_clipboard for
+	// the run: false (the default) strips OSC 52 from the run's output
+	// (ruling P-175). Additive.
+	AllowOSC52Clipboard bool
+	// SignInShared is CreateResult.SignInShared (operator ruling P-183).
+	// Additive.
+	SignInShared string
 }
 
 // Launcher spawns a PTY-backed launcher and returns its opaque handle. It is
@@ -352,6 +425,16 @@ type runMeta struct {
 	// Sandboxer seam (in-memory only; no DB column — see B9 plan §10 ledger
 	// G19, "was this historical run sandboxed?" is deliberately deferred).
 	sandboxed bool
+	// isolation is the run's G19 evidence as recorded at spawn (in memory,
+	// read by Isolation for the dashboard's run pill).
+	isolation termrun.Isolation
+	// startedAt is when the run was registered (in memory; the live
+	// sandboxed run list shows its age, livesandbox.go).
+	startedAt time.Time
+	// endReason is why the run ended: marked before an end Observer causes
+	// (MarkEnding), else set from the exit code at EndRunByHandle; retained
+	// past exit so the dashboard's exit frame can name it (endreason.go).
+	endReason string
 }
 
 // endedHandleGrace is how long a run's retained classification metadata (byMeta)
@@ -381,6 +464,8 @@ const endedHandleGCBound = 256
 // Service is the terminal application service. One instance per daemon.
 type Service struct {
 	policy Policy
+	// terminalGate is Options.TerminalGate (nil = every launch allowed).
+	terminalGate func(requestedSandbox bool) (bool, string)
 	// policySource is Options.PolicySource (nil = the static policy above).
 	policySource func() Policy
 	rec          RunRecorder
@@ -511,6 +596,15 @@ type Options struct {
 	// SandboxWorkspacesDir is the daemon's managed-workspace root (see
 	// Service.sandboxWorkspacesDir).
 	SandboxWorkspacesDir string
+	// TerminalGate, when set, is the org's node.features terminals decision
+	// (terminals.enabled, sandbox_required and an isolation floor that
+	// implies it), asked by EVERY PTY launch entry (fresh, shell, handoff,
+	// native resume, attach, SSH) before a run is minted, so a launch is
+	// judged the same whichever surface asked for it (OSH-R-003: before it,
+	// only the dashboard's HTTP handlers asked, and the attach socket did
+	// not). requestedSandbox is whether this launch runs in a sandbox. It
+	// returns (allowed, reason). Nil allows every launch.
+	TerminalGate func(requestedSandbox bool) (bool, string)
 	// Getwd resolves the daemon's own working directory — the cwd a child
 	// spawned with no explicit Dir inherits, and therefore the run's factual
 	// spawn directory (see runMeta.spawnDir). Injected so the whole decision is
@@ -531,6 +625,7 @@ func New(opts Options) *Service {
 	return &Service{
 		getwd:                getwd,
 		policy:               opts.Policy,
+		terminalGate:         opts.TerminalGate,
 		policySource:         opts.PolicySource,
 		rec:                  opts.Recorder,
 		launcher:             opts.Launcher,
@@ -549,6 +644,21 @@ func New(opts Options) *Service {
 		bySession:            make(map[string]sessionLink),
 		launching:            make(map[string]struct{}),
 	}
+}
+
+// checkTerminal asks the org's terminals decision about one launch; a
+// refusal wraps ErrTerminalNotAllowed with the decision's own reason.
+func (s *Service) checkTerminal(requestedSandbox bool) error {
+	if s.terminalGate == nil {
+		return nil
+	}
+	if ok, reason := s.terminalGate(requestedSandbox); !ok {
+		if reason == "" {
+			return ErrTerminalNotAllowed
+		}
+		return fmt.Errorf("%w: %s", ErrTerminalNotAllowed, reason)
+	}
+	return nil
 }
 
 // FreshRequest is the dashboard-derived fresh-launch request. Tool is validated
@@ -589,7 +699,28 @@ type FreshRequest struct {
 	// WorkspaceBranch is an optional branch to check out after clone/worktree.
 	// Ignored for "live".
 	WorkspaceBranch string
+	// ToolArgs are the tool's own arguments the inner launcher receives
+	// (the CLI path's remaining argv), so the Sandboxer can read the same
+	// effective route the launcher will (a --settings flag, say). Empty for
+	// a dashboard launch, whose extra args are server-derived. Additive.
+	ToolArgs []string
+	// SandboxBackend is the isolation row chosen for this one launch (the
+	// New Terminal picker, re-validated by the dashboard); "" lets the
+	// Sandboxer's selection pick. Ignored when Sandbox is false. Additive.
+	SandboxBackend string
+	// SignInSeed is the user's answer for this launch to copying the
+	// tool's sign-in into the box (lane BOXSIGNIN): nil not answered, true
+	// copy it, false start without it. SignInAsk says the caller can ask
+	// (the dashboard's inline step): with no answer and no remembered
+	// consent the launch then returns a *SignInConsentError instead of
+	// starting unseeded. Ignored when Sandbox is false. Additive.
+	SignInSeed *bool
+	SignInAsk  bool
 }
+
+// SignInConsentError re-exports termcore's consent question (lane
+// BOXSIGNIN).
+type SignInConsentError = termcore.SignInConsentError
 
 // LaunchResult is what a launch returns to the dashboard.
 type LaunchResult struct {
@@ -633,6 +764,9 @@ func (s *Service) LaunchFresh(ctx context.Context, req FreshRequest) (LaunchResu
 	if err != nil {
 		return LaunchResult{}, err
 	}
+	if err := s.checkTerminal(req.Sandbox && !req.Shell); err != nil {
+		return LaunchResult{}, err
+	}
 	tool := req.Tool
 	if req.Shell {
 		tool = ShellTool
@@ -643,9 +777,12 @@ func (s *Service) LaunchFresh(ctx context.Context, req FreshRequest) (LaunchResu
 	// terminal_runs row. sandboxed/wrapArgv stay their zero values (false/nil)
 	// on the unchanged, non-sandboxed path — byte-identical to today.
 	var wrapArgv []string
+	var prepared PrepareResult
+	var sourceDir string
 	sandboxed := req.Sandbox
 	if sandboxed {
-		prepared, perr := s.prepareSandbox(ctx, req, tool, dir)
+		var perr error
+		prepared, perr = s.prepareSandbox(ctx, req, tool, dir)
 		if perr != nil {
 			return LaunchResult{}, perr
 		}
@@ -653,8 +790,18 @@ func (s *Service) LaunchFresh(ctx context.Context, req FreshRequest) (LaunchResu
 		// attributed to — ProjectRootHash below hashes THIS value, so
 		// attribution follows the prepared workspace, not the original
 		// project root (plan §5).
+		if prepared.Dir != dir {
+			sourceDir = dir
+		}
 		dir = prepared.Dir
 		wrapArgv = prepared.WrapArgv
+	}
+	// G19 evidence: a sandboxed launch records what the Sandboxer built; an
+	// unsandboxed fresh launch records the two facts that are true of it
+	// (no isolation class, captured on the host), nothing it cannot know.
+	iso := termrun.Isolation{Class: "none", CaptureOrigin: "local"}
+	if sandboxed {
+		iso = prepared.Isolation
 	}
 
 	run := termrun.Run{
@@ -662,10 +809,23 @@ func (s *Service) LaunchFresh(ctx context.Context, req FreshRequest) (LaunchResu
 		Kind:            termrun.KindFresh,
 		ProjectRootHash: termrun.HashProjectRoot(dir),
 		LaunchedAt:      s.now(),
+		Isolation:       iso,
 	}
 	var extraArgs, extraEnv []string
 	if req.Model != "" && !req.Shell {
 		extraArgs, extraEnv = s.resolveModelLaunch(req.Tool, req.Model)
+	}
+	// The agent's own sandbox (sandbox plan v2 section 4.4, N6 and the
+	// nesting rows; lane SBX-P3D): the per-run switch is read back from the
+	// evidence the run records, so a run says disabled_by_observer or weak
+	// exactly when the switch is on its argv. One rule for every backend and
+	// both entry points (the CLI path calls the same function).
+	if sandboxed && !req.Shell {
+		switchArgs, serr := integration.NativeSwitchArgsForState(tool, vocab.NativeSandboxState(iso.NativeSandboxState))
+		if serr != nil {
+			return LaunchResult{}, fmt.Errorf("%w: %w", ErrWorkspacePrepFailed, serr)
+		}
+		extraArgs = integration.AppendNativeArgs(extraArgs, switchArgs)
 	}
 	return s.launch(ctx, run, LaunchRequest{
 		Subcommand: req.Subcommand,
@@ -678,6 +838,12 @@ func (s *Service) LaunchFresh(ctx context.Context, req FreshRequest) (LaunchResu
 		ExtraEnv:   extraEnv,
 		WrapArgv:   wrapArgv,
 		Sandboxed:  sandboxed,
+		SourceDir:  sourceDir,
+
+		SandboxEnvAllow:     prepared.EnvAllow,
+		SandboxEnvPassed:    prepared.EnvPassed,
+		SandboxAllowOSC52:   prepared.AllowOSC52Clipboard,
+		SandboxSignInShared: prepared.SignInShared,
 	})
 }
 
@@ -705,6 +871,10 @@ func (s *Service) prepareSandbox(ctx context.Context, req FreshRequest, tool, va
 		WorkspaceSource: req.WorkspaceSource,
 		WorkspaceRemote: req.WorkspaceRemote,
 		WorkspaceBranch: req.WorkspaceBranch,
+		Backend:         req.SandboxBackend,
+		DeferSlowPrep:   true,
+		SignInSeed:      req.SignInSeed,
+		SignInAsk:       req.SignInAsk,
 	})
 	if err != nil {
 		return PrepareResult{}, fmt.Errorf("%w: %w", ErrWorkspacePrepFailed, err)
@@ -778,6 +948,9 @@ func (s *Service) LaunchSSH(ctx context.Context, req SSHRequest) (LaunchResult, 
 	if !pol.AllowSSH {
 		return LaunchResult{}, ErrSSHLaunchDisabled
 	}
+	if err := s.checkTerminal(false); err != nil {
+		return LaunchResult{}, err
+	}
 	profile, ok := findSSHProfile(pol.SSHProfiles, req.Profile)
 	if !ok {
 		return LaunchResult{}, fmt.Errorf("%w: %q", ErrSSHProfileUnknown, req.Profile)
@@ -845,6 +1018,9 @@ type HandoffRequest struct {
 func (s *Service) LaunchHandoff(ctx context.Context, req HandoffRequest) (LaunchResult, error) {
 	if s.launcher == nil {
 		return LaunchResult{}, ErrNoLauncher
+	}
+	if err := s.checkTerminal(false); err != nil {
+		return LaunchResult{}, err
 	}
 	run := termrun.Run{
 		Tool:            req.Tool,
@@ -915,6 +1091,13 @@ func (s *Service) LaunchAttachable(ctx context.Context, req AttachRequest) (Laun
 	if req.Dir != "" && !filepath.IsAbs(req.Dir) {
 		return LaunchResult{}, fmt.Errorf("%w: %q", ErrAttachDirNotAbsolute, req.Dir)
 	}
+	// The attach socket's owner-only permissions exempt this launch from
+	// the operator's own [terminal.launch] policy, never from the org's
+	// terminals decision: an attach PTY is a daemon-owned, Jump-in-able
+	// terminal like any other (OSH-R-003).
+	if err := s.checkTerminal(false); err != nil {
+		return LaunchResult{}, err
+	}
 	run := termrun.Run{
 		Tool:            req.Tool,
 		Kind:            termrun.KindAttach,
@@ -971,14 +1154,7 @@ func (s *Service) LaunchResume(ctx context.Context, req ResumeRequest) (LaunchRe
 	if s.launcher == nil {
 		return LaunchResult{}, ErrNoLauncher
 	}
-	pol := s.currentPolicy()
-	if !pol.AllowFresh {
-		return LaunchResult{}, ErrFreshLaunchDisabled
-	}
-	if !pol.toolAllowed(req.Tool) {
-		return LaunchResult{}, fmt.Errorf("%w: %q", ErrToolNotAllowed, req.Tool)
-	}
-	dir, err := ValidateProjectRoot(req.ProjectRoot, pol.AllowedProjectRoots)
+	dir, err := s.currentPolicy().AuthorizeAgent(req.Tool, req.ProjectRoot)
 	if err != nil {
 		return LaunchResult{}, err
 	}
@@ -987,6 +1163,9 @@ func (s *Service) LaunchResume(ctx context.Context, req ResumeRequest) (LaunchRe
 	}
 	if len(req.ExtraArgs) != 2 || req.ExtraArgs[0] != "--resume" || req.ExtraArgs[1] != req.SourceSessionID {
 		return LaunchResult{}, ErrResumeArgsMismatch
+	}
+	if err := s.checkTerminal(false); err != nil {
+		return LaunchResult{}, err
 	}
 	run := termrun.Run{
 		Tool:            req.Tool,
@@ -1101,6 +1280,8 @@ func (s *Service) launch(ctx context.Context, run termrun.Run, lr LaunchRequest)
 		dir:       dir,
 		spawnDir:  spawnDir,
 		sandboxed: lr.Sandboxed,
+		isolation: run.Isolation,
+		startedAt: s.now(),
 	}
 	s.mu.Unlock()
 
@@ -1287,6 +1468,32 @@ func (s *Service) Sandboxed(handle string) (sandboxed bool, ok bool) {
 	return m.sandboxed, ok
 }
 
+// Isolation returns the G19 evidence a live-or-lingering handle's run
+// recorded at spawn (the source of the dashboard's run pill). ok=false for
+// an unknown handle.
+func (s *Service) Isolation(handle string) (termrun.Isolation, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, ok := s.byMeta[handle]
+	return m.isolation, ok
+}
+
+// LiveSandboxedCount is how many runs launched through the Sandboxer seam
+// are still live (not yet ended). The update drain defers on it (sandbox
+// plan v2 section 5.5, I10): no update or restart ends a live sandboxed run
+// silently.
+func (s *Service) LiveSandboxedCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, m := range s.byMeta {
+		if m.sandboxed && m.endedAt.IsZero() {
+			n++
+		}
+	}
+	return n
+}
+
 // SessionForRun returns the observer session id a run has been correlated to,
 // once the correlation is established (>= termrun.MinLinkConfidence). ok=false
 // when the run has no established link yet — correlation is scored and
@@ -1386,6 +1593,7 @@ func (s *Service) HandleForRun(runID string) (string, bool) {
 // closes: the pre-fix delete here made KindForHandle false mid-linger, and the
 // pre-R2-2 set-only prune reopened it against a stale snapshot).
 func (s *Service) EndRunByHandle(ctx context.Context, handle string, exitCode int) {
+	reason := ""
 	s.mu.Lock()
 	runID, ok := s.byHandle[handle]
 	if ok {
@@ -1398,6 +1606,8 @@ func (s *Service) EndRunByHandle(ctx context.Context, handle string, exitCode in
 		// a still-live entry classified even against a stale live-handle set (R2-2).
 		if m, mok := s.byMeta[handle]; mok {
 			m.endedAt = s.now()
+			m.endReason = endReasonFor(m.endReason, exitCode)
+			reason = m.endReason
 			s.byMeta[handle] = m
 		}
 		// Opportunistic bound (R2-7): on a daemon driven only through attach
@@ -1428,7 +1638,16 @@ func (s *Service) EndRunByHandle(ctx context.Context, handle string, exitCode in
 	// rediscovery gate WOULD offer — but native-resuming an already-finished
 	// session is safe (the tool just reopens its own transcript), so the failure
 	// direction is benign.
-	_ = s.rec.EndRun(ctx, runID, s.now(), exitCode, reasonChildExit)
+	// Why the run ended (Windows 11 Pro run 4, N3): the reason marked by
+	// whoever ended it (Stop & close, an org floor, the daemon's stop), else
+	// what the exit code alone says; one daemon log line per end.
+	if reason == "" {
+		reason = endReasonFor("", exitCode)
+	}
+	_ = s.rec.EndRun(ctx, runID, s.now(), exitCode, reason)
+	if s.logger != nil {
+		s.logger.Info("terminal: run ended", "run", runID, "end_reason", reason, "exit_code", exitCode)
+	}
 	s.publish(termfeed.Event{
 		Kind:  "term:exit",
 		RunID: runID,

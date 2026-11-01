@@ -23,16 +23,14 @@ import (
 func writeArgvEnvRecorderStub(t *testing.T, dir, argvPath, envPath string) string {
 	t.Helper()
 	script := filepath.Join(dir, "stub-copilot.sh")
+	a, e := shellQuote(stubShPath(argvPath)), shellQuote(stubShPath(envPath))
 	contents := "#!/bin/sh\n" +
-		"rm -f " + shellQuote(argvPath) + " " + shellQuote(envPath) + "\n" +
-		"touch " + shellQuote(argvPath) + "\n" +
-		"for a in \"$@\"; do printf '%s\\n' \"$a\" >> " + shellQuote(argvPath) + "; done\n" +
-		"env > " + shellQuote(envPath) + "\n" +
+		"rm -f " + a + " " + e + "\n" +
+		"touch " + a + "\n" +
+		"for a in \"$@\"; do printf '%s\\n' \"$a\" >> " + a + "; done\n" +
+		"env > " + e + "\n" +
 		"exit 0\n"
-	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
-		t.Fatalf("write stub: %v", err)
-	}
-	return script
+	return writeShellStub(t, script, contents)
 }
 
 // writeCopilotCLITestConfig writes a minimal config.toml pointing db_path at
@@ -41,9 +39,14 @@ func writeArgvEnvRecorderStub(t *testing.T, dir, argvPath, envPath string) strin
 func writeCopilotCLITestConfig(t *testing.T, dir string) string {
 	t.Helper()
 	cfgPath := filepath.Join(dir, "config.toml")
-	if err := os.WriteFile(cfgPath, []byte("[observer]\ndb_path = \""+filepath.Join(dir, "observer.db")+"\"\n"), 0o600); err != nil {
+	// ToSlash: a Windows path in a TOML basic string would read "\U" as an
+	// escape.
+	if err := os.WriteFile(cfgPath, []byte("[observer]\ndb_path = \""+filepath.ToSlash(filepath.Join(dir, "observer.db"))+"\"\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
+	// The launch gates open this DB; a migrated copy keeps each launch from
+	// replaying the migration chain.
+	preseedMigratedDB(t, filepath.Join(dir, "observer.db"))
 	return cfgPath
 }
 

@@ -5,16 +5,18 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
-import type { ReactNode } from "react";
+import type { ReactNode, RefObject } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { isRemoteView } from "@/lib/remote";
-import { isLiveStatus, policyStopMessage } from "@/lib/launchStatus";
+import { foldAgentExits, isLiveStatus, policyStopMessage } from "@/lib/launchStatus";
 import type { Status, PolicyStopInfo } from "@/lib/launchStatus";
+import type { LaunchIsolation } from "@/lib/types";
 // The terminal itself comes from the component registry: a lazy component in
 // a distro that compiles terminals, null in one that does not, so this
 // always-loaded provider never pulls xterm into a bundle without terminals.
@@ -30,13 +32,14 @@ import {
   useRemoteTerminalGate,
 } from "@/lib/remoteTerminal";
 import { usePointerDrag } from "@/lib/useDrag";
+import { DOCK_CLEARANCE_VAR, dockClearance } from "@/lib/dockClearance";
 import { useMobileTerminal } from "@/lib/useMediaQuery";
 import { useVisualViewport } from "@/lib/useVisualViewport";
 import type { ProjectPanelTab } from "@/components/ProjectPanel";
 import { CompanionProvider } from "@/components/primitives/companion";
 import { ConfirmButton, Icon, LiveDot, Tooltip, TooltipSpan } from "@/components/primitives";
 import { TRANSPORT_DOT, liveDotProps, withDotClass } from "@/lib/liveSignals";
-import { ChevronUp, GripHorizontal, Plus, X } from "lucide-react";
+import { ChevronUp, GripVertical, Plus, SquareTerminal, X } from "lucide-react";
 
 // Lazy so the per-terminal project panel (file tree + git graph) stays out of
 // the critical chunk — it loads only when a terminal's Files/Git button fires.
@@ -54,7 +57,8 @@ const TerminalSessionModal = lazy(
 );
 
 // Project panels live in a BOUNDED z-band ABOVE the expanded-terminal backdrop
-// (z-80) and the dock (z-70), but comfortably BELOW the guided tour (z-120/130)
+// (z-80) and the dock (z-25, below every modal, drawer and the phone nav
+// backdrop, T-855), but comfortably BELOW the guided tour (z-120/130)
 // and the context menu (z-200). On every raise the sibling panels are
 // renormalized into [PANEL_Z_BASE, PANEL_Z_MAX] (never a monotonically growing
 // counter), so no amount of interaction can push a panel over the tour or its
@@ -134,7 +138,14 @@ function lowestFreeCascade(panels: PanelEntry[]): number {
 //     session (true detach/reattach across reloads is the Tier 2 follow-up).
 
 /** A launched session the dock owns. token is the opaque launch handle. */
-export type DockSession = { token: string; tool: string; sessionId: string; hasProjectRoot?: boolean };
+export type DockSession = {
+  token: string;
+  tool: string;
+  sessionId: string;
+  hasProjectRoot?: boolean;
+  /** A sandboxed run's recorded isolation evidence (the run pill). */
+  isolation?: LaunchIsolation;
+};
 
 /** One row of GET /api/launch/sessions (dashboard.LaunchInfo wire shape). */
 type LaunchInfoWire = {
@@ -143,6 +154,7 @@ type LaunchInfoWire = {
   session_id?: string;
   exited?: boolean;
   has_project_root?: boolean;
+  isolation?: LaunchIsolation;
 };
 
 type LaunchDockCtx = {
@@ -150,6 +162,13 @@ type LaunchDockCtx = {
   launch: (s: DockSession) => void;
   /** Open the New-terminal dialog (the same one the floating dock's + uses). */
   openNewTerminal: () => void;
+  /**
+   * Open the same dialog with `tool` preselected (the Tools page coverage
+   * list's "Install" next step, T-935): the dialog's own preflight then
+   * offers that tool's guided install when it is not found. A tool the
+   * picker does not list falls back to the dialog's usual default.
+   */
+  openNewTerminalFor: (tool: string) => void;
   /** The dock-owned live sessions (the Terminal Workspace reads these). */
   sessions: DockSession[];
   /** Per-token connection status. */
@@ -216,6 +235,12 @@ type LaunchDockCtx = {
    * a project panel and a session panel open at once).
    */
   panels: PanelEntry[];
+  /** The minimized sessions the dock shows as pills (not expanded, not in a
+   *  workspace cell). The phone top-bar button (PhoneTerminalButton) lists
+   *  them, since the floating dock is desktop-only (T-855). */
+  minimized: DockSession[];
+  /** Per-token policy-stop reason, for the minimized pills. */
+  policyStops: Record<string, PolicyStopInfo | undefined>;
 };
 
 // The two floating-panel kinds that share the same token-keyed stacking/
@@ -305,6 +330,18 @@ export function LaunchDockProvider({ children }: { children: ReactNode }) {
       prev.some((p) => p.token === s.token) ? prev : [...prev, s],
     );
     setActiveToken(s.token);
+    // The run pill shows what the run was actually launched in, so read the
+    // recorded evidence back once instead of echoing the dialog's choice.
+    fetch("/api/launch/sessions")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { sessions?: LaunchInfoWire[] } | null) => {
+        const iso = data?.sessions?.find((w) => w.token === s.token)?.isolation;
+        if (!iso) return;
+        setSessions((prev) => prev.map((p) => (p.token === s.token ? { ...p, isolation: iso } : p)));
+      })
+      .catch(() => {
+        /* no launch seam: no pill */
+      });
   }, []);
 
   const minimize = useCallback(() => setActiveToken(null), []);
@@ -341,6 +378,14 @@ export function LaunchDockProvider({ children }: { children: ReactNode }) {
   const setStatus = useCallback((token: string, s: Status) => {
     setStatuses((prev) => (prev[token] === s ? prev : { ...prev, [token]: s }));
   }, []);
+
+  // R-183: a tile follows its run's end from the daemon's status stream at
+  // once, even while its own socket still reads live (foldAgentExits).
+  const agentStatuses = useTerminalStatuses();
+  useEffect(() => {
+    const tokens = sessions.map((s) => s.token);
+    setStatuses((prev) => foldAgentExits(prev, tokens, agentStatuses));
+  }, [agentStatuses, sessions, statuses]);
 
   const setPolicyStop = useCallback(
     (token: string, info: PolicyStopInfo | undefined) => {
@@ -385,6 +430,23 @@ export function LaunchDockProvider({ children }: { children: ReactNode }) {
     // keeps the saved draft so an impatient operator still resumes in place.
     setPendingInstall(null);
     setResumedAfterInstall(false);
+    setNewOpen(true);
+  }, []);
+
+  const openNewTerminalFor = useCallback((tool: string) => {
+    setPendingInstall(null);
+    setResumedAfterInstall(false);
+    setNewTerminalDraft({
+      tool,
+      sshProfile: "",
+      rootSel: "",
+      customRoot: "",
+      modelSel: "",
+      sandboxOn: false,
+      workspaceSource: "live",
+      workspaceRemote: "",
+      workspaceBranch: "",
+    });
     setNewOpen(true);
   }, []);
 
@@ -554,6 +616,7 @@ export function LaunchDockProvider({ children }: { children: ReactNode }) {
               tool: s.subcommand || "terminal",
               sessionId: s.session_id || "",
               hasProjectRoot: !!s.has_project_root,
+              isolation: s.isolation,
             }));
           return add.length ? [...prev, ...add] : prev;
         });
@@ -602,10 +665,15 @@ export function LaunchDockProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, [sessions, statuses]);
 
+  const minimized = useMemo(
+    () => sessions.filter((s) => !cells[s.token] && s.token !== activeToken),
+    [sessions, cells, activeToken],
+  );
   const value = useMemo<LaunchDockCtx>(
     () => ({
       launch,
       openNewTerminal,
+      openNewTerminalFor,
       sessions,
       statuses,
       closeSession,
@@ -621,10 +689,13 @@ export function LaunchDockProvider({ children }: { children: ReactNode }) {
       openSessionDetail,
       registerPaste,
       panels,
+      minimized,
+      policyStops,
     }),
     [
       launch,
       openNewTerminal,
+      openNewTerminalFor,
       sessions,
       statuses,
       closeSession,
@@ -640,6 +711,8 @@ export function LaunchDockProvider({ children }: { children: ReactNode }) {
       openSessionDetail,
       registerPaste,
       panels,
+      minimized,
+      policyStops,
     ],
   );
 
@@ -1073,6 +1146,7 @@ function TerminalHost({
         <LaunchTerminal
           token={session.token}
           tool={session.tool}
+          isolation={session.isolation}
           expanded={expanded && !docked}
           fill
           onAddToGrid={docked ? undefined : onRequestDock}
@@ -1117,6 +1191,7 @@ function Dock({
   const pills = sessions.filter((s) => s.token !== activeToken);
   const agentStatuses = useTerminalStatuses();
   const drag = useDockDrag();
+  useDockClearance(drag.ref);
   // A paired remote device can only fresh-launch when the owner enabled
   // [remote].allow_terminal; when it's off we keep the button visible but
   // disabled with a reason (honest-disabled-control convention), rather than
@@ -1126,22 +1201,46 @@ function Dock({
     <div
       ref={drag.ref}
       style={drag.style}
-      className="sb-launch-dock fixed bottom-4 right-4 z-[70] flex flex-col-reverse items-end gap-2"
+      // Desktop only (lg+). Below lg the nav is a drawer and a floating
+      // dock sat on primary actions (Send on Ask my admin); there the top
+      // bar's PhoneTerminalButton takes its place (T-855).
+      className="sb-launch-dock fixed bottom-4 right-4 z-[25] hidden flex-col-reverse items-end gap-2 lg:flex"
     >
-      {/* When remoteBlocked the button is disabled and swallows pointer
-          events, so hover would never fire — TooltipSpan wraps it in a
-          hoverable span; the enabled button is its own reference. */}
-      {(() => {
-        const newBtn = (
-          <button type="button" onClick={onNew} disabled={remoteBlocked} className="flex items-center gap-1.5 rounded-pill border bg-bg-1 px-3 py-1.5 text-caption font-medium text-fg-2 shadow-lg hover:text-fg-1 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:text-fg-2"><Icon icon={Plus} size="xs" />New terminal</button>
-        );
-        const tip = remoteBlocked ? REMOTE_TERMINAL_OFF_MSG : "Start a fresh agent in the embedded terminal";
-        return remoteBlocked ? (
-          <TooltipSpan content={tip}>{newBtn}</TooltipSpan>
-        ) : (
-          <Tooltip content={tip}>{newBtn}</Tooltip>
-        );
-      })()}
+      <div className="flex items-center gap-1.5">
+        {/* Drag grip, inline to the LEFT of the button. It used to float above
+            the button as an extra row that sat on page controls (T-855).
+            Dragging only the grip keeps "New terminal" a plain click target,
+            with no click-vs-drag ambiguity. Double-click resets. */}
+        <Tooltip content="Drag to move · double-click to reset">
+          <button
+            type="button"
+            aria-label="Drag to move the terminal dock (double-click to reset)"
+            onPointerDown={drag.gripHandlers.onPointerDown}
+            onPointerMove={drag.gripHandlers.onPointerMove}
+            onPointerUp={drag.gripHandlers.onPointerUp}
+            onPointerCancel={drag.gripHandlers.onPointerCancel}
+            onLostPointerCapture={drag.gripHandlers.onLostPointerCapture}
+            onDoubleClick={drag.onReset}
+            className="flex h-7 w-4 touch-none cursor-grab select-none items-center justify-center rounded-full border bg-bg-1 text-fg-4 shadow-lg hover:text-fg-2 active:cursor-grabbing"
+          >
+            <Icon icon={GripVertical} size={14} />
+          </button>
+        </Tooltip>
+        {/* When remoteBlocked the button is disabled and swallows pointer
+            events, so hover would never fire; TooltipSpan wraps it in a
+            hoverable span; the enabled button is its own reference. */}
+        {(() => {
+          const newBtn = (
+            <button type="button" onClick={onNew} disabled={remoteBlocked} className="flex items-center gap-1.5 rounded-pill border bg-bg-1 px-3 py-1.5 text-caption font-medium text-fg-2 shadow-lg hover:text-fg-1 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:text-fg-2"><Icon icon={Plus} size="xs" />New terminal</button>
+          );
+          const tip = remoteBlocked ? REMOTE_TERMINAL_OFF_MSG : "Start a fresh agent in the embedded terminal";
+          return remoteBlocked ? (
+            <TooltipSpan content={tip}>{newBtn}</TooltipSpan>
+          ) : (
+            <Tooltip content={tip}>{newBtn}</Tooltip>
+          );
+        })()}
+      </div>
       {pills.map((s) => (
         <DockPill
           key={s.token}
@@ -1153,25 +1252,141 @@ function Dock({
           onClose={() => onClose(s.token)}
         />
       ))}
-      {/* Drag grip (rendered last so flex-col-reverse floats it to the TOP of
-          the dock). Dragging only the grip keeps the "New terminal" button a
-          plain click target — no click-vs-drag ambiguity. Double-click resets. */}
-      <Tooltip content="Drag to move · double-click to reset">
-        <button
-          type="button"
-          aria-label="Drag to move the terminal dock (double-click to reset)"
-          onPointerDown={drag.gripHandlers.onPointerDown}
-          onPointerMove={drag.gripHandlers.onPointerMove}
-          onPointerUp={drag.gripHandlers.onPointerUp}
-          onPointerCancel={drag.gripHandlers.onPointerCancel}
-          onLostPointerCapture={drag.gripHandlers.onLostPointerCapture}
-          onDoubleClick={drag.onReset}
-          className="flex h-4 w-9 touch-none cursor-grab select-none items-center justify-center rounded-full border bg-bg-1 text-fg-4 shadow-lg hover:text-fg-2 active:cursor-grabbing"
-        >
-        <Icon icon={GripHorizontal} size={14} />
-        </button>
-      </Tooltip>
     </div>
+  );
+}
+
+// useDockClearance publishes the space the dock needs at the bottom of the
+// page (lib/dockClearance, T-855) as a CSS variable on <html>; the shell's
+// page area pads its bottom with it, so no page puts a button under the dock.
+// It follows the dock's size (minimized pills come and go), a drag (the
+// transform lives in the style attribute) and the window size. While an
+// overlay hides the dock the last value is kept, so the page behind the
+// scrim does not reflow; unmounting the dock clears it.
+function useDockClearance(ref: RefObject<HTMLDivElement | null>) {
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const root = document.documentElement;
+    let frame = 0;
+    const publish = () => {
+      frame = 0;
+      const r = el.getBoundingClientRect();
+      if (r.height === 0 && document.body.dataset.overlayOpen) return;
+      root.style.setProperty(DOCK_CLEARANCE_VAR, `${dockClearance(r, window.innerHeight)}px`);
+    };
+    const schedule = () => {
+      if (!frame) frame = requestAnimationFrame(publish);
+    };
+    publish();
+    const ro = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(schedule);
+    ro?.observe(el);
+    const mo = new MutationObserver(schedule);
+    mo.observe(el, { attributes: true, attributeFilter: ["style"] });
+    window.addEventListener("resize", schedule);
+    return () => {
+      cancelAnimationFrame(frame);
+      ro?.disconnect();
+      mo.disconnect();
+      window.removeEventListener("resize", schedule);
+      root.style.removeProperty(DOCK_CLEARANCE_VAR);
+    };
+  }, [ref]);
+}
+
+// PhoneTerminalButton is the dock below lg (T-855): a compact top-bar icon
+// button instead of a floating stack over the page. With no minimized
+// session it opens the New terminal dialog directly; with some it opens a
+// small menu that lists them (restore or close, the same DockPill as the
+// desktop dock) above a New terminal action. The TopBar hides it at lg+.
+export function PhoneTerminalButton() {
+  const dock = useContext(Ctx);
+  const { blocked: remoteBlocked } = useRemoteTerminalGate();
+  const agentStatuses = useTerminalStatuses();
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLSpanElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+  if (!dock) return null;
+  const pills = dock.minimized;
+  const label = pills.length > 0 ? `Terminals (${pills.length} minimized)` : "New terminal";
+  const blockedNew = remoteBlocked && pills.length === 0;
+  const startNew = () => {
+    setOpen(false);
+    dock.openNewTerminal();
+  };
+  const button = (
+    <button
+      type="button"
+      aria-label={label}
+      aria-haspopup={pills.length > 0 ? "menu" : undefined}
+      aria-expanded={pills.length > 0 ? open : undefined}
+      disabled={blockedNew}
+      onClick={() => (pills.length > 0 ? setOpen((v) => !v) : startNew())}
+      className="relative grid h-7 w-7 place-items-center rounded-2 border border-line-2 bg-bg-2 text-fg-3 hover:bg-bg-3 hover:text-fg-0 disabled:cursor-not-allowed disabled:opacity-50"
+    >
+      <Icon icon={SquareTerminal} size="sm" />
+      {pills.length > 0 && (
+        <span className="absolute -right-1.5 -top-1.5 min-w-[16px] rounded-full bg-accent px-1 text-center text-[10px] font-semibold leading-4 text-accent-on">
+          {pills.length}
+        </span>
+      )}
+    </button>
+  );
+  return (
+    <span ref={rootRef} className="relative inline-flex">
+      {blockedNew ? (
+        <TooltipSpan content={REMOTE_TERMINAL_OFF_MSG}>{button}</TooltipSpan>
+      ) : (
+        <Tooltip content={label}>{button}</Tooltip>
+      )}
+      {open && pills.length > 0 && (
+        <div
+          role="menu"
+          aria-label="Terminals"
+          className="fixed inset-x-3 top-[calc(var(--header-h)+0.25rem)] z-50 max-h-[calc(100dvh-var(--header-h)-1rem)] space-y-2 overflow-y-auto rounded-3 border border-line-2 bg-bg-1 p-3 text-[12px] shadow-lg"
+        >
+          <b className="block text-fg-1">Minimized terminals</b>
+          {pills.map((s) => (
+            <DockPill
+              key={s.token}
+              session={s}
+              agent={agentStatuses[s.token]}
+              status={dock.statuses[s.token]}
+              policyStop={dock.policyStops[s.token]}
+              onRestore={() => {
+                setOpen(false);
+                dock.restore(s.token);
+              }}
+              onClose={() => dock.closeSession(s.token)}
+            />
+          ))}
+          <button
+            type="button"
+            onClick={startNew}
+            disabled={remoteBlocked}
+            className="flex w-full items-center justify-center gap-1.5 rounded-pill border bg-bg-2 px-3 py-1.5 text-caption font-medium text-fg-2 hover:text-fg-1 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Icon icon={Plus} size="xs" />
+            New terminal
+          </button>
+          {remoteBlocked && <p className="text-[11px] text-fg-3">{REMOTE_TERMINAL_OFF_MSG}</p>}
+        </div>
+      )}
+    </span>
   );
 }
 

@@ -2,12 +2,9 @@ package qoder
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -622,66 +619,28 @@ func isForeignMountPath(path string) bool {
 	return false
 }
 
-// stageMirrorIfForeign copies a Work DB that lives on a foreign mount
-// (a Windows profile seen from WSL2 over DrvFs, or the reverse) into a
-// local staging dir before opening it. SQLite over DrvFs fails with
-// `disk I/O error (10)`; the same mirror trick kirocli/opencode/zcode use.
-// A native path is returned unchanged.
+// stageMirrorIfForeign returns srcDB unchanged when it is native. A foreign-mount
+// store (a Windows-side store read by a WSL observer over /mnt/c, or
+// the reverse), which modernc.org/sqlite cannot open in place while the
+// vendor process writes its WAL, is read through a filtered local
+// mirror built by mirrorbase.Stage: only the tables in mirrorSpec are
+// kept, so the store's other tables (credentials included) never leave
+// the vendor's file.
 func stageMirrorIfForeign(srcDB string) (string, error) {
 	if !isForeignMountPath(srcDB) {
 		return srcDB, nil
 	}
-	base, err := mirrorbase.Base()
-	if err != nil || base == "" {
-		base = filepath.Join(os.TempDir(), "superbased-observer")
-	}
-	sum := sha256.Sum256([]byte(srcDB))
-	mirrorDir := filepath.Join(base, "qoderwork-mirror", hex.EncodeToString(sum[:8]))
-	if err := os.MkdirAll(mirrorDir, 0o700); err != nil {
-		return "", fmt.Errorf("qoder.stageMirror: mkdir %s: %w", mirrorDir, err)
-	}
-	dstDB := filepath.Join(mirrorDir, workDBName)
-	if mirrorUpToDate(srcDB, dstDB) {
-		return dstDB, nil
-	}
-	for _, suffix := range []string{"", "-wal", "-shm"} {
-		src := srcDB + suffix
-		dst := dstDB + suffix
-		data, err := os.ReadFile(src) //nolint:gosec // src derives from validated watch roots
-		if err != nil {
-			if os.IsNotExist(err) {
-				_ = os.Remove(dst)
-				continue
-			}
-			return "", fmt.Errorf("qoder.stageMirror: read %s: %w", src, err)
-		}
-		if err := os.WriteFile(dst, data, 0o600); err != nil { //nolint:gosec // G703: dst is a private staging copy under the adapter's own temp dir
-			return "", fmt.Errorf("qoder.stageMirror: write %s: %w", dst, err)
-		}
-	}
-	return dstDB, nil
+	return mirrorbase.Stage(context.Background(), srcDB, mirrorSpec)
 }
 
-// mirrorUpToDate reports whether the mirrored DB is at least as fresh as
-// the source, comparing (size, mtime) on the main file and the -wal
-// sibling. Returns false on any stat error so a fresh copy is attempted.
-func mirrorUpToDate(srcDB, dstDB string) bool {
-	for _, suffix := range []string{"", "-wal"} {
-		src, srcErr := os.Stat(srcDB + suffix)
-		dst, dstErr := os.Stat(dstDB + suffix)
-		if srcErr != nil {
-			// Absent source sibling: the mirror must not claim to be
-			// current if it still holds a stale copy of it.
-			if dstErr == nil {
-				return false
-			}
-			continue
-		}
-		if dstErr != nil || src.Size() != dst.Size() || src.ModTime().After(dst.ModTime()) {
-			return false
-		}
-	}
-	return true
+// mirrorSpec is the allow-list mirror of the Qoder Work store (main.sqlite, which also holds BYOK and OAuth credential tables): every table this
+// package queries and nothing else. A query on a new table must add it
+// here, or the foreign-mount mirror silently lacks it;
+// mirrortest.AssertSpecCoversQueries pins that.
+var mirrorSpec = mirrorbase.Spec{
+	Dir:    "qoderwork-mirror",
+	File:   workDBName,
+	Tables: []string{"chat_sessions", "chat_session_messages"},
 }
 
 // allHomesFunc is the test seam over crossmount.AllHomes, matching the

@@ -318,10 +318,36 @@ func TestRoutabilityCell(t *testing.T) {
 		integration.RouteStatusAfterBridge:   "after-bridge",
 		integration.RouteStatusProbeRequired: "probe",
 		integration.RouteStatusNativeExempt:  "native-exempt",
+		// Surface-row only (CC-1a): Claude Desktop ignores the settings route.
+		integration.RouteStatusSettingsIgnored: "settings-ignored",
 	}
 	for in, want := range cases {
 		if got := routabilityCell(in); got != want {
 			t.Errorf("routabilityCell(%q) = %q, want %q", in, got, want)
+		}
+	}
+	// Every value of the closed vocabulary has its own label.
+	for _, s := range integration.RouteStatuses() {
+		if _, ok := cases[s]; !ok {
+			t.Errorf("RouteStatus %q has no case here (and so maybe no label)", s)
+		}
+	}
+}
+
+// TestControlCoverageLineSurfacePosture: the doctor's control-coverage line
+// carries the per-surface posture (surface-gap Wave 3 acceptance).
+func TestControlCoverageLineSurfacePosture(t *testing.T) {
+	cases := map[string]string{
+		// The JetBrains Claude Agent rows (MAC-5) read as one family clause.
+		"claude-code": "proxy route: cli gated, ide unproven, ide/jetbrains-* unproven, ide/xcode ungated, desktop ungated",
+		// AW-48: the Codex Xcode surface (MAC-1) is ungated and named as
+		// skipped by the route proof until a session of it is observed.
+		"codex": "tool gate: cli gated, ide ungated, ide/xcode ungated, desktop ungated; proxy route: cli gated, ide gated, ide/xcode ungated, desktop gated; route proof skips ide/xcode: no adapter captures it yet",
+	}
+	for tool, want := range cases {
+		line, ok := controlCoverageLine(tool)
+		if !ok || !strings.Contains(line, "surfaces: ") || !strings.Contains(line, want) {
+			t.Errorf("%s: line %q, want it to carry %q", tool, line, want)
 		}
 	}
 }

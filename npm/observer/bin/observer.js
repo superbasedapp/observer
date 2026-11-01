@@ -32,13 +32,17 @@ function reportUnsupported(key) {
 }
 
 function reportMissingPackage(pkg) {
+  // On Windows name npm.cmd: PowerShell's default execution policy refuses
+  // the npm.ps1 shim a bare `npm` resolves to, and npm.cmd also runs in
+  // Command Prompt.
+  const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
   process.stderr.write(
     '@superbased/observer: optional dependency ' + pkg + ' is not installed.\n' +
     'This usually means npm skipped optional dependencies during install.\n' +
     'Retry with:\n' +
-    '  npm install --include=optional @superbased/observer\n' +
+    '  ' + npm + ' install --include=optional @superbased/observer\n' +
     'or, if installed globally:\n' +
-    '  npm install -g --include=optional @superbased/observer\n'
+    '  ' + npm + ' install -g --include=optional @superbased/observer\n'
   );
   process.exit(1);
 }

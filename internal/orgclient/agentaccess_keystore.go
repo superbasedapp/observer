@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	keyring "github.com/zalando/go-keyring"
+	"github.com/marmutapp/superbased-observer/internal/keystore"
 )
 
 // Agent Access key custody (operator ruling 2026-09-27, superseding the
@@ -100,7 +100,7 @@ func OpenAgentAccessKeyStoreIn(service, fallbackDir string, logger *slog.Logger)
 	}
 	if keychainUsable(service) {
 		st.keychain = true
-		if _, err := keyring.Get(service, recAgentAccessKey); errors.Is(err, keyring.ErrNotFound) && st.path != "" {
+		if _, err := keystore.KeyringGet(service, recAgentAccessKey); errors.Is(err, keystore.ErrKeyringNotFound) && st.path != "" {
 			if _, statErr := os.Lstat(st.path); statErr == nil {
 				st.useFile = true // row 2: never silently rotate a file-held key
 			}
@@ -147,8 +147,8 @@ func (s *agentAccessKeyStore) LoadAgentAccessKey() (AgentAccessKey, error) {
 		}
 		return decodeAgentAccessKey(string(b))
 	}
-	v, err := keyring.Get(s.service, recAgentAccessKey)
-	if errors.Is(err, keyring.ErrNotFound) {
+	v, err := keystore.KeyringGet(s.service, recAgentAccessKey)
+	if errors.Is(err, keystore.ErrKeyringNotFound) {
 		return AgentAccessKey{}, ErrNoSecret
 	}
 	if err != nil {
@@ -169,7 +169,7 @@ func (s *agentAccessKeyStore) SaveAgentAccessKey(k AgentAccessKey) error {
 		}
 		return nil
 	}
-	if err := keyring.Set(s.service, recAgentAccessKey, v); err != nil {
+	if err := keystore.KeyringSet(s.service, recAgentAccessKey, v); err != nil {
 		return fmt.Errorf("orgclient.SaveAgentAccessKey: %w", err)
 	}
 	return nil
@@ -185,7 +185,7 @@ func (s *agentAccessKeyStore) ClearAgentAccessKey() error {
 			errs = append(errs, err)
 		}
 	}
-	if err := keyring.Delete(s.service, recAgentAccessKey); err != nil && !errors.Is(err, keyring.ErrNotFound) && s.keychain {
+	if err := keystore.KeyringDelete(s.service, recAgentAccessKey); err != nil && !errors.Is(err, keystore.ErrKeyringNotFound) && s.keychain {
 		errs = append(errs, err)
 	}
 	if len(errs) > 0 {

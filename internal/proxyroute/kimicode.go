@@ -3,9 +3,6 @@ package proxyroute
 import (
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
 
 	"github.com/marmutapp/superbased-observer/internal/cfgfmt"
 	"github.com/marmutapp/superbased-observer/internal/credfile"
@@ -19,14 +16,19 @@ func openAICompatProxyURL(port int) string {
 }
 
 // resolveKimiCodeConfigPath returns <kimi-home>/config.toml. Precedence:
-// KIMI_CODE_HOME env > homeDir/.kimi-code. The proxy/route writer runs on
-// the daemon OS (Linux for the cross-OS WSL case), where kimi-code stores
-// its config under ~/.kimi-code.
-func resolveKimiCodeConfigPath(homeDir string) string {
-	if env := strings.TrimSpace(os.Getenv("KIMI_CODE_HOME")); env != "" {
-		return filepath.Join(env, "config.toml")
-	}
-	return filepath.Join(homeDir, ".kimi-code", "config.toml")
+// KIMI_CODE_HOME env > homeDir/.kimi-code (the kimi-code/user-config
+// artifact's rule). The proxy/route writer runs on the daemon OS (Linux for
+// the cross-OS WSL case), where kimi-code stores its config under
+// ~/.kimi-code. The inspector passes its inspection environment; the
+// writers resolve with the registrar's own lookup (kimiCodeConfigPath).
+func resolveKimiCodeConfigPath(homeDir string, getenv func(string) string) (string, error) {
+	return routeArtifactPath("proxyroute.kimi-code", kimiConfigArtifact, homeDir, getenv)
+}
+
+// kimiCodeConfigPath is the config.toml this registrar routes, resolved
+// with RegisterOptions.Getenv.
+func (r *Registrar) kimiCodeConfigPath(what string) (string, error) {
+	return routeArtifactPath(what, kimiConfigArtifact, r.opts.HomeDir, r.opts.Getenv)
 }
 
 // RegisterKimiCode points kimi-code's OpenAI-compatible provider at the
@@ -54,9 +56,13 @@ func (r *Registrar) RegisterKimiCode() RegistrationResult {
 // writeKimiCode is RegisterKimiCode without the provenance record.
 func (r *Registrar) writeKimiCode() RegistrationResult {
 	const what = "proxyroute.kimicode"
-	path := resolveKimiCodeConfigPath(r.opts.HomeDir)
+	path, perr := r.kimiCodeConfigPath(what)
 	want := openAICompatProxyURL(r.opts.ProxyPort)
 	res := RegistrationResult{Tool: "kimi-code", ConfigPath: path, BaseURL: want, DryRun: r.opts.DryRun}
+	if perr != nil {
+		res.Error = perr
+		return res
+	}
 	res.AlreadySet, res.Added, res.Error = r.addProbeBaseURL(what, cfgfmt.FormatTOML, path, kimiBaseURLPath, want, &res)
 	return res
 }

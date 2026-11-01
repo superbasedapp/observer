@@ -32,12 +32,15 @@ type orgStatusReport struct {
 	Tenancy        string
 	PushingEnabled bool
 	GovernanceLine string
-	Governed       bool
-	ShareRule      string
-	ShareLine      string
-	TargetActions  []string
-	Cursor         store.PushCursor
-	MaxIDs         store.PushCursor
+	// TenancyLine explains a managed-consent grant refused because it would
+	// cross tenancy (OSH-R-013, P-204); empty otherwise.
+	TenancyLine   string
+	Governed      bool
+	ShareRule     string
+	ShareLine     string
+	TargetActions []string
+	Cursor        store.PushCursor
+	MaxIDs        store.PushCursor
 	// Eligible is the per-table count of rows above Cursor
 	// (store.PushEligibleCounts), never MaxIDs minus Cursor (T-373).
 	Eligible       store.PushCursor
@@ -48,6 +51,9 @@ type orgStatusReport struct {
 	// IntelLine is the org-plane Cloud Intelligence consent line (design
 	// 3.7 step 3), empty unless something is pending.
 	IntelLine string
+	// Oversized is the daemon's report of snapshot rows too large for any
+	// push (family names and sizes only; store.LoadOrgPushOversizedRows).
+	Oversized []store.OrgPushOversizedRow
 }
 
 // collectOrgStatus computes the status report through the same seams the
@@ -62,7 +68,7 @@ func collectOrgStatus(ctx context.Context, b orgBundle) (orgStatusReport, error)
 		return rep, nil
 	}
 	rep.Tenancy = orgcontract.TenancyIndividual
-	if enr, eerr := b.store.LoadEnrolment(ctx); eerr == nil && enr.IsManaged() {
+	if managed, merr := orgclient.NodeManaged(ctx, b.store); merr == nil && managed { // P-204
 		rep.Tenancy = orgcontract.TenancyManaged
 	}
 	rep.GovernanceLine = governancePostureLine(ctx, b.store)
@@ -70,6 +76,7 @@ func collectOrgStatus(ctx context.Context, b orgBundle) (orgStatusReport, error)
 	if loader := governanceIdentityLoader(b.store); loader != nil {
 		if grant, _, gerr := loader(ctx); gerr == nil && grant != nil {
 			rep.Governed = true
+			rep.TenancyLine = managedConsentRefusalLine(grant)
 		}
 	}
 	// Share mode - the v1.8.0 per-node opt-in, read through the SAME
@@ -105,6 +112,10 @@ func collectOrgStatus(ctx context.Context, b orgBundle) (orgStatusReport, error)
 		rep.Tombstones, rep.Manifests = tomb, mans
 	}
 	rep.EligibleReason = pushEligibilityReason(eligibleTotal(rep.Eligible), historicalTotal(rep.MaxIDs), st.LastPush)
+	// Display-only: a read failure omits the line.
+	if ov, oerr := b.store.LoadOrgPushOversizedRows(ctx); oerr == nil {
+		rep.Oversized = ov
+	}
 	return rep, nil
 }
 
@@ -150,6 +161,10 @@ func printOrgStatus(out io.Writer, rep orgStatusReport) {
 		fmt.Fprintln(out, rep.GovernanceLine)
 		fmt.Fprintln(out)
 	}
+	if rep.TenancyLine != "" {
+		fmt.Fprintln(out, rep.TenancyLine)
+		fmt.Fprintln(out)
+	}
 	if rep.IntelLine != "" {
 		fmt.Fprintln(out, rep.IntelLine)
 		fmt.Fprintln(out)
@@ -190,6 +205,9 @@ func printOrgStatus(out io.Writer, rep orgStatusReport) {
 		fmt.Fprintf(out, "Last push:        %s - %s, %d rows, %d bytes%s\n",
 			lp.PushedAt, lp.Status, lp.RowCount, lp.Bytes, errSuffix(lp.Error))
 	}
+	for _, r := range rep.Oversized {
+		fmt.Fprintf(out, "Unshippable rows: %s\n", r.Summary())
+	}
 }
 
 // grantShowReport is `observer org grant show`.
@@ -224,11 +242,11 @@ type governedFamilyRow struct {
 func governedFamilyRows(authority []string, policy config.OrgClientPolicyConfig) []governedFamilyRow {
 	families := govern.GovernedFamilies(authority)
 	accepted := make(map[string]bool, len(policy.AcceptFamilies))
-	for _, f := range policy.AcceptFamilies {
+	for _, f := range policy.AcceptedFamilies() {
 		accepted[f] = true
 	}
 	preauth := make(map[string]bool, len(policy.PreauthorizeEnforce))
-	for _, f := range policy.PreauthorizeEnforce {
+	for _, f := range policy.PreauthorizedFamilies() {
 		preauth[f] = true
 	}
 	rows := make([]governedFamilyRow, 0, len(families))
@@ -264,6 +282,21 @@ func grantConsentLine(g *govern.Grant) string {
 	default:
 		return g.ConsentMode + " (from the enrolment type)" + actor()
 	}
+}
+
+// managedConsentRefusalLine is the plain-language line for a grant that
+// claims managed consent and carries authority but is REFUSED as managed
+// because it would cross tenancy (OSH-R-013, P-204), naming why. A node whose
+// org switched it to enterprise is managed and prints nothing; so does a
+// node whose org switched back (its narrowing grant claims nothing).
+func managedConsentRefusalLine(g *govern.Grant) string {
+	why := govern.ManagedConsentRefusal(g)
+	if why == "" {
+		return ""
+	}
+	return "Managed:      REFUSED - " + why + ",\n" +
+		"              so the managed consent this grant claims is not honoured (no enforce.*,\n" +
+		"              extract.managed or managed dashboard visibility)."
 }
 
 // grantKeyVerdict answers "is this grant bound to the key I pin?".
@@ -348,6 +381,9 @@ func printGrantShow(out io.Writer, rep grantShowReport, cfg config.Config, confi
 	fmt.Fprintf(out, "Granted at:   %s\n", formatGrantStamp(grant.GrantedAt))
 	fmt.Fprintln(out, expiryLine(grant, rep.Row))
 	fmt.Fprintf(out, "Consent:      %s\n", grantConsentLine(grant))
+	if line := managedConsentRefusalLine(grant); line != "" {
+		fmt.Fprintln(out, line)
+	}
 	fmt.Fprintf(out, "Receipt:      %s\n", grant.ReceiptHash)
 	fmt.Fprintln(out, "\nAuthority granted:")
 	for _, tok := range grant.Authority {

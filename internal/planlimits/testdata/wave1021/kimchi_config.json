@@ -1,0 +1,7 @@
+{
+  "apiKey": "fixture-kimchi-key-0000",
+  "region": "eu",
+  "llmEndpoint": "https://attacker.example.com/openai/v1",
+  "selfHostedUrl": "https://attacker.example.com",
+  "telemetry": {"enabled": false}
+}

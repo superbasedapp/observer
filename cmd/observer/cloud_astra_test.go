@@ -340,44 +340,32 @@ func seedLongAstraSession(t *testing.T, dbPath, sessionID string, total, buildRo
 		t.Fatalf("insert session: %v", err)
 	}
 	longEnv := "SBO_LONG_VALUE=" + strings.Repeat("x", 600) + " "
-	tx, err := database.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	stmt, err := tx.PrepareContext(ctx, `
+	// One INSERT ... SELECT over a recursive sequence writes the same rows
+	// the per-row loop did (same kinds, targets, success flags, RFC3339
+	// timestamps one second apart and source_event_ids), inside SQLite, so
+	// the 60k-row fixture no longer costs 60k driver round trips. edit_file,
+	// not read_file: the filler rows must be OUTCOME-BEARING, so the
+	// kind-bounded head+tail population is genuinely 60k rows deep and the
+	// build at buildRow genuinely falls in its omitted middle. That build is
+	// the LAST build of the session, and it FAILED; it is followed by far
+	// more than a tail window's worth of rows.
+	if _, err := database.ExecContext(ctx, `
+		WITH RECURSIVE seq(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM seq WHERE i + 1 < ?1)
 		INSERT INTO actions (session_id, project_id, timestamp, action_type, tool, success, target,
 		                     raw_tool_name, raw_tool_input, error_message, is_sidechain, source_file, source_event_id)
-		VALUES (?, ?, ?, ?, 'claude-code', ?, ?, '', '', '', 0, 'f', ?)`)
-	if err != nil {
-		t.Fatalf("prepare: %v", err)
-	}
-	base := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
-	for i := 0; i < total; i++ {
-		// edit_file, not read_file: the filler rows must be OUTCOME-BEARING, so
-		// the kind-bounded head+tail population is genuinely 60k rows deep and
-		// the build below genuinely falls in its omitted middle.
-		kind, target, success := "edit_file", "/tmp/astra-long/f"+strconv.Itoa(i)+".go", 1
-		switch i {
-		case buildRow:
-			// The LAST build of the session, and it FAILED. It sits deep in the
-			// middle, followed by far more than a tail window's worth of rows.
-			kind, target, success = "run_command", "go build ./cmd/observer", 0
-		case total - 2:
-			kind, target = "run_command", "go test ./internal/store/..."
-		case total - 1:
-			kind, target = "run_command", longEnv+"go test ./cmd/..."
-		}
-		if _, err := stmt.ExecContext(ctx, sessionID, projectID,
-			base.Add(time.Duration(i)*time.Second).Format(time.RFC3339Nano),
-			kind, success, target, sessionID+"-a"+strconv.Itoa(i)); err != nil {
-			t.Fatalf("insert action %d: %v", i, err)
-		}
-	}
-	if err := stmt.Close(); err != nil {
-		t.Fatalf("close stmt: %v", err)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatalf("commit: %v", err)
+		SELECT ?2, ?3,
+		       strftime('%Y-%m-%dT%H:%M:%SZ', '2026-08-01 00:00:00', '+' || i || ' seconds'),
+		       CASE WHEN i IN (?4, ?5, ?6) THEN 'run_command' ELSE 'edit_file' END,
+		       'claude-code',
+		       CASE WHEN i = ?4 THEN 0 ELSE 1 END,
+		       CASE i WHEN ?4 THEN 'go build ./cmd/observer'
+		              WHEN ?5 THEN 'go test ./internal/store/...'
+		              WHEN ?6 THEN ?7 || 'go test ./cmd/...'
+		              ELSE '/tmp/astra-long/f' || i || '.go' END,
+		       '', '', '', 0, 'f', ?2 || '-a' || i
+		  FROM seq`,
+		total, sessionID, projectID, buildRow, total-2, total-1, longEnv); err != nil {
+		t.Fatalf("insert actions: %v", err)
 	}
 }
 

@@ -1,0 +1,27 @@
+{
+ "number": 14706,
+ "state": "closed",
+ "draft": false,
+ "title": "chore(deps): bump actions/create-github-app-token from 3.2.0 to 3.3.0",
+ "html_url": "https://github.com/cli/cli/pull/14706",
+ "created_at": "2026-10-15T14:05:39Z",
+ "updated_at": "2026-10-15T15:15:13Z",
+ "closed_at": "2026-10-15T15:15:11Z",
+ "merged_at": "2026-10-15T15:15:11Z",
+ "merge_commit_sha": "59e9f78eacdf2554f8534d166808c3e9b8c7ebcb",
+ "merged": true,
+ "mergeable": null,
+ "mergeable_state": "unknown",
+ "commits": 2,
+ "head": {
+  "sha": "1b0eb4096d53d0c8c35f76cf2aad62529083d93d",
+  "ref": "dependabot/github_actions/actions/create-github-app-token-3.3.0"
+ },
+ "base": {
+  "ref": "trunk",
+  "sha": "819f972eff771d5ec433c8d03c369cc43f1eab49"
+ },
+ "user": {
+  "login": "dependabot[bot]"
+ }
+}

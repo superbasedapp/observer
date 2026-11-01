@@ -65,6 +65,7 @@ var ManagedNavDefaults = []ManagedDefault{
 	{"actions", VisibilityVisible, "The developer's own captured tool calls."},
 	{"projects", VisibilityVisible, "The developer's own per-project spend, commits and guidance files."},
 	{"security", VisibilityHidden, "Guard verdicts, rule editing, approvals, prompt-guard and MCP pins: guard configuration the organization owns on a managed machine."},
+	{"code-security", VisibilityHidden, "Code security findings and the commit-gate posture: hidden by default like Guard's page, which the organization may expose."},
 	{"egress", VisibilityHidden, "Plane-A egress routing of a hosted app's end-user traffic: organization policy, not the developer's own usage."},
 	{"search", VisibilityVisible, "Full-text search over the developer's own sessions."},
 	{"cost", VisibilityVisible, "The developer's own spend (or token usage, per the organization's display policy) and budgets."},
@@ -83,6 +84,7 @@ var ManagedNavDefaults = []ManagedDefault{
 	{"privacy", VisibilityVisible, "Transparency: what is captured and shared. Can never be hidden."},
 	{"terminals", VisibilityVisible, "The developer's own agent terminals and launch settings."},
 	{"remote", VisibilityReadOnly, "Exposing the machine remotely is a machine-security decision; the developer still sees whether it is on and who connected."},
+	{"messages", VisibilityVisible, "Conversations between the developer and their organization's admins (D-695). Can never be hidden."},
 	{"requests", VisibilityVisible, "Where the developer asks the organization for an exception and follows the answer (D-089). Can never be hidden."},
 	{"settings", VisibilityVisible, "Carries enrolment and unenrol. Can never be hidden."},
 }

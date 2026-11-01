@@ -1,0 +1,2 @@
+{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"gosec","version":"2.21.4","rules":[{"id":"G101","shortDescription":{"text":"creds"},"properties":{"precision":"low"}}]}},
+ "results":[{"ruleId":"G101","level":"error","message":{"text":"Potential hardcoded credentials"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"file:///C:/Work/Project/cmd/main.go"},"region":{"startLine":7}}}]}]}]}

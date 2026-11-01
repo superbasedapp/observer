@@ -129,13 +129,25 @@ func WritePlugin(destDir, defaultObserverBin, configPath, observerDir string) er
 // WritePluginEvents is WritePlugin subscribing exactly events (a subset of
 // Events, e.g. EventsExcept's result).
 func WritePluginEvents(destDir, defaultObserverBin, configPath, observerDir string, events map[string]string) error {
+	_, err := pluginshim.Write(destDir, host(), nativeOptions(defaultObserverBin, configPath, observerDir, events))
+	return err
+}
+
+// RenderPluginEvents returns the exact bytes WritePluginEvents writes, so a
+// registrar can tell a current mod from a stale or hand-edited one (T-847:
+// byte-exact currency, as the plugin-shim writer already does).
+func RenderPluginEvents(defaultObserverBin, configPath, observerDir string, events map[string]string) ([]byte, error) {
+	return pluginshim.Render(host(), nativeOptions(defaultObserverBin, configPath, observerDir, events))
+}
+
+// nativeOptions is the one builder of a native install's render options.
+func nativeOptions(defaultObserverBin, configPath, observerDir string, events map[string]string) pluginshim.RenderOptions {
 	o := pluginshim.RenderOptions{Events: events, Bin: defaultObserverBin, Config: configPath, PostureSchema: postureSchema}
 	if observerDir != "" {
 		o.PosturePath = filepath.Join(observerDir, postureFile)
 		o.SpoolPath = filepath.Join(observerDir, spoolFile)
 	}
-	_, err := pluginshim.Write(destDir, host(), o)
-	return err
+	return o
 }
 
 // WritePluginBridge renders the shim for the command-code-windows cross-OS
@@ -151,14 +163,26 @@ func WritePluginBridge(destDir, wslBin, distro, configPath string) error {
 
 // WritePluginBridgeEvents is WritePluginBridge subscribing exactly events.
 func WritePluginBridgeEvents(destDir, wslBin, distro, configPath string, events map[string]string) error {
-	_, err := pluginshim.Write(destDir, host(), pluginshim.RenderOptions{
-		Events: events, Bin: "observer", Config: configPath, WSLBin: wslBin, WSLDistro: distro,
-	})
+	_, err := pluginshim.Write(destDir, host(), bridgeOptions(wslBin, distro, configPath, events))
 	return err
 }
 
+// RenderPluginBridgeEvents returns the exact bytes WritePluginBridgeEvents
+// writes (see RenderPluginEvents).
+func RenderPluginBridgeEvents(wslBin, distro, configPath string, events map[string]string) ([]byte, error) {
+	return pluginshim.Render(host(), bridgeOptions(wslBin, distro, configPath, events))
+}
+
+// bridgeOptions is the one builder of a bridge install's render options.
+func bridgeOptions(wslBin, distro, configPath string, events map[string]string) pluginshim.RenderOptions {
+	return pluginshim.RenderOptions{
+		Events: events, Bin: "observer", Config: configPath, WSLBin: wslBin, WSLDistro: distro,
+	}
+}
+
 // RemovePlugin removes the observer-owned mod file from destDir, if
-// present. Never errors on an already-absent file.
+// present. Never errors on an already-absent file; a file there that is not
+// an observer-written mod is kept (pluginshim.ErrNotObserverShim, FU-212).
 func RemovePlugin(destDir string) error {
 	return pluginshim.Remove(destDir, host())
 }

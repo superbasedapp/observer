@@ -1,0 +1,19 @@
+rules:
+  - id: csharp.shell-interpolation
+    languages: [csharp]
+    severity: ERROR
+    message: A shell command line is built with values pasted in; start the program directly with an ArgumentList instead.
+    metadata:
+      category: code_vuln
+      cwe: CWE-78
+    patterns:
+      - pattern-either:
+          - pattern: Process.Start("$SH", $ARGS)
+          - pattern: 'new ProcessStartInfo { ..., FileName = "$SH", ..., Arguments = $ARGS, ... }'
+          - pattern: new ProcessStartInfo("$SH", $ARGS)
+      - metavariable-regex:
+          metavariable: $SH
+          regex: (?i)^(cmd|cmd\.exe|powershell|powershell\.exe|pwsh|pwsh\.exe|sh|bash|/bin/sh|/bin/bash)$
+      - metavariable-regex:
+          metavariable: $ARGS
+          regex: (?is)^(\$@?"\s*(/c|/k|-c|-command)\b.*\{.*|"\s*(/c|/k|-c|-command)\b[^"]*"\s*\+.*|string\.Format\(\s*"\s*(/c|/k|-c|-command)\b.*)$

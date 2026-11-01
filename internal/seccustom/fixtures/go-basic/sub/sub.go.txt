@@ -1,0 +1,8 @@
+// Package sub holds a finding in a subpackage, so the self-test also proves
+// the driver scanned the whole module.
+package sub
+
+import "crypto/sha1" // G505
+
+// Sum hashes b with SHA-1.
+func Sum(b []byte) [20]byte { return sha1.Sum(b) }

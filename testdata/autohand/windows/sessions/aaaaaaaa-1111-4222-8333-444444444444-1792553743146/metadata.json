@@ -1,0 +1,26 @@
+{
+  "sessionId": "aaaaaaaa-1111-4222-8333-444444444444-1792553743146",
+  "createdAt": "2026-10-21T03:35:43.148Z",
+  "lastActiveAt": "2026-10-21T03:41:18.103Z",
+  "projectPath": "C:\\Users\\user\\proj",
+  "projectName": "proj",
+  "model": "minimax/minimax-m3.1-flash:free",
+  "messageCount": 27,
+  "status": "completed",
+  "client": "terminal",
+  "title": "Create a hello world python file run",
+  "titleSource": "auto",
+  "usage": {
+    "promptTokens": 198106,
+    "completionTokens": 2420,
+    "totalTokens": 200526,
+    "cacheReadTokens": 108832,
+    "cacheWriteTokens": 0,
+    "turnCount": 1,
+    "tokenUsageStatus": "actual",
+    "longestTurnDurationMs": 36191,
+    "updatedAt": "2026-10-21T03:37:31.491Z"
+  },
+  "closedAt": "2026-10-21T03:41:18.103Z",
+  "summary": "Create a hello world python file, run it. Update it to read "
+}

@@ -1,10 +1,19 @@
 # Applies to every image built with the REPO ROOT as context
-# (deploy/observer-edge, Dockerfile.observer-org, deploy/observer-gateway).
-# Those are all pure-Go builds; every go:embed asset lives under internal/
-# (the dashboards embed internal/*/webapp/dist, not web//web2/ directly), so
-# the web sources, distribution channels, and the private marketing/site
-# trees are dead weight in the build context (~20 GB without this file).
+# (Dockerfile.observer-org, Dockerfile.observer-mcpgw, Dockerfile.observer-cloud,
+# deploy/observer-{devnode,node,edge,gateway}/Dockerfile). Those are all
+# pure-Go builds; every go:embed asset lives under internal/ (the dashboards
+# embed internal/*/webapp/dist, not web//web2/ directly), so the web sources,
+# distribution channels, and the private marketing/site trees are dead weight
+# in the build context (~20 GB without this file).
 # harness-gateway builds from its OWN directory context and is unaffected.
+#
+# RULE (tests/invariant/dockerignore_test.go pins it): every `!` exception in
+# this file is a plain path, never a wildcard (* ? [ ]). One wildcard
+# exception makes BuildKit walk INTO every excluded directory looking for
+# re-included files, so an excluded directory the builder cannot read (the
+# demo box's state/router/caddy, root 0700 once Caddy has run in direct
+# public mode) still fails the build with "permission denied". Exclusions
+# may use wildcards freely.
 
 .git
 .wrangler
@@ -30,15 +39,57 @@ npm
 pypi
 docs
 # docs/embed.go embeds the eight deployment runbooks into observer-org
-# (`observer-org deploy export`); the root-level markdown must stay in the
-# context or the go:embed pattern fails the image build. Only docs/*.md is
-# re-included (180 files / 5.6 MB) plus the embed declaration itself;
-# docs/ subdirectories stay excluded.
-!docs/*.md
+# (`observer-org deploy export`); exactly those files plus the embed
+# declaration are re-included, or the go:embed pattern fails the image build.
+# Named one by one (see RULE above); the invariant test checks this list
+# against docs/embed.go's go:embed line.
 !docs/embed.go
+!docs/deploy-observer-org-production.md
+!docs/private-datacenter-deployment.md
+!docs/teams-getting-started.md
+!docs/teams-operations.md
+!docs/teams-architecture.md
+!docs/enterprise-updates.md
+!docs/aigateway-runbook.md
+!docs/harness-sdk-playbook.md
 browser-extension
 observer
 observer.exe
 *.log
 node_modules
 **/node_modules
+
+# --- Deploy-kit runtime state and operator secrets (T-936) -------------------
+# Every Dockerfile above has a `COPY . .` build stage, so anything a deploy
+# kit leaves in the working tree reaches that stage and the builder's cache
+# whenever an image is built from a checkout that is also a running kit (the
+# demo box builds from ~/sbo-demo, which IS its kit). deploy/embed.go also
+# go:embeds all:observer-org/production and all:modules, so a filled .env,
+# a secrets/ directory or a local tofu state there would land IN the
+# observer-org binary. Release images build from `git archive` and never
+# carried any of this; working-tree builds could.
+#
+# Box kits' generated state: database, broker and sidecar passwords, keys,
+# rendered config, Caddy's certificate store.
+deploy/demo-box/state
+deploy/cloud-box/state
+# Operator-created secret directories the compose files bind-mount.
+deploy/observer-org/production/secrets
+deploy/observer-gateway/config
+# Every .env and .env.* at any depth: the demo box's .env, keygen.sh's
+# deploy/observer-org/.env, a filled production or observer-mcpgw .env.
+# The OpenTofu test-bundle .env fixtures under deploy/modules/**/tests/ go
+# too; `observer-org deploy export` never ships tests/ (deploybundle prunes it).
+**/.env
+**/.env.*
+# The one template a build needs: observer-org go:embeds it for
+# `observer-org deploy export`.
+!deploy/observer-org/production/.env.example
+# Local OpenTofu state, its provider cache and filled tfvars. The committed
+# tfvars fixtures live deeper (tests/fixtures/) and stay.
+**/*.tfstate
+**/*.tfstate.*
+**/.terraform
+deploy/modules/*/*/*/*.tfvars
+deploy/modules/*/*/*/*.tfvars.json
+deploy/ops/**/*.tfvars

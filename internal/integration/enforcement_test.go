@@ -68,7 +68,7 @@ var wantEnforcementChannel = map[string]EnforcementChannel{
 	// drives a proxy route, so refusing to route is the only lever. No row
 	// derives it today; the ladder rung stays for a future proxy-only row.
 
-	// recorded_acceptance (14): no grounded lever at all — no blocking hook,
+	// recorded_acceptance (24): no grounded lever at all — no blocking hook,
 	// no launcher, no proxy route. The five *-web rows are browser-capture
 	// only; the rest are watcher/SQLite-only or IDE-extension surfaces.
 	"cline":       EnforceRecordedAcceptance,
@@ -88,6 +88,18 @@ var wantEnforcementChannel = map[string]EnforcementChannel{
 	"gemini-web":     EnforceRecordedAcceptance,
 	"copilot-web":    EnforceRecordedAcceptance,
 	"grokbot":        EnforceRecordedAcceptance,
+	// The 2026-10-21 wave: hook-gated (autohand live E2E on WSL 2026-10-22,
+	// still `observer init`-only), no launcher, no proxy route.
+	"autohand":        EnforceHookBlock,
+	"ibm-bob":         EnforceHookBlock,
+	"cortex-code":     EnforceHookBlock,
+	"codebuddy":       EnforceHookBlock,
+	"deepagents-code": EnforceHookBlock,
+	"dimcode":         EnforceHookBlock,
+	"dirac":           EnforceHookBlock,
+	"kimchi":          EnforceHookBlock,
+	"stakpak":         EnforceRecordedAcceptance,
+	"vtcode":          EnforceHookBlock,
 }
 
 // TestEnforcementChannelClassifiedForEveryAdapter pins the honesty rule for

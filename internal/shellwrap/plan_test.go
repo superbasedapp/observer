@@ -184,7 +184,7 @@ func TestCandidatesComeFromTheSeam(t *testing.T) {
 				t.Fatalf("%s: %s not a WrappedCommandFor hit", goos, c.ID)
 			}
 			if c.Kind != w.Kind || c.Routes != w.Routes || c.TrafficProven != w.TrafficProven ||
-				c.Wrapped != "observer "+strings.Join(w.Args, " ") {
+				c.RouteFlag != w.RouteFlag || c.Wrapped != "observer "+strings.Join(w.Args, " ") {
 				t.Fatalf("%s: %s diverges from the seam: %+v vs %+v", goos, c.ID, c, w)
 			}
 			if h, _ := HonestyFor(w); h != c.Honesty {
@@ -197,6 +197,20 @@ func TestCandidatesComeFromTheSeam(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestCandidateCarriesTheRouteFlag (FU-12): goose's route needs the opt-in
+// --proxy launcher flag, so its candidate names it for the Settings card.
+func TestCandidateCarriesTheRouteFlag(t *testing.T) {
+	for _, c := range Candidates("linux") {
+		if c.ID == "goose" {
+			if c.RouteFlag != "--proxy" {
+				t.Fatalf("goose RouteFlag = %q, want --proxy", c.RouteFlag)
+			}
+			return
+		}
+	}
+	t.Fatal("goose is not a shell-wrap candidate")
 }
 
 // TestProbeOnlyGUIRowsAreNeverShimmed: a ProbeOnly row's spelling collides

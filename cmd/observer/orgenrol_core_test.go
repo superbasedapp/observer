@@ -169,7 +169,7 @@ func TestWriteAcceptedGrantPolicy(t *testing.T) {
 // run from another build registers against the running daemon's binary.
 func TestEnrolWireBinary(t *testing.T) {
 	const self, daemon, other, db = "/opt/new/observer", "/opt/daemon/observer", "/opt/other/observer", "/h/.observer/observer.db"
-	onDisk := func(p string) bool { return p != "/opt/gone/observer" }
+	onDisk := func(p string) bool { return filepath.ToSlash(p) != "/opt/gone/observer" }
 	lock := func(bin, dbPath string) diag.LockInfo { return diag.LockInfo{PID: 1, BinaryPath: bin, DBPath: dbPath} }
 	cases := []struct {
 		name     string
@@ -188,7 +188,8 @@ func TestEnrolWireBinary(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got, note := enrolWireBinary(self, db, tc.live, onDisk)
-			if got != tc.want || (note != "") != tc.wantNote {
+			// The binary path is cleaned with the host's separator.
+			if filepath.Clean(got) != filepath.Clean(tc.want) || (note != "") != tc.wantNote {
 				t.Fatalf("enrolWireBinary = (%q, %q), want %q with note=%v", got, note, tc.want, tc.wantNote)
 			}
 			if strings.ContainsAny(note, "\u2014\u2013") {
@@ -283,5 +284,38 @@ func TestEnrolDashboardResync(t *testing.T) {
 		if rep.Queued != 0 || rep.Manifests != 0 {
 			t.Fatalf("a fresh enrolment queued %d rows / %d manifests", rep.Queued, rep.Manifests)
 		}
+	}
+}
+
+// TestEnrolWireBinaryWindowsCase (WINFIX2 audit finding 10): Windows file
+// names are case-insensitive, so a daemon lock spelling this binary or the
+// database in another case is the same binary on the same database there,
+// and two such spellings are not "daemons disagree". On Linux they stay
+// different files.
+func TestEnrolWireBinaryWindowsCase(t *testing.T) {
+	const self, db = `C:\Tools\Observer\observer.exe`, `C:\Users\dev\.observer\observer.db`
+	const selfOther, dbOther = `c:\tools\observer\OBSERVER.EXE`, `c:\users\DEV\.observer\observer.db`
+	onDisk := func(string) bool { return true }
+	lock := func(bin, dbPath string) diag.LockInfo { return diag.LockInfo{PID: 1, BinaryPath: bin, DBPath: dbPath} }
+	cases := []struct {
+		name, goos string
+		live       []diag.LockInfo
+		wantNote   bool
+	}{
+		{"this binary in another case", "windows", []diag.LockInfo{lock(selfOther, dbOther)}, false},
+		{"two spellings of one daemon binary", "windows", []diag.LockInfo{lock(selfOther, db), lock(self, db)}, false},
+		{"on linux another case is another binary", "linux", []diag.LockInfo{lock(selfOther, db)}, true},
+	}
+	for _, tc := range cases {
+		got, note := enrolWireBinaryOn(tc.goos, self, db, tc.live, onDisk)
+		if (note != "") != tc.wantNote {
+			t.Errorf("%s: enrolWireBinaryOn = (%q, %q), want a note = %v", tc.name, got, note, tc.wantNote)
+		}
+		if !tc.wantNote && !samePathOn(tc.goos, got, self) {
+			t.Errorf("%s: picked %q, want this binary", tc.name, got)
+		}
+	}
+	if !samePathOn("windows", self, selfOther) || samePathOn("linux", self, selfOther) {
+		t.Fatal("samePathOn does not fold case on windows only")
 	}
 }

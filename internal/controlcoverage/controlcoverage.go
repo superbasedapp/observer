@@ -130,6 +130,28 @@ type Row struct {
 	// Observer reaches it on this tool and the first non-hook seam that can
 	// stand in for it. Additive: every field above keeps its value.
 	Caps map[integration.HookCap]CapCoverage
+	// Surfaces is the per-capture-surface posture (surfaceposture.go): for
+	// every surface the registry declares a route or hook row for, how far
+	// the tool-call gate and the proxy route reach it. Empty when none is
+	// declared. RouteProof above is the tool-wide answer: proven only when
+	// every declared surface that produces sessions is (AW-48).
+	Surfaces []SurfacePosture
+	// RouteNotObserved names ("ide/xcode") the declared surfaces the
+	// tool-wide RouteProof skipped: in a registry-only view (and its node
+	// fallback), the surfaces no adapter can produce yet
+	// (integration.SurfaceRoute.NoProducer); in an observed node view, every
+	// surface with zero sessions on the node. PostureText words the reason
+	// per RouteProofBasis, so a skip is never silent. Empty when nothing was
+	// skipped.
+	RouteNotObserved []string
+	// RouteProofBasis says what RouteProof was computed from (AW-48).
+	RouteProofBasis RouteProofBasis
+	// RouteBasisNote says why a node view fell back to the registry
+	// (RouteBasisRegistryFallback); empty otherwise.
+	RouteBasisNote string
+	// ReplayedVia lists the tools whose own hook registration this tool's
+	// wired gates ride (HookBinding.ReplayedVia, W-2b).
+	ReplayedVia []string
 }
 
 // promptSubmitEvents is the closed set of guard.ConformanceMatrix channel
@@ -142,12 +164,14 @@ type Row struct {
 // conformance row naming one of these events is a prompt-submit row
 // regardless of which tool it belongs to.
 var promptSubmitEvents = map[string]bool{
-	"hook:UserPromptSubmit":   true,
-	"hook:userPromptSubmit":   true, // kiro-cli's lowercase spelling
-	"hook:BeforeAgent":        true, // gemini-cli
-	"hook:beforeSubmitPrompt": true, // cursor
-	"hook:pre_user_prompt":    true, // devin / Windsurf-Cascade
-	"hook:transformInput":     true, // command-code (Mods SDK, not a shell hook)
+	"hook:UserPromptSubmit":    true,
+	"hook:userPromptSubmit":    true, // kiro-cli's lowercase spelling
+	"hook:BeforeAgent":         true, // gemini-cli
+	"hook:beforeSubmitPrompt":  true, // cursor
+	"hook:pre_user_prompt":     true, // devin / Windsurf-Cascade
+	"hook:transformInput":      true, // command-code (Mods SDK, not a shell hook)
+	"hook:userPromptSubmitted": true, // copilot-cli (command hook, live 2026-10-15)
+	"hook:beforeModel":         true, // cline-cli (Plugin API, live 2026-10-15)
 }
 
 // Rows returns the full, tool-sorted control-coverage table: one row per
@@ -210,12 +234,47 @@ func For(tool string) (Row, bool) {
 	return buildRow(c, guard.ConformanceMatrix()), true
 }
 
+// ForObserved is For with the tool-wide RouteProof counted over the
+// surfaces this node produced sessions on (AW-48): groups are the node's
+// session groups of tool (store.LoadSurfaceSessionCounts). A declared
+// surface with no observed session is skipped and named in
+// RouteNotObserved. With no evidence, or with evidence it cannot judge, the
+// row falls back to the registry proof and says why
+// (RouteBasisRegistryFallback; observedBasisRules).
+func ForObserved(tool string, groups []SurfaceSession) (Row, bool) {
+	c, ok := integration.For(tool)
+	if !ok {
+		return Row{}, false
+	}
+	ev := placeSessions(c, groups)
+	for _, rule := range observedBasisRules {
+		if note, hit := rule.hit(c, ev); hit {
+			basis := RouteBasisRegistryFallback
+			if note == "" {
+				basis = RouteBasisRegistry
+			}
+			row := buildRowSeen(c, guard.ConformanceMatrix(), nil, basis)
+			row.RouteBasisNote = note
+			return row, true
+		}
+	}
+	return buildRowSeen(c, guard.ConformanceMatrix(), ev.seen, RouteBasisObserved), true
+}
+
 func buildRow(c integration.Capability, matrix []guard.ConformanceEntry) Row {
+	return buildRowSeen(c, matrix, nil, RouteBasisRegistry)
+}
+
+// buildRowSeen builds a row; seen nil is the registry-only proof.
+func buildRowSeen(c integration.Capability, matrix []guard.ConformanceEntry, seen SurfaceSeen, basis RouteProofBasis) Row {
+	proof, skipped := toolRouteProofSeen(c, seen)
 	row := Row{
-		Tool:            c.Tool,
-		ToolCallChannel: c.EnforcementChannel(),
-		BudgetChannel:   c.BudgetAdmissionChannel(),
-		RouteProof:      routeProofFor(c),
+		Tool:             c.Tool,
+		ToolCallChannel:  c.EnforcementChannel(),
+		BudgetChannel:    c.BudgetAdmissionChannel(),
+		RouteProof:       proof,
+		RouteNotObserved: skipped,
+		RouteProofBasis:  basis,
 	}
 	row.PromptSubmit, row.Note = promptSubmitFor(c, matrix)
 	row.PromptWarnBeforeModel = c.Hook.PromptWarnOnly && c.Hook.Mechanism != integration.HookNone
@@ -225,17 +284,9 @@ func buildRow(c integration.Capability, matrix []guard.ConformanceEntry) Row {
 		row.PromptProxyScope = c.Proxy.PromptScope
 	}
 	row.Caps = capsFor(c)
+	row.Surfaces = SurfacePostures(c)
+	row.ReplayedVia = replayedVia(c)
 	return row
-}
-
-func routeProofFor(c integration.Capability) RouteProofState {
-	if c.Proxy == nil {
-		return RouteProofStateNone
-	}
-	if c.RouteProven() {
-		return RouteProofStateProven
-	}
-	return RouteProofStateUnproven
 }
 
 func promptSubmitFor(c integration.Capability, matrix []guard.ConformanceEntry) (PromptSubmitChannel, string) {

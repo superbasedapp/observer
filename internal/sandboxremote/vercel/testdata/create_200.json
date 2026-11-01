@@ -1,0 +1,33 @@
+{
+  "sandbox": {
+    "name": "observer-run-1",
+    "persistent": false,
+    "status": "running",
+    "currentSessionId": "sbx_abc123",
+    "region": "iad1",
+    "vcpus": 2,
+    "memory": 4096,
+    "timeout": 2700000,
+    "networkPolicy": {"mode": "deny-all"},
+    "tags": {"observer-run": "run-1"},
+    "createdAt": 1792800000000,
+    "updatedAt": 1792800000000
+  },
+  "session": {
+    "id": "sbx_abc123",
+    "status": "pending",
+    "memory": 4096,
+    "vcpus": 2,
+    "region": "iad1",
+    "timeout": 2700000,
+    "cwd": "/vercel/sandbox",
+    "requestedAt": 1792800000000,
+    "startedAt": 1792800001000,
+    "networkPolicy": {"mode": "deny-all"},
+    "projectId": "prj_FAKE",
+    "architecture": "amd64",
+    "createdAt": 1792800000000,
+    "updatedAt": 1792800000000
+  },
+  "routes": []
+}

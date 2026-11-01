@@ -62,6 +62,9 @@ func storeCases(t *testing.T) map[string]Store {
 func TestStoreContract(t *testing.T) {
 	for name, s := range storeCases(t) {
 		t.Run(name, func(t *testing.T) {
+			if name == "file" && !FileFallbackSecure() {
+				t.Skip("the 0600 file fallback is unix-only; Windows fails closed instead (FileFallbackSecure)")
+			}
 			if _, err := s.Get("k1"); !errors.Is(err, ErrNotFound) {
 				t.Fatalf("Get empty = %v, want ErrNotFound", err)
 			}
@@ -103,6 +106,9 @@ func TestStoreContract(t *testing.T) {
 }
 
 func TestFileBackendModeAndNaming(t *testing.T) {
+	if !FileFallbackSecure() {
+		t.Skip("the 0600 file fallback is unix-only; Windows fails closed instead (keystore.FileFallbackSecure)")
+	}
 	dir := filepath.Join(t.TempDir(), "cred")
 	b := FileBackend{Dir: dir, Service: testService}
 	if err := b.Write("rec", []byte("secret")); err != nil {

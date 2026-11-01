@@ -121,6 +121,8 @@ func Validate(req Request, s Settings) (Normalized, []Problem) {
 	switch {
 	case req.DurationS < 0:
 		probs = append(probs, Problem{Field: "requested_duration_s", Code: CodeOutOfRange, Message: "the duration cannot be negative"})
+	case req.DurationS == 0 && t.ExpiryRequired:
+		probs = append(probs, Problem{Field: "requested_duration_s", Code: CodeRequired, Message: "say how long you need it: a " + strings.ToLower(t.Label) + " always has an expiry"})
 	case req.DurationS == 0:
 		out.Duration = DefaultDuration
 	default:

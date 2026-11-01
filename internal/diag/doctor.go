@@ -17,10 +17,15 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/codextrust"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/hook"
+	"github.com/marmutapp/superbased-observer/internal/installshape"
 	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/mcpregister"
 	"github.com/marmutapp/superbased-observer/internal/models"
+	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
+	"github.com/marmutapp/superbased-observer/internal/proxyroute"
 	"github.com/marmutapp/superbased-observer/internal/remedy"
+	"github.com/marmutapp/superbased-observer/internal/supervisor"
 )
 
 // Status is the outcome of a single check. Three levels — anything other
@@ -105,6 +110,13 @@ type DoctorOptions struct {
 	DB *sql.DB
 	// HomeDir overrides $HOME (for tests).
 	HomeDir string
+	// Getenv reads the variables that relocate a tool's config home
+	// (CODEX_HOME today, through the agentconfig rule on codex/user-config;
+	// surface-gap Wave 4 CX-4). nil is the one pinned-home rule
+	// (crossmount.HomeEnv, R-188 F1): os.Getenv only when HomeDir is not
+	// pinned and the process home is not isolated, and no variable
+	// otherwise, so a sandboxed or isolated run reads only its own home.
+	Getenv func(string) string
 	// BinaryPath is the absolute path of the running observer binary.
 	// Required for hook + MCP registration checks. It is the REGISTRATION
 	// command (the npm / pip launcher for a package-manager install, U1),
@@ -128,6 +140,13 @@ type DoctorOptions struct {
 	// Scope and of [observer.db].integrity_check_max_gb (`observer doctor
 	// --integrity`).
 	ForceIntegrity bool
+	// RouteSelection is the node's component selection for managed routes,
+	// the one route maintenance acts on (cmd/observer routeSelection). The
+	// route rows name a tool it does not select as "not selected by policy"
+	// and, with the route writer component off, every tool as "routing
+	// switched off by policy", never as route drift (T-915, D-770, D-771).
+	// The zero value selects routing and every tool.
+	RouteSelection proxyroute.Selection
 	// ExtraChecks are pre-built checks the caller assembles OUTSIDE this
 	// package and appends to the report — the seam for checks that need
 	// dependencies diag must not import (e.g. the obs-plane admission check,
@@ -151,6 +170,7 @@ func Run(ctx context.Context, opts DoctorOptions) Report {
 			opts.HomeDir = home
 		}
 	}
+	opts.Getenv = crossmount.HomeEnv(homeOverride, opts.Getenv)
 	r := Report{}
 	r.add(checkSchema(ctx, opts.DB))
 	r.add(checkDBIntegrityGated(ctx, opts))
@@ -158,21 +178,70 @@ func Run(ctx context.Context, opts DoctorOptions) Report {
 	r.add(checkAdapters(opts.Config))
 	r.add(checkAntigravityFamily(opts.HomeDir, opts.Config))
 	r.add(checkHookChecksums(opts.HomeDir))
-	r.add(checkHookCommandsBinary(opts.HomeDir, opts.BinaryPath))
-	r.add(checkMCPRegistrations(opts.HomeDir, opts.BinaryPath, opts.RealBinaryPath))
+	r.add(checkHookCommandsBinary(opts.HomeDir, opts.BinaryPath, opts.RealBinaryPath))
+	// A stale observer left by an update (lane LEFT-SHARED,
+	// binaryfreshness.go): plugin shims and the observer on PATH.
+	running := HookBinaryIdentity{Command: opts.BinaryPath, Real: opts.RealBinaryPath}
+	r.add(checkPluginShimBinaries(opts.HomeDir, opts.Getenv, running, opts.CLIVersion, BinaryVersionOf))
+	r.add(checkPathObserver(pathObserver, running, opts.CLIVersion, BinaryVersionOf))
+	r.add(checkMCPRegistrations(opts.HomeDir, opts.BinaryPath, opts.RealBinaryPath, opts.Getenv, opts.Config.Observer.MCP.StableCommand))
 	r.add(checkClaudeCodePlugin(opts.HomeDir, homeOverride))
 	r.add(checkCursorHooks(opts.HomeDir, homeOverride))
 	r.add(checkCursorClaudeReplay(opts.HomeDir))
-	r.add(checkHooksDisabled(opts.HomeDir, homeOverride))
+	switchRoots := hookSwitchProjectRoots(ctx, opts.DB)
+	r.add(checkHooksDisabled(opts.HomeDir, homeOverride, switchRoots, opts.Getenv))
+	r.add(checkConfigLayers(ctx, opts.HomeDir, homeOverride, switchRoots, opts.Getenv))
+	r.add(checkHookLiveness(ctx, opts.DB, opts.HomeDir, homeOverride, switchRoots, time.Now(), opts.Getenv))
+	for _, c := range checkWindowsHookShells(homeOverride, opts.BinaryPath, opts.Getenv) {
+		r.add(c)
+	}
+	for _, c := range checkCopilotCLIPowerShellOnHost(homeOverride, opts.BinaryPath, opts.Getenv) {
+		r.add(c)
+	}
+	for _, c := range checkWindowsHookRunners(ctx, homeOverride, opts.BinaryPath, opts.Getenv) {
+		r.add(c)
+	}
+	for _, c := range checkCrossOSLiveGated(homeOverride, opts.BinaryPath) {
+		r.add(c)
+	}
+	if c, ok := checkRemoteHosts(opts.HomeDir, homeOverride != ""); ok {
+		r.add(c)
+	}
+	if c, ok := checkCodexInWSL(opts.HomeDir, homeOverride != ""); ok {
+		r.add(c)
+	}
+	if c, ok := checkWindowsSideRelocation(homeOverride, opts.BinaryPath); ok {
+		r.add(c)
+	}
+	// Gates reached through another tool's hook registration (W-2b).
+	for _, c := range checkReplayedVia(ctx, opts.HomeDir, opts.BinaryPath, opts.DB, time.Now()) {
+		r.add(c)
+	}
 	r.add(checkCursorUsage(ctx, opts.DB, cursorFinishHooksWiring(cursorHooksFiles(opts.HomeDir, homeOverride))))
 	r.add(checkPidBridge(ctx, opts.DB))
 	r.add(checkConcurrentDaemons(opts.Config))
 	r.add(checkDaemonVersion(opts.Config, opts.CLIVersion))
 	r.add(checkCodexHookTrust(opts.HomeDir))
+	for _, c := range checkForeignCodexHookTrust(homeOverride) {
+		r.add(c)
+	}
 	r.add(checkRoutePort(opts.HomeDir, opts.Config))
-	r.add(checkCodexProviderRoute(opts.HomeDir, codexSystemRequirementsPath()))
-	r.add(checkProxyRoutingGap(ctx, opts.DB, opts.HomeDir))
+	r.add(checkProxyClientAuth(opts.HomeDir, opts.Config))
+	r.add(checkRouteHost(opts.HomeDir, opts.RouteSelection))
+	for _, c := range checkRecordedRoutes(opts.HomeDir) {
+		r.add(c)
+	}
+	r.add(checkSupervisor(opts.HomeDir, supervisor.OSProbe()))
+	r.add(checkCodexProviderRoute(opts.HomeDir, opts.Getenv, codexSystemRequirementsPath()))
+	r.add(checkLiveGatedWriters())
+	for _, c := range checkSurfaceCoverage(opts.HomeDir, homeOverride != "", opts.Getenv) {
+		r.add(c)
+	}
+	r.add(checkRouteObserved(ctx, opts.DB, time.Now(), nil))
 	if c, ok := checkWindowsProxyRoutes(ctx, opts.Config); ok {
+		r.add(c)
+	}
+	for _, c := range checkRelay(homeOverride, time.Now()) {
 		r.add(c)
 	}
 	r.add(checkOrgEnrolment(ctx, opts.DB, opts.Config))
@@ -180,11 +249,19 @@ func Run(ctx context.Context, opts DoctorOptions) Report {
 	r.add(checkProcessObservability(ctx, opts.DB, opts.Config))
 	r.add(checkHandoffReaders(ctx, opts.DB))
 	r.add(checkClaudeCodeTeams(opts.Config))
+	r.add(checkClaudeCodeManagedPolicy(opts.HomeDir, opts.Getenv))
+	r.add(checkVendorPolicyCaches(opts.HomeDir, opts.Getenv))
 	r.add(checkCodexTeams(opts.Config))
 	r.add(checkCopilotTeams(opts.Config))
+	r.add(checkCortexTeams(opts.Config))
+	r.add(checkIBMBobTeams(opts.Config))
 	r.add(checkPromptGuardWiring(opts.Config))
+	r.add(checkGuardOrgLock(opts.Config))
 	r.add(checkCommitCapture(opts.Config))
 	r.add(checkCodeIntel(opts.Config))
+	if c, ok := checkCrossmountRow(); ok {
+		r.add(c)
+	}
 	for _, c := range opts.ExtraChecks {
 		r.add(c)
 	}
@@ -360,6 +437,19 @@ func checkOrgEnrolment(ctx context.Context, database *sql.DB, cfg config.Config)
 			shareStatus = worseStatus(shareStatus, StatusWarn)
 		}
 	}
+	// Snapshot rows too large for any push: the daemon's report
+	// (store.OrgPushOversizedKey; family names and sizes only, never row
+	// content). Read here with this file's own SQL, like org_push_log above.
+	for _, line := range oversizedPushLines(ctx, database) {
+		details = append(details, "oversized:     "+line)
+		shareStatus = worseStatus(shareStatus, StatusWarn)
+	}
+	if line, unavailable := machineProofLine(ctx, database); line != "" {
+		details = append(details, "machine proof: "+line)
+		if unavailable {
+			shareStatus = worseStatus(shareStatus, StatusWarn)
+		}
+	}
 	msg := "enrolled - " + shareMsg
 	if orgServerURLUnset {
 		msg = fmt.Sprintf(
@@ -373,6 +463,65 @@ func checkOrgEnrolment(ctx context.Context, database *sql.DB, cfg config.Config)
 		Message: msg,
 		Details: details,
 	}
+}
+
+// orgPushOversizedKey mirrors store.OrgPushOversizedKey (this file keeps its
+// own SQL); TestOrgEnrolmentReportsOversizedPushRows pins the shape.
+const orgPushOversizedKey = "org_push_oversized_rows"
+
+// oversizedPushLines renders the daemon's oversized snapshot row report, one
+// line per family. A missing or unreadable report yields nothing.
+func oversizedPushLines(ctx context.Context, database *sql.DB) []string {
+	var raw string
+	if err := database.QueryRowContext(ctx, `SELECT value FROM schema_meta WHERE key = ?`, orgPushOversizedKey).Scan(&raw); err != nil || raw == "" {
+		return nil
+	}
+	var rows []struct {
+		Family       string `json:"family"`
+		Rows         int64  `json:"rows"`
+		LargestBytes int64  `json:"largest_bytes"`
+		BudgetBytes  int64  `json:"budget_bytes"`
+		LastSeen     string `json:"last_seen"`
+	}
+	if err := json.Unmarshal([]byte(raw), &rows); err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, fmt.Sprintf("%s: %d row(s) larger than the %d-byte snapshot budget (largest %d bytes, last %s); raise [org_client] max_push_bytes to ship them",
+			r.Family, r.Rows, r.BudgetBytes, r.LargestBytes, r.LastSeen))
+	}
+	return out
+}
+
+// orgMachineProofKey mirrors store.OrgMachineProofKey (this file keeps its
+// own SQL); TestOrgMachineProofReport pins the shape.
+const orgMachineProofKey = "org_machine_proof"
+
+// machineProofLine renders the daemon's machine-proof report (WINNODE item 4):
+// the daemon records it only for a managed enrolment, at its first request
+// that names the machine. unavailable is true when the daemon signs nothing.
+// A missing or unreadable report yields "".
+func machineProofLine(ctx context.Context, database *sql.DB) (line string, unavailable bool) {
+	var tenancy, raw string
+	if err := database.QueryRowContext(ctx, `SELECT COALESCE(tenancy,'') FROM org_enrolment LIMIT 1`).Scan(&tenancy); err != nil || tenancy != "managed" {
+		return "", false // only a managed enrolment signs with a machine key
+	}
+	if err := database.QueryRowContext(ctx, `SELECT value FROM schema_meta WHERE key = ?`, orgMachineProofKey).Scan(&raw); err != nil || raw == "" {
+		return "", false
+	}
+	var r struct {
+		Available bool   `json:"available"`
+		Reason    string `json:"reason"`
+		At        string `json:"at"`
+	}
+	if err := json.Unmarshal([]byte(raw), &r); err != nil {
+		return "", false
+	}
+	if r.Available {
+		return "available (daemon, since " + r.At + ")", false
+	}
+	return "machine proof unavailable: " + r.Reason + " (daemon, since " + r.At + "); machine-scoped grants and the machine's budget binding are withheld until the daemon runs in the developer's sign-in", true
 }
 
 func worseStatus(a, b Status) Status {
@@ -446,7 +595,12 @@ func checkPidBridge(ctx context.Context, database *sql.DB) Check {
 
 func (r *Report) add(c Check) { r.Checks = append(r.Checks, c) }
 
-// checkSchema verifies a non-zero schema version is recorded.
+// checkSchema verifies a non-zero schema version is recorded and that no
+// migration is still pending. Pending comes from db.PlanMigrations, the
+// runner's own read-only plan (T-979), so a step numbered below the recorded
+// version that has not run is reported too; the version alone cannot show it.
+// It is a warning, not a failure: the usual cause is a CLI that deferred its
+// migrations to a running daemon of an older build.
 func checkSchema(ctx context.Context, database *sql.DB) Check {
 	v, err := db.Version(ctx, database)
 	if err != nil {
@@ -454,6 +608,24 @@ func checkSchema(ctx context.Context, database *sql.DB) Check {
 	}
 	if v == 0 {
 		return Check{Name: "db.schema", Status: StatusFail, Message: "no migrations applied (version 0)"}
+	}
+	plan, err := db.PlanMigrations(ctx, database)
+	if err != nil {
+		return Check{
+			Name: "db.schema", Status: StatusWarn,
+			Message: fmt.Sprintf("schema version %d applied; the migration plan could not be read: %v", v, err),
+		}
+	}
+	if pending := plan.RunVersions(); len(pending) > 0 {
+		parts := make([]string, len(pending))
+		for i, p := range pending {
+			parts[i] = fmt.Sprint(p)
+		}
+		return Check{
+			Name: "db.schema", Status: StatusWarn,
+			Message: fmt.Sprintf("schema version %d applied; %d migration(s) pending (%s): restart the daemon so it applies them",
+				v, len(pending), strings.Join(parts, ", ")),
+		}
 	}
 	return Check{Name: "db.schema", Status: StatusOK, Message: fmt.Sprintf("schema version %d applied", v)}
 }
@@ -777,9 +949,10 @@ func checkHookChecksums(homeDir string) Check {
 // The expected events come from the integration registry (the Registered
 // Codex bindings, pinned to the writer's list), so an event a newer
 // Observer adds is listed even before hooks.json carries it. The trust
-// hash is recomputed by internal/codextrust for DETECTION ONLY: this
-// check never writes Codex config and Observer never trusts a hook on the
-// user's behalf (decision D-148).
+// hash is recomputed by internal/codextrust. This check never writes Codex
+// config; the hook writer records trust for Observer's own entries when it
+// registers them (live check 2026-10-20), so an entry reported here as
+// untrusted is one whose record is missing, changed or switched off.
 //
 // Outcomes: OK when Codex has no Observer hooks or every expected event
 // is trusted; Warn otherwise, with the first detail line naming the
@@ -835,11 +1008,12 @@ func readCodexHookTrust(homeDir string) codexTrustState {
 		return st
 	}
 	rep, err := codextrust.Classify(codextrust.Input{
-		HooksPath:  hooksPath,
-		HooksJSON:  hooksRaw,
-		ConfigTOML: cfgRaw,
-		Expected:   codexExpectedHookEvents(),
-		Owned:      isObserverCodexHook,
+		HooksPath:     hooksPath,
+		HooksJSON:     hooksRaw,
+		ConfigTOML:    cfgRaw,
+		Expected:      codexExpectedHookEvents(),
+		Owned:         isObserverCodexHook,
+		NormalizePath: CodexTrustPathKey,
 	})
 	if err != nil {
 		st.err = err.Error()
@@ -859,6 +1033,85 @@ func readCodexHookTrust(homeDir string) codexTrustState {
 	return st
 }
 
+// CodexTrustPathKey is the codextrust NormalizePath every Codex trust read
+// uses: the foreign-path translation (a Windows Codex's C:\... or \\?\C:\...
+// key becomes /mnt/c/... on a WSL daemon), forward slashes, lower case (NTFS
+// and DrvFs are case-insensitive). Applied to both sides of the comparison,
+// so a native POSIX path still matches itself.
+func CodexTrustPathKey(p string) string {
+	return strings.ToLower(filepath.ToSlash(crossmount.TranslateForeignPath(p)))
+}
+
+// ForeignCodexHomes returns the cross-mount homes (a WSL daemon's view of
+// the Windows user's home, the one the codex-windows hook bridge writes
+// into) that carry a .codex directory. A Windows home counts only when it
+// is the current Windows user's (the same ownership rule the bridge
+// registrar applies). homeOverride is the caller's sandbox home ("" in
+// production); a sandboxed caller sees none (crossmount.AutoDetectSuppressed).
+func ForeignCodexHomes(homeOverride string) []crossmount.HomeRoot {
+	if crossmount.AutoDetectSuppressed(homeOverride, "") {
+		return nil
+	}
+	var out []crossmount.HomeRoot
+	for _, h := range crossmount.AllHomes() {
+		if h.Origin == "native" {
+			continue
+		}
+		if fi, err := os.Stat(filepath.Join(h.Path, ".codex")); err != nil || !fi.IsDir() {
+			continue
+		}
+		if h.OS == crossmount.OSWindows && !crossmount.HomeOwnedByCurrentWindowsUser(h.Path) {
+			continue
+		}
+		out = append(out, h)
+	}
+	return out
+}
+
+// checkForeignCodexHookTrust is checkCodexHookTrust for every foreign home
+// ForeignCodexHomes finds (live check 2026-10-20: on a WSL daemon the only
+// check read the WSL ~/.codex, so the Windows Codex's untrusted Observer
+// hooks, and with them a gate that never ran, went unreported). A home with
+// no Observer hooks yields no check. The check is named
+// "codex.hook_trust.<os>" so it sits beside the native one.
+func checkForeignCodexHookTrust(homeOverride string) []Check {
+	var out []Check
+	for _, h := range ForeignCodexHomes(homeOverride) {
+		name := "codex.hook_trust." + h.OS
+		st := readCodexHookTrust(h.Path)
+		switch {
+		case st.noHooksFile:
+			continue
+		case st.err != "":
+			out = append(out, Check{Name: name, Status: StatusWarn, Message: st.err})
+			continue
+		case len(st.registered) == 0:
+			continue
+		}
+		out = append(out, codexHookTrustCheckNamed(name, st.report, st.hooksPath))
+	}
+	return out
+}
+
+// CodexToolGateEvents returns the Codex hooks.json events Observer registers
+// as its tool gate (registry bindings with the tool-gate capability). While
+// any of them is untrusted, Observer's Codex guard gate does not run at all.
+func CodexToolGateEvents() []string {
+	c, ok := integration.For(models.ToolCodex)
+	if !ok {
+		return nil
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, b := range c.Hook.Bindings {
+		if b.Registered && b.Cap == integration.HookCapToolGate && !seen[b.NativeEvent] {
+			seen[b.NativeEvent] = true
+			out = append(out, b.NativeEvent)
+		}
+	}
+	return out
+}
+
 // codexExpectedHookEvents is every Codex hooks.json event Observer
 // registers, from the integration registry.
 func codexExpectedHookEvents() []string {
@@ -869,11 +1122,11 @@ func codexExpectedHookEvents() []string {
 	return c.Hook.RegisteredEvents()
 }
 
-// isObserverCodexHook sniffs the `observer hook codex` command shape:
-// narrow enough to skip a user's own hooks, broad enough to survive a
-// binary path change.
+// isObserverCodexHook reports an Observer Codex hook command in every shape
+// the registrar writes (hook.IsObserverCodexHookCommand, the fail-closed
+// hook bridge included).
 func isObserverCodexHook(command string) bool {
-	return strings.Contains(command, " hook codex ")
+	return hook.IsObserverCodexHookCommand(command)
 }
 
 // codexTrustStateLines is the per-state detail table, in display order.
@@ -889,6 +1142,14 @@ var codexTrustStateLines = []struct {
 }
 
 func codexHookTrustCheck(rep codextrust.Report, hooksPath string) Check {
+	return codexHookTrustCheckNamed("codex.hook_trust", rep, hooksPath)
+}
+
+// codexHookTrustCheckNamed builds the trust check under name. An untrusted
+// tool-gate event (CodexToolGateEvents) is a FAIL, not a warning: Codex runs
+// no unapproved hook, so Observer's Codex guard gate is off, not degraded
+// (live check 2026-10-20, Codex 0.144.4 `codex exec` ran no hook at all).
+func codexHookTrustCheckNamed(name string, rep codextrust.Report, hooksPath string) Check {
 	blocked := rep.Events(codextrust.StateUntrusted, codextrust.StateModified, codextrust.StateDisabled)
 	missing := rep.Events(codextrust.StateMissing)
 	if len(blocked) == 0 && len(missing) == 0 {
@@ -896,14 +1157,31 @@ func codexHookTrustCheck(rep codextrust.Report, hooksPath string) Check {
 		if !rep.HashVerified {
 			msg += " (recorded approvals; this Codex version's trust hash could not be reproduced)"
 		}
-		return Check{Name: "codex.hook_trust", Status: StatusOK, Message: msg}
+		return Check{Name: name, Status: StatusOK, Message: msg}
 	}
+	gate := map[string]bool{}
+	for _, e := range CodexToolGateEvents() {
+		gate[e] = true
+	}
+	var gateOff []string
+	for _, e := range blocked {
+		if gate[e] {
+			gateOff = append(gateOff, e)
+		}
+	}
+	status := StatusWarn
 	var details []string
 	var msg string
-	if len(blocked) > 0 {
-		msg = fmt.Sprintf("%d codex hook(s) need trust approval, so Codex will not run them: open `codex`, run /hooks and trust each Observer entry", len(blocked))
+	switch {
+	case len(gateOff) > 0:
+		status = StatusFail
+		msg = fmt.Sprintf("Codex hooks not trusted, so Observer's Codex guard gate is OFF (%s does not run): run `observer init --codex` (it re-registers the hooks and records their trust), or approve each Observer entry in codex /hooks (%d need approval)",
+			strings.Join(gateOff, ", "), len(blocked))
 		details = append(details, "untrusted: "+strings.Join(blocked, ", "))
-	} else {
+	case len(blocked) > 0:
+		msg = fmt.Sprintf("%d codex hook(s) need trust approval, so Codex will not run them: run `observer init --codex`, or trust each Observer entry in codex /hooks", len(blocked))
+		details = append(details, "untrusted: "+strings.Join(blocked, ", "))
+	default:
 		msg = fmt.Sprintf("%d codex hook event(s) Observer expects are not registered", len(missing))
 		details = append(details, "not registered: "+strings.Join(missing, ", "))
 	}
@@ -918,24 +1196,30 @@ func codexHookTrustCheck(rep codextrust.Report, hooksPath string) Check {
 	if !rep.HashVerified {
 		details = append(details, "note: no trust hash in this hooks.json reproduces, so a changed entry cannot be told apart from a trusted one")
 	}
+	if len(gateOff) > 0 {
+		details = append(details, "gate off: guard rules do not apply to Codex tool calls until the tool-gate hook is trusted")
+	}
 	details = append(details,
 		"hooks file: "+hooksPath,
-		"why: codex requires per-hook user trust before dispatch; Observer never trusts hooks for you",
+		"why: codex runs a hook only once config.toml [hooks.state] records its trust; Observer records it for its own entries when it registers them, so an entry listed here lacks that record (registered by an older Observer, changed since, or a Codex version that hashes differently). An entry switched off in /hooks stays off until you turn it back on there",
 	)
 	var rems []remedy.Remediation
+	if len(blocked) > 0 || len(missing) > 0 {
+		rems = append(rems, remedy.Of(remedy.InitTool, models.ToolCodex))
+	}
 	if len(blocked) > 0 {
 		rems = append(rems, remedy.Of(remedy.CodexTrust, ""))
 	}
-	if len(missing) > 0 {
-		rems = append(rems, remedy.Of(remedy.InitTool, models.ToolCodex))
-	}
-	return Check{Name: "codex.hook_trust", Status: StatusWarn, Message: msg, Details: details, Remediations: rems}
+	return Check{Name: name, Status: status, Message: msg, Details: details, Remediations: rems}
 }
 
 // checkHookCommandsBinary looks at every recorded hook config and verifies
 // the command it points to is the running observer binary. Mismatch
-// usually means the binary was moved after `observer init`.
-func checkHookCommandsBinary(homeDir, binaryPath string) Check {
+// usually means the binary was moved after `observer init`. binaryPath is
+// the registration command and realBinary the running binary; the match is
+// HookBinaryMatches, the one rule table the managed-integrity probe uses too
+// (T-874).
+func checkHookCommandsBinary(homeDir, binaryPath, realBinary string) Check {
 	if binaryPath == "" {
 		return Check{Name: "hooks.binary", Status: StatusWarn, Message: "binary path unknown"}
 	}
@@ -952,7 +1236,7 @@ func checkHookCommandsBinary(homeDir, binaryPath string) Check {
 	}
 	var drift []string
 	for path, e := range entries {
-		if e.BinaryPath != "" && e.BinaryPath != binaryPath {
+		if e.BinaryPath != "" && !HookBinaryMatches(e.BinaryPath, HookBinaryIdentity{Command: binaryPath, Real: realBinary}) {
 			drift = append(drift, fmt.Sprintf("%s: registered=%s running=%s", path, e.BinaryPath, binaryPath))
 		}
 	}
@@ -975,7 +1259,24 @@ func checkHookCommandsBinary(homeDir, binaryPath string) Check {
 // `observer init --skip-hooks --skip-proxy-route` when init would refresh it
 // on its own (a stale entry whose binary is gone, or this same install by
 // another path), with --force only when init would really refuse.
-func checkMCPRegistrations(homeDir, binaryPath, realBinary string) Check {
+func checkMCPRegistrations(homeDir, binaryPath, realBinary string, getenv func(string) string, stableCommand bool) Check {
+	c := checkMCPRegistrationsAt(homeDir, binaryPath, realBinary, getenv, stableCommand)
+	c.Details = append(c.Details, stableMCPCommandNote(stableCommand))
+	return c
+}
+
+// stableMCPCommandNote is the DEC-12 line for the managed-node bare MCP
+// command (surface-gap FU-24): built, and switched off until its live check
+// passes unless the operator opted in.
+func stableMCPCommandNote(on bool) string {
+	if on {
+		return "stable MCP command ([observer.mcp] stable_command): ON by opt-in, so an org-managed Linux or macOS node registers the bare observer when PATH runs this install; not live-verified, waiting on " + installshape.PathNameLiveCheck
+	}
+	return "stable MCP command for managed nodes: built, waiting on " + installshape.PathNameLiveCheck + "; off by default (opt in with [observer.mcp] stable_command = true)"
+}
+
+// checkMCPRegistrationsAt is checkMCPRegistrations before the DEC-12 note.
+func checkMCPRegistrationsAt(homeDir, binaryPath, realBinary string, getenv func(string) string, stableCommand bool) Check {
 	if binaryPath == "" {
 		return Check{Name: "mcp.registrations", Status: StatusWarn, Message: "binary path unknown"}
 	}
@@ -984,7 +1285,7 @@ func checkMCPRegistrations(homeDir, binaryPath, realBinary string) Check {
 		path string
 		read func(string) (mcpEntry, bool, error)
 	}{
-		{"claude-code", filepath.Join(homeDir, ".claude.json"), readJSONMCPEntry},
+		{"claude-code", claudeGlobalConfigPath(homeDir, getenv), readJSONMCPEntry},
 		{"cursor", filepath.Join(homeDir, ".cursor", "mcp.json"), readJSONMCPEntry},
 		{"codex", filepath.Join(homeDir, ".codex", "config.toml"), readTOMLMCPEntry},
 	}
@@ -1000,6 +1301,10 @@ func checkMCPRegistrations(homeDir, binaryPath, realBinary string) Check {
 		case !ok:
 			absent = append(absent, c.tool)
 		case entry.command == binaryPath:
+			registered = append(registered, c.tool)
+		case stableCommand && entry.command == "observer" && mcpregister.SameInstallCommand(entry.command, realBinary):
+			// The stable bare form the opt-in registers (FU-24): PATH runs
+			// this install, so it is registered, not a mismatch.
 			registered = append(registered, c.tool)
 		default:
 			mismatched = append(mismatched, c.tool)

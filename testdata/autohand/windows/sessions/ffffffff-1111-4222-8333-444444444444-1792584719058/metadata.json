@@ -1,0 +1,24 @@
+{
+  "sessionId": "ffffffff-1111-4222-8333-444444444444-1792584719058",
+  "createdAt": "2026-10-21T12:11:59.059Z",
+  "lastActiveAt": "2026-10-21T12:12:16.641Z",
+  "projectPath": "C:\\Users\\user\\proj",
+  "projectName": "proj",
+  "model": "minimax/minimax-m3.1-flash:free",
+  "messageCount": 10,
+  "status": "completed",
+  "client": "terminal",
+  "usage": {
+    "promptTokens": 53708,
+    "completionTokens": 314,
+    "totalTokens": 54022,
+    "cacheReadTokens": 14166,
+    "cacheWriteTokens": 0,
+    "turnCount": 1,
+    "tokenUsageStatus": "actual",
+    "longestTurnDurationMs": 14658,
+    "updatedAt": "2026-10-21T12:12:16.119Z"
+  },
+  "closedAt": "2026-10-21T12:12:16.641Z",
+  "summary": "Read probe.txt and tell me the magic number. Then run the sh"
+}

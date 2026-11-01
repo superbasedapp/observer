@@ -90,6 +90,8 @@ func BuildEnvelope(input SessionInput, plane cloudcontract.Plane, opts BuildOpti
 		Authority:          input.Authority,
 	}
 
+	env.Metrics.UsageStatus = usageStatusFor(input.Metrics.Usage, env.Metrics)
+
 	overflow := &cloudcontract.Overflow{}
 
 	emitPathHash := opts.PathCorrelation && len(opts.PathSalt) > 0
@@ -129,6 +131,61 @@ func BuildEnvelope(input SessionInput, plane cloudcontract.Plane, opts BuildOpti
 		return nil, fmt.Errorf("cloudevidence.BuildEnvelope: built an invalid envelope: %w", err)
 	}
 	return env, nil
+}
+
+// usageStatusRule is one row of the usage_status decision: the caller's
+// data-presence statement, whether the figures are all zero, and what the
+// envelope carries.
+type usageStatusRule struct {
+	presence UsagePresence
+	figures  figuresMatch
+	status   cloudcontract.UsageStatus
+}
+
+// figuresMatch is a rule's condition on the metrics block's token and cost
+// figures.
+type figuresMatch int
+
+const (
+	// figuresAny matches any figures.
+	figuresAny figuresMatch = iota
+	// figuresAllZero matches only when every token and cost figure is zero.
+	figuresAllZero
+	// figuresNonZero matches only when some token or cost figure is non-zero.
+	figuresNonZero
+)
+
+// usageStatusRules is the ordered decision table (first match wins). The field
+// is emitted only where the figures alone cannot answer "was usage measured?"
+// (D-866), so a measured session with non-zero figures keeps the exact
+// pre-D-866 bytes and an older hosted server, which re-marshals the envelope
+// to check its digest, still accepts it:
+//
+//  1. not captured             -> not_measured (the zeros are absent data);
+//  2. captured, all zero       -> measured (a real zero, said explicitly);
+//  3. captured, non-zero       -> omitted (the figures speak for themselves);
+//  4. unspecified (old caller) -> omitted (byte-identical to an older build).
+var usageStatusRules = []usageStatusRule{
+	{presence: UsageNotCaptured, figures: figuresAny, status: cloudcontract.UsageNotMeasured},
+	{presence: UsageCaptured, figures: figuresAllZero, status: cloudcontract.UsageMeasured},
+	{presence: UsageCaptured, figures: figuresNonZero, status: ""},
+	{presence: UsageUnspecified, figures: figuresAny, status: ""},
+}
+
+// usageStatusFor walks usageStatusRules for the caller's presence statement and
+// the built metrics block. It branches on captured data, never on the tool.
+func usageStatusFor(presence UsagePresence, m cloudcontract.MetricsBlock) cloudcontract.UsageStatus {
+	zero := m.TokensIn == 0 && m.TokensOut == 0 && m.CacheReadTokens == 0 && m.CostUSD == 0
+	for _, r := range usageStatusRules {
+		if r.presence != presence {
+			continue
+		}
+		if (r.figures == figuresAllZero && !zero) || (r.figures == figuresNonZero && zero) {
+			continue
+		}
+		return r.status
+	}
+	return ""
 }
 
 // boundActions caps the action list at MaxActions, deriving each action's

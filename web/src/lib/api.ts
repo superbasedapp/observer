@@ -441,3 +441,54 @@ export function fetchSessionCommits(
     { signal },
   );
 }
+
+// ---------- delivery (commit to PR to merge, D-689) ----------
+//
+// Reads go through useApi; every write is owner-local with the confirm token
+// (internal/intelligence/dashboard/delivery.go). A refused write carries the
+// server's plain message and its closed kind (no_keychain, auth_failed,
+// rate_limited, needs_noninteractive_credentials, ...).
+
+export function projectDeliveryPath(projectId: number): string {
+  return `/api/project/${projectId}/delivery`;
+}
+
+export function sessionDeliveryPath(sessionId: string): string {
+  return `/api/session/${encodeURIComponent(sessionId)}/delivery`;
+}
+
+export const DELIVERY_LINKS_PATH = "/api/delivery/links";
+export const DELIVERY_MIRRORS_PATH = "/api/delivery/mirrors";
+
+/** DeliveryWriteError is a refused delivery write: the server's sentence and kind. */
+export class DeliveryWriteError extends Error {
+  constructor(
+    message: string,
+    public readonly kind: string,
+    public readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
+/** deliveryWrite sends one confirm-token write and maps a refusal. */
+export async function deliveryWrite<T>(method: "POST" | "PUT" | "DELETE", path: string, body: unknown = {}): Promise<T> {
+  try {
+    return await fetchJSON<T>(path, undefined, {
+      method,
+      headers: await localConfirmHeaders(),
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    if (e instanceof ApiError) {
+      let parsed: { error?: string; kind?: string } | null = null;
+      try {
+        parsed = JSON.parse(e.body) as { error?: string; kind?: string };
+      } catch {
+        parsed = null;
+      }
+      throw new DeliveryWriteError(parsed?.error || e.body.trim() || e.message, parsed?.kind ?? "", e.status);
+    }
+    throw e;
+  }
+}

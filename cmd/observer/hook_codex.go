@@ -48,12 +48,12 @@ func handleCodexHook(ctx context.Context, event, configPath string) {
 		recordCodexAccountsAfterReply(ctx, event, body, configPath)
 		return
 	}
-	cfg, err := config.Load(config.LoadOptions{GlobalPath: configPath})
+	cfg, stop, err := loadGateConfig(configPath, nil, os.Stderr)
+	if stop {
+		return
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "observer-hook: codex config: %v\n", err)
-		if hookFailClosed(guardposture.KindConfig, nil) {
-			return
-		}
 		// Bare ack via empty JSON object - codex hooks accept this as
 		// "no action" across all event classes.
 		_ = json.NewEncoder(hookStdout).Encode(struct{}{})
@@ -82,6 +82,7 @@ func handleCodexHook(ctx context.Context, event, configPath string) {
 	body, truncated := readHookBodyDetectTruncation(os.Stdin, promptSubmitBodyLimit)
 	body = bytes.TrimPrefix(body, []byte{0xEF, 0xBB, 0xBF})
 	hook.DumpHookShape(models.ToolCodex, event, body)
+	noteHookPayload(body)
 
 	sc := scrub.New()
 	// Part B: UserPromptSubmit is special-cased to the guarded
@@ -121,6 +122,11 @@ func handleCodexHook(ctx context.Context, event, configPath string) {
 				models.ToolCodex, hook.PromptDialectTopLevelBlock, event, body, truncated, g,
 				makePromptGuardPersist(cfg, g, models.ToolCodex, "codex:"+event, os.Stderr), hookStdout, os.Stderr,
 			)
+			// FU-161: an undecodable prompt payload fails closed under
+			// enforcement instead of reaching the unguarded reply below.
+			if !handled && hook.PromptPayloadUndecodable(hook.PromptDialectTopLevelBlock, body) && hookFailClosed(guardposture.KindUnparseable, body) {
+				return
+			}
 			if handled {
 				// P2-1: the reply (if this dialect's builder returned
 				// one) already went out inside the call above - never
@@ -159,6 +165,10 @@ func handleCodexHook(ctx context.Context, event, configPath string) {
 		// SessionStart can carry an armed session handoff as
 		// hookSpecificOutput.additionalContext (handoff_hook.go).
 		codexOut := wrapSessionStartContext(ctx, hookStdout, models.ToolCodex, event, body, configPath)
+		// PostToolUse can carry the security feedback lines (lane sec-h,
+		// security_feedback.go); unchanged unless security.feedback is
+		// selected.
+		codexOut = securityPostFeedbackWriter(ctx, codexOut, models.ToolCodex, event, body, configPath)
 		hook.HandleCodexEvent(event, store.New(database), sc, bytes.NewReader(body),
 			codexOut, os.Stderr, cfg.Observer.Hooks.HookTimeout())
 		markHookReplied()
@@ -180,8 +190,11 @@ func handleCodexHook(ctx context.Context, event, configPath string) {
 	// process, so the claude-code ancestor-walk resolves the codex pid
 	// verbatim - reuse the shared writer. Best-effort + fail-open: the
 	// reply already went out above.
-	seedCodexSessionPidbridge(ctx, event, body, os.Getppid(), defaultAncestors,
+	seedCodexSessionPidbridge(ctx, event, body, hookContext(ctx).ParentPID(), hookContext(ctx).Ancestors,
 		makePidbridgeWriter(configPath), os.Stderr)
+	if event == codexadapter.HookEventSessionStart {
+		recordSessionStartTrust(ctx, models.ToolCodex, body, configPath, os.Stderr)
+	}
 }
 
 // recordCodexAccountsAfterReply records the login snapshot a codex tool

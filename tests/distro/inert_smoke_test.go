@@ -5,8 +5,11 @@ package distro
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -83,8 +86,10 @@ func freePort(t *testing.T) int {
 // daemon is one running `observer start`.
 type daemon struct {
 	cmd *exec.Cmd
-	mu  sync.Mutex
-	out bytes.Buffer
+	// home is the daemon's HOME; its ~/.observer holds what it wrote.
+	home string
+	mu   sync.Mutex
+	out  bytes.Buffer
 }
 
 func (d *daemon) Write(p []byte) (int, error) {
@@ -102,7 +107,13 @@ func (d *daemon) output() string {
 // startDaemon runs `observer start` with its own HOME and config.
 func startDaemon(t *testing.T, bin, configTOML string) *daemon {
 	t.Helper()
-	home := t.TempDir()
+	return startDaemonIn(t, bin, configTOML, t.TempDir())
+}
+
+// startDaemonIn is startDaemon with a chosen HOME (a short one keeps the
+// owner-only unix sockets under the OS's 107-byte path limit).
+func startDaemonIn(t *testing.T, bin, configTOML, home string) *daemon {
+	t.Helper()
 	if err := os.MkdirAll(filepath.Join(home, ".observer"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +121,7 @@ func startDaemon(t *testing.T, bin, configTOML string) *daemon {
 	if err := os.WriteFile(cfgPath, []byte(configTOML), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	d := &daemon{}
+	d := &daemon{home: home}
 	d.cmd = exec.Command(bin, "start", "--config", cfgPath, "--no-open") //nolint:gosec // G204: the test's own binary and temp path.
 	d.cmd.Env = []string{
 		"HOME=" + home,
@@ -208,12 +219,18 @@ func (d *daemon) alive(t *testing.T) {
 	}
 }
 
-// inertConfig removes every optional component except keep.
+// inertConfig removes every optional component except keep, and selects
+// keep: a stamped edition starts from its own default set, where a kept
+// component may be off by default (terminals.sandbox on developer, the
+// security module on managed), so removing the rest alone would leave it
+// inactive (RB1 gate). On a plain build the add list changes nothing.
 func inertConfig(t *testing.T, keep ...string) (string, map[string]int) {
 	t.Helper()
 	kept := map[string]bool{}
+	var added []string
 	for _, k := range keep {
 		kept[k] = true
+		added = append(added, strconv.Quote(k))
 	}
 	var quoted []string
 	for _, id := range nonCoreNodeIDs() {
@@ -221,7 +238,7 @@ func inertConfig(t *testing.T, keep ...string) (string, map[string]int) {
 			quoted = append(quoted, strconv.Quote(id))
 		}
 	}
-	return baseConfig(t, "[components]\nremove = ["+strings.Join(quoted, ", ")+"]\n")
+	return baseConfig(t, "[components]\nadd = ["+strings.Join(added, ", ")+"]\nremove = ["+strings.Join(quoted, ", ")+"]\n")
 }
 
 // settledListeners waits for the component start report, gives every
@@ -344,6 +361,131 @@ func TestInertSelectionOpensNoListener(t *testing.T) {
 		ps := settledListeners(t, d)
 		if len(ps) != 1 || ps[0] != want {
 			t.Fatalf("listeners %v, want exactly [%d]; output:\n%s", ps, want, d.output())
+		}
+	})
+}
+
+// TestSecurityModuleInertWhenInactive is the security pillar's L2 smoke
+// check (security pillar plan section 4.3, SECP-1): with the module
+// inactive the daemon writes no posture key and opens no quick-scan
+// endpoint; with it active (and guard, which it requires) both appear, so
+// the empty result is a measurement. Removing the ModuleActive gate on
+// the module's loops fails the inactive half.
+func TestSecurityModuleInertWhenInactive(t *testing.T) {
+	bin := smokeBinary(t)
+	rep := binaryReport(t, bin)
+	if !reportCompiled(rep)["security"] {
+		t.Skipf("the %s distro does not offer the security module", rep.Distro)
+	}
+	keyOf := func(d *daemon) string {
+		return filepath.Join(d.home, ".observer", "security", "posture", "posture.key")
+	}
+	sockOf := func(d *daemon) string {
+		return filepath.Join(d.home, ".observer", "security", "attach", "attach.sock")
+	}
+	exists := func(p string) bool { _, err := os.Stat(p); return err == nil }
+	shortHome := func(t *testing.T) string {
+		h, err := os.MkdirTemp("/tmp", "sbo")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(h) })
+		return h
+	}
+
+	t.Run("active: the posture key and the quick-scan endpoint appear", func(t *testing.T) {
+		cfg, _ := inertConfig(t, "security", "guard")
+		d := startDaemonIn(t, bin, cfg, shortHome(t))
+		waitFor(t, d, 90*time.Second, "the security posture key and endpoint", func() bool {
+			return exists(keyOf(d)) && exists(sockOf(d))
+		})
+	})
+	t.Run("inactive: no posture key and no quick-scan endpoint", func(t *testing.T) {
+		cfg, _ := inertConfig(t, "guard")
+		d := startDaemonIn(t, bin, cfg, shortHome(t))
+		settledListeners(t, d)
+		if exists(keyOf(d)) || exists(sockOf(d)) {
+			t.Fatalf("an inactive security module wrote %s or %s; output:\n%s", keyOf(d), sockOf(d), d.output())
+		}
+	})
+}
+
+// TestSandboxModuleInertWhenInactive is the sandbox module's absence proof
+// with a real daemon (sandbox plan v2 section 11.4): with the Sandboxes and
+// VMs module active the probe route answers, and with it inactive the route
+// answers 404 component_not_installed and the daemon starts no sandbox
+// helper process. Removing the route guard (or the catalog's route row)
+// fails the inactive half.
+func TestSandboxModuleInertWhenInactive(t *testing.T) {
+	bin := smokeBinary(t)
+	rep := binaryReport(t, bin)
+	if !reportCompiled(rep)["terminals.sandbox"] {
+		t.Skipf("the %s distro does not offer the sandbox module", rep.Distro)
+	}
+	dashboardOwner := ""
+	for comp, key := range automaticTCPListeners() {
+		if key == "dashboard.addr" {
+			dashboardOwner = comp
+		}
+	}
+	if dashboardOwner == "" {
+		t.Fatal("no component declares the dashboard listener")
+	}
+	probe := func(t *testing.T, port int) (int, string) {
+		t.Helper()
+		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/api/terminal/sandbox", port))
+		if err != nil {
+			return 0, err.Error()
+		}
+		defer func() { _ = resp.Body.Close() }()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(b)
+	}
+	// helperRunning looks for a sandbox-host helper of THIS binary (lane
+	// sbx-p2, P-017 (g): the old pattern matched any observer on the box).
+	helperRunning := func(d *daemon) bool {
+		out, _ := exec.Command("pgrep", "-f", bin+" sandbox-host").Output() //nolint:gosec // G204: the test's own binary path
+		return len(bytes.TrimSpace(out)) > 0
+	}
+	t.Run("active: the probe route answers", func(t *testing.T) {
+		cfg, ports := inertConfig(t, dashboardOwner, "terminals", "isolation", "terminals.sandbox")
+		d := startDaemon(t, bin, cfg)
+		var code int
+		var body string
+		waitFor(t, d, 90*time.Second, "the sandbox probe route", func() bool {
+			code, body = probe(t, ports[dashboardOwner])
+			return code == http.StatusOK
+		})
+		if strings.Contains(body, "component_not_installed") {
+			t.Fatalf("an active module answered %s", body)
+		}
+	})
+	t.Run("inactive: 404 component_not_installed and no helper", func(t *testing.T) {
+		cfg, ports := inertConfig(t, dashboardOwner, "terminals")
+		d := startDaemon(t, bin, cfg)
+		var code int
+		var body string
+		waitFor(t, d, 90*time.Second, "the dashboard", func() bool {
+			code, body = probe(t, ports[dashboardOwner])
+			return code != 0
+		})
+		if code != http.StatusNotFound || !strings.Contains(body, "component_not_installed") {
+			t.Fatalf("an inactive sandbox module answered %d %s", code, body)
+		}
+		// The half that tests the claim (P-017 (g)): ASK for a sandboxed
+		// launch through the CLI, the path that would start the helper, and
+		// prove it is refused for the inactive module and no helper starts.
+		cfgPath := filepath.Join(d.home, ".observer", "config.toml")
+		cli := exec.Command(bin, "claude", "--observer-sandbox", "bwrap", "--config", cfgPath) //nolint:gosec // G204: the test's own binary and temp path.
+		cli.Env = []string{"HOME=" + d.home, "PATH=/usr/bin:/bin", "TMPDIR=" + d.home}
+		cli.Dir = d.home
+		out, err := cli.CombinedOutput()
+		var ee *exec.ExitError
+		if !errors.As(err, &ee) || ee.ExitCode() != 3 || !strings.Contains(string(out), "not active") {
+			t.Fatalf("a sandboxed CLI launch with the module inactive: err %v output %q", err, out)
+		}
+		if helperRunning(d) {
+			t.Fatal("an observer sandbox-host process runs with the module inactive")
 		}
 	})
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/govern"
 	"github.com/marmutapp/superbased-observer/internal/govern/sidecar"
+	"github.com/marmutapp/superbased-observer/internal/keystore"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/policyfam"
@@ -426,6 +427,7 @@ func TestHookFailsOpenOnMalformedSidecar(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds the observer binary")
 	}
+	needGo(t)
 	bin := filepath.Join(t.TempDir(), "observer-hook-test")
 	if runtime.GOOS == "windows" {
 		bin += ".exe"
@@ -455,7 +457,7 @@ func TestHookFailsOpenOnMalformedSidecar(t *testing.T) {
 				t.Fatalf("write sidecar: %v", err)
 			}
 			cmd := exec.Command(bin, "hook", "claude-code", "PreToolUse")
-			cmd.Env = append(os.Environ(), "HOME="+home, "USERPROFILE="+home)
+			cmd.Env = append(os.Environ(), "HOME="+home, "USERPROFILE="+home, keystore.EnvTestKeystore+"="+keystore.TestKeystoreMemory)
 			cmd.Stdin = readerOf(`{"session_id":"s1","tool_name":"Read","tool_input":{"file_path":"/tmp/x"},"cwd":"/tmp"}`)
 			out, err := cmd.CombinedOutput()
 			if err != nil {

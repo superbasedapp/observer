@@ -15,7 +15,9 @@ import (
 // observer entry and cleans up mcpServers when empty.
 func TestUnregisterClaudeRoundTrip(t *testing.T) {
 	t.Parallel()
-	r, home := newRegistrar(t, false)
+	// A provenance record says Observer created the file (MACUSER merge
+	// M2: with no record a removal never deletes it).
+	r, home := newProvenanceRegistrar(t)
 	path := filepath.Join(home, ".claude.json")
 
 	if res := r.Register("claude-code"); res.Error != nil {
@@ -82,7 +84,7 @@ func TestUnregisterPreservesOtherMCPServers(t *testing.T) {
 // same shape as Claude's JSON path.
 func TestUnregisterCursorRoundTrip(t *testing.T) {
 	t.Parallel()
-	r, home := newRegistrar(t, false)
+	r, home := newProvenanceRegistrar(t) // the record decides (M2)
 	path := filepath.Join(home, ".cursor", "mcp.json")
 
 	if res := r.Register("cursor"); res.Error != nil {

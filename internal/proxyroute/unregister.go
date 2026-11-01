@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 
 	"github.com/marmutapp/superbased-observer/internal/cfgfmt"
+	"github.com/marmutapp/superbased-observer/internal/proxyauth"
+	"github.com/marmutapp/superbased-observer/internal/testwriteguard"
 )
 
 // UnregisterCodex undoes RegisterCodex for THIS install: it removes the
@@ -23,10 +25,19 @@ import (
 // This is the one seam both `observer uninstall` and the dashboard's route
 // undo use.
 func (r *Registrar) UnregisterCodex() RegistrationResult {
-	dir := filepath.Join(r.opts.HomeDir, ".codex")
-	path := filepath.Join(dir, "config.toml")
+	return redactResult(r.unregisterCodex())
+}
+
+// unregisterCodex is UnregisterCodex before the client token in the result
+// is masked. A route in the client token form is this install's route too.
+func (r *Registrar) unregisterCodex() RegistrationResult {
+	path, err := r.codexConfigPath()
 	want := codexBaseURL(r.opts.ProxyPort)
 	res := RegistrationResult{Tool: "codex", ConfigPath: path, DryRun: r.opts.DryRun}
+	if err != nil {
+		res.Error = err
+		return res
+	}
 
 	// Review M3-16: the edit is surgical (cfgfmt keeps every comment, key
 	// order and blank line it does not touch), takes the same settings-file
@@ -61,7 +72,7 @@ func (r *Registrar) UnregisterCodex() RegistrationResult {
 		return res
 	}
 	res.BaseURL = curURL
-	if curURL != want {
+	if !proxyauth.SameRoute(curURL, want) {
 		res.AlreadySet = true
 		return res
 	}
@@ -109,8 +120,21 @@ func unregisterCodexEdits(doc cfgfmt.Doc, prior string) error {
 }
 
 // writeFileKeepMode replaces path atomically through a unique temp file in
-// the same directory, keeping the file's current permission bits.
+// the same directory, keeping the file's current permission bits. Inside a
+// test binary it first refuses a path outside the temp directory
+// (guardWrite).
 func writeFileKeepMode(path string, b []byte) error {
+	return writeFileKeepModeIf(path, b, nil)
+}
+
+// writeFileKeepModeIf is writeFileKeepMode with a precondition checked
+// immediately before the rename (after the temp file is written): a
+// non-nil error from unchanged abandons the write and leaves path as it
+// is. nil checks nothing.
+func writeFileKeepModeIf(path string, b []byte, unchanged func() error) error {
+	if err := testwriteguard.Check("write", path); err != nil {
+		return err
+	}
 	mode := os.FileMode(0o600)
 	if fi, err := os.Stat(path); err == nil {
 		mode = fi.Mode().Perm()
@@ -132,6 +156,12 @@ func writeFileKeepMode(path string, b []byte) error {
 	if err := os.Chmod(name, mode); err != nil {
 		_ = os.Remove(name)
 		return err
+	}
+	if unchanged != nil {
+		if err := unchanged(); err != nil {
+			_ = os.Remove(name)
+			return err
+		}
 	}
 	if err := os.Rename(name, path); err != nil {
 		_ = os.Remove(name)
@@ -155,4 +185,17 @@ func (r *Registrar) forget(tool, configPath string) error {
 	}
 	f.Drop(tool, configPath)
 	return saveProvenance(path, f)
+}
+
+// guardWrite is the one test-binary write guard every proxy-route writer
+// calls before it creates a directory or writes, renames or removes a file:
+// inside a `go test` binary any path outside the temp directory is refused
+// (internal/testwriteguard, incident 2026-10-21).
+func guardWrite(paths ...string) error {
+	for _, p := range paths {
+		if err := testwriteguard.Check("write", p); err != nil {
+			return err
+		}
+	}
+	return nil
 }

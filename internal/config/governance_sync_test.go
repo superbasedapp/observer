@@ -46,6 +46,9 @@ func TestPinnableKeysMirrorInSyncWithPolicyfam(t *testing.T) {
 		if !governanceValuesEqual(got.Safe, want.Safe) && !(got.Safe == nil && want.Safe == nil) {
 			t.Errorf("%q: mirror Safe %v, nodegov Safe %v", want.Key, got.Safe, want.Safe)
 		}
+		if got.Format != want.Format {
+			t.Errorf("%q: mirror Format %q, nodegov Format %q", want.Key, got.Format, want.Format)
+		}
 		if got.Min != want.Min || got.Max != want.Max {
 			t.Errorf("%q: mirror bounds %d..%d, nodegov bounds %d..%d", want.Key, got.Min, got.Max, want.Min, want.Max)
 		}

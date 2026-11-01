@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/models"
@@ -251,7 +252,9 @@ func TestPatchFileSet(t *testing.T) {
 				t.Fatalf("patchFileSet size = %d (%v), want %d (%v)", len(got), keysOf(got), len(tt.want), tt.want)
 			}
 			for _, p := range tt.want {
-				if _, ok := got[p]; !ok {
+				// Both pairing sides key by filepath.Clean (changesFileSet
+				// does too), which uses the host separator.
+				if _, ok := got[filepath.Clean(p)]; !ok {
 					t.Errorf("patchFileSet missing %q (got %v)", p, keysOf(got))
 				}
 			}

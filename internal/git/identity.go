@@ -44,14 +44,17 @@ type Identity struct {
 	// to fingerprint (an empty or unreadable directory).
 	ContentFingerprint string
 	// Workspace is the session cwd's position inside the repo: the
-	// slash-separated path (relative to Root) of the nearest ancestor
-	// directory (walking from dir up to, and including, Root) that
-	// contains one of WorkspaceManifests. "" means the workspace IS the
-	// repo root, dir lies outside Root, or no manifest was found.
+	// slash-separated path (relative to CheckoutRoot, which equals Root
+	// outside a linked worktree) of the nearest ancestor directory
+	// (walking from dir up to, and including, CheckoutRoot) that contains
+	// one of WorkspaceManifests. "" means the workspace IS the checkout
+	// root, dir lies outside it, or no manifest was found.
 	Workspace string
-	// IsWorktree is true when dir resolved to its git root through a
-	// linked worktree's `.git` FILE (as opposed to the main repo's
-	// `.git` directory).
+	// IsWorktree is true when dir sits in a linked worktree in git's own
+	// layout (see linkedWorktree): Root is then the main repository's top
+	// level (or, for a bare common dir, the checkout) and CheckoutRoot the
+	// worktree's. A `.git` FILE that is not such a worktree (a submodule, a
+	// `--separate-git-dir` clone, a planted file) reports false.
 	IsWorktree bool
 }
 
@@ -101,24 +104,27 @@ func ResolveIdentity(dir string, opts IdentityOptions) (Identity, error) {
 		return Identity{}, fmt.Errorf("git.ResolveIdentity: %w", err)
 	}
 
-	root, isGit, isWorktree := findGitRootDetailed(abs)
-	if !isGit {
-		root = abs
+	loc := locateGit(abs)
+	root, checkout := loc.root, loc.checkout
+	if !loc.ok {
+		root, checkout = abs, abs
 	}
 
 	id := Identity{
-		Info: Info{Root: root, IsGit: isGit},
+		Info: Info{Root: root, IsGit: loc.ok, CheckoutRoot: checkout},
 	}
 
-	if isGit {
-		id.IsWorktree = isWorktree
-		id.Branch = readBranch(root)
-		id.Remote = NormalizeRemote(readOriginRemote(root))
-		remotes := readAllRemotes(root)
+	if loc.ok {
+		id.IsWorktree = loc.worktree
+		id.Branch = readBranch(loc.gitDir)
+		id.Remote = NormalizeRemote(readOriginRemote(loc.commonDir))
+		remotes := readAllRemotes(loc.commonDir)
 		id.UpstreamRemote = NormalizeRemote(pickUpstreamRemote(remotes))
 		id.RemoteOwner = OwnerOf(id.Remote)
 		id.UpstreamOwner = OwnerOf(id.UpstreamRemote)
-		id.Workspace = resolveWorkspace(root, abs)
+		// The workspace is dir's position inside its own checkout (a
+		// linked worktree's files sit under CheckoutRoot, not Root).
+		id.Workspace = resolveWorkspace(checkout, abs)
 
 		if opts.RootCommit != nil {
 			// ResolveIdentity has no ctx parameter (it mirrors Resolve's

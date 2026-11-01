@@ -22,6 +22,8 @@ import {
   type TabDef,
 } from "@/components/primitives";
 import { useUrlTab } from "@/lib/useUrlTab";
+import { useComponentState } from "@/lib/useComponents";
+import { codeSecurityCardVisible } from "@/lib/codeSecuritySettings";
 import { usePageTabs } from "@/lib/governance";
 import {
   SECURITY_RECENT_VERDICTS,
@@ -234,6 +236,24 @@ type ApproveSeed = { rule: string; session: string };
 type SeverityFilter = "all" | "warn" | "high" | "critical";
 type DecisionFilter = "all" | "flag" | "ask" | "deny";
 type WindowFilter = "24" | "168" | "720";
+
+// CodeSecurityLink points from Guard to the Code security page (security
+// pillar plan section 4.10: Guard's own page keeps the `security` nav id;
+// the pillar's page is `code-security`). Shown only while the `security`
+// component is active, so an inactive or omitted module adds nothing here.
+function CodeSecurityLink() {
+  const view = useComponentState().data?.view;
+  if (!codeSecurityCardVisible(view)) return null;
+  return (
+    <p className="mb-4 text-small text-fg-3" data-testid="guard-code-security-link">
+      Findings, the commit gate and repository trust live on{" "}
+      <Link to="/code-security" className="text-accent hover:underline">
+        Code security
+      </Link>
+      .
+    </p>
+  );
+}
 
 export function SecurityPage() {
   const pageTabs = usePageTabs("security", SECURITY_TABS);
@@ -493,6 +513,8 @@ export function SecurityPage() {
         guardEnabled={!!sum?.enabled && sum.mode !== "off"}
         onEdit={openPolicyEditor}
       />
+
+      <CodeSecurityLink />
 
       <StatStrip cols={4} ariaLabel="Guard summary">
         <StatCard

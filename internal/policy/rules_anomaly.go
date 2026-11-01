@@ -36,6 +36,21 @@ func matchRepeatLoop(ctx *MatchContext) (bool, string) {
 		strconv.Itoa(ctx.Event.RepeatCount) + "× consecutively (stuck loop shape)"
 }
 
+// matchEvasion is A-613 (D-761, security pillar plan section 5.2): after a
+// deny, the agent kept trying the same denied thing in other shapes (the
+// JSP-6 live half saw a model reword a denied commit twice in one turn).
+// A-610 catches only identical repeats. The guard layer stamps the event
+// (Event.EvasionOf, Event.EvasionShapes) on the watcher ingest path; the
+// row is inert without the stamp, which is the default.
+func matchEvasion(ctx *MatchContext) (bool, string) {
+	ev := ctx.Event
+	if ev.EvasionOf == "" || ev.EvasionShapes < 1 {
+		return false, ""
+	}
+	return true, "after " + ev.EvasionOf + " refused an action in this session, " +
+		strconv.Itoa(ev.EvasionShapes) + " differently shaped attempt(s) hit the same rule"
+}
+
 // anomalyRules assembles the shipped §5.7 anomaly rows.
 func anomalyRules() []Rule {
 	return []Rule{
@@ -46,6 +61,14 @@ func anomalyRules() []Rule {
 			Observe:   DecisionFlag, Enforce: DecisionFlag,
 			Doc:    "identical tool call repeated consecutively past the stuck-loop threshold",
 			Advice: "The agent is likely looping on a failing action; check the session timeline and interrupt the run if it isn't converging.",
+		},
+		{
+			ID: "A-613", Category: CategoryAnomaly, Severity: SeverityHigh,
+			AppliesTo: []EventKind{KindShellExec, KindFileAccess, KindMCPCall, KindToolCall},
+			Match:     matchEvasion,
+			Observe:   DecisionFlag, Enforce: DecisionFlag,
+			Doc:    "repeated attempts at a denied action in different shapes (policy evasion, opt-in)",
+			Advice: "The agent is trying to get around a guard refusal. Read the refusal it received and the session timeline; stop the run if it does not change course.",
 		},
 	}
 }

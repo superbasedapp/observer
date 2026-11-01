@@ -22,9 +22,11 @@ type fakeOrgIntel struct {
 }
 
 func (f *fakeOrgIntel) Status(*http.Request) (OrgIntelStatus, error) { return OrgIntelStatus{}, nil }
+
 func (f *fakeOrgIntel) Accept(*http.Request, string) (OrgIntelStatus, error) {
 	return OrgIntelStatus{}, nil
 }
+
 func (f *fakeOrgIntel) Withdraw(*http.Request) (OrgIntelStatus, error) { return OrgIntelStatus{}, nil }
 
 func (f *fakeOrgIntel) Session(_ *http.Request, id string) (OrgIntelSessionView, error) {

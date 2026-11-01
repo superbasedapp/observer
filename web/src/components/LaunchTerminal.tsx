@@ -3,6 +3,9 @@ import { createPortal } from "react-dom";
 import { useTerminalTheme } from "@/lib/terminalTheme";
 import type { TerminalThemePref } from "@shared/lib/terminalTheme";
 import { isRemoteView } from "@/lib/remote";
+import { runPillLabel } from "@/lib/sandboxIsolation";
+import { terminalEndLine } from "@/lib/terminalEnd";
+import type { LaunchIsolation } from "@/lib/types";
 import { pushToast } from "@/components/Toast";
 import { useCompanionRegistry } from "@/components/primitives/companion";
 import { ConfirmButton, Icon, LiveDot, Tooltip, TooltipSpan } from "@/components/primitives";
@@ -69,6 +72,8 @@ type Props = {
   token: string;
   /** Tool label for the header (e.g. "codex"). */
   tool: string;
+  /** A sandboxed run's recorded isolation evidence, shown as the run pill. */
+  isolation?: LaunchIsolation;
   /** Kill the process + tear down the panel (destructive). */
   onClose: () => void;
   /** Collapse to the dock, keeping the ws + child process alive. */
@@ -230,6 +235,7 @@ export type Control =
 export function LaunchTerminal({
   token,
   tool,
+  isolation,
   onClose,
   onMinimize,
   onStatus,
@@ -244,6 +250,8 @@ export function LaunchTerminal({
   projectPanelEnabled,
   sessionPanelEnabled,
 }: Props) {
+  // The run pill (sandbox plan v2 section 9): what this run was launched in.
+  const runPill = runPillLabel(isolation);
   const companion = useCompanionRegistry();
   // Touch presentation gate (capability query — coarse pointer AND small
   // viewport). EVERY branch keyed off this is additive: a desktop user, or a
@@ -312,6 +320,9 @@ export function LaunchTerminal({
   const [policyStop, setPolicyStop] = useState<PolicyStopInfo | undefined>(
     undefined,
   );
+  // Why the run ended, from the exit frame's end_reason (Windows 11 Pro run
+  // 4, N3): named in the terminal and as the exited pill's title.
+  const [endReason, setEndReason] = useState<string | undefined>(undefined);
   const [errMsg, setErrMsg] = useState<string | null>(null);
 
   // Remote-writer control (§4). A remote-paired device starts read-only and
@@ -1021,6 +1032,7 @@ export function LaunchTerminal({
                 expiry?: boolean;
                 reason?: TerminalControlDenialReason;
                 policy_stop?: PolicyStopInfo;
+                end_reason?: string;
               };
               if (m.t === "exit") {
                 // The AUTHORITATIVE "really exited" signal — the only thing that
@@ -1030,6 +1042,12 @@ export function LaunchTerminal({
                 ptyExited = true;
                 setExitCode(typeof m.code === "number" ? m.code : 0);
                 setPolicyStop(m.policy_stop);
+                setEndReason(m.end_reason);
+                // The named line for why the run ended (N3), after the
+                // tool's last output.
+                termRef.current?.write(
+                  `\r\n\x1b[2m[${terminalEndLine(m.end_reason, typeof m.code === "number" ? m.code : 0)}]\x1b[0m\r\n`,
+                );
                 setStatus("exited");
               } else if (m.t === "pty_size") {
                 // Feature A / Feature 2: the server's geometry frame (sent on open
@@ -2136,7 +2154,15 @@ export function LaunchTerminal({
           >
             {tool}
           </span>
-          <StatusPill status={status} exitCode={exitCode} />
+          <StatusPill status={status} exitCode={exitCode} endReason={endReason} />
+          {runPill && (
+            <span
+              className={"rounded-pill border px-1.5 py-px text-[10px] text-fg-2" + (isTouch ? " min-w-0 truncate" : "")}
+              title={`Sandboxed: ${runPill}`}
+            >
+              {runPill}
+            </span>
+          )}
           {errMsg && (
             <span
               className={
@@ -3195,9 +3221,11 @@ function RemoteControlBar({
 function StatusPill({
   status,
   exitCode,
+  endReason,
 }: {
   status: Status;
   exitCode: number | null;
+  endReason?: string;
 }) {
   const map: Record<Status, { label: string; cls: string }> = {
     connecting: { label: "connecting…", cls: "bg-overlay-1 text-fg-3" },
@@ -3217,6 +3245,7 @@ function StatusPill({
       // shrink-0: in the touch header the identity row never wraps, so the
       // pill must keep its full width and let the tool NAME be the thing that
       // truncates — a half-clipped "reconnecting…" says nothing.
+      title={status === "exited" ? terminalEndLine(endReason, exitCode) : undefined}
       className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-1.5 py-0.5 text-[9.5px] font-medium uppercase tracking-[0.05em] ${cls}`}
     >
       {/* Same transport dot as the dock chip and the workspace tile

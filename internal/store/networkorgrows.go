@@ -104,7 +104,7 @@ func (s *Store) SelectSessionNetworkEvents(ctx context.Context) ([]orgcontract.S
 // per-session SQL cap, this bounds the complete cross-session snapshot before
 // request/response bodies accumulate in the Go heap.
 func (s *Store) SelectSessionNetworkEventsBounded(ctx context.Context, maxBytes int64) ([]orgcontract.SessionNetworkEventRow, error) {
-	rows, _, err := s.selectSessionNetworkEventsBounded(ctx, maxBytes)
+	rows, _, err := s.selectSessionNetworkEventsBounded(ctx, maxBytes, nil)
 	return rows, err
 }
 
@@ -118,7 +118,12 @@ func (s *Store) SelectSessionNetworkEventsBounded(ctx context.Context, maxBytes 
 // Every other snapshot wire truncates only in fitRows, where the caller can see
 // it by comparing lengths; this one also truncates inside the scan, so it has
 // to say so explicitly.
-func (s *Store) selectSessionNetworkEventsBounded(ctx context.Context, maxBytes int64) ([]orgcontract.SessionNetworkEventRow, bool, error) {
+//
+// skip (nil for every caller but the org push) drops a row before it is
+// measured: the push passes the snapshot paging rule, so a row the server
+// already accepted in the family's open cycle, or one too large for any
+// envelope, neither ships nor spends the ceiling (orgsnapgate.go).
+func (s *Store) selectSessionNetworkEventsBounded(ctx context.Context, maxBytes int64, skip func(orgcontract.SessionNetworkEventRow) bool) ([]orgcontract.SessionNetworkEventRow, bool, error) {
 	truncated := false
 	since := time.Now().UTC().AddDate(0, 0, -sessionNetworkWindowDays)
 	// The per-session cap is enforced IN SQL via ROW_NUMBER() rather than in
@@ -243,6 +248,9 @@ func (s *Store) selectSessionNetworkEventsBounded(ctx context.Context, maxBytes 
 			}
 		}
 
+		if skip != nil && skip(r) {
+			continue
+		}
 		rowBytes := jsonSize(r)
 		if maxBytes > 0 && usedBytes+rowBytes > maxBytes {
 			truncated = true

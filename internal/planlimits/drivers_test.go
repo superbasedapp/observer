@@ -106,8 +106,8 @@ func TestEveryAccountSourceHasADriver(t *testing.T) {
 		if !s.Passive && !has {
 			t.Errorf("source %s has no driver", s.ID)
 		}
-		if s.Kind == KindBrowser {
-			t.Errorf("source %s: rung 3 is not built in this phase", s.ID)
+		if s.Kind == KindBrowser && len(s.Local) > 0 {
+			t.Errorf("source %s: a browser session is pasted, never read from this machine", s.ID)
 		}
 		if len(s.Hosts) > 0 && s.Command != "" {
 			t.Errorf("source %s: a source is either network or a vendor command", s.ID)
@@ -141,10 +141,28 @@ func TestOpenRouter(t *testing.T) {
 	if _, err := ParseOpenRouterCredits([]byte(`{"data":{"total_credits":"many","total_usage":1}}`)); !errors.Is(err, ErrShape) {
 		t.Errorf("non-number credits: %v", err)
 	}
-	// The management key is optional: without it only /key is planned.
+	// The balance left is asked with the key itself (D-681); the management
+	// key is an optional fallback for credits.
 	reqs, _ := planOpenRouter(PlanInput{Secrets: map[string]string{"key": "K"}})
-	if len(reqs) != 1 || reqs[0].SecretHeaders["Authorization"] != "Bearer K" || reqs[0].Header["Authorization"] != "" {
+	if len(reqs) != 2 || reqs[0].SecretHeaders["Authorization"] != "Bearer K" || reqs[0].Header["Authorization"] != "" ||
+		reqs[1].Key != "credits" || !reqs[1].Optional || reqs[1].SecretHeaders["Authorization"] != "Bearer K" {
 		t.Errorf("plan %+v", reqs)
+	}
+	reqs, _ = planOpenRouter(PlanInput{Secrets: map[string]string{"key": "K", "mgmt": "M"}})
+	if len(reqs) != 3 || reqs[2].Key != "credits_mgmt" || reqs[2].SecretHeaders["Authorization"] != "Bearer M" {
+		t.Errorf("plan with management key %+v", reqs)
+	}
+	// A key OpenRouter refuses credits for falls back to the management key.
+	s, err = parseOpenRouter(ParseInput{Now: t0, Responses: map[string]Response{
+		"key":          {Status: 200, Body: fixture(t, "openrouter_key_unlimited.json")},
+		"credits":      {Status: 403},
+		"credits_mgmt": {Status: 200, Body: fixture(t, "openrouter_credits.json")},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, ok := FindBalance(s, "prepaid"); !ok || b.Amount != 18_420_000 {
+		t.Errorf("fallback prepaid %+v", b)
 	}
 	if _, err := planOpenRouter(PlanInput{}); !errors.Is(err, ErrAuth) {
 		t.Errorf("missing key must be ErrAuth: %v", err)
@@ -168,7 +186,7 @@ func TestDeepSeek(t *testing.T) {
 	}
 	for _, bad := range []string{
 		`{"is_available":true,"balance_infos":[{"currency":"USD","total_balance":3.12,"granted_balance":"0","topped_up_balance":"0"}]}`,
-		`{"is_available":true,"balance_infos":[{"currency":"EUR","total_balance":"1","granted_balance":"0","topped_up_balance":"1"}]}`,
+		`{"is_available":true,"balance_infos":[{"currency":"GBP","total_balance":"1","granted_balance":"0","topped_up_balance":"1"}]}`,
 		`{"error":{"message":"Authentication Fails"}}`,
 		`{"is_available":true,"balance_infos":[]}`,
 	} {

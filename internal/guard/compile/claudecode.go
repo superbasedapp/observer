@@ -203,6 +203,65 @@ func claudeCodeRows() []Translation {
 			Note: "flag-only rule: the native dialect has no record-but-allow action",
 		},
 		{
+			RuleID: "R-162", Fidelity: FidelityNone,
+			Note: "judged on CONTENT (a write that turns a hook switch on); a path entry would also refuse the host's own permission-grant writes to settings.local.json, which the rule exists to let through",
+		},
+		{
+			RuleID: "R-163", Fidelity: FidelityNone,
+			Note: "flag-only rule: the native dialect has no record-but-allow action",
+		},
+		{
+			RuleID: "R-112", Fidelity: FidelityApprox,
+			Note: "the skip option as the first argument and -c core.hooksPath as the first git option only: Bash() rules are command-prefix patterns, so --no-verify later in the argument list (git commit -m x --no-verify), environment injection (GIT_CONFIG_PARAMETERS / GIT_CONFIG_COUNT), a lower-case core.hookspath and aliases stay hook-enforced",
+			Entries: []Entry{
+				{Action: ActionDeny, Value: "Bash(git commit --no-verify:*)"},
+				{Action: ActionDeny, Value: "Bash(git commit -n:*)"},
+				{Action: ActionDeny, Value: "Bash(git push --no-verify:*)"},
+				{Action: ActionDeny, Value: "Bash(git merge --no-verify:*)"},
+				{Action: ActionDeny, Value: "Bash(git pull --no-verify:*)"},
+				{Action: ActionDeny, Value: "Bash(git rebase --no-verify:*)"},
+				{Action: ActionDeny, Value: "Bash(git am --no-verify:*)"},
+				{Action: ActionDeny, Value: "Bash(git -c core.hooksPath:*)"},
+			},
+		},
+		{
+			RuleID: "R-113", Fidelity: FidelityNone,
+			Note: "the skip switch is an environment assignment in front of the command (HUSKY=0 git commit), an env operand or an earlier export; none is a command prefix the dialect can name for every spelling",
+		},
+		{
+			RuleID: "R-114", Fidelity: FidelityApprox,
+			Note: "Edit/Write arms over git's own files and the common hook-manager configs, plus the leading `git config core.hooksPath` forms; core.fsmonitor, scope flags in other positions, shell writes and .gitattributes driver content stay hook-enforced",
+			Entries: []Entry{
+				{Action: ActionDeny, Value: "Edit(**/.git/config)"},
+				{Action: ActionDeny, Value: "Write(**/.git/config)"},
+				{Action: ActionDeny, Value: "Edit(**/.git/info/attributes)"},
+				{Action: ActionDeny, Value: "Write(**/.git/info/attributes)"},
+				{Action: ActionDeny, Value: "Write(**/.git/refs/**)"},
+				{Action: ActionDeny, Value: "Write(**/.git/objects/**)"},
+				{Action: ActionDeny, Value: "Edit(~/.gitconfig)"},
+				{Action: ActionDeny, Value: "Write(~/.gitconfig)"},
+				{Action: ActionDeny, Value: "Bash(git config core.hooksPath:*)"},
+				{Action: ActionDeny, Value: "Bash(git config --global core.hooksPath:*)"},
+				{Action: ActionDeny, Value: "Bash(git config --unset core.hooksPath:*)"},
+				{Action: ActionAsk, Value: "Edit(**/.husky/**)"},
+				{Action: ActionAsk, Value: "Write(**/.husky/**)"},
+				{Action: ActionAsk, Value: "Edit(**/.pre-commit-config.yaml)"},
+				{Action: ActionAsk, Value: "Write(**/.pre-commit-config.yaml)"},
+				{Action: ActionAsk, Value: "Edit(**/lefthook.yml)"},
+				{Action: ActionAsk, Value: "Write(**/lefthook.yml)"},
+			},
+		},
+		{
+			RuleID: "R-165", Fidelity: FidelityApprox,
+			Note: "the observer binary's grant verbs as the leading command; package-runner forms (npx @superbased/observer ...), the dashboard's approval routes reached through curl and SQL into guard_approvals stay hook-enforced, and the request row is flag-only",
+			Entries: []Entry{
+				{Action: ActionDeny, Value: "Bash(observer guard approve:*)"},
+				{Action: ActionDeny, Value: "Bash(observer guard mcp approve:*)"},
+				{Action: ActionDeny, Value: "Bash(observer guard prompt allow:*)"},
+				{Action: ActionDeny, Value: "Bash(observer guard disable:*)"},
+			},
+		},
+		{
 			RuleID: "R-170", Fidelity: FidelityNone,
 			Note: "the pipe-to-interpreter shape sits mid-command (the pipe); a curl/wget prefix entry would block every download",
 		},
@@ -363,6 +422,14 @@ func claudeCodeRows() []Translation {
 		{
 			RuleID: "A-610", Fidelity: FidelityNone,
 			Note: "repeat tracking is runtime state; anomaly rules never block (§12.2)",
+		},
+		{
+			RuleID: "R-166", Fidelity: FidelityNone,
+			Note: "the protected path classes are opt-in node config ([guard.boundary].protected_path_classes), and this table is static, so R-166 stays hook-enforced",
+		},
+		{
+			RuleID: "A-613", Fidelity: FidelityNone,
+			Note: "evasion tracking is runtime state on the watcher ingest path; anomaly rules never block (§12.2)",
 		},
 	}
 }

@@ -3,6 +3,8 @@ package pathnorm
 import (
 	"net/url"
 	"os"
+	"path"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -109,6 +111,37 @@ func (f Format) String() string {
 func Normalize(p string) string {
 	out, _ := NormalizeWithFormat(p)
 	return out
+}
+
+// foreignFormats are the outermost formats NormalizeForeign accepts a
+// rewrite for: shapes that can never name a native path on a POSIX
+// host (a drive letter, a file URI, the `\\?\` prefix, a same-distro
+// WSL UNC share). The native-looking rewrites (Git Bash `/c/`, `~`,
+// surrounding quotes) are left out, because `/c/x` and `~x` are also
+// legal POSIX directory names.
+var foreignFormats = map[Format]bool{
+	FormatWindowsDrive:   true,
+	FormatFileURI:        true,
+	FormatExtendedLength: true,
+	FormatUNCWSL:         true,
+}
+
+// NormalizeForeign is the strict variant of Normalize for identity
+// keys such as a project root: it rewrites p only when p is
+// unmistakably a foreign or URI spelling (see foreignFormats) and
+// returns every other input byte-for-byte unchanged, so a native path
+// never changes identity. A rewritten result is lexically cleaned
+// (trailing separator, `.` and `..` segments), so `C:\foo\` and
+// `C:/foo` land on one key.
+func NormalizeForeign(p string) string {
+	out, format := NormalizeWithFormat(p)
+	if !foreignFormats[format] || out == "" || out == p {
+		return p
+	}
+	if runtime.GOOS == "windows" {
+		return filepath.Clean(out)
+	}
+	return path.Clean(out)
 }
 
 // NormalizeWithFormat runs the same pipeline as Normalize and also
@@ -264,13 +297,35 @@ func stripMatchedQuotes(s string) (string, bool) {
 	return s, stripped
 }
 
-// isFileURI reports whether s starts with the case-insensitive
-// `file://` scheme prefix.
+// isFileURI reports whether s starts with a case-insensitive `file:`
+// scheme followed by a slash: the authority form `file://...` and the
+// RFC 8089 authority-less form `file:/C:/...` alike.
 func isFileURI(s string) bool {
-	if len(s) < 7 {
+	if len(s) < 6 {
 		return false
 	}
-	return strings.EqualFold(s[:7], "file://")
+	return strings.EqualFold(s[:5], "file:") && s[5] == '/'
+}
+
+// decodeDriveAuthorityURI handles the malformed `file://C:\foo` shape:
+// a caller that builds a URI by prefixing `file://` to a bare Windows
+// path puts the drive letter where the authority belongs, which
+// url.Parse rejects (`\foo` is not a port). The remainder is the path.
+// Live, the antigravity-cli launch-workspace fallback produced it, and
+// the unparsed URI reached filepath.Abs, which joined it onto the
+// daemon's cwd as `/home/<user>/file:/C:\...`.
+func decodeDriveAuthorityURI(uri string) (string, bool) {
+	if len(uri) < 7 || !strings.EqualFold(uri[:7], "file://") {
+		return "", false
+	}
+	rest := uri[7:]
+	if !looksLikeWindowsDriveAbsolute(rest) {
+		return "", false
+	}
+	if decoded, err := url.PathUnescape(rest); err == nil {
+		return decoded, true
+	}
+	return rest, true
 }
 
 // windowsDrivePathRE matches a leading `/X:/` (forward-slash drive
@@ -282,6 +337,9 @@ var windowsDrivePathRE = regexp.MustCompile(`^/[A-Za-z]:/`)
 // path component, and strips the leading slash before a drive letter
 // (`/D:/foo` → `D:/foo`). Returns (path, true) on success.
 func decodeFileURIPath(uri string) (string, bool) {
+	if p, ok := decodeDriveAuthorityURI(uri); ok {
+		return p, true
+	}
 	u, err := url.Parse(uri)
 	if err != nil {
 		return "", false

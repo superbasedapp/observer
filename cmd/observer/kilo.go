@@ -194,6 +194,7 @@ func runKiloLauncher(configPath, dbPath, bin string, args []string, dir string) 
 	child.Stderr = os.Stderr
 	discovery := prepareGenericDiscovery(context.Background(), "kilo-code-cli", dir)
 	if rErr := child.Start(); rErr != nil {
+		noteBoxToolLaunch(os.Stderr, "kilo", bin, args, rErr)
 		return fmt.Errorf("exec kilo: %w", rErr)
 	}
 	// Direct process attribution (migration 086): record the child pid now
@@ -212,6 +213,7 @@ func runKiloLauncher(configPath, dbPath, bin string, args []string, dir string) 
 		defer discoverCancel()
 	}
 	if rErr := child.Wait(); rErr != nil {
+		noteBoxToolLaunch(os.Stderr, "kilo", bin, args, rErr)
 		var ee *exec.ExitError
 		if errors.As(rErr, &ee) {
 			return exitErr(ee.ExitCode())

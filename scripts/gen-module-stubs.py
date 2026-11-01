@@ -128,6 +128,13 @@ V = [
  var("pg_backup_retention_days", "number", "35", ["data"], ["appliance"], "Flexible Server backup retention (plan 4.4: 35 days of PITR); the self-hosted job uses the same number.",
   ("var.pg_backup_retention_days >= 7 && var.pg_backup_retention_days <= 35", "pg_backup_retention_days must be 7..35"),
   aws={"description": "RDS backup_retention_period (plan 4.4: 35 days of PITR); the self-hosted job uses the same number."}),
+ # T-810 (load test 2026-10-14): the managed server's checkpoint pair (internal/pgtune.ManagedParameters,
+ # native units: max_wal_size MB, checkpoint_timeout s) as dynamic Flexible Server parameters. Flexible
+ # Server already sizes shared_buffers / effective_cache_size / max_connections from its SKU. Azure only:
+ # the AWS RDS root manages no parameter group yet (RDS defaults are memory-derived too).
+ var("pg_server_parameters", "map(string)", "{}", ["data"], ["appliance"], "Flexible Server parameters the planner derives from the managed SKU's RAM (T-810: max_wal_size in MB, checkpoint_timeout in seconds); {} = the service defaults. Only applied on postgres = managed-*.",
+  ('alltrue([for k in keys(var.pg_server_parameters) : contains(["max_wal_size", "checkpoint_timeout"], k)])', "pg_server_parameters keys must be max_wal_size or checkpoint_timeout"),
+  clouds=["azure"]),
  var("app_layout", "string", '"single"', ["data", "app"], ["appliance"], "Catalog axis app_layout: single (RA-2) | ha (RA-3).",
   ('contains(["single", "ha"], var.app_layout)', "app_layout must be single or ha")),
  # ---- app ----
@@ -160,7 +167,7 @@ V = [
  var("app_instance_type", "string", None, ["app"], None, "App EC2 instance type (catalog provision name, e.g. m6a.xlarge).", NOT_CHANGEME("app_instance_type"),
   clouds=["aws"], twin="app_vm_size"),
  var("nats_replicas", "number", "1", ["app"], None, "[log].replicas rendered into config (Sizing nats_replicas).", ("var.nats_replicas >= 1 && var.nats_replicas <= 5", "nats_replicas must be 1..5")),
- var("nats_max_age_hours", "number", "24", ["app"], None, "[log].max_age_hours (Sizing nats_max_age_hours).", None),
+ var("nats_max_age_hours", "number", "24", ["app"], None, "DEPRECATED (T-823): [log].max_age_hours, ignored by releases that trim the durable log below every durable's ack floor; the planner renders the outage hours the stream is sized to absorb (Sizing nats_outage_hours) so older releases keep a valid config.", None),
  var("nats_max_bytes_gb", "number", "10", ["app"], None, "[log].max_bytes_gb (Sizing nats_max_bytes_gb).", None),
  # C-L (demo-estate rebuild plan 2026-09-20): lb_nodes = 1 is a SUPPORTED, uncertified hand-fill on Azure
  # (the planner renders 2 for haproxy-pair) - ONE HAProxy VM behind the Standard LB, so a -replace, a
@@ -168,6 +175,17 @@ V = [
  # VM"). AWS keeps its [0, 2] validation: its haproxy-pair child still hard-codes the pair.
  var("lb_nodes", "number", "0", ["app"], ["appliance"], "HAProxy VMs (Sizing lb_nodes): 2 for haproxy-pair (the certified pair; the planner renders 2), 1 = ONE HAProxy VM behind the Standard LB (supported, hand-filled: a -replace / reboot / failed box is a full outage until the new VM's first boot completes), else 0.", ("contains([0, 1, 2], var.lb_nodes)", "lb_nodes must be 0, 1 or 2"),
   aws={"description": "HAProxy instances (Sizing lb_nodes): 2 for haproxy-pair, else 0.", "validation": ("contains([0, 2], var.lb_nodes)", "lb_nodes must be 0 or 2")}),
+ # T-811 (load test 2026-10-14): HAProxy's global + defaults maxconn, sized by the planner from the
+ # developer count (Sizing lb_maxconn = max(10,000, 4 x developers)); the shipped 4,096 capped a fleet
+ # near 2,200 developers.
+ var("haproxy_maxconn", "number", "10000", ["app"], ["appliance"], "HAProxy global and defaults maxconn (Sizing lb_maxconn: max(10000, 4 x developers), T-811); the HAProxy container's open-file limit is fixed well above it. Only read when l7 = haproxy-pair.",
+  ("var.haproxy_maxconn >= 1000 && var.haproxy_maxconn <= 200000", "haproxy_maxconn must be 1000..200000")),
+ # T-810 (load test 2026-10-14): the self-hosted-separate PostgreSQL VM's RAM-derived settings
+ # (internal/pgtune.Recommend), handed to the VM's first boot through ctx.pg_settings, which writes
+ # them into the pg compose project's .env as OBSERVER_PG_<NAME> (docker-compose.pg.yaml reads them
+ # with the image defaults as fallbacks).
+ var("pg_settings", "map(string)", "{}", ["app"], ["appliance"], "PostgreSQL settings for the self-hosted-separate VM (T-810: shared_buffers, effective_cache_size, wal_buffers, max_wal_size, checkpoint_timeout, synchronous_commit, max_connections), derived by the planner from the PostgreSQL VM's RAM; {} = the image defaults. Only read when postgres = self-hosted-separate; takes effect at the VM's first boot (DR-18: -replace, or edit /opt/observer-org/.env on the box).",
+  ('alltrue([for k, v in var.pg_settings : contains(["shared_buffers", "effective_cache_size", "wal_buffers", "max_wal_size", "checkpoint_timeout", "synchronous_commit", "max_connections"], k) && can(regex("^([0-9]+(kB|MB|GB|TB|ms|s|min|h)?|on|off)$", v))])', "pg_settings keys must be one of the pgtune names and every value a number with an optional unit, or on / off")),
  # C-N (demo-estate rebuild plan 2026-09-20, section 5): where a nats-single broker runs. "dedicated" =
  # the nats-quorum child as a standalone broker (node_index 0, no peers, the quorum disk) and the app
  # node(s) as pure clients (ctx nats_colocated = false, nats_disk_lun -1, nats_peers = [the VM]).
@@ -197,7 +215,7 @@ V = [
  var("harness_runners", "number", "0", ["app"], None, "harness-gateway runner containers on the app nodes (Sizing harness_runners).", None),
  var("retention_days", "number", "365", ["app"], None, "[server].data_retention_days (catalog axis retention).", ("contains([90, 180, 365, 730], var.retention_days)", "retention_days must be 90, 180, 365 or 730")),
  var("image_tag", "string", None, ["app"], None, "Release tag of observer-org / observer-postgres / harness-gateway (stamped by the planner from the binary's own version).", NOT_CHANGEME("image_tag")),
- var("registry", "string", None, ["app"], None, "Image registry host: superbasedenterprise.azurecr.io (vendor-private) or the customer mirror.", NOT_CHANGEME("registry")),
+ var("registry", "string", None, ["app"], None, "Image registry host: ghcr.io/marmutapp (vendor-private) or the customer mirror.", NOT_CHANGEME("registry")),
  var("bundle_dir", "string", '"."', ["app"], None, "Local path of the rendered bundle directory (config.production.toml, docker-compose*.yaml, nats.conf, ...) the app layer uploads to the private bundle container.", None,
   aws={"description": "Local path of the rendered bundle directory (config.production.toml, docker-compose*.yaml, nats.conf, ...) the app layer uploads to the private bundle prefix s3://<bucket>/bundle/ (P3-D5: beside the on-box scripts the first boot fetches)."}),
  var("data_state", "object({ storage_account_name = string, container_name = string, key = string })", None, ["app"], None,
@@ -892,7 +910,7 @@ never reaches a box at all - the ALB terminates with it.
 
 C8's `.env` source column for AWS: `OBSERVER_OBJECT_BACKEND=s3`, `_ENDPOINT=https://s3.<region>.amazonaws.com`,
 `_BUCKET`, `_REGION`, no keys; `NATS_PASSWORD` / `POSTGRES_PASSWORD` / `HARNESS_GATEWAY_TOKEN`
-from Secrets Manager by env-sync; the registry login = the stored ACR token (K3) OR, when
+from Secrets Manager by env-sync; the registry login = the stored pull token (K3) OR, when
 `registry` matches `*.dkr.ecr.<region>.amazonaws.com`, `aws ecr get-login-password` under the
 instance role (a capability resolved at the boundary from the registry host's shape, never a
 cloud branch). The fetch runs through the instance role via the `aws` CLI v2 (P3-D3: no

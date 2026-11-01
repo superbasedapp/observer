@@ -3,6 +3,7 @@ package sandbox
 import (
 	"fmt"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -21,8 +22,12 @@ const (
 	flagDieWithParent = "--die-with-parent"
 	flagUnshareNet    = "--unshare-net"
 	flagUnsharePid    = "--unshare-pid"
-	flagUnsetenv      = "--unsetenv"
-	flagSymlink       = "--symlink"
+	// flagNewSession puts the program in a new terminal session (setsid),
+	// so it cannot push keystrokes into the caller's terminal through the
+	// TIOCSTI ioctl. bwrap has had it since 0.1.x; 0.4.0 has it.
+	flagNewSession = "--new-session"
+	flagUnsetenv   = "--unsetenv"
+	flagSymlink    = "--symlink"
 	// devNull is the source bound read-only over a secret FILE to hide it
 	// (a file cannot be tmpfs-masked). bwrap binds it without device
 	// access, so a read inside the sandbox fails outright: the secret is
@@ -82,6 +87,15 @@ type Request struct {
 	// helper creates it before bwrap (so the sandboxed process cannot create
 	// it first) and removes it afterwards when untouched.
 	Overlays []Overlay
+	// Pins are existing paths inside a read-write bind (the workspace or an
+	// ExtraRW entry) bound onto themselves, keeping their writability, right
+	// after the ExtraRW binds (SBX-WORKTREE-SOURCE audit finding 4): a mount
+	// point cannot be renamed or replaced (EBUSY), so a box cannot move a
+	// repository folder or its .git aside and plant a replacement that the
+	// protective overlays over .git/hooks and .git/config would no longer
+	// cover. A pin outside every read-write bind is refused (it would make a
+	// read-only path writable); a missing one is skipped (--bind-try).
+	Pins []string
 	// SocketSweeps rebuild the SocketSweepDirs (e.g. /run) as a tmpfs that
 	// re-binds every entry the cmd seam kept, dropping every socket and FIFO
 	// directly inside (bwrap 0.4.0 cannot mount over a socket, so a socket
@@ -99,7 +113,33 @@ type Request struct {
 	// /etc/resolv.conf points into /mnt/wsl on WSL). Re-bound read-only
 	// right after HostMasks.
 	HostMaskKeep []string
+	// Relay, when its RunID is set, routes the run's capture through the
+	// capture relay (sandbox plan section 5.2, lane sbx-p2): ObserverDir is
+	// a tmpfs inside the box instead of a read-write bind (the node DB is
+	// absent; only the read-only overlays the cmd seam lists show through),
+	// the per-run socket dir is always bound read-only at GuestSocketDir,
+	// and the host helper always runs (it serves the relay socket).
+	Relay RelayRequest
+	// ResolvePath, when set, resolves every symlink in an absolute path
+	// (the cmd seam passes filepath.EvalSymlinks, falling back to the path
+	// itself). The relay's bind check runs on the written and the resolved
+	// spelling, so a bind named through a link cannot show the observer dir
+	// in a box. nil checks the written spelling only.
+	ResolvePath func(string) string
 }
+
+// RelayRequest is the relay input of a plan.
+type RelayRequest struct {
+	// RunID is the run's id (the run record's key); empty plans no relay.
+	RunID string
+	// HostObserverDir is the observer directory on the host, where the
+	// helper reads the run record and dials the daemon (never visible in
+	// the box).
+	HostObserverDir string
+}
+
+// Enabled reports whether the plan routes capture through the relay.
+func (r RelayRequest) Enabled() bool { return r.RunID != "" }
 
 // DirRebuild is one SocketSweeps row: Path is replaced by an empty tmpfs and
 // each Keep entry is put back (a read-only bind of the host entry, or the
@@ -162,14 +202,71 @@ type ProtectedPath struct {
 	Dir bool
 }
 
-// WorkspaceExecState lists workspace-relative paths that host tools EXECUTE
-// but a normal diff review never shows (the repository config drives
-// core.fsmonitor / core.hooksPath / aliases; the hooks dir runs on the next
-// host commit). The cmd seam turns them into read-only overlays under the
-// workspace root; in a workspace that is not a repository the missing .git
-// becomes a read-only placeholder, so a sandboxed repository init cannot
-// plant a config or hook the next host command would run.
-var WorkspaceExecState = []ProtectedPath{{Rel: ".git/config"}, {Rel: ".git/hooks", Dir: true}}
+// WorkspaceExecState lists workspace-relative paths that steer which config
+// the host's git reads or which program it runs, but a normal diff review
+// never shows (the repository config drives core.fsmonitor / core.hooksPath /
+// aliases / uploadpack.packObjectsHook; the hooks dir runs on the next host
+// commit; commondir and config.worktree redirect git at another config and
+// hooks; info/attributes names filter and diff drivers; objects/info/alternates
+// redirects git at a planted object store). Every one is proven with real git
+// (docs/sandboxed-terminals.md "Git-dir execution paths"); the live Mac D1
+// escape planted .git/commondir, which was not on this table and so was not
+// protected (ledger SBX-BE-21). The cmd seam turns each into a read-only
+// overlay under the workspace root; a missing one under a writable bind
+// becomes a read-only placeholder its box can neither replace nor create
+// (.git always holds objects/info and info after an init, so each file lands
+// as a file placeholder, never an over-broad directory). commondir's
+// placeholder is "." (PlaceholderContent): an empty commondir is fatal to git
+// while "." points the common dir back at the git dir itself, which is a
+// non-worktree repository's own layout, so the box's own git still works.
+// Linked-worktree (.git/worktrees/*) and submodule (.git/modules/*) git dirs
+// carry the same paths. A live workspace's own linked-worktree git dirs get
+// these rows, relative to each git dir, and are pinned (lane LEFT-SBX,
+// ledger SBX-BE-21 residual closed); an org write bind's repositories get
+// them for their own .git, their linked-worktree and their submodule git
+// dirs (sandbox_orgbind_git.go); and for the copy-return and worktree-return
+// paths the return-step scan catches them recursively (internal/workspace
+// ScanGitDirExecRisk). Adding a path is adding a row: every driver and the
+// org-bind rows read this one table.
+var WorkspaceExecState = []ProtectedPath{
+	{Rel: ".git/config"},
+	{Rel: ".git/hooks", Dir: true},
+	{Rel: ".git/commondir"},
+	{Rel: ".git/config.worktree"},
+	{Rel: ".git/info/attributes"},
+	{Rel: ".git/objects/info/alternates"},
+}
+
+// GitDirExecParents returns the folders between the git dir gitDir and each
+// WorkspaceExecState path inside it (for the table today: info, objects and
+// objects/info), parents first. A read-only overlay is a mount on the path
+// itself, and a mount moves with its parent folder when that folder is
+// renamed: inside the box `mv .git/info .git/info-moved`, then a fresh
+// `.git/info/attributes`, succeeded on every row and the host's git read it
+// (Linux live re-check 3, 2026-10-23, D2). So every row that pins the .git
+// also pins each of these folders onto itself (EBUSY on a rename), by the
+// same nearest-bind rule; the list is derived from the table, so a new row
+// brings its own folders.
+func GitDirExecParents(gitDir string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, pp := range WorkspaceExecState {
+		rel := strings.TrimPrefix(filepath.ToSlash(pp.Rel), ".git/")
+		parts := strings.Split(rel, "/")
+		for i := 1; i < len(parts); i++ {
+			p := strings.Join(parts[:i], "/")
+			if !seen[p] {
+				seen[p] = true
+				out = append(out, p)
+			}
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return strings.Count(out[i], "/") < strings.Count(out[j], "/") })
+	for i, p := range out {
+		out[i] = filepath.Join(gitDir, filepath.FromSlash(p))
+	}
+	return out
+}
 
 // placeholderContents is the body a file placeholder is created with, keyed
 // by extension: a JSON config reads as an empty object (what "no settings"
@@ -179,9 +276,26 @@ var placeholderContents = map[string]string{
 	".json": "{}\n",
 }
 
+// placeholderBasenames is the body a file placeholder is created with when
+// its base name needs a specific neutral value rather than an empty file. A
+// git commondir read as the empty string is fatal ("fatal: failed to read
+// commondir"), so an empty placeholder would break the box's own git; "."
+// points the common dir back at the git dir itself, which is exactly a
+// non-worktree repository's own layout and reads as neutral (proven with real
+// git on the host 2.25.1 and named by the live Mac 2.50.1 escape). A commondir
+// placeholder the box can neither replace nor create therefore neither breaks
+// the box nor lets it redirect the host's git at a planted config or hooks.
+var placeholderBasenames = map[string]string{
+	"commondir": ".\n",
+}
+
 // PlaceholderContent returns the body a file placeholder at path is created
-// with (and must still hold for the helper to remove it afterwards).
+// with (and must still hold for the helper to remove it afterwards). A base
+// name in placeholderBasenames wins over the extension table.
 func PlaceholderContent(path string) []byte {
+	if c, ok := placeholderBasenames[filepath.Base(path)]; ok {
+		return []byte(c)
+	}
 	return []byte(placeholderContents[strings.ToLower(filepath.Ext(path))])
 }
 
@@ -255,6 +369,7 @@ type Plan struct {
 	pre   []string
 	guest []string
 	net   NetRequest
+	relay RelayRequest
 	// placeholders are the overlays whose path the host helper must create
 	// before bwrap runs (Plan.HostArgv carries them).
 	placeholders []Overlay
@@ -364,53 +479,23 @@ func BuildPlan(req Request) (Plan, error) {
 	// 4. Derived read-only binaries + runtimes (ro-bind-try, tolerate missing),
 	//    deduped by absolute source path (the ladder legitimately overlaps a
 	//    tool bin dir): tool bin dirs, observer bin, runtime ladder, StateRO.
-	seen := map[string]bool{}
-	roTry := func(p string) error {
-		if err := validateAbs(p, false); err != nil {
-			return err
-		}
-		if seen[p] {
-			return nil
-		}
-		seen[p] = true
-		add(flagROBindTry, p, p)
-		return nil
+	roArgs, err := roBinaryArgs(req)
+	if err != nil {
+		return Plan{}, err
 	}
-	for _, d := range req.ToolBinDirs {
-		if err := roTry(d); err != nil {
-			return Plan{}, fmt.Errorf("sandbox.BuildPlan: tool bin dir: %w", err)
-		}
-	}
-	if req.ObserverBin != "" {
-		if err := roTry(req.ObserverBin); err != nil {
-			return Plan{}, fmt.Errorf("sandbox.BuildPlan: observer bin: %w", err)
-		}
-	}
-	for _, rel := range req.RuntimeLadder {
-		p, err := joinHomeRel(req.Home, rel)
-		if err != nil {
-			return Plan{}, fmt.Errorf("sandbox.BuildPlan: runtime ladder %q: %w", rel, err)
-		}
-		if err := roTry(p); err != nil {
-			return Plan{}, fmt.Errorf("sandbox.BuildPlan: runtime ladder %q: %w", rel, err)
-		}
-	}
-	for _, rel := range req.StateRO {
-		p, err := joinHomeRel(req.Home, rel)
-		if err != nil {
-			return Plan{}, fmt.Errorf("sandbox.BuildPlan: state ro %q: %w", rel, err)
-		}
-		if err := roTry(p); err != nil {
-			return Plan{}, fmt.Errorf("sandbox.BuildPlan: state ro %q: %w", rel, err)
-		}
-	}
+	pre = append(pre, roArgs...)
 
-	// 5. ~/.observer rw — the observed-invariant (hook DB writes + inner
-	//    launcher config read). Mutation proof #3 pins it rw.
-	if err := validateAbs(req.ObserverDir, true); err != nil {
-		return Plan{}, fmt.Errorf("sandbox.BuildPlan: observer dir: %w", err)
+	// 5. ~/.observer. Without the relay it is bound rw (the observed-
+	//    invariant: hook DB writes + inner launcher config read; mutation
+	//    proof #3 pins it rw). With the relay (lane sbx-p2) it is a tmpfs:
+	//    the node DB, every secret and every record of other runs are absent
+	//    in the box; the read-only overlays (step 10) put back exactly the
+	//    executed-state files the inner launcher reads.
+	obsArgs, err := observerDirArgs(req)
+	if err != nil {
+		return Plan{}, fmt.Errorf("sandbox.BuildPlan: %w", err)
 	}
-	add(flagBind, req.ObserverDir, req.ObserverDir)
+	add(obsArgs...)
 
 	// 6. Blind the managed-workspaces tree, THEN punch this run's workspace
 	//    back in rw. The tmpfs MUST precede the workspace bind (mutation #2).
@@ -447,6 +532,24 @@ func BuildPlan(req Request) (Plan, error) {
 		add(flagBind, p, p)
 	}
 
+	// 8a. Pins: repository folders and their .git under a read-write bind,
+	//     bound onto themselves so the box cannot rename them. Before the
+	//     re-protections and overlays below, so a pin never re-opens one.
+	pinRoots := append([]string{req.WorkspaceRoot}, req.ExtraRW...)
+	for _, p := range req.Pins {
+		if err := validateAbs(p, true); err != nil {
+			return Plan{}, fmt.Errorf("sandbox.BuildPlan: pin: %w", err)
+		}
+		if !underAny(p, pinRoots) {
+			return Plan{}, fmt.Errorf("sandbox.BuildPlan: pin %q lies outside every read-write bind", p)
+		}
+		add(flagBindTry, p, p)
+	}
+
+	// 8b. With the relay, a workspace that is a parent of the observer dir
+	//     must not show it again (lane sbx-p2b).
+	add(relayObserverReblind(req)...)
+
 	// 9. Re-protect binaries that an rw bind above re-exposed writable (e.g.
 	//    an observer or tool binary installed under ~/.observer or a tool
 	//    state dir): a later unsandboxed session executes them. A dir that
@@ -470,7 +573,194 @@ func BuildPlan(req Request) (Plan, error) {
 	add(flagChdir, req.WorkspaceRoot)
 	add(flagDieWithParent)
 
-	return Plan{pre: pre, guest: guest, net: req.Net, placeholders: placeholdersOf(req.Overlays), HomeMode: homeMode, Egress: prof}, nil
+	return Plan{pre: pre, guest: guest, net: req.Net, relay: req.Relay, placeholders: placeholdersOf(req.Overlays), HomeMode: homeMode, Egress: prof}, nil
+}
+
+// roBinaryArgs is BuildPlan's step 4: the derived read-only binaries and
+// runtimes (ro-bind-try, tolerating missing), deduped by absolute source
+// path: tool bin dirs, observer bin, runtime ladder, StateRO.
+func roBinaryArgs(req Request) ([]string, error) {
+	var out []string
+	seen := map[string]bool{}
+	roTry := func(p string) error {
+		if err := validateAbs(p, false); err != nil {
+			return err
+		}
+		if seen[p] {
+			return nil
+		}
+		seen[p] = true
+		out = append(out, flagROBindTry, p, p)
+		return nil
+	}
+	for _, d := range req.ToolBinDirs {
+		if err := roTry(d); err != nil {
+			return nil, fmt.Errorf("sandbox.BuildPlan: tool bin dir: %w", err)
+		}
+	}
+	if req.ObserverBin != "" {
+		if err := roTry(req.ObserverBin); err != nil {
+			return nil, fmt.Errorf("sandbox.BuildPlan: observer bin: %w", err)
+		}
+	}
+	for _, rel := range req.RuntimeLadder {
+		p, err := joinHomeRel(req.Home, rel)
+		if err != nil {
+			return nil, fmt.Errorf("sandbox.BuildPlan: runtime ladder %q: %w", rel, err)
+		}
+		if err := roTry(p); err != nil {
+			return nil, fmt.Errorf("sandbox.BuildPlan: runtime ladder %q: %w", rel, err)
+		}
+	}
+	for _, rel := range req.StateRO {
+		p, err := joinHomeRel(req.Home, rel)
+		if err != nil {
+			return nil, fmt.Errorf("sandbox.BuildPlan: state ro %q: %w", rel, err)
+		}
+		if err := roTry(p); err != nil {
+			return nil, fmt.Errorf("sandbox.BuildPlan: state ro %q: %w", rel, err)
+		}
+	}
+	return out, nil
+}
+
+// observerDirArgs renders step 5: a tmpfs over the observer dir with the
+// relay, a read-write bind without it.
+func observerDirArgs(req Request) ([]string, error) {
+	if err := validateAbs(req.ObserverDir, true); err != nil {
+		return nil, fmt.Errorf("observer dir: %w", err)
+	}
+	if !req.Relay.Enabled() {
+		return []string{flagBind, req.ObserverDir, req.ObserverDir}, nil
+	}
+	if err := validateRelay(req); err != nil {
+		return nil, fmt.Errorf("relay: %w", err)
+	}
+	if err := validateRelayBinds(req); err != nil {
+		return nil, fmt.Errorf("relay: %w", err)
+	}
+	return []string{flagTmpfs, req.ObserverDir}, nil
+}
+
+// validateRelayBinds refuses a bind that would undo the observer dir's tmpfs
+// in a relayed box (plans decision log P-026, lane sbx-p2b): a StateRW,
+// ExtraRO or ExtraRW entry that is the observer dir, one of its parents, or
+// a path inside it (other than the managed workspaces tree) would show the
+// node database, the run records, their secrets and the daemon's link
+// socket. Checked on the written and the resolved spelling.
+func validateRelayBinds(req Request) error {
+	check := func(kind, p string) error { return CheckObserverDirBind(kind, p, req.ObserverDir, req.ResolvePath) }
+	for _, rel := range req.StateRW {
+		p, err := joinHomeRel(req.Home, rel)
+		if err != nil {
+			continue // BuildPlan's own state rw check reports it
+		}
+		if err := check("state rw bind", p); err != nil {
+			return err
+		}
+	}
+	for _, p := range req.ExtraRO {
+		if err := check("extra ro bind", p); err != nil {
+			return err
+		}
+	}
+	for _, p := range req.ExtraRW {
+		if err := check("extra rw bind", p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// CheckObserverDirBind is the relay's observer-dir rule for one bind of p
+// (kind names it in the refusal): p, on its written and its resolved
+// spelling (resolve may be nil), may not be the observer directory, one of
+// its parents, or a path inside it outside the managed workspaces tree. It
+// is the ONE owner of the rule: bwrap's validateRelayBinds and the oci-runc
+// driver's bind check both call it (SBX-P3A merge finding F1).
+func CheckObserverDirBind(kind, p, observerDir string, resolve func(string) string) error {
+	for _, q := range spellingsOf(p, resolve) {
+		for _, obs := range spellingsOf(observerDir, resolve) {
+			if observerDirExposed(obs, q) {
+				return fmt.Errorf("%s %q would show the observer directory %q inside the sandbox; the capture relay keeps it hidden", kind, p, observerDir)
+			}
+		}
+	}
+	return nil
+}
+
+// resolvedSpellings returns p and, when the request resolves paths and the
+// resolved form differs, that form too.
+func resolvedSpellings(req Request, p string) []string { return spellingsOf(p, req.ResolvePath) }
+
+// spellingsOf returns p and, when resolve gives a different form, that form
+// too.
+func spellingsOf(p string, resolve func(string) string) []string {
+	out := []string{filepath.Clean(p)}
+	if resolve != nil {
+		if r := resolve(p); r != "" && r != out[0] {
+			out = append(out, filepath.Clean(r))
+		}
+	}
+	return out
+}
+
+// observerDirExposed reports whether a bind of p shows any of the observer
+// dir obs: p is obs or a parent of it, or p lies inside obs outside the
+// managed workspaces tree.
+func observerDirExposed(obs, p string) bool {
+	if isWithin(obs, p) {
+		return true
+	}
+	return isWithin(p, obs) && !isWithin(p, filepath.Join(obs, workspacesLeaf))
+}
+
+// relayObserverReblind renders step 8b: with the relay on, when the
+// workspace (the one bind that may legitimately be a parent of the
+// observer dir, a project at the home directory) shows the observer dir
+// again, the dir is blinded once more after every rw bind, before the
+// overlays put back the files the inner launcher reads.
+func relayObserverReblind(req Request) []string {
+	if !req.Relay.Enabled() {
+		return nil
+	}
+	for _, q := range resolvedSpellings(req, req.WorkspaceRoot) {
+		for _, obs := range resolvedSpellings(req, req.ObserverDir) {
+			if isWithin(obs, q) {
+				return []string{flagTmpfs, req.ObserverDir}
+			}
+		}
+	}
+	return nil
+}
+
+// validateRelay checks the relay fields: a run-id-shaped id, an absolute
+// host observer dir and the per-run socket dir the relay socket lives in.
+func validateRelay(req Request) error {
+	if !validRunToken(req.Relay.RunID) {
+		return fmt.Errorf("run id %q must be 1 to 64 of [A-Za-z0-9_-]", req.Relay.RunID)
+	}
+	if err := validateAbs(req.Relay.HostObserverDir, false); err != nil {
+		return fmt.Errorf("host observer dir: %w", err)
+	}
+	if err := validateSockDir(req.Net.HostSocketDir); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validRunToken is the run id shape (sandboxrelay.ValidRunID's rule,
+// restated so this pure package imports nothing).
+func validRunToken(id string) bool {
+	if id == "" || len(id) > 64 {
+		return false
+	}
+	for _, c := range id {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 // hostIsolationArgs renders step 3b: the SocketSweeps rebuilds, the
@@ -607,6 +897,13 @@ func planNet(req Request) (EgressProfile, []string, []string, error) {
 		}
 		flags = append(flags, flagROBind, req.Net.HostSocketDir, GuestSocketDir)
 		guest = guestArgv(req.ObserverBin, prof, req.Net)
+	} else if req.Relay.Enabled() {
+		// The relay socket and the launch record live in the socket dir
+		// whatever the tier forwards.
+		if err := validateSockDir(req.Net.HostSocketDir); err != nil {
+			return EgressProfile{}, nil, nil, err
+		}
+		flags = append(flags, flagROBind, req.Net.HostSocketDir, GuestSocketDir)
 	}
 	return prof, flags, guest, nil
 }
@@ -615,7 +912,10 @@ func planNet(req Request) (EgressProfile, []string, []string, error) {
 // binary that lies under one of the plan's rw bind targets (and does not
 // itself contain one), deduped.
 func reprotectBins(req Request) []string {
-	rwTargets := []string{req.ObserverDir, req.WorkspaceRoot}
+	rwTargets := []string{req.WorkspaceRoot}
+	if !req.Relay.Enabled() {
+		rwTargets = append(rwTargets, req.ObserverDir)
+	}
 	for _, rel := range req.StateRW {
 		rwTargets = append(rwTargets, filepath.Join(req.Home, rel))
 	}

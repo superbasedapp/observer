@@ -18,10 +18,12 @@
 @tailwind components;
 @tailwind utilities;
 
-/* The "New terminal" dock (LaunchDock, z-70) floats above Modal (z-60), so on
-   a phone it covered a dialog's footer buttons. Every Modal / SlideOver marks
-   body while open (shared/lib/scrollLock.ts markOverlay); the dock steps
-   aside until the last one closes. Pinned by src/lib/overlayDock.test.ts. */
+/* The "New terminal" dock (LaunchDock) once floated above Modal (z-60), so on
+   a phone it covered a dialog's footer buttons. It now sits at z-25, below
+   every modal, drawer and the phone nav backdrop (T-855), and also steps
+   aside entirely: every Modal / SlideOver marks body while open
+   (shared/lib/scrollLock.ts markOverlay) and the dock hides until the last
+   one closes. Pinned by src/lib/overlayDock.test.ts. */
 body[data-overlay-open] .sb-launch-dock {
   display: none;
 }

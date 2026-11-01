@@ -129,6 +129,10 @@ func TestBridgeEnvForTable(t *testing.T) {
 			c, ok := integration.For("copilot-cli")
 			return ok && c.Proxy != nil && c.Proxy.Gate != nil && c.Proxy.EnvVar != ""
 		}, nil},
+		{"opt-in launcher-flag route", "goose", func() bool {
+			c, ok := integration.For("goose")
+			return ok && c.Proxy != nil && c.Proxy.LaunchFlag != "" && c.Proxy.Lane == nil && c.Proxy.Gate == nil && c.Proxy.EnvVar != ""
+		}, nil},
 		{"lane route", "grok", func() bool {
 			c, ok := integration.For("grok")
 			return ok && c.Proxy != nil && c.Proxy.Lane != nil && c.Proxy.Gate == nil && c.Proxy.EnvVar != ""

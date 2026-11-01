@@ -20,6 +20,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 )
 
@@ -38,6 +39,16 @@ import (
 // promise the fail-closed immediately broke; "attach disabled for this run"
 // composes cleanly with BOTH a subsequent bare launch AND a subsequent refusal.
 const attachDaemonUnreachableNotice = "observer: daemon unreachable - attach disabled for this run"
+
+// attachInSandboxNotice replaces attachDaemonUnreachableNotice when the launcher
+// runs inside an Observer sandbox (the sandbox marker in its environment): the
+// box reaches the daemon only through its relay and model proxy, never through
+// the attach socket, so an unreachable socket there is by design and not a
+// daemon failure (Windows 11 Pro rerun 2026-10-22, where every in-box launch
+// printed "daemon unreachable" while the daemon was answering). A launcher on
+// the host never carries the marker, so a real daemon failure there keeps its
+// own notice.
+const attachInSandboxNotice = "observer: attach is not available inside the sandbox; this run continues without attach"
 
 // attachDaemonChildNotice is printed when the OBSERVER_DAEMON_CHILD env marker is
 // present but there is NO live OOB channel — a user manually running
@@ -91,6 +102,9 @@ const (
 type attachDecision struct {
 	verdict attachVerdict
 	notice  string
+	// row names the decideAttach row that decided, for the box's inner log
+	// (attachDecisionNote).
+	row string
 }
 
 // attach reports whether the verdict routes to the attach path (either the
@@ -149,7 +163,27 @@ type attachDecisionInputs struct {
 	// reachable probes the daemon attach socket. Invoked lazily (see above); a
 	// nil closure is treated as unreachable.
 	reachable func() bool
+	// inSandbox is true when this launcher runs inside an Observer sandbox
+	// (the sandbox marker): an unreachable attach socket is then by design,
+	// and row 5 says so instead of naming a daemon failure.
+	inSandbox bool
 }
+
+// The rows' names in the box's inner log.
+const (
+	attachRowDaemonSpawned  = "the daemon's own inner launcher"
+	attachRowDaemonSandbox  = "a daemon-owned sandbox terminal"
+	attachRowDaemonChild    = "inside a daemon-owned terminal"
+	attachRowNoAttach       = "--no-attach"
+	attachRowAttach         = "--attach"
+	attachRowIncompatible   = "a launch mode that cannot attach"
+	attachRowNotTTY         = "stdin or stdout is not a terminal"
+	attachRowAttaches       = "attach by default, the daemon reachable"
+	attachRowSandbox        = "attach is not available inside the sandbox"
+	attachRowUnreachable    = "the daemon is unreachable"
+	attachRowConfigDisabled = "[terminal.attach].enabled is false"
+	attachRowNotRequested   = "attach not requested"
+)
 
 // decideAttach is the pure, table-driven attach-mode decision. Rows are walked
 // top-down; the first match wins. The rightmost column is the deliberate
@@ -159,13 +193,15 @@ type attachDecisionInputs struct {
 // script is worse than a missed interactive notice — "when in doubt, silent").
 //
 //  0. daemon-spawned inner launcher (live OOB)        → bare   SILENT   (anti-recursion; normal path)
+//     0a. daemon-child env marker inside a sandbox       → bare   SILENT   (a dashboard sandbox terminal: daemon-owned already)
 //     0b. daemon-child env marker, no live OOB            → bare   NOTICE*  (surprise: bare inside a daemon PTY)
 //     *notice ONLY when interactive + !--no-attach + !incompatible; else SILENT (finding 5)
 //  1. --no-attach                                     → forced bare  SILENT (explicit opt-out)
 //  2. --attach                                        → forced attach       (downstream guards groundedness)
 //  3. incompatible mode OR not both-TTY               → bare   SILENT   (chosen mode / scripted-piped)
 //  4. enabled && default_on && grounded && reachable  → attach
-//  5. enabled && default_on && grounded && !reachable → bare   NOTICE   (daemon unreachable)
+//  5. enabled && default_on && grounded && !reachable → bare   NOTICE   (daemon unreachable;
+//     inside a sandbox: attach is not available there)
 //  6. default_on && grounded (⇒ enabled==false)       → bare   NOTICE   (config contradiction)
 //  7. otherwise (default_on off / ungrounded)         → bare   SILENT   (attach not requested)
 //
@@ -207,7 +243,13 @@ func decideAttach(in attachDecisionInputs) attachDecision {
 	bothTTY := in.stdinTTY && in.stdoutTTY
 	switch {
 	case in.daemonSpawned:
-		return attachDecision{verdict: verdictBare}
+		return attachDecision{verdict: verdictBare, row: attachRowDaemonSpawned}
+	case in.daemonChild && in.inSandbox:
+		// A sandbox box's launcher whose environment carries the daemon-child
+		// marker runs in a dashboard sandbox terminal, which the daemon owns
+		// already; a sandbox box's own OOB stream is not the daemon's spawn
+		// channel (oobChannelSpawnedByDaemon), so row 0 no longer covers it.
+		return attachDecision{verdict: verdictBare, row: attachRowDaemonSandbox}
 	case in.daemonChild:
 		// Anti-recursion VERDICT is unconditional: a daemon-owned child always
 		// execs bare. The NOTICE, however, is suppressed whenever this same launch
@@ -218,25 +260,49 @@ func decideAttach(in attachDecisionInputs) attachDecision {
 		// --attach does NOT suppress it: a daemon-child that asked for attach is a
 		// genuine "why bare?" surprise that still earns the one-line explanation.
 		if bothTTY && !in.flagNoAttach && !in.incompatible {
-			return attachDecision{verdict: verdictBare, notice: attachDaemonChildNotice}
+			return attachDecision{verdict: verdictBare, notice: attachDaemonChildNotice, row: attachRowDaemonChild}
 		}
-		return attachDecision{verdict: verdictBare}
+		return attachDecision{verdict: verdictBare, row: attachRowDaemonChild}
 	case in.flagNoAttach:
-		return attachDecision{verdict: verdictForcedBare}
+		return attachDecision{verdict: verdictForcedBare, row: attachRowNoAttach}
 	case in.flagAttach:
-		return attachDecision{verdict: verdictForcedAttach}
-	case in.incompatible || !bothTTY:
-		return attachDecision{verdict: verdictBare}
+		return attachDecision{verdict: verdictForcedAttach, row: attachRowAttach}
+	case in.incompatible:
+		return attachDecision{verdict: verdictBare, row: attachRowIncompatible}
+	case !bothTTY:
+		return attachDecision{verdict: verdictBare, row: attachRowNotTTY}
 	case in.enabled && in.defaultOn && in.grounded:
 		if in.reachable != nil && in.reachable() {
-			return attachDecision{verdict: verdictAttach}
+			return attachDecision{verdict: verdictAttach, row: attachRowAttaches}
 		}
-		return attachDecision{verdict: verdictBare, notice: attachDaemonUnreachableNotice}
+		if in.inSandbox {
+			return attachDecision{verdict: verdictBare, notice: attachInSandboxNotice, row: attachRowSandbox}
+		}
+		return attachDecision{verdict: verdictBare, notice: attachDaemonUnreachableNotice, row: attachRowUnreachable}
 	case in.defaultOn && in.grounded:
-		return attachDecision{verdict: verdictBare, notice: attachConfigDisabledNotice}
+		return attachDecision{verdict: verdictBare, notice: attachConfigDisabledNotice, row: attachRowConfigDisabled}
 	default:
-		return attachDecision{verdict: verdictBare}
+		return attachDecision{verdict: verdictBare, row: attachRowNotRequested}
 	}
+}
+
+// attachDecisionNote is one line naming what decideAttach chose, the row
+// that decided and the terminal facts it read (the box's inner log records
+// it). Windows 11 Pro run 4 logged "no notice" beside two terminals with no
+// row named: the in-box launcher had taken the daemon-spawned row.
+func attachDecisionNote(in attachDecisionInputs, d attachDecision) string {
+	what := "launches without attach, no notice"
+	switch {
+	case d.attach():
+		what = "attaches"
+	case d.notice != "":
+		what = "launches without attach, notice printed"
+	}
+	row := ""
+	if d.row != "" {
+		row = "row: " + d.row + "; "
+	}
+	return fmt.Sprintf("attach: %s (%sstdin is a terminal: %t, stdout is a terminal: %t)", what, row, in.stdinTTY, in.stdoutTTY)
 }
 
 // argsContainClaudePrint reports whether claude's headless print mode (`-p` /

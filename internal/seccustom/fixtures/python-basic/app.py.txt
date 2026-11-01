@@ -1,0 +1,10 @@
+"""security.scan.custom self-test fixture for Bandit (JSP-12)."""
+import hashlib
+import subprocess
+
+PASSWORD = "self-test-fixture-not-a-secret"  # B105
+
+
+def run(cmd, data):
+    subprocess.call(cmd, shell=True)  # B602
+    return hashlib.md5(data).hexdigest()  # B324

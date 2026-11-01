@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
@@ -152,6 +153,19 @@ type Result struct {
 	// third horizon is a data row, not a third Result field. A table whose
 	// horizon is 0 (keep forever) is absent from the map.
 	EventRowsDeleted EventSweepCounts
+	// HeldForPush counts the aged rows this pass KEPT because the org push
+	// has not accepted them yet (Options.PushHold, T-830). Non-zero means a
+	// stuck, slow or paused push; the caller WARNs and doctor reports it.
+	HeldForPush HeldForPush
+	// HoldCap is the held-data ceiling for this pass (T-839): the estimated
+	// held bytes and, when they passed PushHold.MaxHeldBytes, how many of
+	// the OLDEST held rows were released anyway. A release is data the org
+	// never received; the caller logs it at ERROR and records it for doctor.
+	HoldCap HoldCap
+	// GuardKeepFromID is the guard_events floor the caller passes to
+	// store.PruneGuardRows (T-839): rows at or above it are held for the
+	// org push. 0 when there is no hold (a node that is not enrolled).
+	GuardKeepFromID int64
 }
 
 // Options parameterize Run.
@@ -184,6 +198,103 @@ type Options struct {
 	// (events.go). Zero on a field means keep forever, so the zero Options
 	// value is byte-identical to pre-2026-09-16 behaviour.
 	EventSweep EventSweepDays
+	// PushHold, when non-nil, keeps every row the org push has not yet
+	// accepted (T-830, T-839): the age pass and the size-cap pass delete
+	// only actions at or below the actions push cursor, the orphaned-session
+	// sweep only sessions at or below the sessions cursor, the account
+	// observation sweep only rows of sessions at or below that cursor, and
+	// Result.GuardKeepFromID bounds the caller's guard_events sweep. The
+	// caller sets it whenever the node is enrolled, push running or paused;
+	// nil (a node that is not enrolled) keeps the local-only behaviour
+	// byte-identical. MaxHeldBytes bounds what the hold may keep.
+	PushHold *PushHold
+}
+
+// PushHold is the org push cursor retention must not cross (T-830). A row
+// above it has not been accepted by the org yet, so deleting it would be a
+// silent loss: the node is the only copy.
+type PushHold struct {
+	// ActionsCursor is the highest actions.id the org accepted.
+	ActionsCursor int64
+	// SessionsCursor is the highest sessions rowid the org accepted.
+	SessionsCursor int64
+	// GuardEventsCursor is the highest guard_events.id the org accepted
+	// (T-839: the guard sweep used to ignore the hold).
+	GuardEventsCursor int64
+	// GuardMaxAgeDays is the caller's [guard].retention_days: the horizon
+	// past which a guard_events row counts as held rather than live. <= 0
+	// means guard rows never age, so none are held.
+	GuardMaxAgeDays int
+	// MaxHeldBytes is the held-data ceiling ([observer.retention].held_max_mb
+	// in bytes, T-839 / D-673). Past it the OLDEST held rows are released to
+	// the normal age pass (holdcap.go). <= 0 means no ceiling.
+	MaxHeldBytes int64
+
+	// shedThrough is set by Run on its own copy: held rows at or before this
+	// timestamp were released by the ceiling this pass. Never set by callers.
+	shedThrough string
+}
+
+// HeldForPush counts the rows a pass at cutoff keeps ONLY because the org
+// push has not accepted them yet (T-830): aged actions above the actions
+// cursor, and sessions above the sessions cursor that hold nothing else.
+// `observer doctor`, the node dashboard and the prune report surface it so a
+// stuck push is visible instead of the database growing silently.
+type HeldForPush struct {
+	Actions  int64 `json:"actions"`
+	Sessions int64 `json:"sessions"`
+	// GuardEvents counts guard_events rows past [guard].retention_days kept
+	// for the push (T-839).
+	GuardEvents int64 `json:"guard_events,omitempty"`
+}
+
+// Total is the held row count across tables.
+func (h HeldForPush) Total() int64 { return h.Actions + h.Sessions + h.GuardEvents }
+
+// CountHeldForPush counts what a pass with MaxAgeDays = maxAgeDays would hold
+// back for hold, as of now. A nil hold holds nothing; a non-positive horizon
+// holds no actions or sessions (guard rows follow hold.GuardMaxAgeDays).
+func CountHeldForPush(ctx context.Context, database *sql.DB, maxAgeDays int, hold *PushHold) (HeldForPush, error) {
+	if hold == nil || database == nil {
+		return HeldForPush{}, nil
+	}
+	return countHeld(ctx, database, maxAgeDays, hold, hold.GuardEventsCursor+1)
+}
+
+// countHeld is CountHeldForPush with an explicit guard_events keep floor (Run
+// passes the floor the ceiling may have raised).
+func countHeld(ctx context.Context, database *sql.DB, maxAgeDays int, hold *PushHold, guardFloor int64) (HeldForPush, error) {
+	var h HeldForPush
+	if maxAgeDays > 0 {
+		cutoff := nowUTC().AddDate(0, 0, -maxAgeDays).Format(time.RFC3339Nano)
+		if err := database.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM actions WHERE timestamp < ? AND id > ?`, cutoff, hold.ActionsCursor).Scan(&h.Actions); err != nil {
+			return h, fmt.Errorf("retention.CountHeldForPush: actions: %w", err)
+		}
+		if err := database.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM sessions WHERE rowid > ? AND `+orphanSessionWhere, hold.SessionsCursor).Scan(&h.Sessions); err != nil {
+			return h, fmt.Errorf("retention.CountHeldForPush: sessions: %w", err)
+		}
+	}
+	if _, gCut := heldCutoffs(0, hold); gCut != "" {
+		if err := database.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM guard_events WHERE ts < ? AND id >= ?`, gCut, guardFloor).Scan(&h.GuardEvents); err != nil {
+			return h, fmt.Errorf("retention.CountHeldForPush: guard_events: %w", err)
+		}
+	}
+	return h, nil
+}
+
+// agedActions is the predicate (and its arguments) selecting the actions a
+// pass at cutoff may delete: older than cutoff and, under a push hold, at or
+// below the actions push cursor or released by the held-data ceiling
+// (timestamp at or before shedThrough; "" releases nothing, since every
+// stored timestamp is non-empty).
+func agedActions(cutoff string, hold *PushHold) (string, []any) {
+	if hold == nil {
+		return `timestamp < ?`, []any{cutoff}
+	}
+	return `timestamp < ? AND (id <= ? OR timestamp <= ?)`, []any{cutoff, hold.ActionsCursor, hold.shedThrough}
 }
 
 // Pruner runs retention on a database.
@@ -219,15 +330,41 @@ func (p *Pruner) Run(ctx context.Context, opts Options) (Result, error) {
 	}
 	res.DBSizeBytesBefore = sizeOf(opts.DBPath)
 
+	// T-839: apply the held-data ceiling BEFORE any delete, on a private
+	// copy of the hold, so every pass below (age, orphaned sessions, size
+	// cap) sees the same released set.
+	if opts.PushHold != nil {
+		h := *opts.PushHold
+		hc, err := EstimateHold(ctx, p.db, opts.MaxAgeDays, &h)
+		if err != nil {
+			return res, err
+		}
+		res.HoldCap = hc
+		h.shedThrough = hc.ShedThrough
+		opts.PushHold = &h
+	}
+
 	if opts.MaxAgeDays > 0 {
 		cutoff := nowUTC().AddDate(0, 0, -opts.MaxAgeDays).Format(time.RFC3339Nano)
-		if err := p.deleteActionsOlder(ctx, cutoff, &res); err != nil {
+		if err := p.deleteActionsOlder(ctx, cutoff, opts.PushHold, &res); err != nil {
 			return res, err
 		}
 	}
 
-	if err := p.deleteOrphanedSessions(ctx, &res); err != nil {
+	if err := p.deleteOrphanedSessions(ctx, opts.PushHold, &res); err != nil {
 		return res, err
+	}
+	if opts.PushHold != nil {
+		floor, err := guardKeepFrom(ctx, p.db, opts.PushHold)
+		if err != nil {
+			return res, err
+		}
+		res.GuardKeepFromID = floor
+		held, err := countHeld(ctx, p.db, opts.MaxAgeDays, opts.PushHold, floor)
+		if err != nil {
+			return res, err
+		}
+		res.HeldForPush = held
 	}
 
 	if opts.ObserverLogMaxAgeDays > 0 {
@@ -359,50 +496,95 @@ func ConvertToIncrementalVacuum(ctx context.Context, db *sql.DB) (int, error) {
 	return mode, nil
 }
 
-// deleteAgedExcerptsSQL removes the FTS5 excerpts of every action older
-// than the cutoff.
-//
-// action_id is UNINDEXED in action_excerpts (001_initial.sql), so the old
-// `DELETE FROM action_excerpts WHERE action_id IN (SELECT id FROM actions
-// WHERE timestamp < ?)` planned as a full scan of every stored excerpt
-// under the write lock on EVERY retention pass, even one that deletes
-// nothing (T-415, the FTSSTALL class: 0.4-0.5 s in sqlite3 over 529k
-// excerpts, slower in modernc). Here the aged actions are walked by their
-// timestamp index, each is resolved to its FTS rowids through the shadow
-// table's c0 index (migration 147), and the virtual table is reached by
-// rowid equality, so the cost follows the number of aged actions, not the
-// size of the excerpt table. `+a.id` drops actions.id's INTEGER affinity so
-// the c0 index stays usable (c0 has no affinity; every writer binds int64),
-// which also makes the planner drive the join from the timestamp range.
-// Pinned by TestDeleteAgedExcerptsSeeksByRowid.
-const deleteAgedExcerptsSQL = `DELETE FROM action_excerpts
- WHERE rowid IN (SELECT e.id FROM actions a
-                   JOIN action_excerpts_content e ON e.c0 = +a.id
-                  WHERE a.timestamp < ?)`
+// Retention deletes run in BATCHES (2026-10-18): the single-transaction form
+// deleted a whole month of actions (shrinkToCap's 30-day step) with a dozen
+// IN (SELECT id FROM actions WHERE ...) statements over the full tables. On a
+// 10 GB store that held the write lock for many minutes, so every watcher
+// ingest, commit scan and scoring write failed with SQLITE_BUSY until it
+// finished, and it ran again on every pass because a DELETE does not shrink
+// the file. Each batch now takes at most retentionBatchSize aged actions,
+// applies every dependent statement to exactly those ids and commits, so no
+// transaction holds the lock for long and other writers interleave.
+const (
+	retentionBatchSize = 1000
+	// retentionBatchPause lets queued writers (the watcher above all) take
+	// the lock between batches.
+	retentionBatchPause = 20 * time.Millisecond
+	// retentionCheckpointEvery runs a PASSIVE WAL checkpoint every N batches
+	// so a long prune does not grow the WAL without bound.
+	retentionCheckpointEvery = 25
+)
 
-// deleteActionsOlder deletes actions with timestamp < cutoff, plus the
-// dependent FTS5 excerpts and failure_context rows (which carry FK to
-// actions but no ON DELETE CASCADE).
-func (p *Pruner) deleteActionsOlder(ctx context.Context, cutoff string, res *Result) error {
+// deleteBatchExcerptsSQLPrefix reaches the FTS5 excerpt table by rowid
+// through the content table's c0 (action id) index, scoped to one batch's ids
+// (closed with the placeholder list and "))").
+const deleteBatchExcerptsSQLPrefix = `DELETE FROM action_excerpts
+ WHERE rowid IN (SELECT e.id FROM action_excerpts_content e WHERE e.c0 IN (`
+
+// deleteActionsOlder deletes actions with timestamp < cutoff (and, under a
+// push hold, id at or below the actions push cursor), plus the dependent FTS5
+// excerpts and failure_context rows (which carry FK to actions but no ON
+// DELETE CASCADE), batch by batch.
+func (p *Pruner) deleteActionsOlder(ctx context.Context, cutoff string, hold *PushHold, res *Result) error {
+	// The ageing cutoff is recorded on every pass, even one that finds
+	// nothing to delete (the org push reads it to tell ageing from
+	// correction); RecordAgeingCutoff only ever raises it.
+	if err := p.recordAgeingCutoff(ctx, cutoff); err != nil {
+		return err
+	}
+	where, args := agedActions(cutoff, hold)
+	for batch := 1; ; batch++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		n, err := p.deleteActionsBatch(ctx, cutoff, where, args, res)
+		if err != nil {
+			return err
+		}
+		if n < retentionBatchSize {
+			break
+		}
+		if batch%retentionCheckpointEvery == 0 {
+			_, _ = p.db.ExecContext(ctx, `PRAGMA wal_checkpoint(PASSIVE)`)
+		}
+		if err := sleepCtx(ctx, retentionBatchPause); err != nil {
+			return err
+		}
+	}
+	return p.deleteAccountObservations(ctx, cutoff, hold)
+}
+
+// deleteActionsBatch deletes one batch of aged actions and their dependents
+// in its own short transaction and returns how many actions it removed.
+func (p *Pruner) deleteActionsBatch(ctx context.Context, cutoff, where string, args []any, res *Result) (int, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("retention: begin: %w", err)
+		return 0, fmt.Errorf("retention: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	exc, err := tx.ExecContext(ctx, deleteAgedExcerptsSQL, cutoff)
+	ids, err := agedBatch(ctx, tx, where, args)
+	if err != nil || len(ids) == 0 {
+		return 0, err
+	}
+	in := placeholders(len(ids))
+	idArgs := make([]any, len(ids))
+	for i, id := range ids {
+		idArgs[i] = id
+	}
+
+	exc, err := tx.ExecContext(ctx, deleteBatchExcerptsSQLPrefix+in+`))`, idArgs...) //nolint:gosec // G202: in is generated placeholders only
 	if err != nil {
-		return fmt.Errorf("retention: delete excerpts: %w", err)
+		return 0, fmt.Errorf("retention: delete excerpts: %w", err)
 	}
 	if n, err := exc.RowsAffected(); err == nil {
 		res.ExcerptsDeleted += int(n)
 	}
 
 	fc, err := tx.ExecContext(ctx,
-		`DELETE FROM failure_context
-		 WHERE action_id IN (SELECT id FROM actions WHERE timestamp < ?)`, cutoff)
+		`DELETE FROM failure_context WHERE action_id IN (`+in+`)`, idArgs...) //nolint:gosec // G202: in is generated placeholders only
 	if err != nil {
-		return fmt.Errorf("retention: delete failure_context: %w", err)
+		return 0, fmt.Errorf("retention: delete failure_context: %w", err)
 	}
 	if n, err := fc.RowsAffected(); err == nil {
 		res.FailureContextDeleted += int(n)
@@ -412,9 +594,8 @@ func (p *Pruner) deleteActionsOlder(ctx context.Context, cutoff string, res *Res
 	// rather than delete the file_state row (which may still be useful for
 	// recent freshness checks even after the originating action is pruned).
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE file_state SET last_action_id = NULL
-		 WHERE last_action_id IN (SELECT id FROM actions WHERE timestamp < ?)`, cutoff); err != nil {
-		return fmt.Errorf("retention: null file_state.last_action_id: %w", err)
+		`UPDATE file_state SET last_action_id = NULL WHERE last_action_id IN (`+in+`)`, idArgs...); err != nil { //nolint:gosec // G202: in is generated placeholders only
+		return 0, fmt.Errorf("retention: null file_state.last_action_id: %w", err)
 	}
 
 	// Later migrations added more nullable action_id FKs to actions, none
@@ -427,44 +608,138 @@ func (p *Pruner) deleteActionsOlder(ctx context.Context, cutoff string, res *Res
 	// tail (014 comment), guard_events is an append-only audit chain with its
 	// own retention, and process_runs/process_events carry their own
 	// retention horizon — each row stays useful without the action link.
-	for _, c := range []struct{ table, stmt string }{
-		{"retrieval_signals", `UPDATE retrieval_signals SET action_id = NULL WHERE action_id IN (SELECT id FROM actions WHERE timestamp < ?)`},
-		{"guard_events", `UPDATE guard_events SET action_id = NULL WHERE action_id IN (SELECT id FROM actions WHERE timestamp < ?)`},
-		{"process_runs", `UPDATE process_runs SET action_id = NULL WHERE action_id IN (SELECT id FROM actions WHERE timestamp < ?)`},
-		{"process_events", `UPDATE process_events SET action_id = NULL WHERE action_id IN (SELECT id FROM actions WHERE timestamp < ?)`},
+	// Nulling guard_events.action_id does not break the guard audit chain:
+	// the chain hashes action_anchor, which this never touches (agent
+	// migration 197, GUARD-CHAIN-1).
+	// Each statement is spelled out in full (not built from a table name):
+	// migration 079's dependency protocol is transcribed from these exact
+	// strings and internal/db/reasoninggen's
+	// TestDependencyTablesMatchRetentionProtocol probes for them.
+	for _, c := range []struct{ table, prefix string }{
+		{"retrieval_signals", `UPDATE retrieval_signals SET action_id = NULL WHERE action_id IN (`},
+		{"guard_events", `UPDATE guard_events SET action_id = NULL WHERE action_id IN (`},
+		{"process_runs", `UPDATE process_runs SET action_id = NULL WHERE action_id IN (`},
+		{"process_events", `UPDATE process_events SET action_id = NULL WHERE action_id IN (`},
 	} {
-		if _, err := tx.ExecContext(ctx, c.stmt, cutoff); err != nil {
-			return fmt.Errorf("retention: null %s.action_id: %w", c.table, err)
+		if _, err := tx.ExecContext(ctx, c.prefix+in+`)`, idArgs...); err != nil {
+			return 0, fmt.Errorf("retention: null %s.action_id: %w", c.table, err)
 		}
 	}
 
-	if _, err := tx.ExecContext(ctx, `DELETE FROM tool_account_observations WHERE observed_at < ?`, cutoff); err != nil {
-		return fmt.Errorf("retention: delete account observations: %w", err)
-	}
 	// Ageing, not a correction (agent migration 141): the marker keeps these
 	// deletes out of the org tombstone queue, so the org keeps the rows under
 	// its own retention policy.
+	deleted := 0
 	if err := db.WithRetentionDeletes(ctx, tx, func() error {
 		if err := db.RecordAgeingCutoff(ctx, tx, cutoff); err != nil {
 			return fmt.Errorf("retention: %w", err)
 		}
-		a, err := tx.ExecContext(ctx, `DELETE FROM actions WHERE timestamp < ?`, cutoff)
+		a, err := tx.ExecContext(ctx, `DELETE FROM actions WHERE id IN (`+in+`)`, idArgs...) //nolint:gosec // G202: in is generated placeholders only
 		if err != nil {
 			return fmt.Errorf("retention: delete actions: %w", err)
 		}
 		if n, err := a.RowsAffected(); err == nil {
-			res.ActionsDeleted += int(n)
+			deleted = int(n)
+			res.ActionsDeleted += deleted
 		}
 		return nil
 	}); err != nil {
-		return err
+		return 0, err
 	}
 
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("retention: commit: %w", err)
+		return 0, fmt.Errorf("retention: commit: %w", err)
+	}
+	return len(ids), nil
+}
+
+// recordAgeingCutoff records cutoff in its own short transaction.
+func (p *Pruner) recordAgeingCutoff(ctx context.Context, cutoff string) error {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("retention: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := db.RecordAgeingCutoff(ctx, tx, cutoff); err != nil {
+		return fmt.Errorf("retention: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("retention: commit ageing cutoff: %w", err)
 	}
 	return nil
 }
+
+// agedBatch returns up to retentionBatchSize aged action ids.
+func agedBatch(ctx context.Context, tx *sql.Tx, where string, args []any) ([]int64, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM actions WHERE `+where+` LIMIT ?`, append(append([]any{}, args...), retentionBatchSize)...) //nolint:gosec // G202: where is an agedActions constant, never input
+	if err != nil {
+		return nil, fmt.Errorf("retention: select aged batch: %w", err)
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("retention: scan aged batch: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// deleteAccountObservations ages tool_account_observations, also in short
+// batches. It ships on a snapshot wire, not a cursor, so under a push hold an
+// observation of a session the org has not accepted yet stays with that
+// session (T-839).
+func (p *Pruner) deleteAccountObservations(ctx context.Context, cutoff string, hold *PushHold) error {
+	q, qArgs := `DELETE FROM tool_account_observations WHERE rowid IN (
+		SELECT rowid FROM tool_account_observations WHERE observed_at < ?`, []any{cutoff}
+	if hold != nil {
+		q += ` AND session_id NOT IN (SELECT id FROM sessions WHERE rowid > ?)`
+		qArgs = append(qArgs, hold.SessionsCursor)
+	}
+	q += ` LIMIT ?)`
+	qArgs = append(qArgs, retentionBatchSize)
+	for {
+		r, err := p.db.ExecContext(ctx, q, qArgs...)
+		if err != nil {
+			return fmt.Errorf("retention: delete account observations: %w", err)
+		}
+		if n, _ := r.RowsAffected(); n < retentionBatchSize {
+			return nil
+		}
+		if err := sleepCtx(ctx, retentionBatchPause); err != nil {
+			return err
+		}
+	}
+}
+
+// placeholders returns "?,?,...,?" with n marks.
+func placeholders(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return strings.Repeat("?,", n-1) + "?"
+}
+
+// sleepCtx pauses for d unless ctx ends first.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// orphanSessionWhere selects a session with no remaining row in any table
+// that references it (the orphaned-session sweep's condition).
+const orphanSessionWhere = `id NOT IN (SELECT DISTINCT session_id FROM actions)
+   AND id NOT IN (SELECT DISTINCT session_id FROM token_usage)
+   AND id NOT IN (SELECT DISTINCT session_id FROM failure_context)
+   AND id NOT IN (SELECT DISTINCT session_id FROM compaction_events)`
 
 // deleteOrphanedSessions removes sessions whose action set is empty after
 // the actions delete pass AND that no other table still references. Other
@@ -481,20 +756,22 @@ func (p *Pruner) deleteActionsOlder(ctx context.Context, cutoff string, res *Res
 //
 // Ageing, not a correction (agent migration 141): runs under the retention
 // marker, so a session this sweep removes is never tombstoned on the org.
-func (p *Pruner) deleteOrphanedSessions(ctx context.Context, res *Result) error {
+//
+// Under a push hold (T-830) only sessions at or below the sessions push
+// cursor are removed: a session the org has not accepted yet stays.
+func (p *Pruner) deleteOrphanedSessions(ctx context.Context, hold *PushHold, res *Result) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("retention: orphaned sessions: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 	deleted := int64(0)
+	q, args := `DELETE FROM sessions WHERE `+orphanSessionWhere, []any(nil)
+	if hold != nil {
+		q, args = q+` AND rowid <= ?`, []any{hold.SessionsCursor}
+	}
 	if err := db.WithRetentionDeletes(ctx, tx, func() error {
-		r, err := tx.ExecContext(ctx,
-			`DELETE FROM sessions
-			 WHERE id NOT IN (SELECT DISTINCT session_id FROM actions)
-			   AND id NOT IN (SELECT DISTINCT session_id FROM token_usage)
-			   AND id NOT IN (SELECT DISTINCT session_id FROM failure_context)
-			   AND id NOT IN (SELECT DISTINCT session_id FROM compaction_events)`)
+		r, err := tx.ExecContext(ctx, q, args...)
 		if err != nil {
 			return fmt.Errorf("retention: orphaned sessions: %w", err)
 		}
@@ -595,10 +872,10 @@ func (p *Pruner) shrinkToCap(ctx context.Context, opts Options, res *Result) err
 		cutoff = floor // clamp: never cross the keep-floor in one pass
 	}
 	actionsBefore := res.ActionsDeleted
-	if err := p.deleteActionsOlder(ctx, cutoff.Format(time.RFC3339Nano), res); err != nil {
+	if err := p.deleteActionsOlder(ctx, cutoff.Format(time.RFC3339Nano), opts.PushHold, res); err != nil {
 		return err
 	}
-	if err := p.deleteOrphanedSessions(ctx, res); err != nil {
+	if err := p.deleteOrphanedSessions(ctx, opts.PushHold, res); err != nil {
 		return err
 	}
 	_, _ = p.db.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`)

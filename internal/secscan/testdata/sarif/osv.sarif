@@ -1,0 +1,4 @@
+{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"osv-scanner","version":"2.6.0","rules":[
+ {"id":"GHSA-xxxx-yyyy-zzzz","shortDescription":{"text":"lodash prototype pollution"},"properties":{"security-severity":"9.1"}}]}},
+ "results":[{"ruleId":"GHSA-xxxx-yyyy-zzzz","level":"warning","message":{"text":"Package lodash@4.17.20 is vulnerable"},
+  "locations":[{"physicalLocation":{"artifactLocation":{"uri":"file:///work/project/package-lock.json"}}}]}]}]}

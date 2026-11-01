@@ -1,0 +1,1 @@
+{"plan":"Starter","quotas":[{"name":"Monthly","limit":1000,"used":250,"reset_at":"2025-11-01T00:00:00Z"},{"name":"Daily","max":200,"remaining":50,"window_minutes":1440}]}

@@ -75,6 +75,10 @@ type parseState struct {
 	// (ParseArgv): such a unit keeps the event's own working directory.
 	cur    *unitSeq
 	curPos int
+	// psTicks marks the PowerShell tick reading of one line (parseDepth):
+	// backticks are escapes there, never substitution spans. deeper() does
+	// not carry it: a nested payload is a new line with its own readings.
+	psTicks bool
 }
 
 // newParseState starts a fresh top-level parse.
@@ -169,6 +173,13 @@ type Command struct {
 	// Heredoc is the concatenated heredoc body attached to the unit
 	// (`psql <<EOF ... EOF`), scanned by R-120.
 	Heredoc string
+	// Env lists the NAME=value environment assignments that apply to
+	// this unit's command: POSIX prefix assignments (`HUSKY=0 git
+	// commit`) and the assignment operands of a stripped wrapper (`env
+	// SKIP=x git commit`). Values are as the lexer left them: quotes
+	// removed, expansions not expanded. nil when there are none. The
+	// git hook-bypass rules read it (R-112, R-113).
+	Env []string
 	// Payload is a nested code payload that was NOT unwrapped into
 	// further Commands: interpreter one-liners (`python -c '...'`,
 	// always opaque) and shell payloads at maxUnwrapDepth.
@@ -234,6 +245,11 @@ type Command struct {
 	// later command calls it: every verdict a rule draws from the unit is
 	// capped at ASK (engine.go, D-338). "" when the unit can run.
 	uncalledDef string
+	// altReading marks a unit from the event's second reading
+	// (Event.AltDialect). A unit rule's reason comes from that reading
+	// first (engine.go applyRuleCeiling); whether the rule hits never
+	// depends on it.
+	altReading bool
 }
 
 // Args returns the unit's argument tokens — everything after the
@@ -561,7 +577,8 @@ type unit struct {
 // subexpression stripped and analysed as PowerShell runs it.
 func parseDepth(raw string, dialect Dialect, st parseState) []Command {
 	orig := raw
-	raw, subs := stripSubstitutionsFor(raw, true, dialect == DialectPowerShell)
+	ps := dialect == DialectPowerShell
+	raw, subs, tickSpan := stripSubstitutionsOpts(raw, stripOpts{mark: true, psEscape: ps, psTicks: ps && st.psTicks})
 	atLimit := st.depth >= maxUnwrapDepth && len(subs) > 0
 	if atLimit {
 		subs = nil
@@ -595,7 +612,43 @@ func parseDepth(raw string, dialect Dialect, st parseState) []Command {
 	for _, sub := range subs {
 		out = append(out, parseDepth(sub, dialect, sst)...)
 	}
+	if ps && tickSpan && !st.psTicks {
+		out = appendPSTickReading(orig, st, out)
+	}
 	return out
+}
+
+// appendPSTickReading adds the PowerShell tick reading of a PowerShell line
+// whose backticks the substitution pass took as POSIX spans: the line as
+// PowerShell itself reads it, every backtick an escape (PSRULES lane).
+//
+// Both readings are kept. The span reading is the conservative one T-534
+// pinned (a PowerShell-tagged line can carry a POSIX payload, so sh -c
+// with a backtick span around crontab -e keeps its deny); the tick reading
+// is what PowerShell
+// runs, and without it two backticks on one line hid everything between
+// them: `git commit `<nl>--no-verify `<nl>-m x` (line continuations) and
+// `git commit --no`-verify -m "a`tb"` both lost their --no-verify into a
+// "substitution". The reading is charged against the expansion budget like
+// any other; an exhausted budget marks the line Unanalyzed (fail CLOSED).
+func appendPSTickReading(raw string, st parseState, out []Command) []Command {
+	if !st.afford(1) {
+		marked := false
+		for i := range out {
+			if out[i].Depth == st.depth && out[i].Unanalyzed == "" {
+				out[i].Unanalyzed = unanalyzedExpansionBudget
+				marked = true
+			}
+		}
+		if !marked {
+			text := strings.TrimSpace(raw)
+			out = append(out, Command{Argv: []string{text}, Raw: text, Dialect: DialectPowerShell, Depth: st.depth, Unanalyzed: unanalyzedExpansionBudget})
+		}
+		return out
+	}
+	alt := st
+	alt.psTicks = true
+	return append(out, parseDepth(raw, DialectPowerShell, alt)...)
 }
 
 // markSubstitutionLimit records that a command substitution on this
@@ -675,6 +728,7 @@ func processUnit(u unit, dialect Dialect, st parseState, out *[]Command) {
 		Pipeline:         u.pipeline,
 		RedirectTargets:  u.redirects,
 		Heredoc:          u.heredoc,
+		Env:              unitEnv(u.words, len(stripped)),
 		seq:              st.cur,
 		seqPos:           st.curPos,
 		chdir:            chdir,
@@ -730,6 +784,24 @@ func stripAssignments(words []string) []string {
 		i++
 	}
 	return words[i:]
+}
+
+// unitEnv returns the environment assignments among the words in front of
+// a unit's command word: the unit's words minus its argv, which is always a
+// suffix of them (argvLen words long). Leading keywords and wrapper words
+// are not assignments and are skipped, so prefix assignments and `env`
+// wrapper operands are both kept, in order.
+func unitEnv(words []string, argvLen int) []string {
+	if argvLen > len(words) {
+		return nil
+	}
+	var env []string
+	for _, w := range words[:len(words)-argvLen] {
+		if isEnvAssign(w) {
+			env = append(env, w)
+		}
+	}
+	return env
 }
 
 // isEnvAssign reports whether w is an environment-assignment word
@@ -1234,12 +1306,18 @@ type lexSpec struct {
 	// the escape char escapes INSIDE double quotes (POSIX: only
 	// \" \\ \$ \` — otherwise the backslash is literal).
 	dquoteEscapeSet string
+	// psSyntax enables three PowerShell token rules (PSRULES lane): a
+	// here-string (@'...'@, @"..."@) is one quoted word, a comment (# to
+	// the end of the line, <# ... #>) at the start of a token is not
+	// lexed, and an escape before a newline is a line continuation
+	// (whitespace), not an escaped newline character.
+	psSyntax bool
 }
 
 // Per-dialect lexer parameters.
 var (
 	posixLexSpec = lexSpec{escape: '\\', singleQuote: true, semiSep: true, dquoteEscapeSet: "\"\\$`"}
-	psLexSpec    = lexSpec{escape: '`', singleQuote: true, semiSep: true, stopParse: true}
+	psLexSpec    = lexSpec{escape: '`', singleQuote: true, semiSep: true, stopParse: true, psSyntax: true}
 	cmdLexSpec   = lexSpec{escape: '^', singleQuote: false, semiSep: false}
 )
 
@@ -1367,6 +1445,8 @@ func (lx *lexer) run() {
 			lx.i++
 		case lx.inD:
 			lx.scanDouble(c)
+		case spec.psSyntax && lx.psToken(c):
+			// consumed: a here-string (one quoted word) or a comment
 		case spec.singleQuote && c == '\'':
 			lx.inS, lx.has = true, true
 			lx.i++
@@ -1374,12 +1454,7 @@ func (lx *lexer) run() {
 			lx.inD, lx.has = true, true
 			lx.i++
 		case spec.escape != 0 && c == spec.escape:
-			if lx.i+1 < len(s) {
-				lx.writeLit(s[lx.i+1])
-				lx.i += 2
-			} else {
-				lx.i++
-			}
+			lx.scanEscape()
 		case c == ' ' || c == '\t' || c == '\r':
 			lx.flush()
 			lx.i++
@@ -1421,6 +1496,25 @@ func (lx *lexer) run() {
 		}
 	}
 	lx.flush()
+}
+
+// scanEscape handles the dialect's escape character outside quotes: the
+// next byte is literal, except that under psSyntax an escape before the end
+// of the line is a line continuation, which joins the next line to this
+// one and separates words like any whitespace.
+func (lx *lexer) scanEscape() {
+	s := lx.src
+	if n := psLineContinuation(s, lx.i); lx.spec.psSyntax && n > 0 {
+		lx.flush()
+		lx.i += n
+		return
+	}
+	if lx.i+1 < len(s) {
+		lx.writeLit(s[lx.i+1])
+		lx.i += 2
+		return
+	}
+	lx.i++
 }
 
 // scanDouble handles one byte inside double quotes.
@@ -1601,75 +1695,155 @@ func stripSubstitutionsMarked(s string, mark bool) (string, []string) {
 // ordinary character (the dollar is read next, so a `$( )` after it is
 // stripped). Every other byte is read exactly as without psEscape.
 func stripSubstitutionsFor(s string, mark, psEscape bool) (string, []string) {
+	out, subs, _ := stripSubstitutionsOpts(s, stripOpts{mark: mark, psEscape: psEscape})
+	return out, subs
+}
+
+// stripSubstitutionsOpts is the substitution pass under explicit options
+// (stripOpts). tickSpan reports that a backtick span was removed as a
+// substitution, which PowerShell would have read as escapes instead
+// (parseDepth then adds the PowerShell tick reading).
+//
+// TWO QUOTE FACTS ADDED IN THE PSRULES LANE, both of which can only make
+// the pass strip MORE: an apostrophe inside double quotes is text, not the
+// start of a single-quoted region (`"it's $(crontab -e)"` used to hide its
+// substitution from every dialect), and under psEscape a here-string body
+// (psHereStringAt) is read with apostrophes as text (psHereBody).
+func stripSubstitutionsOpts(s string, o stripOpts) (string, []string, bool) {
 	if !strings.ContainsAny(s, "`$") {
-		return s, nil
+		return s, nil, false
 	}
-	var out strings.Builder
-	var subs []string
-	inS := false
-	i := 0
-	for i < len(s) {
+	st := &stripScan{s: s, o: o}
+	inS, inD := false, false
+	for i := 0; i < len(s); {
 		c := s[i]
 		switch {
 		case inS:
-			out.WriteByte(c)
-			if c == '\'' {
-				inS = false
-			}
+			st.out.WriteByte(c)
+			inS = c != '\''
 			i++
-		case c == '\'':
+		case o.psEscape && !inD && c == '@':
+			i = st.hereString(i)
+		case c == '\'' && !inD && !o.noSingle:
 			inS = true
-			out.WriteByte(c)
+			st.out.WriteByte(c)
 			i++
-		case psEscape && c == '\\' && i+1 < len(s) && s[i+1] == '$':
-			out.WriteByte(c)
+		case c == '"':
+			inD = !inD
+			st.out.WriteByte(c)
 			i++
-		case c == '\\' || (psEscape && c == '`' && i+1 < len(s) && (s[i+1] == '{' || s[i+1] == '}')):
-			out.WriteByte(c)
-			if i+1 < len(s) {
-				out.WriteByte(s[i+1])
-				i += 2
-			} else {
-				i++
-			}
+		case o.psEscape && c == '\\' && i+1 < len(s) && s[i+1] == '$':
+			st.out.WriteByte(c)
+			i++
+		case st.escapesNext(i):
+			i = st.copyEscape(i)
 		case c == '`':
-			j := strings.IndexByte(s[i+1:], '`')
-			if j < 0 {
-				out.WriteByte(c)
-				i++
-				continue
-			}
-			subs = append(subs, s[i+1:i+1+j])
-			if mark {
-				out.WriteByte(subMarker)
-			}
-			i = i + 1 + j + 1
+			i = st.tickSpanAt(i)
 		case c == '$' && i+1 < len(s) && s[i+1] == '(':
-			depth := 1
-			j := i + 2
-			for j < len(s) && depth > 0 {
-				switch s[j] {
-				case '(':
-					depth++
-				case ')':
-					depth--
-				}
-				j++
-			}
-			if depth != 0 {
-				out.WriteByte(c)
-				i++
-				continue
-			}
-			subs = append(subs, s[i+2:j-1])
-			if mark {
-				out.WriteByte(subMarker)
-			}
-			i = j
+			i = st.dollarParen(i)
 		default:
-			out.WriteByte(c)
+			st.out.WriteByte(c)
 			i++
 		}
 	}
-	return out.String(), subs
+	return st.out.String(), st.subs, st.tickSpan
+}
+
+// stripScan is the output side of one substitution pass
+// (stripSubstitutionsOpts): each method consumes one construct starting at
+// s[i] and returns the index after it.
+type stripScan struct {
+	s        string
+	o        stripOpts
+	out      strings.Builder
+	subs     []string
+	tickSpan bool
+}
+
+// mark leaves subMarker where a substitution was removed (stripOpts.mark).
+func (st *stripScan) mark() {
+	if st.o.mark {
+		st.out.WriteByte(subMarker)
+	}
+}
+
+// hereString copies a PowerShell here-string, its body run through
+// psHereBody; a '@' that does not open one is copied as text.
+func (st *stripScan) hereString(i int) int {
+	s := st.s
+	_, bs, be, next, ok := psHereStringAt(s, i)
+	if !ok {
+		st.out.WriteByte(s[i])
+		return i + 1
+	}
+	body, bsubs, bt := psHereBody(s[bs:be], st.o)
+	st.out.WriteString(s[i:bs])
+	st.out.WriteString(body)
+	st.out.WriteString(s[be:next])
+	st.subs = append(st.subs, bsubs...)
+	st.tickSpan = st.tickSpan || bt
+	return next
+}
+
+// escapesNext reports an escape at s[i] whose next byte is copied as is: a
+// backslash, or under psEscape a backtick before a brace, or any backtick
+// in the PowerShell tick reading (stripOpts.psTicks).
+func (st *stripScan) escapesNext(i int) bool {
+	s := st.s
+	if s[i] == '\\' {
+		return true
+	}
+	if !st.o.psEscape || s[i] != '`' {
+		return false
+	}
+	return st.o.psTicks || (i+1 < len(s) && (s[i+1] == '{' || s[i+1] == '}'))
+}
+
+// copyEscape copies an escape and the byte after it.
+func (st *stripScan) copyEscape(i int) int {
+	st.out.WriteByte(st.s[i])
+	if i+1 < len(st.s) {
+		st.out.WriteByte(st.s[i+1])
+		return i + 2
+	}
+	return i + 1
+}
+
+// tickSpanAt removes a POSIX backtick substitution; an unclosed backtick
+// is copied as text.
+func (st *stripScan) tickSpanAt(i int) int {
+	s := st.s
+	j := strings.IndexByte(s[i+1:], '`')
+	if j < 0 {
+		st.out.WriteByte(s[i])
+		return i + 1
+	}
+	st.subs = append(st.subs, s[i+1:i+1+j])
+	st.tickSpan = true
+	st.mark()
+	return i + 1 + j + 1
+}
+
+// dollarParen removes a $( ) substitution (nested parentheses balanced); an
+// unbalanced one is copied as text from its '$'.
+func (st *stripScan) dollarParen(i int) int {
+	s := st.s
+	depth := 1
+	j := i + 2
+	for j < len(s) && depth > 0 {
+		switch s[j] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		}
+		j++
+	}
+	if depth != 0 {
+		st.out.WriteByte(s[i])
+		return i + 1
+	}
+	st.subs = append(st.subs, s[i+2:j-1])
+	st.mark()
+	return j
 }

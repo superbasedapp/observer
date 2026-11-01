@@ -26,11 +26,11 @@ func TestExplainDegradedAsk(t *testing.T) {
 	}{
 		{
 			"enforced ask on a deny-only seam, session known", verdict(policy.DecisionAsk), denyOnly, "s1",
-			"observer: R-110 needs your confirmation before this file access runs, and this tool cannot ask you, so it was blocked. To allow it, run `observer guard approve R-110 --session s1` (or approve it on the Observer dashboard Security page), then let the agent retry the identical call. ",
+			"observer: R-110 needs your confirmation before this file access runs, and this tool cannot ask you, so it was blocked. To allow it, the developer (not the agent) runs `observer guard approve R-110 --session s1` (or approves it on the Observer dashboard Security page), then lets the agent retry the identical call. ",
 		},
 		{
 			"enforced ask on a deny-only seam, no session id", verdict(policy.DecisionAsk), denyOnly, "",
-			"observer: R-110 needs your confirmation before this file access runs, and this tool cannot ask you, so it was blocked. This tool reported no session id, so approve R-110 on the Observer dashboard Security page, then let the agent retry the identical call. ",
+			"observer: R-110 needs your confirmation before this file access runs, and this tool cannot ask you, so it was blocked. This tool reported no session id, so the developer (not the agent) approves R-110 on the Observer dashboard Security page, then lets the agent retry the identical call. ",
 		},
 		{"enforced ask on an ask-capable seam asks natively", verdict(policy.DecisionAsk), canAsk, "s1", ""},
 		{"enforced deny is a plain deny", verdict(policy.DecisionDeny), denyOnly, "s1", ""},

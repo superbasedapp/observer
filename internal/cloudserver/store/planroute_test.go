@@ -21,6 +21,9 @@ const (
 	// gpt6LunaRoute is migration 0041's GPT-6 Luna route (D-299): the route
 	// both v3 plans pin, shipped inactive and unbound.
 	gpt6LunaRoute = "session_enrichment.gpt-6-luna.v1"
+	// haikuRoute is migration 0042's Claude Haiku 5.5 route, which both v4 plans
+	// pin (0043), shipped inactive and unbound.
+	haikuRoute = "session_enrichment.claude-haiku-5-5.v1"
 	// lunaV1Route is the original feature default (0004).
 	lunaV1Route = "session_enrichment.luna.v1"
 )
@@ -50,10 +53,11 @@ func bindAndActivate(t *testing.T, s *store.Store, routeID, arm string) {
 	}
 }
 
-// TestFreePlanV3Allowance pins the LITERAL v3 free numbers (not just
-// "whatever DefaultFreePlanVersion points at"): daily 20 -> 100, monthly
-// 100 -> 3000, concurrency unchanged, and the GPT-6 Luna route pinned.
-func TestFreePlanV3Allowance(t *testing.T) {
+// TestFreePlanV4Allowance pins the LITERAL v4 free numbers (not just
+// "whatever DefaultFreePlanVersion points at"): daily 100 and monthly 3000
+// (0041, kept by 0043), concurrency unchanged, and the Claude Haiku 5.5
+// route pinned (0043).
+func TestFreePlanV4Allowance(t *testing.T) {
 	s, _ := newStore(t)
 	ctx := context.Background()
 	acct := makeAccount(t, s)
@@ -62,26 +66,26 @@ func TestFreePlanV3Allowance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveAllowance: %v", err)
 	}
-	if a.Plan.Name != store.PlanFree || a.Plan.Version != 3 {
-		t.Fatalf("fresh account resolves %s v%d, want free v3", a.Plan.Name, a.Plan.Version)
+	if a.Plan.Name != store.PlanFree || a.Plan.Version != 4 {
+		t.Fatalf("fresh account resolves %s v%d, want free v4", a.Plan.Name, a.Plan.Version)
 	}
 	if a.DailyCap != 100 || a.MonthlyCap != 3000 || a.ConcurrencyCap != 2 {
-		t.Fatalf("free v3 caps = %d/%d/%d, want 100/3000/2", a.DailyCap, a.MonthlyCap, a.ConcurrencyCap)
+		t.Fatalf("free v4 caps = %d/%d/%d, want 100/3000/2", a.DailyCap, a.MonthlyCap, a.ConcurrencyCap)
 	}
-	if a.Plan.RouteID != gpt6LunaRoute {
-		t.Fatalf("free v3 route_id = %q, want %q", a.Plan.RouteID, gpt6LunaRoute)
+	if a.Plan.RouteID != haikuRoute {
+		t.Fatalf("free v4 route_id = %q, want %q", a.Plan.RouteID, haikuRoute)
 	}
 	if a.BudgetPool != "free" || a.Plan.Label != "Signed-in Free" {
-		t.Fatalf("free v3 pool/label = %q / %q, want free / Signed-in Free (copied from v2)", a.BudgetPool, a.Plan.Label)
+		t.Fatalf("free v4 pool/label = %q / %q, want free / Signed-in Free (copied forward)", a.BudgetPool, a.Plan.Label)
 	}
 }
 
-// TestPlusPlanV3AllowanceAndRoutePin pins the paid side: 5x free on both
-// windows (500/day, 15000/month), concurrency 4 unchanged, the GPT-6 Luna
-// route pinned (the Sol pin is gone from the current version), and the
-// columns 0041 does not move (digest entitlement, retention window, label)
-// carried forward by the INSERT ... SELECT rather than silently reset.
-func TestPlusPlanV3AllowanceAndRoutePin(t *testing.T) {
+// TestPlusPlanV4AllowanceAndRoutePin pins the paid side: 5x free on both
+// windows (500/day, 15000/month), concurrency 4 unchanged, the route pin
+// moved to Claude Haiku 5.5 by 0043, and the columns neither 0041 nor 0043
+// moves (digest entitlement, retention window, label) carried forward by the
+// INSERT ... SELECT rather than silently reset.
+func TestPlusPlanV4AllowanceAndRoutePin(t *testing.T) {
 	s, _ := newStore(t)
 	ctx := context.Background()
 	acct := makeAccount(t, s)
@@ -94,20 +98,20 @@ func TestPlusPlanV3AllowanceAndRoutePin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveAllowance: %v", err)
 	}
-	if a.Plan.Version != 3 {
-		t.Fatalf("latest plus version = %d, want 3", a.Plan.Version)
+	if a.Plan.Version != 4 {
+		t.Fatalf("latest plus version = %d, want 4", a.Plan.Version)
 	}
 	if a.DailyCap != 500 || a.MonthlyCap != 15000 || a.ConcurrencyCap != 4 {
-		t.Fatalf("plus v3 caps = %d/%d/%d, want 500/15000/4", a.DailyCap, a.MonthlyCap, a.ConcurrencyCap)
+		t.Fatalf("plus v4 caps = %d/%d/%d, want 500/15000/4", a.DailyCap, a.MonthlyCap, a.ConcurrencyCap)
 	}
-	if a.Plan.RouteID != gpt6LunaRoute {
-		t.Fatalf("plus v3 route_id = %q, want %q", a.Plan.RouteID, gpt6LunaRoute)
+	if a.Plan.RouteID != haikuRoute {
+		t.Fatalf("plus v4 route_id = %q, want %q", a.Plan.RouteID, haikuRoute)
 	}
 	if a.BudgetPool != "plus_beta" {
-		t.Fatalf("plus v3 pool = %q, want plus_beta (never the free pool)", a.BudgetPool)
+		t.Fatalf("plus v4 pool = %q, want plus_beta (never the free pool)", a.BudgetPool)
 	}
 	if !a.Plan.DigestWeekly || a.Plan.ResultsRetentionDays != 365 || a.Plan.Label != "Plus" {
-		t.Fatalf("plus v3 carried digest_weekly=%v retention=%d label=%q, want true/365/Plus copied from v2",
+		t.Fatalf("plus v4 carried digest_weekly=%v retention=%d label=%q, want true/365/Plus copied forward",
 			a.Plan.DigestWeekly, a.Plan.ResultsRetentionDays, a.Plan.Label)
 	}
 }

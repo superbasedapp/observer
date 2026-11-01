@@ -3,6 +3,7 @@ package proxyroute
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -86,7 +87,7 @@ func probeWriterCases() []probeWriterCase {
 
 func probeRegistrar(t *testing.T, home string) *Registrar {
 	t.Helper()
-	for _, k := range []string{"KIMI_CODE_HOME", "QWEN_HOME", "CRUSH_CONFIG", "XDG_CONFIG_HOME"} {
+	for _, k := range []string{"KIMI_CODE_HOME", "QWEN_HOME", "CRUSH_GLOBAL_CONFIG", "XDG_CONFIG_HOME"} {
 		t.Setenv(k, "")
 	}
 	r, err := NewRegistrar(RegisterOptions{ProxyPort: 8820, HomeDir: home})
@@ -149,7 +150,8 @@ func TestProbeRouteWritersAreSurgical(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := fi.Mode().Perm(); got != 0o640 {
+			// POSIX-only: Windows has no mode bits (Perm reports 0666 or 0444).
+			if got := fi.Mode().Perm(); runtime.GOOS != "windows" && got != 0o640 {
 				t.Errorf("mode = %o, want 0640 kept", got)
 			}
 			entries, _ := os.ReadDir(filepath.Dir(path))

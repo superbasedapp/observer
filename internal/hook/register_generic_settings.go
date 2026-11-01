@@ -37,6 +37,10 @@ type genericSettingsHookTarget struct {
 	resultTool string
 	// dir is the settings directory (e.g. ~/.gemini, ~/.qwen).
 	dir string
+	// dirErr, when set, is why dir could not be resolved (a relocation
+	// variable with a relative value, register_homes.go): nothing is
+	// written and the error is reported.
+	dirErr error
 	// event is the tool's prompt-submit event: the fallback event list
 	// when the registry row declares no registered bindings. The writer
 	// registers every event the row's bindings mark Registered (events):
@@ -46,6 +50,13 @@ type genericSettingsHookTarget struct {
 	event string
 	// errPrefix names the calling registrar in wrapped errors.
 	errPrefix string
+	// hostTarget, when set, is the host-home Registry target this writer
+	// serves (gemini-cli-xcode, register_xcode.go): the credential-file
+	// rules and the checksum entry answer for it, and an Unregister that
+	// leaves no hook drops the hooks member (and a file left empty) rather
+	// than leaving an empty block in the host's file. Empty for the native
+	// and "-windows" targets, which answer for tool.
+	hostTarget string
 	// wrapper prefixes every registered command; "" for the native
 	// target, `MSYS_NO_PATHCONV=1 wsl.exe -d <distro> -- ` for the
 	// cross-OS bridge — same convention as registerClaudeCodeWindows /
@@ -65,11 +76,48 @@ func (t genericSettingsHookTarget) label() string {
 	return t.tool
 }
 
-// events is the event list this target registers / unregisters: the
-// registry row's Registered bindings (hook-parity audit section 5.4), or the
-// single prompt-submit event for a row with none.
-func (t genericSettingsHookTarget) events() []string {
-	return eventsOr(t.tool, t.event)
+// rulesTool is the target the credential-file rules and the checksum entry
+// answer for: hostTarget when set, else tool.
+func (t genericSettingsHookTarget) rulesTool() string {
+	if t.hostTarget != "" {
+		return t.hostTarget
+	}
+	return t.tool
+}
+
+// removeObserverGroups drops, for each event, the hook groups made only of
+// Observer's commands for tool, deleting an event left with none, and
+// returns the events it changed.
+func removeObserverGroups(hooks map[string][]claudeHookGroup, events []string, tool string) []string {
+	var changed []string
+	for _, event := range events {
+		groups := hooks[event]
+		kept := groups[:0]
+		removed := false
+		for _, g := range groups {
+			isOurs := len(g.Hooks) > 0
+			for _, h := range g.Hooks {
+				if h.Type != "command" || !isObserverAnyHookEntry(h.Command, tool) {
+					isOurs = false
+				}
+			}
+			if isOurs {
+				removed = true
+				continue
+			}
+			kept = append(kept, g)
+		}
+		if !removed {
+			continue
+		}
+		if len(kept) == 0 {
+			delete(hooks, event)
+		} else {
+			hooks[event] = kept
+		}
+		changed = append(changed, event)
+	}
+	return changed
 }
 
 // registerGenericSettingsHooks is the shared writer behind
@@ -79,6 +127,10 @@ func (t genericSettingsHookTarget) events() []string {
 // on drift; anything else blocks without --force.
 func (r *Registry) registerGenericSettingsHooks(t genericSettingsHookTarget) RegistrationResult {
 	res := RegistrationResult{Tool: t.label(), DryRun: r.opts.DryRun}
+	if t.dirErr != nil {
+		res.Error = fmt.Errorf("%s: %w", t.errPrefix, t.dirErr)
+		return res
+	}
 	path := filepath.Join(t.dir, "settings.json")
 	res.ConfigPath = path
 
@@ -119,8 +171,15 @@ func (r *Registry) registerGenericSettingsHooks(t genericSettingsHookTarget) Reg
 		hooks = map[string][]claudeHookGroup{}
 	}
 
+	// FU-192: an entry in Observer's shape running another binary is kept.
+	if r.refusesForeignBinary(&res, t.errPrefix, path, identityContent, shapedHooksInText(settings["hooks"], t.tool)) {
+		return res
+	}
 	binPath := forwardSlashPath(r.opts.BinaryPath)
-	for _, event := range t.events() {
+	// T-847: a matcher or an extra field on Observer's entry is never
+	// "already set" (hook_shape.go); the typed groups cannot see the field.
+	shapeDrift := shapeDriftEvents(settings["hooks"], claudeShapedGroups(func(c string) bool { return isObserverAnyHookEntry(c, t.tool) }))
+	for _, event := range r.registeredEventsFor(t.tool, t.event) {
 		if r.skipEvent(t.tool, event) {
 			continue
 		}
@@ -135,7 +194,7 @@ func (r *Registry) registerGenericSettingsHooks(t genericSettingsHookTarget) Reg
 			}
 		}
 		if idx >= 0 {
-			if len(groups[idx].Hooks) == 1 && groups[idx].Hooks[0].Type == "command" && groups[idx].Hooks[0].Command == cmd {
+			if genericGroupCurrent(&res, event, cmd, groups[idx], shapeDrift[event]) {
 				res.AlreadySet = append(res.AlreadySet, event)
 				continue
 			}
@@ -143,7 +202,7 @@ func (r *Registry) registerGenericSettingsHooks(t genericSettingsHookTarget) Reg
 			// group; the fresh append below restores.
 			groups = append(groups[:idx], groups[idx+1:]...)
 		}
-		if !r.opts.Force {
+		if r.refuses(res.ConfigPath, identityContent) {
 			for _, g := range groups {
 				for _, h := range g.Hooks {
 					if h.Type == "command" && !isObserverAnyHookEntry(h.Command, t.tool) {
@@ -157,7 +216,11 @@ func (r *Registry) registerGenericSettingsHooks(t genericSettingsHookTarget) Reg
 		hooks[event] = groups
 		res.HooksAdded = append(res.HooksAdded, event)
 	}
-	if len(res.HooksAdded) == 0 {
+	// An opt-in event whose component is not selected loses the entry
+	// Observer wrote for it (Options.Selected, lane sec-h); nothing else in
+	// the file changes.
+	removed := removeObserverGroups(hooks, r.optInEventsOff(t.tool), t.tool)
+	if len(res.HooksAdded) == 0 && len(removed) == 0 {
 		return res
 	}
 
@@ -171,15 +234,27 @@ func (r *Registry) registerGenericSettingsHooks(t genericSettingsHookTarget) Reg
 	if r.opts.DryRun {
 		return res
 	}
-	if err := r.writeHookSettingsJSON(t.tool, t.dir, pinned, raw, settings); err != nil {
+	if err := r.writeHookSettingsJSON(t.rulesTool(), t.dir, pinned, raw, settings); err != nil {
 		res.Error = err
 		return res
 	}
-	if err := r.recordHookChecksum(t.tool, path); err != nil {
+	if err := r.recordHookChecksum(t.rulesTool(), path); err != nil {
 		res.Error = err
 		return res
 	}
 	return res
+}
+
+// genericGroupCurrent reports whether Observer's group is exactly the one
+// this writer emits: a single command handler equal to cmd and, since T-847,
+// no shape drift (a matcher or an extra field the typed group cannot see).
+// A drifted group is recorded as a shape rewrite.
+func genericGroupCurrent(res *RegistrationResult, event, cmd string, g claudeHookGroup, drift bool) bool {
+	if drift {
+		shapeRewrite(res, event, cmd, cmd)
+		return false
+	}
+	return len(g.Hooks) == 1 && g.Hooks[0].Type == "command" && g.Hooks[0].Command == cmd
 }
 
 // registerGeminiCLI installs the prompt-submit hook into
@@ -187,12 +262,7 @@ func (r *Registry) registerGenericSettingsHooks(t genericSettingsHookTarget) Reg
 // HookGeminiSettings mechanism), plus the BeforeTool tool gate
 // (every Registered binding of the row, t.events()).
 func (r *Registry) registerGeminiCLI() RegistrationResult {
-	return r.registerGenericSettingsHooks(genericSettingsHookTarget{
-		tool:      "gemini-cli",
-		dir:       filepath.Join(r.opts.HomeDir, ".gemini"),
-		event:     "BeforeAgent",
-		errPrefix: "hook.registerGeminiCLI",
-	})
+	return r.registerGenericSettingsHooks(r.nativeSettingsTarget("gemini-cli", "gemini-cli/user-settings", "BeforeAgent", "hook.registerGeminiCLI"))
 }
 
 // registerQwenCode installs the prompt-submit hook into
@@ -200,12 +270,7 @@ func (r *Registry) registerGeminiCLI() RegistrationResult {
 // HookQwenSettings mechanism), plus the PreToolUse tool gate and the
 // grounded lifecycle events (every Registered binding of the row).
 func (r *Registry) registerQwenCode() RegistrationResult {
-	return r.registerGenericSettingsHooks(genericSettingsHookTarget{
-		tool:      "qwen-code",
-		dir:       filepath.Join(r.opts.HomeDir, ".qwen"),
-		event:     "UserPromptSubmit",
-		errPrefix: "hook.registerQwenCode",
-	})
+	return r.registerGenericSettingsHooks(r.nativeSettingsTarget("qwen-code", "qwen-code/user-settings", "UserPromptSubmit", "hook.registerQwenCode"))
 }
 
 // registerQoder installs the prompt-submit hook into
@@ -222,12 +287,7 @@ func (r *Registry) registerQwenCode() RegistrationResult {
 // lists 23 distinct hook event names, not 24 as an earlier pass here
 // miscounted).
 func (r *Registry) registerQoder() RegistrationResult {
-	return r.registerGenericSettingsHooks(genericSettingsHookTarget{
-		tool:      "qoder",
-		dir:       filepath.Join(r.opts.HomeDir, ".qoder"),
-		event:     "UserPromptSubmit",
-		errPrefix: "hook.registerQoder",
-	})
+	return r.registerGenericSettingsHooks(r.nativeSettingsTarget("qoder", "qoder/user-settings", "UserPromptSubmit", "hook.registerQoder"))
 }
 
 // unregisterGenericSettingsHooks removes ONLY the observer-owned hook
@@ -236,6 +296,10 @@ func (r *Registry) registerQoder() RegistrationResult {
 // counterpart of registerGenericSettingsHooks.
 func (r *Registry) unregisterGenericSettingsHooks(t genericSettingsHookTarget) UnregistrationResult {
 	res := UnregistrationResult{Tool: t.label(), DryRun: r.opts.DryRun}
+	if t.dirErr != nil {
+		res.Error = fmt.Errorf("%s: %w", t.errPrefix, t.dirErr)
+		return res
+	}
 	path := filepath.Join(t.dir, "settings.json")
 	res.ConfigPath = path
 
@@ -271,47 +335,41 @@ func (r *Registry) unregisterGenericSettingsHooks(t genericSettingsHookTarget) U
 		res.Error = fmt.Errorf("%s: parse hooks: %w", t.errPrefix, err)
 		return res
 	}
-	for _, event := range t.events() {
-		groups := hooks[event]
-		kept := groups[:0]
-		removed := false
-		for _, g := range groups {
-			isOurs := len(g.Hooks) > 0
+	// FU-203: removeObserverGroups's strict recogniser never takes an entry
+	// in Observer's shape that runs another binary; it is reported kept.
+	for _, ev := range allEventsFor(t.tool, t.event) {
+		for _, g := range hooks[ev] {
 			for _, h := range g.Hooks {
-				if h.Type != "command" || !isObserverAnyHookEntry(h.Command, t.tool) {
-					isOurs = false
+				if r.keepsForeignBinary(shapedHooksInText([]byte(h.Command), t.tool)) {
+					noteKeptForeign(&res, ev)
 				}
 			}
-			if isOurs {
-				removed = true
-				continue
-			}
-			kept = append(kept, g)
 		}
-		if !removed {
-			continue
-		}
-		if len(kept) == 0 {
-			delete(hooks, event)
-		} else {
-			hooks[event] = kept
-		}
-		res.HooksRemoved = append(res.HooksRemoved, event)
 	}
+	res.HooksRemoved = removeObserverGroups(hooks, allEventsFor(t.tool, t.event), t.tool)
 	if len(res.HooksRemoved) == 0 {
 		return res
 	}
-	patched, err := json.Marshal(hooks)
-	if err != nil {
-		res.Error = fmt.Errorf("%s: marshal hooks: %w", t.errPrefix, err)
-		return res
+	if len(hooks) == 0 && t.hostTarget != "" {
+		delete(settings, "hooks")
+	} else {
+		patched, err := json.Marshal(hooks)
+		if err != nil {
+			res.Error = fmt.Errorf("%s: marshal hooks: %w", t.errPrefix, err)
+			return res
+		}
+		settings["hooks"] = patched
 	}
-	settings["hooks"] = patched
 
 	if r.opts.DryRun {
 		return res
 	}
-	if err := r.writeHookSettingsJSON(t.tool, t.dir, pinned, raw, settings); err != nil {
+	if len(settings) == 0 && t.hostTarget != "" {
+		if err := removeEmptyConfigFile(path, raw); err != nil {
+			res.Error = fmt.Errorf("%s: remove empty %s: %w", t.errPrefix, path, err)
+			return res
+		}
+	} else if err := r.writeHookSettingsJSON(t.rulesTool(), t.dir, pinned, raw, settings); err != nil {
 		res.Error = err
 		return res
 	}
@@ -323,22 +381,23 @@ func (r *Registry) unregisterGenericSettingsHooks(t genericSettingsHookTarget) U
 }
 
 func (r *Registry) unregisterGeminiCLI() UnregistrationResult {
-	return r.unregisterGenericSettingsHooks(genericSettingsHookTarget{
-		tool: "gemini-cli", dir: filepath.Join(r.opts.HomeDir, ".gemini"),
-		event: "BeforeAgent", errPrefix: "hook.unregisterGeminiCLI",
-	})
+	return r.unregisterGenericSettingsHooks(r.nativeSettingsTarget("gemini-cli", "gemini-cli/user-settings", "BeforeAgent", "hook.unregisterGeminiCLI"))
 }
 
 func (r *Registry) unregisterQwenCode() UnregistrationResult {
-	return r.unregisterGenericSettingsHooks(genericSettingsHookTarget{
-		tool: "qwen-code", dir: filepath.Join(r.opts.HomeDir, ".qwen"),
-		event: "UserPromptSubmit", errPrefix: "hook.unregisterQwenCode",
-	})
+	return r.unregisterGenericSettingsHooks(r.nativeSettingsTarget("qwen-code", "qwen-code/user-settings", "UserPromptSubmit", "hook.unregisterQwenCode"))
 }
 
 func (r *Registry) unregisterQoder() UnregistrationResult {
-	return r.unregisterGenericSettingsHooks(genericSettingsHookTarget{
-		tool: "qoder", dir: filepath.Join(r.opts.HomeDir, ".qoder"),
-		event: "UserPromptSubmit", errPrefix: "hook.unregisterQoder",
-	})
+	return r.unregisterGenericSettingsHooks(r.nativeSettingsTarget("qoder", "qoder/user-settings", "UserPromptSubmit", "hook.unregisterQoder"))
+}
+
+// nativeSettingsTarget is the native settings.json target of tool, whose
+// directory is that of the catalogued artifact (gemini-cli/user-settings,
+// qwen-code/user-settings, qoder/user-settings), so the vendor's own home
+// variable (GEMINI_CLI_HOME, QWEN_HOME, QODER_CONFIG_DIR) moves the write
+// with the route writer and the detector (S-17).
+func (r *Registry) nativeSettingsTarget(tool, artifact, event, errPrefix string) genericSettingsHookTarget {
+	dir, err := r.artifactDir(artifact)
+	return genericSettingsHookTarget{tool: tool, dir: dir, dirErr: err, event: event, errPrefix: errPrefix}
 }

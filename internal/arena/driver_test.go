@@ -109,6 +109,8 @@ func TestExecuteDrive_ClaudeShape(t *testing.T) {
 		WorktreePath: wt,
 		Prompt:       "fix the bug",
 		Timeout:      30 * time.Second,
+		// The pre-OSH-R-005 shape, now only where the skip is allowed.
+		Bypass: BypassDecision{Allowed: true},
 	})
 	if err != nil {
 		t.Fatalf("executeDrive: %v", err)
@@ -240,6 +242,7 @@ echo "done"
 		t.Fatal("aider headless contract missing")
 	}
 	res, err := executeDrive(context.Background(), bin, ic.Headless, driveRequest{
+		Bypass:       BypassDecision{Allowed: true}, // argv shape of the skip lane (OSH-R-005)
 		Tool:         "aider",
 		WorktreePath: t.TempDir(),
 		Prompt:       "update both files",
@@ -256,7 +259,7 @@ echo "done"
 		t.Fatal(err)
 	}
 	argv := string(raw)
-	for _, want := range []string{"--message update both files", "--yes --no-auto-commits", "one.go", filepath.Join("pkg", "two.go")} {
+	for _, want := range []string{"--message update both files", "--yes --message", "--no-auto-commits", "one.go", filepath.Join("pkg", "two.go")} {
 		if !strings.Contains(argv, want) {
 			t.Errorf("argv missing %q:\n%s", want, argv)
 		}
@@ -277,6 +280,7 @@ JSON
 		t.Fatal("opencode headless contract missing")
 	}
 	res, err := executeDrive(context.Background(), bin, ic.Headless, driveRequest{
+		Bypass:       BypassDecision{Allowed: true}, // argv shape of the skip lane (OSH-R-005)
 		Tool:         "opencode",
 		WorktreePath: t.TempDir(),
 		Prompt:       "make a small edit",
@@ -307,6 +311,7 @@ touch "`+marker+`"
 		t.Fatal("opencode headless contract missing")
 	}
 	_, err := executeDrive(context.Background(), bin, ic.Headless, driveRequest{
+		Bypass:       BypassDecision{Allowed: true}, // argv shape of the skip lane (OSH-R-005)
 		Tool:         "opencode",
 		Model:        "opencode/x-preview-f-free",
 		WorktreePath: t.TempDir(),

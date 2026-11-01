@@ -4,28 +4,51 @@ import {
   useMemo,
   useRef,
   useState,
+  type KeyboardEvent,
+  type MouseEvent,
   type ReactNode,
 } from "react";
-import { Icon, Pill } from "../../primitives";
+import clsx from "clsx";
+import { Callout, Icon, Pill } from "../../primitives";
 import { fmtBytes, fmtClock, fmtDuration, fmtInt } from "../../lib/format";
 import type { MetricSampleLike, ProcessNodeLike } from "../../lib/types";
+import {
+  captureGaps,
+  chainOf,
+  indexProcesses,
+  stepInList,
+  type ProcessStackIndex,
+} from "../../lib/processLayout";
+import { ProcessFlame, processDomId, spawnLinkOf } from "./ProcessFlame";
+import { ProcessSpawnStack } from "./ProcessSpawnStack";
 import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, CornerDownRight, MemoryStick, Timer } from "lucide-react";
 
-// ProcessTree — the OS-level process tree/table view of the session-detail
-// System tab: the Tree | Table toggle, Collapse-all, the recursive tree rows
-// with attribution + spawning-message link + per-process CPU/memory/disk
-// metrics and working-set sparkline, and the sortable, row-capped Table view.
+// ProcessTree - the OS-level process view of the session-detail System tab,
+// in three ways over the same data: Tree (who started whom, nested), Table
+// (sortable, flat) and Call stack (the spawn chain over time: ProcessFlame +
+// ProcessSpawnStack). One picked process is shared by all three, so switching
+// views keeps it; the caller may own that selection (the node keeps it in the
+// URL as ?proc=) or leave it to local state.
+//
 // Promoted into the shared design system so the org can render the node-style
 // tree (building `children` from parent_run_key) instead of a flat table.
 //
-// It is pure: process nodes in, tree/table out. The two node couplings are
-// dropped/injected — the react-router deep-links live in the node's
-// diagnostics panel (which stays node-side), and the spawning-message link is
-// injected via `renderMessageLink` so the caller decides whether it navigates.
-// The /processes fetch, capture-diagnostics panel, findings and network egress
-// list all stay node-side; this component renders only the tree/table body.
+// It is pure: process nodes in, views out. The node couplings are injected:
+// the spawning-message link (`renderMessageLink` for the Tree/Table cells,
+// `onOpenMessage` for the Call stack and the selection strip) and the session
+// timeline link (`onOpenTimeline`). The /processes fetch, capture-diagnostics
+// panel, findings and network egress list all stay node-side.
 
 type PillVariant = "neutral" | "success" | "warn" | "danger" | "info" | "accent";
+
+/** The three views of the processes panel. */
+export type ProcessView = "tree" | "table" | "stack";
+
+const VIEW_LABELS: Readonly<Record<ProcessView, string>> = {
+  tree: "Tree",
+  table: "Table",
+  stack: "Call stack",
+};
 
 // LARGE_TREE_THRESHOLD: above this many captured processes the tree opens
 // collapsed-to-roots, so a huge session (e.g. a long-running daemon subtree)
@@ -130,6 +153,12 @@ function MessageCell({
   );
 }
 
+// fromControl: a click that landed on a button or link inside a row acts on
+// that control, not on the row's selection.
+function fromControl(e: MouseEvent<HTMLElement>): boolean {
+  return !!(e.target as HTMLElement).closest("button, a, input, label");
+}
+
 // Sparkline — a tiny SVG polyline of a metric series (default: working set).
 function Sparkline({
   samples,
@@ -217,30 +246,53 @@ function MetricBadges({ node }: { node: ProcessNodeLike }) {
   );
 }
 
+type SelectionProps = {
+  selectedKey: string | null;
+  ancestors: ReadonlySet<string>;
+  onSelect: (key: string) => void;
+  idPrefix: string;
+};
+
 function ProcessTreeNode({
   node,
   depth,
   collapsed,
   onToggle,
   renderMessageLink,
+  sel,
 }: {
   node: ProcessNodeLike;
   depth: number;
   collapsed: Set<string>;
   onToggle: (key: string) => void;
   renderMessageLink?: RenderMessageLink;
+  sel: SelectionProps;
 }) {
   const hasChildren = node.children.length > 0;
   const isCollapsed = collapsed.has(node.process_key);
+  const isSel = sel.selectedKey === node.process_key;
+  const isAnc = !isSel && sel.ancestors.has(node.process_key);
   return (
-    <div>
+    <div role="none">
       <div
-        className="flex flex-wrap items-center gap-x-2 gap-y-0.5 border-b border-line-1/60 py-[3px] text-[12px] last:border-b-0"
-        style={{ paddingLeft: depth * 14 }}
+        id={processDomId(sel.idPrefix, node.process_key)}
+        role="treeitem"
+        aria-level={depth + 1}
+        aria-selected={isSel}
+        aria-expanded={hasChildren ? !isCollapsed : undefined}
+        onClick={(e) => {
+          if (!fromControl(e)) sel.onSelect(node.process_key);
+        }}
+        className={clsx(
+          "flex cursor-pointer flex-wrap items-center gap-x-2 gap-y-0.5 rounded-1 border-b border-line-1/60 py-[3px] text-[12px] last:border-b-0 hover:bg-bg-3",
+          isSel && "bg-accent-soft shadow-[inset_2px_0_0_var(--accent)] hover:bg-accent-soft",
+        )}
+        style={{ paddingLeft: depth * 14 + 2 }}
       >
         {hasChildren ? (
           <button
             type="button"
+            tabIndex={-1}
             onClick={() => onToggle(node.process_key)}
             className="w-[16px] select-none text-left text-fg-3 hover:text-fg-1"
             aria-label={isCollapsed ? "Expand" : "Collapse"}
@@ -255,7 +307,7 @@ function ProcessTreeNode({
         ) : (
           <span className="w-[16px] select-none text-fg-4">·</span>
         )}
-        <span className="font-mono text-fg-1">{node.exe || "?"}</span>
+        <span className={clsx("font-mono", isAnc ? "text-accent" : "text-fg-1")}>{node.exe || "?"}</span>
         {isDerived(node) ? (
           <>
             <Pill
@@ -274,7 +326,7 @@ function ProcessTreeNode({
             <Pill variant={attributionVariant(node.attribution_source)}>
               {attributionLabel(node)}
             </Pill>
-            <span className={node.exited ? "text-fg-3" : "text-success"}>
+            <span className={node.exited ? (node.exit_code !== 0 || (node.exit_signal ?? 0) > 0 ? "text-danger" : "text-fg-3") : "text-success"}>
               {runtimeLabel(node)}
             </span>
           </>
@@ -304,18 +356,21 @@ function ProcessTreeNode({
           </Pill>
         )}
       </div>
-      {hasChildren &&
-        !isCollapsed &&
-        node.children.map((c) => (
-          <ProcessTreeNode
-            key={c.process_key}
-            node={c}
-            depth={depth + 1}
-            collapsed={collapsed}
-            onToggle={onToggle}
-            renderMessageLink={renderMessageLink}
-          />
-        ))}
+      {hasChildren && !isCollapsed && (
+        <div role="group">
+          {node.children.map((c) => (
+            <ProcessTreeNode
+              key={c.process_key}
+              node={c}
+              depth={depth + 1}
+              collapsed={collapsed}
+              onToggle={onToggle}
+              renderMessageLink={renderMessageLink}
+              sel={sel}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -343,14 +398,17 @@ function ProcessTable({
   nodes,
   renderMessageLink,
   extended = false,
+  sel,
+  onOpenSelected,
 }: {
   nodes: ProcessNodeLike[];
   renderMessageLink?: RenderMessageLink;
   // extended opts the Table view into the org's extra columns (cwd + duration)
   // and honest peak-RSS memory labelling. Each addition is still gated on
-  // per-row data presence below. The node omits it, keeping the Table view
-  // byte-for-byte unchanged.
+  // per-row data presence below. The node omits it.
   extended?: boolean;
+  sel: SelectionProps;
+  onOpenSelected: () => void;
 }) {
   const [sortKey, setSortKey] = useState<SortKey>("mem");
   const [desc, setDesc] = useState(true);
@@ -372,14 +430,36 @@ function ProcessTable({
     });
     return arr;
   }, [nodes, sortKey, desc]);
+  // A selection made in another view may sit below the row cap: lift the cap
+  // so the picked row is always on screen.
+  const selIdx = sel.selectedKey ? sorted.findIndex((n) => n.process_key === sel.selectedKey) : -1;
+  useEffect(() => {
+    if (selIdx >= TABLE_ROW_CAP) setShowAll(true);
+  }, [selIdx]);
   // Cap the rendered rows so a huge session doesn't build a 1,000-row table; the
   // sort puts the most relevant rows first, and "show all" lifts the cap (C1).
   const capped = sorted.length > TABLE_ROW_CAP && !showAll;
   const visible = capped ? sorted.slice(0, TABLE_ROW_CAP) : sorted;
+  const keys = useMemo(() => visible.map((n) => n.process_key), [visible]);
+
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const next = stepInList(keys, sel.selectedKey, e.key === "ArrowDown" ? 1 : -1);
+      if (next) sel.onSelect(next);
+    } else if (e.key === "Home" || e.key === "End") {
+      e.preventDefault();
+      const k = e.key === "Home" ? keys[0] : keys[keys.length - 1];
+      if (k) sel.onSelect(k);
+    } else if (e.key === "Enter") {
+      onOpenSelected();
+    }
+  };
 
   const Header = ({ k, label, right }: { k: SortKey; label: string; right?: boolean }) => (
     <th
       className={`cursor-pointer select-none py-1 font-medium hover:text-fg-1 ${right ? "text-right" : "text-left"}`}
+      aria-sort={sortKey === k ? (desc ? "descending" : "ascending") : undefined}
       onClick={() => {
         if (sortKey === k) setDesc((v) => !v);
         else {
@@ -396,7 +476,14 @@ function ProcessTable({
   );
 
   return (
-    <div className="overflow-x-auto">
+    <div
+      className="overflow-x-auto rounded-1 outline-none focus-visible:ring-2 focus-visible:ring-accent-ring"
+      tabIndex={0}
+      role="grid"
+      aria-label="Processes"
+      aria-activedescendant={sel.selectedKey && selIdx >= 0 ? processDomId(sel.idPrefix, sel.selectedKey) : undefined}
+      onKeyDown={onKeyDown}
+    >
       <table className="w-full min-w-[760px] text-left text-[11.5px]">
         <thead className="text-[10px] uppercase tracking-[0.06em] text-fg-3">
           <tr className="border-b border-line-2">
@@ -413,72 +500,88 @@ function ProcessTable({
           </tr>
         </thead>
         <tbody>
-          {visible.map((n) => (
-            <tr key={n.process_key} className="border-b border-line-1/60 last:border-b-0">
-              <td className="py-1 pr-2 font-mono text-fg-1">{n.exe || "?"}</td>
-              {showCwd && (
-                <td
-                  className="max-w-[260px] truncate py-1 pl-2 pr-2 font-mono text-fg-3"
-                  title={n.cwd || undefined}
-                >
-                  {n.cwd || "-"}
-                </td>
-              )}
-              <td
-                className="py-1 pr-2 text-fg-3"
-                title={isDerived(n) ? "from the tool's exec record - no OS process captured" : undefined}
-              >
-                {isDerived(n) ? <span className="text-fg-4">tool log</span> : n.pid}
-              </td>
-              <td className="py-1 pr-2 whitespace-nowrap tabular-nums text-fg-3" title={n.started_at || undefined}>
-                {fmtClock(n.started_at)}
-              </td>
-              {showDuration && (
-                <td className="py-1 pr-2 text-right font-mono tabular-nums text-fg-3">
-                  {n.duration_ms && n.duration_ms > 0 ? fmtDuration(n.duration_ms) : "-"}
-                </td>
-              )}
-              {isDerived(n) ? (
-                <td className={`py-1 pr-2 ${n.exit_code === 0 ? "text-fg-3" : "text-danger"}`}>
-                  {derivedRuntimeLabel(n)}
-                </td>
-              ) : (
-                <td className={`py-1 pr-2 ${n.exited ? "text-fg-3" : "text-success"}`}>
-                  {runtimeLabel(n)}
-                </td>
-              )}
-              <td className="py-1 pr-2 text-right font-mono tabular-nums text-fg-2">
-                {n.cpu_ms ? fmtDuration(n.cpu_ms) : "-"}
-              </td>
-              <td
-                className="py-1 pr-2 text-right font-mono tabular-nums text-fg-2"
-                title={
-                  extended && !n.working_set_bytes && n.peak_rss_bytes
-                    ? "peak RSS (no working-set sample captured)"
-                    : undefined
-                }
-              >
-                {n.working_set_bytes ? (
-                  fmtBytes(n.working_set_bytes)
-                ) : extended && n.peak_rss_bytes ? (
-                  <>
-                    {fmtBytes(n.peak_rss_bytes)}
-                    <span className="text-fg-4"> peak</span>
-                  </>
-                ) : (
-                  "-"
+          {visible.map((n) => {
+            const isSel = n.process_key === sel.selectedKey;
+            return (
+              <tr
+                key={n.process_key}
+                id={processDomId(sel.idPrefix, n.process_key)}
+                aria-selected={isSel}
+                onClick={(e) => {
+                  if (!fromControl(e)) sel.onSelect(n.process_key);
+                }}
+                className={clsx(
+                  "cursor-pointer border-b border-line-1/60 last:border-b-0 hover:bg-bg-3",
+                  isSel && "bg-accent-soft shadow-[inset_2px_0_0_var(--accent)] hover:bg-accent-soft",
                 )}
-              </td>
-              <td className="py-1 pr-2 text-right font-mono tabular-nums text-fg-3">
-                {(n.read_bytes ?? 0) + (n.write_bytes ?? 0) > 0
-                  ? <DiskIO read={n.read_bytes ?? 0} write={n.write_bytes ?? 0} />
-                  : "-"}
-              </td>
-              <td className="py-1 pl-2">
-                <MessageCell node={n} renderMessageLink={renderMessageLink} />
-              </td>
-            </tr>
-          ))}
+              >
+                <td className={clsx("py-1 pr-2 pl-1 font-mono", !isSel && sel.ancestors.has(n.process_key) ? "text-accent" : "text-fg-1")}>
+                  {n.exe || "?"}
+                </td>
+                {showCwd && (
+                  <td
+                    className="max-w-[260px] truncate py-1 pl-2 pr-2 font-mono text-fg-3"
+                    title={n.cwd || undefined}
+                  >
+                    {n.cwd || "-"}
+                  </td>
+                )}
+                <td
+                  className="py-1 pr-2 text-fg-3"
+                  title={isDerived(n) ? "from the tool's exec record - no OS process captured" : undefined}
+                >
+                  {isDerived(n) ? <span className="text-fg-4">tool log</span> : n.pid}
+                </td>
+                <td className="py-1 pr-2 whitespace-nowrap tabular-nums text-fg-3" title={n.started_at || undefined}>
+                  {fmtClock(n.started_at)}
+                </td>
+                {showDuration && (
+                  <td className="py-1 pr-2 text-right font-mono tabular-nums text-fg-3">
+                    {n.duration_ms && n.duration_ms > 0 ? fmtDuration(n.duration_ms) : "-"}
+                  </td>
+                )}
+                {isDerived(n) ? (
+                  <td className={`py-1 pr-2 ${n.exit_code === 0 ? "text-fg-3" : "text-danger"}`}>
+                    {derivedRuntimeLabel(n)}
+                  </td>
+                ) : (
+                  <td className={`py-1 pr-2 ${n.exited ? (n.exit_code !== 0 || (n.exit_signal ?? 0) > 0 ? "text-danger" : "text-fg-3") : "text-success"}`}>
+                    {runtimeLabel(n)}
+                  </td>
+                )}
+                <td className="py-1 pr-2 text-right font-mono tabular-nums text-fg-2">
+                  {n.cpu_ms ? fmtDuration(n.cpu_ms) : "-"}
+                </td>
+                <td
+                  className="py-1 pr-2 text-right font-mono tabular-nums text-fg-2"
+                  title={
+                    extended && !n.working_set_bytes && n.peak_rss_bytes
+                      ? "peak RSS (no working-set sample captured)"
+                      : undefined
+                  }
+                >
+                  {n.working_set_bytes ? (
+                    fmtBytes(n.working_set_bytes)
+                  ) : extended && n.peak_rss_bytes ? (
+                    <>
+                      {fmtBytes(n.peak_rss_bytes)}
+                      <span className="text-fg-4"> peak</span>
+                    </>
+                  ) : (
+                    "-"
+                  )}
+                </td>
+                <td className="py-1 pr-2 text-right font-mono tabular-nums text-fg-3">
+                  {(n.read_bytes ?? 0) + (n.write_bytes ?? 0) > 0
+                    ? <DiskIO read={n.read_bytes ?? 0} write={n.write_bytes ?? 0} />
+                    : "-"}
+                </td>
+                <td className="py-1 pl-2">
+                  <MessageCell node={n} renderMessageLink={renderMessageLink} />
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
       {sorted.length > TABLE_ROW_CAP && (
@@ -494,15 +597,107 @@ function ProcessTable({
   );
 }
 
-// ProcessTree — the Tree | Table toggle + Collapse-all + the tree/table body,
-// owning the view + collapsed state. Feed it the roots and total; it opens a
-// large tree collapsed-to-roots once per `sessionKey`.
+// SelectionStrip - shown above Tree and Table: the picked process's spawn path
+// (each step clickable), the turn and message that started it, and a jump to
+// the Call stack view. It is what makes the shared selection visible when the
+// picked row has scrolled away.
+function SelectionStrip({
+  index,
+  selectedKey,
+  onSelect,
+  onOpenMessage,
+  onShowStack,
+  sessionLabel,
+}: {
+  index: ProcessStackIndex;
+  selectedKey: string | null;
+  onSelect: (key: string) => void;
+  onOpenMessage?: (messageId: string) => void;
+  onShowStack: () => void;
+  sessionLabel: string;
+}) {
+  const chain = chainOf(index, selectedKey);
+  if (!chain.length) {
+    return (
+      <div className="rounded-2 border border-dashed border-line-2 px-2.5 py-1.5 text-[11.5px] text-fg-3">
+        Pick a process in any view. It stays picked when you switch between Tree, Table and Call stack.
+      </div>
+    );
+  }
+  const path = chain.slice().reverse();
+  const MAX = 6;
+  const shown = path.length > MAX ? [path[0], ...path.slice(path.length - (MAX - 1))] : path;
+  const hidden = path.length - shown.length;
+  const link = spawnLinkOf(index, selectedKey);
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-2 border border-accent-ring bg-accent-soft px-2.5 py-1.5 text-[11.5px]">
+      <span className="text-[10px] uppercase tracking-[0.06em] text-fg-4">Selected</span>
+      <nav aria-label="Spawn path of the selected process" className="flex min-w-0 flex-wrap items-center gap-0.5">
+        <span className="px-1 text-fg-3">{sessionLabel}</span>
+        {shown.map((it, i) => (
+          <span key={it.key} className="inline-flex items-center gap-0.5">
+            <span className="text-[10px] text-fg-4" aria-hidden>
+              ›
+            </span>
+            {hidden > 0 && i === 1 && (
+              <span className="px-1 text-fg-4" title={`${hidden} more`}>
+                …
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={() => onSelect(it.key)}
+              aria-current={it.key === selectedKey ? "true" : undefined}
+              className={clsx(
+                "rounded-1 px-1 font-mono text-[11px] hover:bg-bg-4",
+                it.key === selectedKey ? "font-medium text-fg-0" : "text-fg-2",
+              )}
+            >
+              {it.node.exe || "?"}
+              {it.key === selectedKey && !it.derived ? <span className="text-fg-3"> {it.node.pid}</span> : null}
+            </button>
+          </span>
+        ))}
+      </nav>
+      <span className="ml-auto flex flex-wrap items-center gap-x-3">
+        {link &&
+          (link.node.message_id && onOpenMessage ? (
+            <button
+              type="button"
+              onClick={() => onOpenMessage(link.node.message_id!)}
+              className="text-accent hover:underline"
+              title="Open the message that started this process"
+            >
+              {link.node.turn_index != null ? `Turn ${link.node.turn_index}` : "Started by"} · open message
+            </button>
+          ) : link.node.turn_index != null ? (
+            <span className="text-fg-3">Turn {link.node.turn_index}</span>
+          ) : null)}
+        <button type="button" onClick={onShowStack} className="text-accent hover:underline">
+          Show call stack →
+        </button>
+      </span>
+    </div>
+  );
+}
+
+// ProcessTree — the Tree | Table | Call stack switcher + body, owning the view
+// and collapsed state (and the selection, unless the caller owns it). Feed it
+// the roots and total; it opens a large tree collapsed-to-roots once per
+// `sessionKey`.
 export function ProcessTree({
   roots,
   total,
   sessionKey,
   renderMessageLink,
   extendedTableColumns = false,
+  selectedKey: selectedProp,
+  onSelectedKeyChange,
+  onOpenMessage,
+  onOpenTimeline,
+  sessionLabel = "Session",
+  nowMs,
+  initialView = "tree",
 }: {
   roots: ProcessNodeLike[];
   total: number;
@@ -512,12 +707,37 @@ export function ProcessTree({
   renderMessageLink?: RenderMessageLink;
   // extendedTableColumns opts the Table view into the org's cwd + duration
   // columns and honest peak-RSS memory labelling (each still gated on per-row
-  // data presence). The node omits it, so its Table view is byte-for-byte
-  // unchanged. It only affects the Table view, never the Tree view.
+  // data presence). It only affects the Table view.
   extendedTableColumns?: boolean;
+  // selectedKey / onSelectedKeyChange let the caller own the picked process
+  // (the node keeps it in the URL). Omit both for local selection state.
+  selectedKey?: string | null;
+  onSelectedKeyChange?: (key: string | null) => void;
+  // onOpenMessage opens the message (and so the turn) that started a process;
+  // used by the Call stack view and the selection strip. Absent: plain text.
+  onOpenMessage?: (messageId: string) => void;
+  // onOpenTimeline opens the session's message timeline (the session frame of
+  // the spawn stack). Absent: no link.
+  onOpenTimeline?: () => void;
+  // sessionLabel names the session frame / root bar, e.g. "Session 7f3c2a91".
+  sessionLabel?: string;
+  // nowMs is the right edge for running processes (defaults to the render time).
+  nowMs?: number;
+  initialView?: ProcessView;
 }) {
-  const [view, setView] = useState<"tree" | "table">("tree");
+  const [view, setView] = useState<ProcessView>(initialView);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [localSel, setLocalSel] = useState<string | null>(null);
+  const controlled = onSelectedKeyChange !== undefined;
+  const selectedKey = controlled ? (selectedProp ?? null) : localSel;
+  const select = useCallback(
+    (key: string | null) => {
+      if (controlled) onSelectedKeyChange?.(key);
+      else setLocalSel(key);
+    },
+    [controlled, onSelectedKeyChange],
+  );
+
   const toggle = useCallback((key: string) => {
     setCollapsed((prev) => {
       const next = new Set(prev);
@@ -528,6 +748,10 @@ export function ProcessTree({
   }, []);
 
   const flat = useMemo(() => flattenProcessNodes(roots), [roots]);
+  // now is captured per data load so a re-render does not move every bar.
+  const now = useMemo(() => nowMs ?? Date.now(), [nowMs, roots]); // eslint-disable-line react-hooks/exhaustive-deps
+  const index = useMemo(() => indexProcesses(roots, now), [roots, now]);
+  const ancestors = useMemo(() => new Set(chainOf(index, selectedKey).map((it) => it.key)), [index, selectedKey]);
 
   const parentKeys = useMemo(() => {
     const keys: string[] = [];
@@ -556,22 +780,109 @@ export function ProcessTree({
     if (total > LARGE_TREE_THRESHOLD) setCollapsed(new Set(parentKeys));
   }, [sk, total, parentKeys]);
 
+  // A process picked elsewhere (Call stack, Table, a deep link) must be visible
+  // in the Tree: open its collapsed ancestors.
+  useEffect(() => {
+    if (!selectedKey) return;
+    const anc = chainOf(index, selectedKey).slice(1).map((it) => it.key);
+    setCollapsed((prev) => {
+      if (!anc.some((k) => prev.has(k))) return prev;
+      const next = new Set(prev);
+      for (const k of anc) next.delete(k);
+      return next;
+    });
+  }, [selectedKey, index]);
+
+  // Keep the picked row in view when it changes.
+  const idPrefix = "proc";
+  useEffect(() => {
+    if (!selectedKey || view === "stack") return;
+    const el = document.getElementById(processDomId(`${idPrefix}-${view}`, selectedKey));
+    el?.scrollIntoView?.({ block: "nearest" });
+  }, [selectedKey, view]);
+
+  const openSelected = useCallback(() => {
+    const link = spawnLinkOf(index, selectedKey);
+    if (link?.node.message_id && onOpenMessage) onOpenMessage(link.node.message_id);
+  }, [index, selectedKey, onOpenMessage]);
+
+  // Tree keyboard: up/down walk the visible rows, left collapses or goes to the
+  // parent, right expands or goes to the first child, Enter opens the message.
+  const visibleTreeKeys = useMemo(() => {
+    const out: string[] = [];
+    const walk = (ns: ProcessNodeLike[]) => {
+      for (const n of ns) {
+        out.push(n.process_key);
+        if (n.children.length && !collapsed.has(n.process_key)) walk(n.children);
+      }
+    };
+    walk(roots);
+    return out;
+  }, [roots, collapsed]);
+  const onTreeKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    const cur = selectedKey ? index.byKey.get(selectedKey) : undefined;
+    switch (e.key) {
+      case "ArrowDown":
+      case "ArrowUp": {
+        e.preventDefault();
+        const next = stepInList(visibleTreeKeys, selectedKey, e.key === "ArrowDown" ? 1 : -1);
+        if (next) select(next);
+        return;
+      }
+      case "ArrowLeft": {
+        if (!cur) return;
+        e.preventDefault();
+        if (cur.node.children.length && !collapsed.has(cur.key)) toggle(cur.key);
+        else if (cur.parentKey) select(cur.parentKey);
+        return;
+      }
+      case "ArrowRight": {
+        if (!cur || !cur.node.children.length) return;
+        e.preventDefault();
+        if (collapsed.has(cur.key)) toggle(cur.key);
+        else select(cur.node.children[0].process_key);
+        return;
+      }
+      case "Enter":
+        openSelected();
+        return;
+    }
+  };
+
+  const gaps = useMemo(() => captureGaps(index), [index]);
+  const gapParts: string[] = [];
+  if (gaps.exitNotSeen) gapParts.push(`${fmtInt(gaps.exitNotSeen)} not seen exiting (drawn faded)`);
+  if (gaps.parentNotCaptured) gapParts.push(`${fmtInt(gaps.parentNotCaptured)} whose parent was never captured`);
+  if (gaps.toolLogOnly) gapParts.push(`${fmtInt(gaps.toolLogOnly)} known only from the tool log (dashed)`);
+
+  const selProps = (v: ProcessView): SelectionProps => ({
+    selectedKey,
+    ancestors,
+    onSelect: select,
+    idPrefix: `${idPrefix}-${v}`,
+  });
+
   return (
     <>
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex overflow-hidden rounded-2 border border-line-2 text-[10.5px]">
-          {(["tree", "table"] as const).map((v) => (
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div
+          role="tablist"
+          aria-label="Process view"
+          className="flex w-full overflow-hidden rounded-2 border border-line-2 text-[11px] sm:w-auto"
+        >
+          {(["tree", "table", "stack"] as const).map((v) => (
             <button
               key={v}
               type="button"
+              role="tab"
+              aria-selected={view === v}
               onClick={() => setView(v)}
-              className={
-                view === v
-                  ? "bg-accent-soft px-2 py-0.5 text-accent"
-                  : "px-2 py-0.5 text-fg-3 hover:text-fg-1"
-              }
+              className={clsx(
+                "flex-1 px-3 py-1 sm:flex-none [&+&]:border-l [&+&]:border-line-2",
+                view === v ? "bg-accent-soft text-accent" : "text-fg-3 hover:text-fg-1",
+              )}
             >
-              {v === "tree" ? "Tree" : "Table"}
+              {VIEW_LABELS[v]}
             </button>
           ))}
         </div>
@@ -586,26 +897,90 @@ export function ProcessTree({
         )}
       </div>
 
-      <div className="rounded-3 border border-line-2 bg-bg-2 p-3">
-        {view === "tree" ? (
-          roots.map((r) => (
-            <ProcessTreeNode
-              key={r.process_key}
-              node={r}
-              depth={0}
-              collapsed={collapsed}
-              onToggle={toggle}
-              renderMessageLink={renderMessageLink}
+      {view === "stack" ? (
+        <div className="space-y-2">
+          {gapParts.length > 0 && (
+            <Callout tone="warn" title="Partial capture">
+              Of {fmtInt(flat.length)} processes: {gapParts.join(", ")}.
+            </Callout>
+          )}
+          {flat.length > 150 && (
+            <Callout tone="info" title={`${fmtInt(flat.length)} processes`}>
+              To keep this fast, the chart shows a window of the session, and identical processes that ran side by
+              side (test workers, a parallel build) share one bar. Move the window in the strip above the chart;
+              click a shared bar to open it.
+            </Callout>
+          )}
+          <div className="grid items-start gap-3 xl:grid-cols-[minmax(0,1fr)_320px]">
+            <ProcessFlame
+              index={index}
+              selectedKey={selectedKey}
+              onSelect={select}
+              onOpenMessage={onOpenMessage}
+              sessionLabel={sessionLabel}
+              nowMs={now}
+              idPrefix={`${idPrefix}-stack`}
             />
-          ))
-        ) : (
-          <ProcessTable
-            nodes={flat}
-            renderMessageLink={renderMessageLink}
-            extended={extendedTableColumns}
-          />
-        )}
-      </div>
+            <ProcessSpawnStack
+              index={index}
+              selectedKey={selectedKey}
+              onSelect={select}
+              onOpenMessage={onOpenMessage}
+              onOpenTimeline={onOpenTimeline}
+              onShowView={setView}
+              sessionLabel={sessionLabel}
+            />
+          </div>
+        </div>
+      ) : (
+        <SelectionStrip
+          index={index}
+          selectedKey={selectedKey}
+          onSelect={select}
+          onOpenMessage={onOpenMessage}
+          onShowStack={() => setView("stack")}
+          sessionLabel={sessionLabel}
+        />
+      )}
+
+      {view !== "stack" && (
+        <div className="rounded-3 border border-line-2 bg-bg-2 p-3">
+          {view === "tree" ? (
+            <div
+              role="tree"
+              aria-label="Process tree"
+              tabIndex={0}
+              onKeyDown={onTreeKeyDown}
+              aria-activedescendant={
+                selectedKey && visibleTreeKeys.includes(selectedKey)
+                  ? processDomId(`${idPrefix}-tree`, selectedKey)
+                  : undefined
+              }
+              className="rounded-1 outline-none focus-visible:ring-2 focus-visible:ring-accent-ring"
+            >
+              {roots.map((r) => (
+                <ProcessTreeNode
+                  key={r.process_key}
+                  node={r}
+                  depth={0}
+                  collapsed={collapsed}
+                  onToggle={toggle}
+                  renderMessageLink={renderMessageLink}
+                  sel={selProps("tree")}
+                />
+              ))}
+            </div>
+          ) : (
+            <ProcessTable
+              nodes={flat}
+              renderMessageLink={renderMessageLink}
+              extended={extendedTableColumns}
+              sel={selProps("table")}
+              onOpenSelected={openSelected}
+            />
+          )}
+        </div>
+      )}
     </>
   );
 }

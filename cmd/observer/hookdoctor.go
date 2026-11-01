@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/marmutapp/superbased-observer/internal/clientwire"
 	"github.com/marmutapp/superbased-observer/internal/diag"
 	"github.com/marmutapp/superbased-observer/internal/hook"
 	"github.com/marmutapp/superbased-observer/internal/integration"
@@ -85,6 +86,7 @@ func runHookDoctor(ctx context.Context, w io.Writer, o hookDoctorOptions) error 
 		for _, tool := range tools {
 			checks = append(checks, hookBindingChecks(ctx, o, tool, gate)...)
 		}
+		checks = append(checks, staleHookChecks(o, tools)...) // stale entries, read-only (hookdoctor_stale.go)
 	case o.Probe:
 		checks = hookProbeChecks(ctx, o, gate)
 	}
@@ -168,46 +170,54 @@ type hookHomeEvents struct {
 	skipped string
 	covered bool
 	detail  string
-	err     error
+	// notes are the writer's non-fatal Warnings for this home (for
+	// example an unverified relocation, Dirac's DIRAC_DIR); they never
+	// change a verdict, the doctor only shows them.
+	notes []string
+	err   error
 }
 
 // readHookHomeEvents asks the registration writer (DryRun) once per home
 // which events already carry Observer's command.
 func readHookHomeEvents(binary, configPath, tool string) []hookHomeEvents {
-	read := func(home, target string) hookHomeEvents {
-		h := hookHomeEvents{home: home, tool: target, present: map[string]bool{}}
-		// Union over the equivalent --config spellings; a conflict or a
-		// skip is taken from the first (the caller's own) spelling.
-		for i, spelling := range registrationConfigSpellings(configPath) {
-			reg, err := hook.NewRegistry(hookRegistrationOptions(binary, spelling))
-			if err != nil {
-				h.err = err
-				return h
-			}
-			res := reg.Register(target)
-			if i == 0 {
-				h.detail = res.ConfigPath
-				switch {
-				case res.Skipped:
-					h.skipped = res.SkipReason
-					h.covered = res.CoveredElsewhere()
-				case res.Error != nil:
-					h.conflict = true
-					h.detail = res.Error.Error()
-				}
-			}
-			for _, ev := range res.AlreadySet {
-				h.present[ev] = true
-			}
-		}
-		return h
-	}
-	out := []hookHomeEvents{read(hookHomeNative, tool)}
+	out := []hookHomeEvents{readHookHome(binary, configPath, hookHomeNative, tool)}
 	win := tool + "-windows"
 	if hookSupported(win) && windowsHookHomeDetected(binary, win) {
-		out = append(out, read(hookHomeBridge, win))
+		out = append(out, readHookHome(binary, configPath, hookHomeBridge, win))
 	}
 	return out
+}
+
+// readHookHome is one home's read: target's registration writer (DryRun)
+// says which events already carry Observer's command there.
+func readHookHome(binary, configPath, home, target string) hookHomeEvents {
+	h := hookHomeEvents{home: home, tool: target, present: map[string]bool{}}
+	// Union over the equivalent --config spellings; a conflict or a
+	// skip is taken from the first (the caller's own) spelling.
+	for i, spelling := range registrationConfigSpellings(configPath) {
+		reg, err := hook.NewRegistry(hookRegistrationOptions(binary, spelling))
+		if err != nil {
+			h.err = err
+			return h
+		}
+		res := reg.Register(target)
+		if i == 0 {
+			h.detail = res.ConfigPath
+			h.notes = res.Warnings
+			switch {
+			case res.Skipped:
+				h.skipped = res.SkipReason
+				h.covered = res.CoveredElsewhere()
+			case res.Error != nil:
+				h.conflict = true
+				h.detail = res.Error.Error()
+			}
+		}
+		for _, ev := range res.AlreadySet {
+			h.present[ev] = true
+		}
+	}
+	return h
 }
 
 // hookInstalled reports whether the tool's config home exists on this
@@ -218,7 +228,7 @@ func hookInstalled(binary, configPath, tool string) bool {
 		return true // unknown: do not hide the report
 	}
 	for _, t := range reg.Installed() {
-		if t == tool || t == tool+"-windows" {
+		if t == tool || clientwire.HookTargetBase(t) == tool {
 			return true
 		}
 	}
@@ -331,7 +341,104 @@ func hookBindingChecks(ctx context.Context, o hookDoctorOptions, tool, gate stri
 		}
 		summary.Details = []string{"vendor-only: " + strings.Join(evs, ", ")}
 	}
+	out = append(out, xcodeHookChecks(o, c, tool, mine)...)
+	out = append(out, wslHookChecks(o, c, tool, mine)...)
 	return append([]diag.Check{summary}, out...)
+}
+
+// xcodeHookChecks reports, for each switched-on Xcode agent-home target of
+// tool whose home exists here (hook.Registry.Installed: macOS, the folder
+// Xcode created), how many of the tool's Observer bindings that home carries
+// (FU-145). Xcode's agents read only their own home, so a missing binding
+// there is a WARN of its own, never covered by the native home.
+func xcodeHookChecks(o hookDoctorOptions, c integration.Capability, tool string, mine []integration.HookBinding) []diag.Check {
+	var out []diag.Check
+	for _, target := range hook.XcodeTargetsFor(tool) {
+		if !hookSupported(target) || !hookTargetInstalled(o.Binary, o.ConfigPath, target) {
+			continue
+		}
+		h := readHookHome(o.Binary, o.ConfigPath, hookHomeXcode, target)
+		out = append(out, homeBindingsCheck(c, target, h, mine, "Xcode's agent home", "Xcode's agent reads only this home"))
+	}
+	return out
+}
+
+// wslHookChecks is xcodeHookChecks for the Windows to WSL "-wsl" twins of
+// tool (FU-211, the FU-197 homes): a row only where the twin applies, a
+// Windows host whose running distro's home holds the tool (Installed /
+// InstalledLiveGated, crossmount's running-distro list, FU-189). A
+// switched-on twin gets its binding count; a gated one is shown as gated
+// with its gate text (it writes nothing there yet).
+func wslHookChecks(o hookDoctorOptions, c integration.Capability, tool string, mine []integration.HookBinding) []diag.Check {
+	twins := hook.WSLTwinsFor(tool)
+	if len(twins) == 0 {
+		return nil
+	}
+	reg, err := hook.NewRegistry(hookRegistrationOptions(o.Binary, o.ConfigPath))
+	if err != nil {
+		return nil
+	}
+	installed := reg.Installed()
+	gated := map[string]hook.LiveGate{}
+	for _, g := range reg.InstalledLiveGated() {
+		gated[g.Target] = g
+	}
+	var out []diag.Check
+	for _, target := range twins {
+		if g, ok := gated[target]; ok {
+			out = append(out, diag.Check{
+				Name: "hook.bindings:" + target, Status: diag.StatusWarn,
+				Message: fmt.Sprintf("%s: gated: %s; its WSL home is detected but Observer writes nothing there yet", target, g.Note()),
+			})
+			continue
+		}
+		if !hookSupported(target) || !containsString(target, installed) {
+			continue
+		}
+		h := readHookHome(o.Binary, o.ConfigPath, hookHomeWSL, target)
+		out = append(out, homeBindingsCheck(c, target, h, mine, "the WSL home", "the tool inside the distro reads only this home"))
+	}
+	return out
+}
+
+// homeBindingsCheck is one other-home target's row: how many of mine its
+// home h carries, a FAIL when a foreign entry blocks one, a WARN when one is
+// missing (where names the home, why says why the native home does not
+// cover it).
+func homeBindingsCheck(c integration.Capability, target string, h hookHomeEvents, mine []integration.HookBinding, where, why string) diag.Check {
+	var missing, conflict []string
+	for _, b := range mine {
+		switch state, _ := bindingRegistration(c, b, []hookHomeEvents{h}); state {
+		case "yes", "n/a", "manual":
+		case "conflict":
+			conflict = append(conflict, b.NativeEvent)
+		default:
+			missing = append(missing, b.NativeEvent)
+		}
+	}
+	ck := diag.Check{
+		Name: "hook.bindings:" + target, Status: diag.StatusOK,
+		Message: fmt.Sprintf("%s: %d of %d Observer binding(s) registered in %s %s", target, len(mine)-len(missing)-len(conflict), len(mine), where, h.detail),
+	}
+	switch {
+	case len(conflict) > 0:
+		ck.Status = diag.StatusFail
+		ck.Details = []string{"a foreign entry blocks: " + strings.Join(conflict, ", ")}
+	case len(missing) > 0:
+		ck.Status = diag.StatusWarn
+		ck.Details = []string{"not registered: " + strings.Join(missing, ", ") + " (" + why + "; `observer start` or `observer init` writes it)"}
+	}
+	return ck
+}
+
+// hookTargetInstalled reports whether the registration writers detect
+// target's home on this machine.
+func hookTargetInstalled(binary, configPath, target string) bool {
+	reg, err := hook.NewRegistry(hookRegistrationOptions(binary, configPath))
+	if err != nil {
+		return false
+	}
+	return containsString(target, reg.Installed())
 }
 
 // hookBindingProbes runs the gate probes the gate selection asks for and
@@ -396,6 +503,11 @@ func bindingCheck(c integration.Capability, b integration.HookBinding, tool stri
 	}
 	if probeMsg != "" {
 		ck.Details = append(ck.Details, "probe: "+probeMsg)
+	}
+	for _, h := range homes {
+		for _, n := range h.notes {
+			ck.Details = append(ck.Details, "note: "+h.home+": "+n)
+		}
 	}
 	for _, r := range bindingCheckRules {
 		if r.match(reg, trusted, probe) {

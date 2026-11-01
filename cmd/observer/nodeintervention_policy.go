@@ -37,7 +37,10 @@ func nodeInterventionAuthority(ctx context.Context, st *store.Store, uid int, no
 	if err != nil {
 		return intervention.PolicyDecision{}, err
 	}
-	if !enr.IsManaged() {
+	// Managed by enrolment or by its org's switch to enterprise (P-204).
+	if managed, merr := orgclient.NodeManagedFor(ctx, st, enr); merr != nil {
+		return intervention.PolicyDecision{}, merr
+	} else if !managed {
 		return intervention.PolicyDecision{}, nil
 	}
 	grant, live, err := governanceIdentityLoader(st)(ctx)
@@ -57,7 +60,13 @@ func nodeInterventionAuthority(ctx context.Context, st *store.Store, uid int, no
 }
 
 func nodeInterventionPermit(enr *store.Enrolment, grant *govern.Grant, live govern.LiveIdentity, uid int, now time.Time) (intervention.PolicyDecision, error) {
-	if !enr.IsManaged() || uid < 0 || now.IsZero() {
+	if enr == nil || uid < 0 || now.IsZero() {
+		return intervention.PolicyDecision{}, nil
+	}
+	// The one node-side managed predicate's pure half (P-204): a managed
+	// enrolment, or an enrolment whose org switched it to enterprise and
+	// whose grant says so (govern.GrantIsManaged).
+	if !enr.IsManaged() && !govern.GrantIsManaged(grant) {
 		return intervention.PolicyDecision{}, nil
 	}
 	if grant == nil {
@@ -104,7 +113,10 @@ func nodeInterventionSignalFence(st *store.Store, gd *guard.Guard) func(context.
 			return result, errors.New("node intervention: signal has no scoped stop authority")
 		}
 		enr, err := st.LoadEnrolment(ctx)
-		if err != nil || !enr.IsManaged() {
+		if err != nil || enr == nil {
+			return result, errors.New("node intervention: signal enrollment unavailable")
+		}
+		if managed, merr := orgclient.NodeManagedFor(ctx, st, enr); merr != nil || !managed {
 			return result, errors.New("node intervention: signal enrollment unavailable")
 		}
 		key := orgclient.OrgKey(enr.OrgServerURL, enr.OrgID)
@@ -132,7 +144,7 @@ func nodeInterventionSignalFence(st *store.Store, gd *guard.Guard) func(context.
 			}
 			var grant *govern.Grant
 			if snapshot.HaveGrant {
-				grant = grantFromStore(snapshot.Grant)
+				grant = grantFromStore(snapshot.Grant, snapshot.Enrolment)
 			}
 			now := time.Now().UTC()
 			current, err := nodeInterventionPermit(snapshot.Enrolment, grant, live, w.Identity.UID, now)

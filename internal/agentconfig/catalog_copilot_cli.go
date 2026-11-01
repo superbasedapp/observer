@@ -38,7 +38,10 @@ var copilotCLIFiles = []FileRow{
 		Format: FormatJSON, Precedence: 15, WriteNeeds: PrivAdminRoot, Grounding: doc(copilotCLIMgdRef),
 		Note: "MDM baseline: applied below user settings, except permissions.disableBypassPermissionsMode \"disable\", managed permission rules, " +
 			"sandbox (a floor), a locked autoTier and shellShortcut, which win. POSIX files must be root-owned, not symlinks, not world-writable. " +
-			"Also the macOS plist domain com.github.copilot and HKLM\\SOFTWARE\\Policies\\GitHubCopilot; server-managed settings fill gaps.",
+			"Also the macOS plist domain com.github.copilot and HKLM\\SOFTWARE\\Policies\\GitHubCopilot; server-managed settings fill gaps. " +
+			"Only the documented managed keys apply here; hooks and disableAllHooks are not among them (GitHub's managed-settings reference and deploy guide, re-fetched 2026-10-30), " +
+			"and Copilot CLI 1.0.105 ignored disableAllHooks in a root-owned /Library/Application Support/GitHubCopilot/managed-settings.json (MAC-6, 2026-10-30, FU-196): Observer's hooks still ran. " +
+			"So this file cannot switch Copilot CLI hooks off; it says nothing against the file itself, which the CLI opens on Linux (T-547 strace).",
 	},
 	{
 		ID: "copilot-cli/user-settings", Tool: "copilot-cli", Shape: "copilot-cli/settings", Kind: KindSettings, Scope: ScopeUser,
@@ -241,8 +244,17 @@ var copilotCLISettings = copilotCLIRows([]SettingRow{
 		Note: "Repo hooks merge with user hooks.",
 	},
 	{
-		Path: KeyPath{"disableAllHooks"}, Scopes: copilotCLIUserRepo, Type: TypeBool, Default: "false", Desc: "Disable every hook (repo and user).",
-		Danger: DangerRefuseWhileIntegrated, Note: "Refused while integrated: true stops Observer's hooks; .claude/settings.json can set it too.",
+		// FU-159: listed in the repo and user settings whitelists, but on
+		// Copilot CLI 1.0.105 true in ~/.copilot/settings.json or the repo
+		// .github/copilot/settings.json left ~/.copilot/hooks running
+		// (Windows rig run 2026-10-29; also seen on macOS, Mac round 5 A7).
+		// So nothing here claims it stops Observer's hooks: no editor
+		// refusal and no effective-layer family; its internal/hookdisable
+		// rows are write-guard-only (R-162 / R-163 still refuse an agent
+		// write that sets it, nothing reports it as turning hooks off).
+		Path: KeyPath{"disableAllHooks"}, Scopes: copilotCLIUserRepo, Type: TypeBool, Default: "false", Desc: "Documented as disabling every hook (repo and user).",
+		Verified: VerifiedUnverified,
+		Note:     "Not honoured by Copilot CLI 1.0.105 for hooks (live 2026-10-29): with true in ~/.copilot/settings.json or the repo .github/copilot/settings.json, the hooks in ~/.copilot/hooks (Observer's included) still ran; ~/.copilot/config.json was not tested. Not a managed key either: true in a root-owned managed-settings.json was ignored by 1.0.105 on macOS (MAC-6, FU-196), matching GitHub's managed key list, which has no hooks key. A .claude/settings.json disableAllHooks is Claude Code's own switch, which the Copilot CLI runtime reads for a repository's Claude hooks.",
 	},
 
 	// --- updates, telemetry-adjacent, remote

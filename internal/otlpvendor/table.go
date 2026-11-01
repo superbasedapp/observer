@@ -363,6 +363,175 @@ var vendors = []Vendor{
 		},
 	},
 	{
+		// IBM Bob Shell (OTEL_EXPORTER_OTLP_ENDPOINT, or the OtelConfiguration
+		// policy). Live: bobshell 2.0.6, 2026-10-22 (testdata/otlp/ibm-bob).
+		// The external exporter passes only an attribute allow-list, which
+		// carries NO token counts: the "LLM Generation" span has the Bob
+		// tier alias (premium-ide), the call's cost in Bobcoins (not USD) and
+		// its duration. There is therefore no turn rule (a zero-token turn
+		// priced in Bobcoins would be wrong twice); the bob.db adapter owns
+		// the session, and the export maps only its "Tool Used" spans, which
+		// land when that adapter is disabled. gen_ai.conversation.id is the
+		// bob.db task id, so a call lands in the adapter's own session.
+		// No TranscriptTiming: the LLM Generation span's duration
+		// (gen_ai.client.operation.duration) has nowhere to land, because
+		// the ibm-bob adapter writes no token rows (AP-125), and the span
+		// carries no per-call id a bob.db message could be matched on.
+		Tool: "ibm-bob", ServiceNames: []string{"bob-shell"},
+		SourceTag: SourceNativeOTel, Grain: GrainUser,
+		ActionTypes: map[string]string{
+			"execute_command": models.ActionRunCommand, "read_file": models.ActionReadFile, "office_read": models.ActionReadFile,
+			"write_file": models.ActionWriteFile, "apply_diff": models.ActionEditFile, "insert_content": models.ActionEditFile,
+			"search_and_replace": models.ActionEditFile, "office_edit": models.ActionEditFile, "list_files": models.ActionSearchFiles,
+			"glob": models.ActionSearchFiles, "grep": models.ActionSearchText, "web_fetch": models.ActionWebFetch,
+			"web_search": models.ActionWebSearch, "search_ibm_docs": models.ActionWebSearch,
+		},
+		Evidence: "live: bobshell 2.0.6 (signed-in account) exporting OTLP/HTTP JSON to a local sink, 2026-10-22 (testdata/otlp/ibm-bob)",
+		Rules: []Rule{
+			{
+				// Every tool span is named after its tool; the event type
+				// attribute is what marks it.
+				Signal: SignalSpans, Names: []string{""}, NamePrefix: true, Kind: KindTool,
+				Where: []Cond{{Key: "bob.event.type", Equals: "Tool Used"}},
+				F: Fields{
+					Session: []string{"gen_ai.conversation.id"}, ToolName: []string{"bob.tool.name"},
+					Success: []string{"bob.operation.success"}, Duration: []string{"bob.tool.duration_ms"},
+					SuccessFromStatus: true,
+				},
+			},
+		},
+	},
+	{
+		// Tencent CodeBuddy Code (CODEBUDDY_CODE_ENABLE_TELEMETRY=1 +
+		// OTEL_TRACES_EXPORTER=otlp). Mock-model capture: codebuddy-code
+		// 2.171.0, 2026-10-22 (testdata/otlp/codebuddy). service.name
+		// carries the CLI version ("CodeBuddy-CLI-2.171.0"), so the claim is
+		// a prefix. Token counts reach span ATTRIBUTES only with
+		// OTEL_SEMCONV=agentlens (gen_ai.usage.* on the
+		// codebuddy_code.model_stream span); the default semconv puts them
+		// in span events. Either way the export reports the GROSS prompt and
+		// GROSS completion with no cache-read or reasoning split, which the
+		// transcript's rawUsage carries, so the transcript owns tokens while
+		// the codebuddy adapter is enabled (the two shapes cannot fold).
+		// request.id is the transcript's providerData.messageId.
+		// Provider: the spans name no provider; CodeBuddy's gateway (and any
+		// custom endpoint) speaks OpenAI chat-completions (the qwen-code
+		// precedent).
+		Tool: "codebuddy", ServiceNamePrefixes: []string{"CodeBuddy-CLI-"},
+		Provider: "openai", SourceTag: SourceNativeOTel, Grain: GrainUser, Norm: semconvNorm,
+		// request.id equals the transcript's providerData.messageId, which
+		// the adapter stores as token_usage.message_id (proven against the
+		// fixture transcript by cmd/observer TestOTLPGenTimingStampsTranscript).
+		TranscriptTiming: TimingKeyMessageID,
+		ActionTypes: map[string]string{
+			"Read": models.ActionReadFile, "Write": models.ActionWriteFile, "Edit": models.ActionEditFile,
+			"MultiEdit": models.ActionEditFile, "Bash": models.ActionRunCommand, "Grep": models.ActionSearchText,
+			"Glob": models.ActionSearchFiles, "LS": models.ActionSearchFiles, "WebFetch": models.ActionWebFetch,
+			"WebSearch": models.ActionWebSearch,
+		},
+		Evidence: "live (mock model): codebuddy-code 2.171.0 against a loopback chat-completions mock, OTEL_SEMCONV=agentlens and default, 2026-10-22 (testdata/otlp/codebuddy)",
+		Rules: []Rule{
+			{
+				Signal: SignalSpans, Names: []string{"codebuddy_code.model_stream"}, Kind: KindTurn,
+				Where: []Cond{{Key: "gen_ai.usage.input_tokens"}},
+				F: Fields{
+					Session: []string{"gen_ai.session.id", "codebuddy.session_id"}, Request: []string{"request.id"},
+					Model: []string{"gen_ai.response.model", "gen_ai.request.model", "model.id"},
+					Input: genAIInput, Output: genAIOutput, CacheRead: genAICacheRead, CacheWrite: genAICacheWrite,
+					Reasoning: genAIReasoning, TTFT: []string{"gen_ai.response.time_to_first_token", "first_token_ms"},
+				},
+			},
+			{
+				// The same call's generation duration for the transcript's own
+				// token row (gen_basis otel). model_stream opens when the
+				// response starts: in the default-semconv capture it begins
+				// right after the codebuddy_code.model_request span, and its
+				// first_token_received event's time minus that event's ttft_ms
+				// lands within 3 ms of the model_request start (126.289 vs
+				// 129.000 ms on the first call, 435.109 vs 435.000 on the
+				// second).
+				// So the duration is rebuilt from the request start to the
+				// stream end (time to first token included, like the
+				// diagnostic log's agent.model_call.completed duration_ms the
+				// adapter reads natively), never the stream-only span. The
+				// session is required: the default semconv puts no session on
+				// this span, and the only transcript proving request.id ==
+				// messageId is the agentlens capture.
+				Signal: SignalSpans, Names: []string{"codebuddy_code.model_stream"}, Kind: KindGenTiming,
+				F: Fields{
+					Session: []string{"gen_ai.session.id", "codebuddy.session_id"}, Request: []string{"request.id"},
+					FirstTokenEvent: "first_token_received", TTFT: []string{"ttft_ms", "first_token_ms", "gen_ai.response.time_to_first_token"},
+				},
+			},
+			{
+				// The tool span (codebuddy_code.tool by default, named after
+				// the tool under agentlens) has no session attribute; its
+				// agent.tool.start_detail / success_detail events carry the
+				// session as conversation_id.
+				Signal: SignalSpans, Names: []string{"codebuddy_code.tool"}, Kind: KindTool,
+				F: codebuddyToolFields,
+			},
+			{
+				Signal: SignalSpans, Names: []string{""}, NamePrefix: true, Kind: KindTool,
+				Where: []Cond{{Key: "gen_ai.span.kind", Equals: "TOOL"}},
+				F:     codebuddyToolFields,
+			},
+		},
+	},
+	{
+		// Kimchi (Cast AI). Redirected with telemetry.endpoint /
+		// telemetry.metricsEndpoint in ~/.config/kimchi/config.json. Mock-model
+		// capture: kimchi 1.17.0, 2026-10-22 (testdata/otlp/kimchi). Its log
+		// events reuse Claude Code's bare names (api_request,
+		// claude_code.tool_decision, tool_result), so this row must CLAIM
+		// service.name "kimchi": unclaimed, the Claude Code row read them
+		// and stored each tool_result / tool_decision body (the event name)
+		// as otel_content. api_request is the same usage object the
+		// transcript records: input NET of cache, output with reasoning
+		// inside it and no reasoning count, no request id, and a bare model
+		// id where the transcript says provider/model, so it cannot fold
+		// against the transcript row and the transcript owns tokens while
+		// the kimchi adapter is enabled. Metrics (cumulative claude_code.*
+		// sums of the same usage) are not read.
+		// No TranscriptTiming: api_request carries no per-call id (its
+		// request.trace_id / span_id appear nowhere in the transcript, and
+		// request_diagnostics' requestId is a different uuid). Its record
+		// time equals the transcript entry's envelope timestamp in the
+		// fixture, but that is an emission coincidence, not a key. And the
+		// adapter already stamps a native duration from the same record's
+		// two clock points, which an otel stamp could never replace.
+		Tool: "kimchi", ServiceNames: []string{"kimchi"},
+		SourceTag: SourceNativeOTel, Grain: GrainUser,
+		ActionTypes: map[string]string{
+			"read": models.ActionReadFile, "write": models.ActionWriteFile, "edit": models.ActionEditFile,
+			"bash": models.ActionRunCommand, "powershell": models.ActionRunCommand, "grep": models.ActionSearchText,
+			"find": models.ActionSearchFiles, "ls": models.ActionSearchFiles, "web_search": models.ActionWebSearch,
+			"web_fetch": models.ActionWebFetch,
+		},
+		Evidence: "live (mock model): kimchi 1.17.0 against a loopback chat-completions mock, telemetry redirected in a throwaway config.json, 2026-10-22 (testdata/otlp/kimchi)",
+		Rules: []Rule{
+			{
+				Signal: SignalLogs, Names: []string{"api_request"}, Kind: KindTurn,
+				Where: []Cond{{Key: "input_tokens"}},
+				F: Fields{
+					Session: []string{"session.id", "pi_session_id"}, Model: []string{"model"}, Provider: []string{"provider"},
+					Input: []string{"input_tokens"}, Output: []string{"output_tokens"},
+					CacheRead: []string{"cache_read_tokens"}, CacheWrite: []string{"cache_creation_tokens"},
+					Cost: []string{"cost_usd"}, Duration: []string{"duration_ms"},
+				},
+			},
+			{
+				// No call id on tool_result (only the decision event has
+				// one); the call id is synthesized from the record.
+				Signal: SignalLogs, Names: []string{"tool_result"}, Kind: KindTool,
+				F: Fields{
+					Session: []string{"session.id", "pi_session_id"}, ToolName: []string{"tool_name"},
+					Success: []string{"success"}, Duration: []string{"duration_ms"},
+				},
+			},
+		},
+	},
+	{
 		// Cursor: Enterprise "OpenTelemetry Export" is sent SERVER-SIDE from
 		// Cursor's cloud, once per team. Team grain: the node refuses it (the
 		// org server is the destination). The row exists so the resource is
@@ -415,6 +584,16 @@ var vendors = []Vendor{
 			},
 		},
 	},
+}
+
+// codebuddyToolFields maps a CodeBuddy tool span under either semconv: the
+// span names the tool and its call id, the span's agent.tool.* events carry
+// the session (conversation_id) and the vendor-measured duration, and the
+// span status carries the outcome.
+var codebuddyToolFields = Fields{
+	Session: []string{"gen_ai.session.id", "conversation_id"}, ToolName: []string{"tool.name", "tool_name"},
+	CallID: []string{"tool.call_id", "call_id"}, Duration: []string{"duration_ms"},
+	SuccessFromStatus: true, FromSpanEvents: true,
 }
 
 // ccContent is one Claude Code content-event rule.

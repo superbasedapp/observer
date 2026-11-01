@@ -1,0 +1,18 @@
+rules:
+  - id: go.jwt-verification-off
+    languages: [go]
+    severity: ERROR
+    message: A JWT is read without verifying its signature (ParseUnverified, or the none algorithm allowed); parse with a key function and a fixed list of valid methods.
+    metadata:
+      category: code_vuln
+      cwe: CWE-347
+    patterns:
+      - pattern-either:
+          - pattern: $P.ParseUnverified(...)
+          - pattern: jwt.UnsafeAllowNoneSignatureType
+      - pattern-not-inside: |
+          func $F($T *testing.T) { ... }
+      - pattern-not-inside: |
+          func $F($B *testing.B) { ... }
+      - pattern-not-inside: |
+          func $F($TB testing.TB, ...) { ... }

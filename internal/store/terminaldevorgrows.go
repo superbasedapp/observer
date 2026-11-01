@@ -87,7 +87,12 @@ func (s *Store) SelectTerminalRunRows(ctx context.Context) ([]orgcontract.Termin
 		           WHERE trs.run_id = r.run_id
 		           ORDER BY trs.confidence DESC, trs.id ASC LIMIT 1),
 		        r.launched_at, r.ended_at, r.exit_code, r.end_reason,
-		        (SELECT COUNT(*) FROM terminal_commands tc WHERE tc.run_id = r.run_id)
+		        (SELECT COUNT(*) FROM terminal_commands tc WHERE tc.run_id = r.run_id),
+		        r.isolation_class, r.stack, r.egress_tier, r.capture_level, r.capture_rule,
+		        r.capture_origin, r.capture_degraded, r.native_sandbox_state,
+		        r.verification, r.key_custody, r.evidence_digest,
+		        r.evidence_producer, r.evidence_component, r.evidence_component_version,
+		        r.evidence_seal_key_id, r.evidence_seal_public_key, r.evidence_seal_sig
 		   FROM terminal_run r
 		  WHERE r.launched_at >= ?
 		  ORDER BY r.launched_at DESC`, since)
@@ -104,14 +109,23 @@ func (s *Store) SelectTerminalRunRows(ctx context.Context) ([]orgcontract.Termin
 			bestConf sql.NullFloat64
 			ended    sql.NullString
 			exit     sql.NullInt64
+			seal     TerminalRunSeal
 		)
 		if err := rows.Scan(
 			&r.RunID, &r.Tool, &r.Kind, &r.SourceSessionID,
 			&bestSess, &bestConf,
 			&r.LaunchedAt, &ended, &exit, &r.EndReason,
 			&r.CommandCount,
+			&r.IsolationClass, &r.Stack, &r.EgressTier, &r.CaptureLevel, &r.CaptureRule,
+			&r.CaptureOrigin, &r.CaptureDegraded, &r.NativeSandboxState,
+			&r.Verification, &r.KeyCustody, &r.EvidenceDigest,
+			&r.EvidenceProducer, &r.EvidenceComponent, &r.EvidenceComponentVersion,
+			&seal.KeyID, &seal.PublicKey, &seal.Sig,
 		); err != nil {
 			return nil, fmt.Errorf("store.SelectTerminalRunRows: scan: %w", err)
+		}
+		if seal.KeyID != "" {
+			r.EvidenceSeal = &orgcontract.ExecEvidenceSeal{KeyID: seal.KeyID, PublicKey: seal.PublicKey, Sig: seal.Sig}
 		}
 		if bestSess.Valid {
 			r.CorrelatedSessionID = bestSess.String
@@ -237,8 +251,10 @@ func (s *Store) SelectRemoteAuditRows(ctx context.Context) ([]orgcontract.Remote
 // other terminal_* SQL — so orgsnapgate.go and orgpush.go stay free of the
 // table names the privacy sentinel forbids there.
 //
-// PROBE: (MAX(rowid), COUNT(*), COUNT(ended_at), MAX(ended_at)) over
-// terminal_run, plus MAX(id) on terminal_commands and terminal_run_session.
+// PROBE: (MAX(rowid), COUNT(*), COUNT(ended_at), MAX(ended_at),
+// SUM(capture_degraded), SUM(missed_heartbeats),
+// SUM(LENGTH(capture_degraded_causes))) over terminal_run, plus MAX(id) on
+// terminal_commands and terminal_run_session.
 //
 // WHY ended_at IS IN THE PROBE: terminal_run is the most visibly MUTABLE
 // substrate in the snapshot family — a run is INSERTed at launch and later
@@ -249,6 +265,18 @@ func (s *Store) SelectRemoteAuditRows(ctx context.Context) ([]orgcontract.Remote
 // scan is trivial. terminal_commands supplies the per-run command count the
 // wires ship, and terminal_run_session the session correlation.
 //
+// WHY THE CAPTURE HEALTH IS IN THE PROBE (sandbox plan v2 section 8.4,
+// plans decision log P-040, lane sbx-p2d): a sandboxed run's capture can be
+// lowered while it is live (store.LowerTerminalRunCapture sets
+// capture_degraded and reseals the evidence digest, both on the wire row),
+// and none of the columns above moves. SUM(capture_degraded),
+// SUM(missed_heartbeats) and the summed length of the recorded causes only
+// ever rise (a lowering is never undone, and a cause is only ever added), so
+// a lowered run's row re-ships on the next push, not at the hourly floor,
+// and so does a second cause added to a run that was already lowered.
+// Counts and a boolean only: the probe string never leaves the node, and
+// no wire column changes.
+//
 // RESIDUAL, BOUNDED BY THE FRESHNESS FLOOR: the shutdown stampers set
 // end_reason WITHOUT setting ended_at on attach runs, and the resume path
 // rewrites end_reason alone; neither moves the probe. snapGate's maxSkipAge
@@ -256,7 +284,10 @@ func (s *Store) SelectRemoteAuditRows(ctx context.Context) ([]orgcontract.Remote
 func (s *Store) probeTerminalActivity(ctx context.Context) (string, error) {
 	return s.snapProbeScalar(ctx, `
 		SELECT 'tr' || (SELECT COALESCE(MAX(rowid), 0) || '/' || COUNT(*) || '/' || COUNT(ended_at) ||
-		                       '/' || COALESCE(MAX(ended_at), '')
+		                       '/' || COALESCE(MAX(ended_at), '') ||
+		                       '/' || COALESCE(SUM(capture_degraded), 0) ||
+		                       '/' || COALESCE(SUM(missed_heartbeats), 0) ||
+		                       '/' || COALESCE(SUM(LENGTH(capture_degraded_causes)), 0)
 		                  FROM terminal_run) ||
 		       ':tc' || (SELECT COALESCE(MAX(id), 0) FROM terminal_commands) ||
 		       ':ts' || (SELECT COALESCE(MAX(id), 0) FROM terminal_run_session)`)

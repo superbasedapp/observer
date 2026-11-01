@@ -1,0 +1,121 @@
+{
+  "Id": "3f1d2c0e9a7b",
+  "Created": "2026-10-21T10:00:00.000000000Z",
+  "Path": "/home/dev/.local/bin/observer",
+  "Args": [
+    "sandbox-oci-init",
+    "--",
+    "/home/dev/.local/bin/observer",
+    "claude"
+  ],
+  "State": {
+    "Status": "created",
+    "Running": false,
+    "Paused": false,
+    "Restarting": false,
+    "OOMKilled": false,
+    "Dead": false,
+    "Pid": 0,
+    "ExitCode": 0,
+    "Error": ""
+  },
+  "Image": "sha256:c83674e1a0b2",
+  "Name": "/observer-sbx-0a1b2c3d-RUNID0123456789abc",
+  "Driver": "overlay2",
+  "HostConfig": {
+    "NetworkMode": "none",
+    "Privileged": false,
+    "ReadonlyRootfs": true,
+    "CapAdd": [],
+    "CapDrop": [
+      "ALL"
+    ],
+    "SecurityOpt": [
+      "no-new-privileges"
+    ],
+    "UsernsMode": "",
+    "Runtime": "runc",
+    "IpcMode": "private",
+    "PidMode": "", "UTSMode": "", "Devices": [],
+    "Tmpfs": {
+      "/home/dev": "rw,nosuid,nodev,size=1073741824,mode=0700,uid=0,gid=0",
+      "/tmp": "rw,nosuid,nodev,size=1073741824,mode=0700,uid=0,gid=0"
+    },
+    "LogConfig": {
+      "Type": "none",
+      "Config": {}
+    },
+    "Annotations": {},
+    "CgroupnsMode": "private"
+  },
+  "Mounts": [
+    {
+      "Type": "bind",
+      "Source": "/home/dev/src/app",
+      "Destination": "/home/dev/src/app",
+      "Mode": "",
+      "RW": true,
+      "Propagation": "rprivate"
+    },
+    {
+      "Type": "bind",
+      "Source": "/home/dev/.local/bin/observer",
+      "Destination": "/home/dev/.local/bin/observer",
+      "Mode": "",
+      "RW": false,
+      "Propagation": "rprivate"
+    },
+    {
+      "Type": "bind",
+      "Source": "/home/dev/.claude",
+      "Destination": "/home/dev/.claude",
+      "Mode": "",
+      "RW": true,
+      "Propagation": "rprivate"
+    },
+    {
+      "Type": "bind",
+      "Source": "/tmp/observer-sbx-RUNID0123456789abc",
+      "Destination": "/tmp/observer-sbx-RUNID0123456789abc",
+      "Mode": "",
+      "RW": false,
+      "Propagation": "rprivate"
+    },
+    {
+      "Type": "bind",
+      "Source": "/dev/null",
+      "Destination": "/home/dev/.claude/.credentials-secret",
+      "Mode": "",
+      "RW": false,
+      "Propagation": "rprivate"
+    },
+    {
+      "Type": "volume",
+      "Name": "4c1f0a",
+      "Source": "/home/dev/.local/share/docker/volumes/4c1f0a/_data",
+      "Destination": "/data",
+      "Driver": "local",
+      "Mode": "",
+      "RW": true,
+      "Propagation": ""
+    }
+  ],
+  "Config": {
+    "Hostname": "3f1d2c0e9a7b",
+    "User": "0:0",
+    "Tty": true,
+    "OpenStdin": true,
+    "StdinOnce": false,
+    "Image": "mirror.gcr.io/library/alpine@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8",
+    "Labels": {
+      "app.superbased.observer.role": "sandbox",
+      "app.superbased.observer.install": "0a1b2c3d4e5f6a7b",
+      "app.superbased.observer.run": "RUNID0123456789abc"
+    }
+  },
+  "ImageManifestDescriptor": {
+    "mediaType": "application/vnd.oci.image.index.v1+json",
+    "digest": "sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8",
+    "size": 9218
+  }
+}

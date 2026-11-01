@@ -190,6 +190,11 @@ type Options struct {
 	ExtensionIDs []string
 	// DryRun previews without writing (mkdir + file write are skipped).
 	DryRun bool
+	// Force replaces a manifest at the path that is not Observer's (another
+	// program's com.superbased.observer.json), keeping its bytes at
+	// <file>.bak. Without it Register refuses such a file and leaves it as
+	// it is (audit row 8, the FU-207 rule).
+	Force bool
 }
 
 // PlaceholderExtensionID is the well-known stand-in written when no real
@@ -384,14 +389,30 @@ func (r *Registrar) registerOne(b Browser) RegisterResult {
 	}
 	want = append(want, '\n')
 
-	if existing, err := os.ReadFile(path); err == nil && bytesEqual(existing, want) {
+	existing, err := os.ReadFile(path)
+	if err == nil && bytesEqual(existing, want) {
 		res.AlreadySet = true
+		return res
+	}
+	// Audit row 8 (the FU-207 rule): a manifest at the path that is not
+	// Observer's (isObserverManifest, the recogniser Remove uses) is kept
+	// byte for byte without --force, dry run too; --force replaces it and
+	// keeps its bytes at <file>.bak.
+	foreign := err == nil && !isObserverManifest(existing)
+	if foreign && !r.opts.Force {
+		res.Error = fmt.Errorf("browserhost.Register: %s already exists and doesn't look like an observer-managed file; pass --force to overwrite", path)
 		return res
 	}
 
 	if r.opts.DryRun {
 		res.Wrote = true // preview: would write
 		return res
+	}
+	if foreign {
+		if err := os.WriteFile(path+".bak", existing, 0o600); err != nil { //nolint:gosec // G703: path is the fixed manifest name in the browser's own native-messaging dir, as the write below
+			res.Error = fmt.Errorf("browserhost.Register: keep %s.bak: %w", path, err)
+			return res
+		}
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		res.Error = fmt.Errorf("browserhost.Register: mkdir %s: %w", dir, err)

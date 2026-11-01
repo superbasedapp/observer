@@ -55,6 +55,13 @@ func (p *Proxy) Lanes() LaneInfo {
 			add(id)
 		}
 	}
+	if m := p.routeLanes.Load(); m != nil {
+		for id, u := range *m {
+			if u != nil {
+				add(id)
+			}
+		}
+	}
 	if len(t.upstreams) > 0 {
 		add(autoLaneID)
 	}

@@ -1,7 +1,7 @@
 {
   "name": "@superbased/observer",
-  "version": "1.36.0",
-  "description": "Local-first AI coding agent observability: Claude Code token usage, Codex cost and Cursor spend across 40 adapters, provider-exact via a local proxy. No account, no telemetry.",
+  "version": "1.37.0",
+  "description": "Local-first AI coding agent observability: Claude Code token usage, Codex cost and Cursor spend across 50 adapters, provider-exact via a local proxy. No account needed.",
   "keywords": [
     "ai",
     "observability",
@@ -22,8 +22,7 @@
     "cost-tracking",
     "prompt-caching",
     "spend",
-    "local-first",
-    "no-telemetry"
+    "local-first"
   ],
   "homepage": "https://superbased.app/",
   "repository": {
@@ -48,11 +47,11 @@
     "LICENSE"
   ],
   "optionalDependencies": {
-    "@superbased/observer-linux-x64": "1.36.0",
-    "@superbased/observer-linux-arm64": "1.36.0",
-    "@superbased/observer-darwin-x64": "1.36.0",
-    "@superbased/observer-darwin-arm64": "1.36.0",
-    "@superbased/observer-win32-x64": "1.36.0"
+    "@superbased/observer-linux-x64": "1.37.0",
+    "@superbased/observer-linux-arm64": "1.37.0",
+    "@superbased/observer-darwin-x64": "1.37.0",
+    "@superbased/observer-darwin-arm64": "1.37.0",
+    "@superbased/observer-win32-x64": "1.37.0"
   },
   "scripts": {
     "test": "node bin/observer.js --version",
@@ -60,12 +59,12 @@
   },
   "superbased": {
     "announcement": {
-      "id": "2026-08-26-disk-maintenance-fix",
+      "id": "v1.37.0-macos13-codesec",
       "severity": "notice",
-      "title": "v1.32.0 fixes unbounded database maintenance that could fill the disk",
-      "body": "Large databases could trigger automatic full-database VACUUM and integrity scans, silently consuming tens of GB of disk plus sustained CPU. v1.32.0 removes the unbounded paths, bounds SQLite memory and temp use, and adds a watchdog. Upgrade any machines on older versions.",
-      "url": "https://github.com/superbasedapp/observer/releases",
-      "expires_at": "2026-11-01T00:00:00Z",
+      "title": "v1.37.0 needs macOS 13 or later, and code security is now on",
+      "body": "This release needs macOS 13 Ventura or later. On macOS 12, stay on v1.36.0. Code security is now on by default in the developer and full editions, so an agent commit or push can ask you first. Run observer guard status to see it.",
+      "url": "https://github.com/superbasedapp/observer/releases/tag/v1.37.0",
+      "expires_at": "2026-12-30T00:00:00Z",
       "source": "release"
     }
   }

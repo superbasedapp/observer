@@ -35,6 +35,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/marmutapp/superbased-observer/internal/testwriteguard"
 )
 
 // writeCodexConfigBaseURL ensures configPath sets the top-level
@@ -51,6 +53,9 @@ func writeCodexConfigBaseURL(configPath, targetURL, stamp string) (string, error
 	}
 	if targetURL == "" {
 		return "", errors.New("targetURL empty")
+	}
+	if err := testwriteguard.Check("write", configPath); err != nil {
+		return "", err
 	}
 	parent := filepath.Dir(configPath)
 	if err := os.MkdirAll(parent, 0o755); err != nil {

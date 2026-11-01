@@ -181,6 +181,7 @@ func TestRailFetchersCoverEveryRail(t *testing.T) {
 		orgcontract.RailRouting, orgcontract.RailAnnouncement, orgcontract.RailDisplay,
 		orgcontract.RailGrants,
 		orgcontract.RailAgentConfig,
+		orgcontract.RailMessages,
 	}
 	seen := map[string]int{}
 	for _, row := range railFetchers {

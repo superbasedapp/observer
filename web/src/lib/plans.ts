@@ -6,6 +6,7 @@
 // here.
 
 import { COST_HIDDEN, dollarsShown, fmtRelative, fmtUSD } from "../../../shared/lib/format.ts";
+import { LANE_SOURCE_HOWTO, LANE_SOURCE_LABELS, LANE_WORDS } from "./plansSources/index.ts";
 
 // ---------- wire types (GET /api/plans) ----------
 
@@ -70,6 +71,24 @@ export type PlanCard = {
   balances: PlanBalance[];
   spend: PlanSpend[];
   state?: PlanRunState;
+  /** The provider's catalogue group: plans | balance | usage. */
+  group?: string;
+  /** The number the card leads with: what is left (D-681). */
+  headline?: PlanHeadline;
+};
+
+/** PlanHeadline mirrors internal/planlimits/headline.go. */
+export type PlanHeadline = {
+  kind: "left" | "percent_left" | "used_only" | "none";
+  unit?: string;
+  value?: number;
+  of?: number;
+  used?: number;
+  basis?: string;
+  resets_at?: string;
+  confidence?: string;
+  /** The same balance in every other currency held, one per currency; never converted. */
+  also?: { unit: string; value: number }[];
 };
 
 export type PlanAccount = {
@@ -93,6 +112,7 @@ export type CatalogSource = {
   kind: string;
   rung: string;
   experimental: boolean;
+  auth?: string;
   passive: boolean;
   secrets: CatalogSecret[];
   params: CatalogParam[];
@@ -105,6 +125,16 @@ export type CatalogProvider = {
   id: string;
   group: string;
   has_experimental: boolean;
+  /** official | experimental | session | manual_only */
+  coverage?: string;
+  /** What you hand over, per source, in ladder order (manual excluded). */
+  auth?: string[];
+  /** What the vendor reports (SHOWS_LABELS keys). */
+  shows?: string[];
+  /** Why there is no live reading (GAP_LABELS keys). */
+  gap?: string;
+  /** Integration-registry tool ids that draw from this plan. */
+  tools?: string[];
   sources: CatalogSource[];
 };
 
@@ -149,11 +179,164 @@ export const PROVIDER_LABELS: Record<string, string> = {
   moonshot: "Moonshot",
   xai: "xAI",
   other: "Other",
+  // lane A
+  clinepass: "ClinePass",
+  opencode_go: "OpenCode Go",
+  factory: "Factory (Droid)",
+  fireworks: "Fireworks",
+  zai: "Z.ai",
+  minimax: "MiniMax",
+  kilo: "Kilo",
+  synthetic: "Synthetic",
+  elevenlabs: "ElevenLabs",
+  warp: "Warp",
+  deepinfra: "DeepInfra",
+  codebuff: "Codebuff",
+  venice: "Venice",
+  command_code: "Command Code",
+  poe: "Poe",
+  chutes: "Chutes",
+  neuralwatt: "Neuralwatt",
+  zenmux: "ZenMux",
+  aiand: "ai&",
+  ibm_bob: "IBM Bob",
+  hugging_face: "Hugging Face",
+  v0: "v0",
+  // lane B
+  llm_proxy: "LLM Proxy",
+  litellm: "LiteLLM",
+  bifrost: "Bifrost",
+  aixy: "Aixy",
+  deepgram: "Deepgram",
+  clawrouter: "ClawRouter",
+  sub2api: "sub2api",
+  wayfinder: "Wayfinder",
+  llmman: "llmman",
+  charm_hyper: "Charm Hyper",
+  gitkraken_ai: "GitKraken AI",
+  devpass: "DevPass",
+  atlas_cloud: "Atlas Cloud",
+  vercel_ai_gateway: "Vercel AI Gateway",
+  xkiro: "xKiro",
+  tavily: "Tavily",
+  linkup: "Linkup",
+  exa: "Exa",
+  cosmic_ai: "Cosmic AI",
+  aerostack: "Aerostack",
+  sail_research: "Sail Research",
+  sofya: "Sofya",
+  fal: "fal",
+  flora: "FLORA",
+  // lane C1
+  opencode: "OpenCode",
+  alibaba_coding_plan: "Alibaba Coding Plan",
+  alibaba_token_plan: "Alibaba Token Plan",
+  qwen_cloud: "Qwen Cloud",
+  devin: "Devin",
+  manus: "Manus",
+  t3_chat: "T3 Chat",
+  langdock: "Langdock",
+  ollama: "Ollama",
+  zed: "Zed",
+  perplexity: "Perplexity",
+  xiaomi_mimo: "Xiaomi MiMo",
+  sakana: "Sakana AI",
+  abacus: "Abacus AI",
+  mistral: "Mistral",
+  qoder: "Qoder",
+  // lane C2
+  stepfun: "StepFun",
+  groq: "Groq",
+  helmcode: "Helmcode",
+  longcat: "LongCat",
+  zoommate: "ZoomMate",
+  x_api: "X API",
+  notion_ai: "Notion AI",
+  replicate: "Replicate",
+  raycast: "Raycast",
+  typesafe: "TypeSafe",
+  muse_ai: "Muse (muse.ai)",
+  lithosai: "LithosAI",
+  workbuddy: "WorkBuddy",
+  tinyapi: "TinyApi",
+  parallel: "Parallel",
+  claude_platform: "Claude Console credits",
+  // lane D
+  openai_api: "OpenAI API",
+  anthropic_api: "Anthropic API",
+  azure_openai: "Azure OpenAI",
+  gemini: "Gemini",
+  antigravity: "Antigravity",
+  vertex_ai: "Vertex AI",
+  jetbrains_ai: "JetBrains AI",
+  doubao: "Doubao",
+  aws_bedrock: "AWS Bedrock",
+  grok: "Grok",
+  nous_portal: "Nous Portal",
+  muse_code: "Muse Code",
+  coderabbit: "CodeRabbit",
+  pi: "Pi",
+  // 2026-10-21 capture wave (AP-134)
+  autohand: "Autohand",
+  kimchi: "Kimchi",
+  stakpak: "Stakpak",
+  cortex_code: "Cortex Code",
 };
 
 export const GROUP_LABELS: Record<string, string> = {
   plans: "Coding plans",
   balance: "API balances",
+  usage: "Usage-based",
+};
+
+/** GAP_LABELS: why a provider has no live reading (catalog.go Gap codes). */
+export const GAP_LABELS: Record<string, string> = {
+  no_quota_api: "The vendor has no way to read your plan or balance",
+  paid_probe: "Reading it would cost you a paid request",
+  vendor_ended: "The vendor ended the sign-in this needs",
+  not_a_plan: "A local tool with no plan or balance",
+  needs_process: "Needs to read another app while it runs",
+  needs_password: "Needs your account password, which Observer never asks for",
+  traffic_only: "Only Observer's own record of your usage",
+  mac_only: "The vendor keeps it only in its Mac app",
+  needs_browser: "Needs a live browser window",
+  cloud_creds_only: "Needs cloud account access Observer does not handle yet",
+  token_exchange: "Needs a short-lived token made from your sign-in, which Observer never does",
+  page_scrape: "Hidden in a web page that changes with every vendor release",
+};
+
+/** SHOWS_LABELS: what a vendor reports (catalog.go Shows codes). */
+export const SHOWS_LABELS: Record<string, string> = {
+  "5h": "5-hour",
+  daily: "Daily",
+  weekly: "Weekly",
+  monthly: "Monthly",
+  cycle: "Billing cycle",
+  balance: "Balance",
+  credits: "Credits",
+  spend: "Spend",
+  budget: "Budget",
+  key_cap: "Key cap",
+  rate_limit: "Rate limits",
+  model: "Per model",
+};
+
+/** COVERAGE_LABELS: how Observer reads a provider today. */
+export const COVERAGE_LABELS: Record<string, StatusVocab> = {
+  official: { label: "Official", tone: "success" },
+  experimental: { label: "Experimental", tone: "info" },
+  session: { label: "Browser session", tone: "info" },
+  manual_only: { label: "Type it in", tone: "neutral" },
+};
+
+/** AUTH_LABELS: what you hand over, per auth method. */
+export const AUTH_LABELS: Record<string, string> = {
+  none: "Nothing to add",
+  pasted_key: "API key",
+  undocumented: "API key, undocumented endpoint",
+  vendor_local: "The vendor's app on this machine",
+  pasted_session: "A browser session you paste",
+  manual: "Type it in",
 };
 
 export function providerLabel(id: string): string {
@@ -180,6 +363,7 @@ export const SOURCE_LABELS: Record<string, string> = {
   "cursor.app": "Cursor sign-in",
   "windsurf.cache": "Windsurf saved plan",
   "kimi_code.api": "Kimi Code key",
+  ...LANE_SOURCE_LABELS,
 };
 
 /** SOURCE_HOWTO is the one-line instruction under each method. */
@@ -202,16 +386,19 @@ export const SOURCE_HOWTO: Record<string, string> = {
   "cursor.app": "Reads Cursor's own sign-in on this machine, read-only, to ask Cursor for your usage.",
   "windsurf.cache": "Reads the plan details Windsurf saved on this machine. No network call.",
   "kimi_code.api": "Paste a Kimi Code key. Uses an endpoint Kimi has not documented.",
+  ...LANE_SOURCE_HOWTO,
 };
 
 /** The one honest warning next to every experimental switch. */
 export const EXPERIMENTAL_WARNING =
-  "Experimental: uses another app's sign-in or an undocumented endpoint. It can break, and the vendor's terms may not allow it.";
+  "Experimental: uses another app's sign-in, a browser session you paste, or an undocumented endpoint. It can break, and the vendor's terms may not allow it.";
 
 export const SECRET_LABELS: Record<string, string> = {
   key: "API key",
   mgmt: "Management key",
-  pat: "GitHub token",
+  pat: "Access token",
+  session: "Browser session",
+  aws_secret: "AWS secret access key",
 };
 
 export const PARAM_LABELS: Record<string, string> = {
@@ -224,6 +411,12 @@ export const PARAM_LABELS: Record<string, string> = {
   used: "Used so far",
   renews_day: "Renews on day of month",
   window: "Resets",
+  base_url: "Base URL",
+  account_id: "Account ID",
+  project_id: "Project ID",
+  workspace_id: "Workspace ID",
+  org_id: "Organization ID",
+  ...LANE_WORDS,
 };
 
 export const CHOICE_LABELS: Record<string, string> = {
@@ -236,6 +429,9 @@ export const CHOICE_LABELS: Record<string, string> = {
   monthly: "Every month",
   weekly: "Every week",
   daily: "Every day",
+  intl: "International",
+  cn: "China mainland",
+  ...LANE_WORDS,
 };
 
 /** SOURCE_KIND_LABELS: where a number came from, for the card header. */
@@ -243,7 +439,7 @@ export const SOURCE_KIND_LABELS: Record<string, string> = {
   official_api: "Official API",
   admin_api: "Official API",
   status_line: "From the status line",
-  vendor_rpc: "From the Codex app",
+  vendor_rpc: "From the vendor's app",
   vendor_cli: "From the vendor's CLI",
   passive_proxy: "From your traffic",
   passive_log: "From Codex logs",
@@ -286,7 +482,21 @@ export const SCOPE_NOTES: Record<string, string> = {
   conflict: "More than one account was used",
 };
 
-export const UNITS = ["percent", "credits", "usd_micros", "cny_micros", "requests", "tokens", "ai_credits"] as const;
+export const UNITS = [
+  "percent",
+  "credits",
+  "usd_micros",
+  "cny_micros",
+  "eur_micros",
+  "jpy_micros",
+  "requests",
+  "tokens",
+  "ai_credits",
+  "points",
+  "characters",
+  "kwh",
+  "hours",
+] as const;
 
 const WINDOW_LABELS: Record<string, string> = {
   "5h": "5-hour",
@@ -301,12 +511,28 @@ const WINDOW_LABELS: Record<string, string> = {
   bonus: "Bonus credits",
   premium: "Premium requests",
   ai_credit: "AI credits",
+  "1d": "1-day",
+  "4h": "4-hour",
+  "6h": "6-hour",
+  "7d": "7-day",
+  hourly: "Hourly",
+  search_hourly: "Searches per hour",
+  rate_limit: "Rate limit",
+  diem_epoch: "DIEM this epoch",
+  zero_gpu: "ZeroGPU",
+  "monthly:included": "Monthly, included",
+  "mcp:monthly": "MCP calls, monthly",
 };
 
 const PREFIX_LABELS: Record<string, string> = {
   model: "Weekly",
   cycle: "This cycle",
   daily: "Daily",
+  "5h": "5-hour",
+  "4h": "4-hour",
+  weekly: "Weekly",
+  monthly: "Monthly",
+  quota: "Quota",
 };
 
 function titleWord(s: string): string {
@@ -335,9 +561,15 @@ const BALANCE_LABELS: Record<string, string> = {
   cash: "Cash",
   total: "Balance",
   posted: "Balance",
+  available: "Available",
+  wallet: "Wallet",
+  points: "Points",
+  purchased: "Bought in total",
   credits: "Credits",
   workspace_pool: "Workspace pool",
   included_used: "Included, used",
+  on_demand: "On demand",
+  granted_total: "Granted in total",
 };
 
 export function balanceLabel(kind: string): string {
@@ -349,11 +581,17 @@ const PERIOD_LABELS: Record<string, string> = {
   week: "this week",
   month: "this month",
   cycle: "this cycle",
+  "30d": "in the last 30 days",
   all_time: "in total",
 };
 
+/** periodPhrase words a spend period: "month" -> "this month". */
+export function periodPhrase(period: string): string {
+  return PERIOD_LABELS[period] ?? "";
+}
+
 export function spendLabel(s: PlanSpend): string {
-  return `Spent ${PERIOD_LABELS[s.period] ?? ""}`.trim();
+  return `Spent ${periodPhrase(s.period)}`.trim();
 }
 
 const PLAN_CODE_LABELS: Record<string, string> = {
@@ -429,16 +667,28 @@ export function cardPill(c: Pick<PlanCard, "status" | "health">): StatusVocab | 
 
 // ---------- numbers ----------
 
-const cnyFmt = new Intl.NumberFormat("en-US", { style: "currency", currency: "CNY" });
+/** Non-dollar money units and their currency formatters. */
+const MONEY_FMT: Record<string, Intl.NumberFormat> = {
+  cny_micros: new Intl.NumberFormat("en-US", { style: "currency", currency: "CNY" }),
+  eur_micros: new Intl.NumberFormat("en-US", { style: "currency", currency: "EUR" }),
+  jpy_micros: new Intl.NumberFormat("en-US", { style: "currency", currency: "JPY" }),
+};
 
 /** fmtAmount renders one amount in its unit. Money follows the cost display. */
 export function fmtAmount(unit: string, n: number | null | undefined): string {
   if (n == null || !Number.isFinite(n)) return "-";
+  if (MONEY_FMT[unit]) return dollarsShown() ? MONEY_FMT[unit].format(n / 1e6) : COST_HIDDEN;
   switch (unit) {
     case "usd_micros":
       return fmtUSD(n / 1e6);
-    case "cny_micros":
-      return dollarsShown() ? cnyFmt.format(n / 1e6) : COST_HIDDEN;
+    case "points":
+      return `${fmtNum(n)} points`;
+    case "characters":
+      return `${fmtNum(n)} characters`;
+    case "kwh":
+      return `${fmtNum(n)} kWh`;
+    case "hours":
+      return `${fmtNum(n)} hours`;
     case "percent":
       return `${Math.round(n)}%`;
     case "credits":
@@ -460,7 +710,7 @@ function fmtNum(n: number): string {
 
 /** isMoney: a unit that is hidden in the token-usage cost display. */
 export function isMoney(unit: string): boolean {
-  return unit === "usd_micros" || unit === "cny_micros";
+  return unit === "usd_micros" || unit in MONEY_FMT;
 }
 
 /** windowFrac is the bar fill, or null when the window has no fraction (never 0). */

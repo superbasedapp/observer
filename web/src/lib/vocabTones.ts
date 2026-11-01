@@ -1,4 +1,5 @@
 import type { VocabEntry, VocabTable } from "@shared/lib/vocabEntry";
+import type { ProjectCaptureInfo } from "@/lib/types";
 
 // vocabTones - the node dashboard's presentation tables for the closed
 // vocabularies that more than one web page renders and that have no other
@@ -69,34 +70,101 @@ export const CHECK_STATUS: VocabTable = {
 };
 
 // COMMIT_CAPTURE - a project's commit-capture state (ProjectCaptureInfo in
-// lib/types.ts, internal/commitscan). Every state but ok is warn (commit and
-// prompt-to-commit data is missing or stale). `tip` is the one-line reason
-// (the Projects table tooltip); `banner` is the longer Project detail
-// wording. Glyphs: VOCAB_ICONS.commitCapture.
+// lib/types.ts; the Go owner is internal/store commitCaptureStates). Each
+// state names its cause: `tip` is the one-line reason (the Projects table
+// tooltip), `banner` the Project detail heading, `todo` what to do about it.
+// Only "error" is generic, and it is refined by COMMIT_SCAN_FAILURE below.
+// Glyphs: VOCAB_ICONS.commitCapture.
+export type CommitCaptureState = ProjectCaptureInfo["commits"];
 export const COMMIT_CAPTURE: Readonly<
-  Record<"ok" | "no_git" | "never_scanned" | "error", VocabEntry & { tip: string; banner: string }>
+  Record<CommitCaptureState, VocabEntry & { tip: string; banner: string; todo: string; rescan: boolean }>
 > = {
-  ok: { tone: "success", tip: "Commit capture is live for this project.", banner: "" },
-  no_git: {
-    tone: "warn",
-    label: "no git",
-    tip: "This project isn't a git repository (or git isn't installed).",
-    banner:
-      "this project isn't a git repository (or git isn't installed) - commit and prompt-to-commit data is unavailable.",
+  ok: { tone: "success", tip: "Commit capture is live for this project.", banner: "", todo: "", rescan: true },
+  catching_up: {
+    tone: "info",
+    label: "catching up",
+    tip: "Reading this project's full git history in the background. Recent commits are already in.",
+    banner: "Reading this project's full git history",
+    todo: "A large history is read in steps of about 45 seconds per scan. Recent commits are in already, so the figures below use them. Nothing to do.",
+    rescan: true,
   },
   never_scanned: {
     tone: "warn",
     label: "not scanned",
     tip: "The commit scanner hasn't scanned this project yet.",
-    banner:
-      "the commit scanner hasn't scanned this project yet - commit and prompt-to-commit data will appear once it has.",
+    banner: "Not scanned yet",
+    todo: "The scanner reads every project with a session in the last few days, every 2 minutes. Rescan now to read it immediately.",
+    rescan: true,
+  },
+  no_git: {
+    tone: "warn",
+    label: "no git",
+    tip: "git is not installed (or not on PATH) for the Observer daemon.",
+    banner: "git is not installed",
+    todo: "Install git and make sure it is on the PATH of the user that runs Observer, then restart the daemon.",
+    rescan: false,
+  },
+  no_folder: {
+    tone: "warn",
+    label: "no folder",
+    tip: "This project has no folder on disk: the tool did not report one, so there is no repository to read.",
+    banner: "This project has no folder on disk",
+    todo: "The AI tool filed these sessions under a placeholder name instead of a folder. Nothing to fix here: commits for this work show on the project for its real folder.",
+    rescan: false,
+  },
+  root_missing: {
+    tone: "warn",
+    label: "folder gone",
+    tip: "The project folder was deleted, moved or is not mounted. Commits captured before are kept.",
+    banner: "The project folder was not found",
+    todo: "It was deleted, moved, or is on a drive that is not mounted right now. Commits captured before are kept. If you moved it, the next session in the new place starts a new project; if it comes back, scanning resumes on its own.",
+    rescan: true,
+  },
+  not_repo: {
+    tone: "warn",
+    label: "not a repo",
+    tip: "The folder exists but is not a git repository.",
+    banner: "This folder is not a git repository",
+    todo: "Commit tracking needs git. Run git init (or clone the project) in this folder; the scanner re-checks every 30 minutes, or rescan now.",
+    rescan: true,
   },
   error: {
     tone: "warn",
     label: "scan error",
-    tip: "The last commit scan failed (timeout, unreadable or deleted root); the ledger may be stale.",
-    banner:
-      "the last commit scan failed (a timeout, or an unreadable or deleted root) - the ledger below may be stale until a scan succeeds.",
+    tip: "The last commit scan failed. Open the project for the reason.",
+    banner: "The last commit scan failed",
+    todo: "",
+    rescan: true,
+  },
+};
+
+// COMMIT_SCAN_FAILURE - the failure kind behind an "error" capture state
+// (internal/commitscan failure.go's FailureKind vocabulary). `what` is the
+// one-line cause, `todo` the plain fix.
+export const COMMIT_SCAN_FAILURE: Readonly<Record<string, { what: string; todo: string }>> = {
+  timeout: {
+    what: "git took too long, even when asked for a few commits at a time",
+    todo: "Usually a very large repository on a slow drive (for example /mnt/c from WSL). Rescan now to try again; moving the repository to the Linux file system makes it much faster.",
+  },
+  dubious_ownership: {
+    what: "git refused the folder because another user owns it",
+    todo: "Common for /mnt/c folders seen from WSL. If you trust the folder, run: git config --global --add safe.directory <folder>, then rescan.",
+  },
+  permission_denied: {
+    what: "the folder or its .git directory is not readable by the user Observer runs as",
+    todo: "Fix the folder permissions, then rescan.",
+  },
+  repo_unreadable: {
+    what: "git reports a missing or damaged object in this repository",
+    todo: "Run git fsck in the folder. A shallow or partial clone can also cause this; fetching the full history fixes it.",
+  },
+  output_too_large: {
+    what: "a single commit's change summary is larger than the scanner's 8 MB limit",
+    todo: "This is rare (usually a huge generated file committed once). Recent commits around it are still captured.",
+  },
+  other: {
+    what: "git failed for a reason the scanner does not recognise",
+    todo: "The message from git is below. Rescan to retry; it also retries on its own with a growing delay.",
   },
 };
 
@@ -129,3 +197,14 @@ export const AUDIT_CHAIN: VocabTable = {
   intact: { tone: "success", label: "ok" },
   broken: { tone: "danger" },
 };
+
+// commitCaptureTip is the one-line Projects-table tooltip for a capture
+// state: the state's own tip, or for a plain error the specific cause
+// (COMMIT_SCAN_FAILURE) the list row now carries as commits_kind.
+export function commitCaptureTip(c: ProjectCaptureInfo): string {
+  if (c.commits === "error") {
+    const f = COMMIT_SCAN_FAILURE[c.commits_kind ?? "other"] ?? COMMIT_SCAN_FAILURE.other;
+    return `The last commit scan failed: ${f.what}. Open the project to see what to do.`;
+  }
+  return (COMMIT_CAPTURE[c.commits] ?? COMMIT_CAPTURE.error).tip;
+}

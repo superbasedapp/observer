@@ -81,6 +81,10 @@ type unenrolRun struct {
 	enr    *store.Enrolment
 	orgKey string
 	res    *UnenrolResult
+	// managed is NodeManagedFor, resolved before any step fences the
+	// enrolment generation (the leave notice names the machine of a
+	// managed node, switched ones included).
+	managed bool
 }
 
 type unenrolStep struct {
@@ -181,7 +185,7 @@ var unenrolSteps = []unenrolStep{
 		},
 		needsEnrolment: true,
 		run: func(ctx context.Context, c *Client, r *unenrolRun) error {
-			ok, why := c.notifyLeave(ctx, r.enr)
+			ok, why := c.notifyLeave(ctx, r.enr, r.managed)
 			r.res.OrgNotified, r.res.OrgNotice = ok, why
 			return nil
 		},
@@ -241,6 +245,7 @@ func (c *Client) UnenrollWithReport(ctx context.Context) (UnenrolResult, error) 
 	run := &unenrolRun{enr: enr, res: &res}
 	if enr != nil {
 		run.orgKey = OrgKey(enr.OrgServerURL, enr.OrgID)
+		run.managed, _ = NodeManagedFor(ctx, c.store, enr) //nolint:errcheck // a read error names no machine, as before
 	}
 	for _, s := range unenrolSteps {
 		if s.needsEnrolment && enr == nil {
@@ -268,7 +273,7 @@ func (c *Client) UnenrollWithReport(ctx context.Context) (UnenrolResult, error) 
 // notifyLeave is the one network call of a leave: POST /api/agent/leave with
 // the still-present bearer, bounded by leaveNoticeTimeout. It never fails the
 // leave; it reports whether the organization recorded it and, if not, why.
-func (c *Client) notifyLeave(ctx context.Context, enr *store.Enrolment) (bool, string) {
+func (c *Client) notifyLeave(ctx context.Context, enr *store.Enrolment, managed bool) (bool, string) {
 	if enr == nil || c.httpClient == nil {
 		return false, "not sent: no enrolment"
 	}
@@ -288,7 +293,7 @@ func (c *Client) notifyLeave(ctx context.Context, enr *store.Enrolment) (bool, s
 	// T-747: a managed node names its machine and proves it with the machine
 	// key it already holds, so the server retires that key and a later
 	// re-enrolment of this machine (a reinstall with a new key) is not a 409.
-	c.attachLeaveProof(req, enr, managedMachineIdentityOf(enr))
+	c.attachLeaveProof(req, enr, managedMachineIdentityOf(enr, managed))
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return false, "the organization server could not be reached; it will see this node stop reporting"

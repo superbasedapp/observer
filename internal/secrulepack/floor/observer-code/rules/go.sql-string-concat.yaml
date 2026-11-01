@@ -1,0 +1,53 @@
+rules:
+  - id: go.sql-string-concat
+    languages: [go]
+    severity: ERROR
+    message: Web request input is pasted into SQL text; pass the value as a query parameter instead.
+    metadata:
+      category: code_vuln
+      cwe: CWE-89
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: $R.URL.Query()
+              - pattern: $R.FormValue(...)
+              - pattern: $R.PostFormValue(...)
+              - pattern: $R.PathValue(...)
+              - pattern: $R.Form
+              - pattern: $R.PostForm
+          - metavariable-regex:
+              metavariable: $R
+              regex: ^(r|req|request|httpReq)$
+      - pattern: mux.Vars(...)
+      - patterns:
+          - pattern-either:
+              - pattern: $C.Query(...)
+              - pattern: $C.Param(...)
+              - pattern: $C.PostForm(...)
+              - pattern: $C.DefaultQuery(...)
+              - pattern: $C.QueryParam(...)
+              - pattern: $C.FormValue(...)
+          - metavariable-regex:
+              metavariable: $C
+              regex: ^(c|ctx|gc|ec)$
+    pattern-sanitizers:
+      - pattern: strconv.Atoi(...)
+      - pattern: strconv.ParseInt(...)
+      - pattern: strconv.ParseUint(...)
+      - pattern: strconv.ParseFloat(...)
+      - pattern: strconv.ParseBool(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - patterns:
+                  - pattern: $DB.$Q($SQL, ...)
+                  - metavariable-regex:
+                      metavariable: $Q
+                      regex: ^(Query|QueryRow|Exec|Prepare)$
+              - patterns:
+                  - pattern: $DB.$Q($CTX, $SQL, ...)
+                  - metavariable-regex:
+                      metavariable: $Q
+                      regex: ^(QueryContext|QueryRowContext|ExecContext|PrepareContext)$
+          - focus-metavariable: $SQL

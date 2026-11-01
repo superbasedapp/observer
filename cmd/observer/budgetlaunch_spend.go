@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
@@ -51,7 +50,7 @@ var errBudgetLaunchDenied = errors.New("organization budget denies further spend
 // windows for exactly that reason.
 func budgetLaunchSpendAdmission(ctx context.Context, cfg config.Config, configPath string, st *store.Store, tool string, state managedBudgetLaunchState) error {
 	now := time.Now().UTC()
-	authority, err := nodeInterventionAuthority(ctx, st, os.Getuid(), now)
+	authority, err := nodeInterventionAuthority(ctx, st, nodeInterventionAuthorityUID(), now)
 	if err != nil {
 		return budgetLaunchStateFailure(tool, err)
 	}

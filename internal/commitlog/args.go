@@ -78,10 +78,29 @@ func PageArgs(sinceRFC3339 string, max, skip int, subtree string) []string {
 // is an OFFSET into whatever history the revision names at invocation
 // time.
 func PageArgsRev(rev, sinceRFC3339 string, max, skip int, subtree string) []string {
+	return pageArgs(rev, "", sinceRFC3339, max, skip, subtree)
+}
+
+// PageArgsRange is PageArgsRev for a commit RANGE: the commits reachable
+// from rev that are NOT reachable from exclude (`git log <rev> ^<exclude>`),
+// with no --since cut. internal/commitscan uses it for an incremental scan
+// once the ledger holds rev's history up to exclude: it returns exactly the
+// commits HEAD gained, including a pulled commit whose committer date is
+// older than anything already seen, which a --since watermark misses.
+// exclude == "" is exactly PageArgsRev(rev, "", ...).
+func PageArgsRange(rev, exclude string, max, skip int, subtree string) []string {
+	return pageArgs(rev, exclude, "", max, skip, subtree)
+}
+
+func pageArgs(rev, exclude, sinceRFC3339 string, max, skip int, subtree string) []string {
 	if rev == "" {
 		rev = "HEAD"
 	}
-	args := []string{"log", rev, "--no-renames", "--no-color", "--date-order"}
+	args := []string{"log", rev}
+	if exclude != "" {
+		args = append(args, "^"+exclude)
+	}
+	args = append(args, "--no-renames", "--no-color", "--date-order")
 	if max > 0 {
 		args = append(args, "-n", strconv.Itoa(max))
 	}

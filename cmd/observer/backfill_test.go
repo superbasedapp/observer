@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -2189,6 +2190,9 @@ func TestLastPathSegment(t *testing.T) {
 // trailing basename. Also pins finding #8's report completeness
 // (reasoning / web_search / estimated_cost sums).
 func TestBackfillCodexForkDedupWindowsBasename(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the case needs a backslash inside one file name, which only a POSIX filesystem has; on Windows the basename is the ordinary one (Windows 11 Pro rerun 2026-10-25, D5 group 4)")
+	}
 	requireAdapter(t, "codex")
 	ctx := context.Background()
 	root := t.TempDir()

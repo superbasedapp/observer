@@ -135,6 +135,20 @@ func ResetHard(ctx context.Context, repoRoot, revision string) error {
 	return nil
 }
 
+// FastForward moves the branch checked out at repoRoot forward to revision,
+// updating its working tree, and refuses (changing nothing) when that is not
+// a fast-forward. The Arena judge_merge keep lands a commit it verified in an
+// isolated worktree this way, so the real checkout changes in one step.
+func FastForward(ctx context.Context, repoRoot, revision string) error {
+	if revision == "" {
+		return fmt.Errorf("git.FastForward: revision required")
+	}
+	if _, err := runGit(ctx, repoRoot, "merge", "--ff-only", revision); err != nil {
+		return fmt.Errorf("git.FastForward: %w", err)
+	}
+	return nil
+}
+
 // WorktreeAdd creates a linked worktree at path with a new branch branching
 // from startPoint. The caller owns cleanup via WorktreeRemove.
 func WorktreeAdd(ctx context.Context, repoRoot, path, branch, startPoint string) error {

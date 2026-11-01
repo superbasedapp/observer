@@ -45,6 +45,14 @@ func TestResolveComponentGovernanceSources(t *testing.T) {
 	expired.Grant.ExpiresAt = expired.Now.Add(-time.Minute)
 	individual := managedGovernanceInputs()
 	individual.Enrolment.Tenancy = orgcontract.TenancyIndividual
+	// The boundary (grantFromStore) fills the grant's tenancy facts from
+	// the enrolment; the enrolment-time grant is not a switch.
+	individual.Grant.Tenancy, individual.Grant.EnrolmentOrgID = orgcontract.TenancyIndividual, "o1"
+	// P-204: the same individual enrolment after its org switched it to
+	// enterprise (the org's signed replacement, carrying authority).
+	switched := managedGovernanceInputs(nodecomponents.Authority)
+	switched.Enrolment.Tenancy = orgcontract.TenancyIndividual
+	switched.Grant.Tenancy, switched.Grant.EnrolmentOrgID, switched.Grant.ReplacementGeneration = orgcontract.TenancyIndividual, "o1", 1
 	withPolicy := managedGovernanceInputs(nodecomponents.Authority)
 	spec, err := nodecomponents.Compile(nodecomponents.BodyV1{Allow: []string{"codeintel"}})
 	if err != nil {
@@ -60,6 +68,7 @@ func TestResolveComponentGovernanceSources(t *testing.T) {
 	}{
 		{"not enrolled", componentGovernanceInputs{Now: time.Now()}, false, nodecomponents.SourceLocal},
 		{"individual enrolment", individual, false, nodecomponents.SourceLocal},
+		{"individual enrolment of a switched org: managed", switched, true, nodecomponents.SourceLegacyPinned},
 		{"managed, grant expired: dormant", expired, false, nodecomponents.SourceDormant},
 		{"managed, grant without components.govern: pinned", managedGovernanceInputs(), true, nodecomponents.SourceUnauthorized},
 		{"managed, authorized, no policy yet: legacy pinned", managedGovernanceInputs(nodecomponents.Authority), true, nodecomponents.SourceLegacyPinned},

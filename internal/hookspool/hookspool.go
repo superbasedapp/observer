@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/models"
+	"github.com/marmutapp/superbased-observer/internal/testwriteguard"
 )
 
 // Filename is the live spool's name beside the global config file.
@@ -26,6 +27,52 @@ const asideMarker = ".aside-"
 // append time (the hook logs and drops it) and skipped at drain time.
 const MaxRecordBytes = 256 << 10
 
+// MaxActivitySpoolBytes is the live spool size past which an activity record
+// is skipped instead of appended (R-188 F5). A running daemon sets the live
+// spool aside every few seconds, so it never comes near this; the cap only
+// bites while hooks stay registered and nothing drains, where every hook call
+// would otherwise add an activity line (a few MB a day) without bound.
+// 8 MiB is roughly 25,000 activity lines, several days of heavy use, and an
+// aside file of that size still decodes in one drain pass. Only liveness
+// counts are lost past it: tool-event and compaction records are never
+// capped (capsAtSpoolLimit), and the skips are counted (SkippedActivity).
+const MaxActivitySpoolBytes = 8 << 20
+
+// MaxSkippedCount bounds the skip counter file (one byte per skipped record),
+// so a spool that stays full for months cannot grow the counter without
+// bound either. Past it the count reads as "at least MaxSkippedCount".
+const MaxSkippedCount = 1 << 20
+
+// skippedSuffix names the skip counter beside the live spool. It does not
+// share the aside marker, so the drainer's glob never reads it as a spool.
+const skippedSuffix = ".activity-skipped"
+
+// ErrActivitySkipped is Append's answer for an activity record it skipped
+// because the live spool is past MaxActivitySpoolBytes. The skip is counted;
+// a hook treats it as success (nothing to report on the hook's stderr).
+var ErrActivitySkipped = errors.New("hookspool.Append: activity record skipped, the spool is past its cap")
+
+// spoolCapRule says, per record kind, whether Append skips the record once
+// the live spool is past MaxActivitySpoolBytes. A kind not listed is never
+// capped: losing an action or a compaction phase is a data loss, losing an
+// activity line is a lost count.
+var spoolCapRule = map[string]bool{
+	"":             false, // a tool-event row (an action)
+	KindCompaction: false,
+	KindActivity:   true,
+}
+
+// capsAtSpoolLimit reports whether a record of kind is skipped past the cap.
+func capsAtSpoolLimit(kind string) bool { return spoolCapRule[kind] }
+
+// SkippedPath is the skip counter beside the live spool ("" for "").
+func SkippedPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	return path + skippedSuffix
+}
+
 // Grace is how long an aside file waits before it is processed: far longer
 // than one hook's open-then-append, so an append that raced the rename has
 // landed in the aside file before the drainer reads it.
@@ -35,8 +82,13 @@ const Grace = 2 * time.Second
 // skips a newer one. Version 1 is a tool-event row; version 2 adds the
 // non-event kinds (KindCompaction), so a released drainer that knows only
 // version 1 drops such a line as "newer schema" instead of ingesting it as
-// an action with no action type.
-const version = 2
+// an action with no action type. Version 3 adds KindActivity, whose session
+// id may be empty, so a drainer that knows only version 2 drops it the same
+// way instead of reading it as a malformed compaction.
+const version = 3
+
+// versionCompaction is the version a compaction record is written with.
+const versionCompaction = 2
 
 // versionToolEvent is the version a plain tool-event row is written with,
 // unchanged from the first release so every released drainer still reads it.
@@ -47,26 +99,40 @@ const versionToolEvent = 1
 // yet. The zero Kind is a tool-event row.
 const KindCompaction = "compaction"
 
+// KindActivity marks one hook invocation's liveness record (surface-gap
+// review OBS-7 / CC-2): the tool, the event, the session id the payload
+// carried ("" when none: the unattributed bucket) and the route-relevant env
+// classes the hook saw (internal/hookliveness.EnvClasses, names and coarse
+// classes only). The drainer hands it to store.UpsertHookActivity; it never
+// needs a session row and is never held.
+const KindActivity = "activity"
+
 // recordVersion is the schema version a record is written with.
 func recordVersion(r Record) int {
-	if r.Kind != "" {
-		return version
+	switch r.Kind {
+	case "":
+		return versionToolEvent
+	case KindCompaction:
+		return versionCompaction
 	}
-	return versionToolEvent
+	return version
 }
 
-// validRecord is the one shape check Append and the drain share: a tool and
-// a session always, an action type for a tool-event row, a phase for a
-// compaction row, and no kind this package does not know.
+// validRecord is the one shape check Append and the drain share: a tool
+// always; a session, and an action type, for a tool-event row; a session and
+// a phase for a compaction row; an event (and no session requirement) for an
+// activity row; and no kind this package does not know.
 func validRecord(r Record) bool {
-	if r.Tool == "" || r.SessionID == "" {
+	if r.Tool == "" {
 		return false
 	}
 	switch r.Kind {
 	case "":
-		return r.ActionType != ""
+		return r.SessionID != "" && r.ActionType != ""
 	case KindCompaction:
-		return r.Phase != ""
+		return r.SessionID != "" && r.Phase != ""
+	case KindActivity:
+		return r.HookEvent != ""
 	default:
 		return false
 	}
@@ -102,6 +168,11 @@ type Record struct {
 	// Attempts counts the drain passes that held this record because its
 	// session did not exist yet (T-320). It bounds the hold with MaxHoldAge.
 	Attempts int `json:"attempts,omitempty"`
+	// HookEvent and Env belong to an activity row: the hook event (the
+	// registry binding's native name when the invocation resolved to one)
+	// and the env names the hook saw mapped to coarse classes, never values.
+	HookEvent string            `json:"event,omitempty"`
+	Env       map[string]string `json:"env,omitempty"`
 }
 
 // FromEvent captures ev as a spool record.
@@ -161,13 +232,17 @@ func Path(configPath string) string {
 // Append adds one record with a single O_APPEND write. It never waits on the
 // drainer and takes no lock: a failed append returns the error and the hook
 // moves on (the row is lost, which the lifecycle ladder tolerates: the
-// transcript still carries the session).
+// transcript still carries the session). A kind capsAtSpoolLimit names (an
+// activity record) is skipped once the live spool is past
+// MaxActivitySpoolBytes, counted in the skip counter, and answered with
+// ErrActivitySkipped; the size is read from the opened file, so the check
+// costs one fstat.
 func Append(path string, r Record) error {
 	if path == "" {
 		return errors.New("hookspool.Append: empty path")
 	}
 	if !validRecord(r) {
-		return errors.New("hookspool.Append: tool, session_id and action_type (or a known kind with its phase) are required")
+		return errors.New("hookspool.Append: tool and the kind's required fields (session_id and action_type, a phase, or an event) are required")
 	}
 	r.V = recordVersion(r)
 	if r.Timestamp.IsZero() {
@@ -181,9 +256,19 @@ func Append(path string, r Record) error {
 	if len(line) > MaxRecordBytes {
 		return errors.New("hookspool.Append: record too large")
 	}
+	if err := testwriteguard.Check("append", path); err != nil {
+		return fmt.Errorf("hookspool.Append: %w", err)
+	}
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
 	if err != nil {
 		return fmt.Errorf("hookspool.Append: %w", err)
+	}
+	if capsAtSpoolLimit(r.Kind) {
+		if st, serr := f.Stat(); serr == nil && st.Size() >= MaxActivitySpoolBytes {
+			_ = f.Close()
+			countSkipped(SkippedPath(path))
+			return ErrActivitySkipped
+		}
 	}
 	if _, err := f.Write(line); err != nil {
 		_ = f.Close()
@@ -193,6 +278,73 @@ func Append(path string, r Record) error {
 		return fmt.Errorf("hookspool.Append: %w", err)
 	}
 	return nil
+}
+
+// countSkipped adds one to the skip counter: a single one-byte O_APPEND
+// write, so concurrent hooks never lose an increment, stopped at
+// MaxSkippedCount. Best effort: a counter that cannot be written loses the
+// count, never the hook's answer.
+func countSkipped(counter string) {
+	if testwriteguard.Check("append", counter) != nil {
+		return
+	}
+	f, err := os.OpenFile(counter, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	if err != nil {
+		return
+	}
+	defer func() { _ = f.Close() }()
+	if st, err := f.Stat(); err != nil || st.Size() >= MaxSkippedCount {
+		return
+	}
+	_, _ = f.Write([]byte{'.'})
+}
+
+// SkippedActivity is the number of activity records skipped since the
+// counter was last taken (0 when there is none). Read-only: the doctor reads
+// it while the daemon is down. A count of MaxSkippedCount means at least
+// that many.
+func SkippedActivity(path string) (int64, error) {
+	counter := SkippedPath(path)
+	if counter == "" {
+		return 0, nil
+	}
+	st, err := os.Stat(counter)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("hookspool.SkippedActivity: %w", err)
+	}
+	return st.Size(), nil
+}
+
+// TakeSkippedActivity returns the skip count and clears the counter (the
+// drainer, after it set the full spool aside, logs it once). The counter is
+// renamed away before it is read, so a skip that lands meanwhile starts a
+// new counter instead of being cleared unread.
+func TakeSkippedActivity(path string, now time.Time) (int64, error) {
+	counter := SkippedPath(path)
+	if counter == "" {
+		return 0, nil
+	}
+	taken := counter + ".taken-" + strconv.FormatInt(now.UnixNano(), 10)
+	if err := testwriteguard.Check("rename", counter); err != nil {
+		return 0, fmt.Errorf("hookspool.TakeSkippedActivity: %w", err)
+	}
+	if err := os.Rename(counter, taken); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("hookspool.TakeSkippedActivity: %w", err)
+	}
+	st, err := os.Stat(taken)
+	if err != nil {
+		return 0, fmt.Errorf("hookspool.TakeSkippedActivity: %w", err)
+	}
+	if err := os.Remove(taken); err != nil {
+		return st.Size(), fmt.Errorf("hookspool.TakeSkippedActivity: %w", err)
+	}
+	return st.Size(), nil
 }
 
 // Aside is one set-aside spool file ready to be processed.
@@ -325,6 +477,9 @@ func SetAside(path string, now time.Time) (bool, error) {
 		return false, nil
 	}
 	dst := path + asideMarker + strconv.FormatInt(now.UnixNano(), 10)
+	if err := testwriteguard.Check("rename", path); err != nil {
+		return false, fmt.Errorf("hookspool.SetAside: %w", err)
+	}
 	if err := os.Rename(path, dst); err != nil {
 		return false, fmt.Errorf("hookspool.SetAside: %w", err)
 	}

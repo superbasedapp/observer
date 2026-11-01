@@ -26,14 +26,24 @@ test("unknown ids and duplicates are dropped; missing sections are re-inserted",
   assert.deepEqual(got.hidden, ["community"]);
   assert.equal(new Set(got.order).size, DEFAULT_OVERVIEW_LAYOUT.order.length);
   // Each missing section lands after its nearest default predecessor that
-  // is present: "trends" / "top" after "kpis", "community" after "recent".
-  assert.deepEqual(got.order, ["recent", "community", "kpis", "trends", "top"]);
+  // is present: "coverage" / "trends" / "top" after "kpis", "community"
+  // after "recent".
+  assert.deepEqual(got.order, ["recent", "community", "kpis", "coverage", "trends", "top"]);
+});
+
+test("a layout saved before the coverage card gains it right after the headline numbers", () => {
+  const got = normalizeLayout({
+    order: ["kpis", "trends", "top", "recent", "community"],
+    hidden: ["top"],
+  });
+  assert.deepEqual(got.order, ["kpis", "coverage", "trends", "top", "recent", "community"]);
+  assert.deepEqual(got.hidden, ["top"], "a new section is shown, the saved hidden list is kept");
 });
 
 test("move and toggle", () => {
   let l = DEFAULT_OVERVIEW_LAYOUT;
   l = moveSection(l, "recent", -1);
-  assert.deepEqual(l.order, ["kpis", "trends", "recent", "top", "community"]);
+  assert.deepEqual(l.order, ["kpis", "coverage", "trends", "recent", "top", "community"]);
   assert.equal(moveSection(l, "kpis", -1), l, "top edge is a no-op");
   l = toggleSection(l, "trends");
   assert.deepEqual(l.hidden, ["trends"]);

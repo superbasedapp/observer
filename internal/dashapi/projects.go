@@ -20,6 +20,29 @@ var CommitLinkCap = 5000
 type APIProjectCaptureInfo struct {
 	Commits  string `json:"commits"`
 	HumanLOC string `json:"human_loc"`
+	// CommitsKind names the failure when Commits is "error" (timeout,
+	// dubious_ownership, permission_denied, repo_unreadable,
+	// output_too_large, other). Additive (2026-10-15).
+	CommitsKind string `json:"commits_kind,omitempty"`
+	// CommitScan is the detail surface's full scan health (the detail
+	// response only; the list omits it).
+	CommitScan *APICommitScanInfo `json:"commit_scan,omitempty"`
+}
+
+// APICommitScanInfo is one project's commit-scan health on the Project
+// detail panel: what failed (Detail is git's own message), the root the
+// scanner runs git in (ScanRoot differs from the stored root when a
+// Windows path is translated for a WSL daemon), when the last attempt and
+// the last success were, and whether "Rescan now" is available.
+type APICommitScanInfo struct {
+	Kind           string `json:"kind,omitempty"`
+	Detail         string `json:"detail,omitempty"`
+	ScanRoot       string `json:"scan_root,omitempty"`
+	LastScanAt     string `json:"last_scan_at,omitempty"`
+	LastSuccessAt  string `json:"last_success_at,omitempty"`
+	Failures       int    `json:"failures"`
+	HistoryPending bool   `json:"history_pending"`
+	CanRescan      bool   `json:"can_rescan"`
 }
 
 type APIProjectCostBucketRow struct {

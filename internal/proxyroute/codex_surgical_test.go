@@ -3,6 +3,7 @@ package proxyroute
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -97,7 +98,8 @@ func TestRegisterCodexIsSurgical(t *testing.T) {
 			if _, reserved := providers["openai"]; reserved {
 				t.Fatalf("reserved openai table survived: %v", providers)
 			}
-			if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o644 {
+			// POSIX-only: Windows has no mode bits (Perm reports 0666 or 0444).
+			if fi, _ := os.Stat(path); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o644 {
 				t.Fatalf("mode = %v, want 0644 kept", fi.Mode().Perm())
 			}
 			if len(locked) != 1 || locked[0] != path {
@@ -154,7 +156,8 @@ func TestLeaveRemovesCodexRouteSurgically(t *testing.T) {
 	if strings.TrimRight(string(got), "\n")+"\n" != seed {
 		t.Fatalf("register then Leave did not restore the file:\n%q\nwant\n%q", got, seed)
 	}
-	if fi, _ := os.Stat(cfg); fi.Mode().Perm() != 0o640 {
+	// POSIX-only: Windows has no mode bits (Perm reports 0666 or 0444).
+	if fi, _ := os.Stat(cfg); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o640 {
 		t.Fatalf("mode = %v, want 0640 kept", fi.Mode().Perm())
 	}
 }

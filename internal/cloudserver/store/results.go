@@ -181,6 +181,11 @@ func (s *Store) completeJobWithResultTx(ctx context.Context, accountID, jobID, e
 			if e := finalizeReservationTx(ctx, tx, accountID, reservationID, "settled", false); e != nil {
 				return e
 			}
+			// T-946: the accepted result's provider cost counts against the
+			// pool's spend ceiling, in the same transaction that stores it.
+			if e := addReservationSpendTx(ctx, tx, accountID, reservationID, prov.CostUSD, now); e != nil {
+				return e
+			}
 		}
 		rv := prov.RouteVersion
 		attempts := prov.RetryCount + 1

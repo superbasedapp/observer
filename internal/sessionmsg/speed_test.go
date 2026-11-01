@@ -142,6 +142,28 @@ func TestDerive_Speed(t *testing.T) {
 			want: want{key: "trn", ok: true, rate: 60, basis: BasisNative, timed: 2, calls: 2, gapToNext: -1, genTokens: 1200, genMs: 20000},
 		},
 		{
+			// AP-131 follow-up: an export-stamped (otel) duration ranks below
+			// native and above transcript.
+			name: "otel basis ranks between native and transcript",
+			in: DeriveInput{
+				TokenRows: []TokenRow{
+					{SourceEventID: "tk:1", TurnID: "trn", Timestamp: "2026-09-22T10:00:00Z", Model: "m", Input: 1, Output: 600, GenMs: 10000, GenBasis: BasisNative},
+					{SourceEventID: "tk:2", TurnID: "trn", Timestamp: "2026-09-22T10:00:20Z", Model: "m", Input: 1, Output: 600, GenMs: 10000, GenBasis: BasisOTel},
+				},
+			},
+			want: want{key: "trn", ok: true, rate: 60, basis: BasisOTel, timed: 2, calls: 2, gapToNext: -1, genTokens: 1200, genMs: 20000},
+		},
+		{
+			name: "otel basis yields to transcript as the weaker label",
+			in: DeriveInput{
+				TokenRows: []TokenRow{
+					{SourceEventID: "tk:1", TurnID: "trn", Timestamp: "2026-09-22T10:00:00Z", Model: "m", Input: 1, Output: 600, GenMs: 10000, GenBasis: BasisOTel},
+					{SourceEventID: "tk:2", TurnID: "trn", Timestamp: "2026-09-22T10:00:20Z", Model: "m", Input: 1, Output: 600, GenMs: 10000, GenBasis: BasisTranscript},
+				},
+			},
+			want: want{key: "trn", ok: true, rate: 60, basis: BasisTranscript, timed: 2, calls: 2, gapToNext: -1, genTokens: 1200, genMs: 20000},
+		},
+		{
 			name: "reasoning counted only when the adapter is ReasoningDisjoint",
 			in: DeriveInput{
 				ReasoningDisjoint: true,

@@ -1,0 +1,23 @@
+{
+  "sessionId": "eeeeeeee-1111-4222-8333-444444444444-1792552897123",
+  "createdAt": "2026-10-21T03:21:37.124Z",
+  "lastActiveAt": "2026-10-21T03:21:59.519Z",
+  "projectPath": "C:\\Users\\user\\proj",
+  "projectName": "proj",
+  "model": "fantail",
+  "messageCount": 11,
+  "status": "active",
+  "client": "terminal",
+  "title": "Can you give me a quick summary",
+  "titleSource": "auto",
+  "usage": {
+    "promptTokens": 40501,
+    "completionTokens": 226,
+    "totalTokens": 40727,
+    "cacheReadTokens": 0,
+    "turnCount": 1,
+    "tokenUsageStatus": "actual",
+    "longestTurnDurationMs": 17924,
+    "updatedAt": "2026-10-21T03:21:59.519Z"
+  }
+}

@@ -113,6 +113,13 @@ type ActionVerdict struct {
 	// value) — MaybeAlert's existing severity-threshold behavior is
 	// unchanged for them.
 	SuppressAlert bool
+	// SilentStop is true when the boundary STOPPED the action but its
+	// channel showed the developer no reason in band (a prompt seam whose
+	// block cannot carry a message: PromptSeamCaps.BlockSilent). The
+	// desktop toast is then the only signal, so MaybeAlert sends it
+	// whatever [guard.alerts].min_severity says. Zero value on every other
+	// channel.
+	SilentStop bool
 	// Overridable / OrgLocked are the ORG-GRANTED OVERRIDE posture of
 	// the winning rule at evaluation time (Track B, override.go).
 	// Overridable: the org bundle marked this rule overridable, so the
@@ -269,6 +276,12 @@ func (g *Guard) EvaluateActions(inputs []ActionInput) []ActionVerdict {
 			appr.stamp(&av)
 			out = append(out, av)
 		}
+		eng := es.engineForEvent(g, ev.ProjectRoot, ev.Cwd)
+		if ev, ok := g.evasionEvent(in, ev, verdict, guardErr, eng.RuleEnforceDenies); ok {
+			if v := eng.EvaluateRule("A-613", ev); v.Decision >= policy.DecisionFlag {
+				out = append(out, ActionVerdict{Input: *in, Kind: kind, Category: g.categoryWith(es, v.RuleID), Verdict: v})
+			}
+		}
 		g.markTaint(in, kind, verdict)
 		g.maybeConfigRescan(in)
 	}
@@ -341,4 +354,31 @@ func boundOrigin(s string) string {
 		return s
 	}
 	return s[:maxOrigin]
+}
+
+// evasionEvent records a refusal in the A-613 tracker and, when the same
+// rule already refused other shapes in this session within the window,
+// returns the event stamped for the A-613 row (ok true). A-613 rides
+// beside the refusal's own verdict, so it is evaluated on its own.
+//
+// A refusal is an ask or a deny, or, in observe mode, a flag from a rule
+// whose enforce decision is deny (enforceDenies): observe mode never asks
+// or denies, and A-613's row says it flags in observe mode too (plans
+// decision log P-004).
+func (g *Guard) evasionEvent(in *ActionInput, ev policy.Event, verdict policy.Verdict, guardErr error, enforceDenies func(ruleID string) bool) (policy.Event, bool) {
+	window := time.Duration(g.cfg.Rules.EvasionWindowSeconds) * time.Second
+	if window <= 0 || guardErr != nil || verdict.RuleID == "" || verdict.RuleID == "A-613" {
+		return ev, false
+	}
+	refused := verdict.Decision >= policy.DecisionAsk ||
+		(verdict.Decision == policy.DecisionFlag && enforceDenies != nil && enforceDenies(verdict.RuleID))
+	if !refused {
+		return ev, false
+	}
+	others := g.evasions.Observe(in.SessionID, verdict.RuleID, in.ActionType+"\x1f"+in.Target, in.Timestamp, window)
+	if others < 1 {
+		return ev, false
+	}
+	ev.EvasionOf, ev.EvasionShapes = verdict.RuleID, others
+	return ev, true
 }

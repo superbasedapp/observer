@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/marmutapp/superbased-observer/internal/testwriteguard"
 )
 
 // ProfileStore extends the built-in profile set (the embedded
@@ -231,6 +233,9 @@ func (ps ProfileStore) Create(name, from string) error {
 		}
 		body = raw
 	}
+	if err := testwriteguard.Check("write", path); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(ps.Dir, 0o755); err != nil {
 		return fmt.Errorf("config: ensure profiles dir: %w", err)
 	}
@@ -246,6 +251,9 @@ func (ps ProfileStore) Delete(name string) error {
 	path := ps.userPath(name)
 	if path == "" {
 		return fmt.Errorf("config: invalid profile name %q", name)
+	}
+	if err := testwriteguard.Check("remove", path); err != nil {
+		return err
 	}
 	if err := os.Remove(path); err != nil {
 		return fmt.Errorf("config: delete profile %q: %w", name, err)

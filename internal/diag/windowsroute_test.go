@@ -256,3 +256,74 @@ func TestWindowsProxyRoutes_ThirdPartyURLNotConsideredRouted(t *testing.T) {
 		t.Errorf("status = %v want Warn", c.Status)
 	}
 }
+
+// TestWindowsProxyRoutes_UnreachableTargetWarns pins CC-9's doctor half: a
+// written Windows route whose own target refuses the connection is a WARN
+// naming the target, never an OK and never a FAIL.
+func TestWindowsProxyRoutes_UnreachableTargetWarns(t *testing.T) {
+	home := writeWindowsClaudeRoute(t, "http://localhost:8820")
+	homes := []crossmount.HomeRoot{{Path: home, OS: crossmount.OSWindows}}
+	refused := func(context.Context, string) (int, error) { return 0, errRouteTargetRefused }
+	c, ok := windowsProxyRoutesCheck(context.Background(), config.Config{}, true, homes, ownsAll, refused)
+	if !ok {
+		t.Fatal("expected a check row")
+	}
+	if c.Status != StatusWarn {
+		t.Errorf("status = %v, want WARN for an unreachable route target", c.Status)
+	}
+	joined := strings.Join(c.Details, "\n")
+	if !strings.Contains(joined, "http://localhost:8820/ REFUSED the connection") || !strings.Contains(joined, "ConnectionRefused") {
+		t.Errorf("expected the unreachable target named:\n%s", joined)
+	}
+	if !strings.Contains(joined, "built, waiting on live check LC6 and LC14") {
+		t.Errorf("expected the relay's gate named:\n%s", joined)
+	}
+}
+
+// TestWindowsProxyRoutes_ProbesEachRouteTarget pins that every distinct
+// written target is probed (a relay URL and the proxy URL are two targets),
+// at its origin root, so the probe never reaches a provider.
+func TestWindowsProxyRoutes_ProbesEachRouteTarget(t *testing.T) {
+	home := writeWindowsClaudeRoute(t, "http://127.0.0.1:8829/r/claude-code")
+	codexDir := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(codexDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	toml := "model_provider = \"openai-observer\"\n[model_providers.openai-observer]\nbase_url = \"http://localhost:8820/v1\"\n"
+	if err := os.WriteFile(filepath.Join(codexDir, "config.toml"), []byte(toml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	homes := []crossmount.HomeRoot{{Path: home, OS: crossmount.OSWindows}}
+	var probed []string
+	probe := func(_ context.Context, target string) (int, error) {
+		probed = append(probed, target)
+		if strings.Contains(target, "8829") {
+			return 0, errRouteTargetRefused
+		}
+		return 200, nil
+	}
+	c, _ := windowsProxyRoutesCheck(context.Background(), config.Config{}, true, homes, ownsAll, probe)
+	if strings.Join(probed, ",") != "http://127.0.0.1:8829/,http://localhost:8820/" {
+		t.Fatalf("probed %v, want each origin root once", probed)
+	}
+	if c.Status != StatusWarn {
+		t.Errorf("status = %v, want WARN (the relay target is unreachable)", c.Status)
+	}
+}
+
+// TestWindowsProxyRoutes_TimedOutTargetHasItsOwnWording pins audit item 7: a
+// curl timeout (exit 28) is a WARN that says the target timed out, never
+// that it refused the connection.
+func TestWindowsProxyRoutes_TimedOutTargetHasItsOwnWording(t *testing.T) {
+	home := writeWindowsClaudeRoute(t, "http://localhost:8820")
+	homes := []crossmount.HomeRoot{{Path: home, OS: crossmount.OSWindows}}
+	timedOut := func(context.Context, string) (int, error) { return 0, errRouteTargetTimedOut }
+	c, _ := windowsProxyRoutesCheck(context.Background(), config.Config{}, true, homes, ownsAll, timedOut)
+	joined := strings.Join(c.Details, "\n")
+	if c.Status != StatusWarn || !strings.Contains(joined, "TIMED OUT") || strings.Contains(joined, "ConnectionRefused") {
+		t.Fatalf("status %v, details:\n%s", c.Status, joined)
+	}
+	if !errors.Is(curlTargetExit[7], errRouteTargetRefused) || !errors.Is(curlTargetExit[28], errRouteTargetTimedOut) || len(curlTargetExit) != 2 {
+		t.Fatal("curl exit 7 is refused, 28 is timed out, nothing else describes the target")
+	}
+}

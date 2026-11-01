@@ -454,6 +454,10 @@ func mapToolName(name string) string {
 		return models.ActionSearchText
 	case "glob", "findfiles", "filesearch", "ls", "listfiles", "listdir", "findbyname":
 		return models.ActionSearchFiles
+	// manage_task: the agent's task bookkeeping (name live-grounded on the
+	// 2026-10-28 Windows demo node, Antigravity IDE 2.6.0; arguments not).
+	case "managetask":
+		return models.ActionHarnessCall
 	default:
 		if strings.HasPrefix(key, "mcp") || strings.Contains(name, "__") {
 			return models.ActionMCPCall

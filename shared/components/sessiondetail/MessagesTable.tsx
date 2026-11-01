@@ -11,6 +11,7 @@ import { createPortal } from "react-dom";
 import clsx from "clsx";
 import { CopyOnClick, Icon, ModelId, Pill, Tooltip } from "../../primitives";
 import { actionMeta, mcpIdentity } from "../../lib/actions";
+import { accountEvidenceLabel } from "../../lib/toolAccounts";
 import { MESSAGE_ROLE, STOP_REASON } from "../../lib/sessionVocab";
 import { vocabIcon } from "../../lib/vocabIcons";
 import { VocabPill } from "../../lib/vocabPill";
@@ -251,10 +252,14 @@ const MESSAGE_CELLS: Record<MessageSortKey, (c: CellCtx) => ReactNode> = {
     <td className="max-w-[230px] py-1 text-fg-2">
       <Tooltip content={<div className="space-y-1">
         <p>{m.account?.status === "conflict" ? "Different logins were observed for this message." : "Login observed at capture time; provider billing identity is unconfirmed."}</p>
-        {(m.account?.evidence ?? []).map((e, i) => <p key={i} className="break-all">{e.email || e.name || e.account_id} · {e.source} · {e.stage} · {e.observed_at}</p>)}
+        {m.account?.account_label && m.account.account_label !== m.account.label && <p>Account-level: {m.account.account_label} (a shared account, not the person)</p>}
+        {(m.account?.evidence ?? []).map((e, i) => <p key={i} className="break-all">{accountEvidenceLabel(e)} · {e.source} · {e.stage} · {e.observed_at}</p>)}
         {(!m.account || m.account.status === "unknown") && <p>No account evidence with an exact message match.</p>}
       </div>} maxWidth={440}>
-        <span tabIndex={0} className="block truncate cursor-help">{m.account?.label || "Unknown"}</span>
+        <span tabIndex={0} className="block cursor-help">
+          <span className="block truncate">{m.account?.label || "Unknown"}</span>
+          {m.account?.account_label && m.account.account_label !== m.account.label && <span className="block truncate text-fg-4">{m.account.account_label}</span>}
+        </span>
       </Tooltip>
     </td>
   ),

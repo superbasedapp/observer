@@ -57,11 +57,20 @@ type Options struct {
 	// Admission runs immediately before each candidate or judge process starts.
 	// Nil leaves Arena admission unchanged. The callback receives the tool name
 	// and configured Arena proxy URL so cmd can apply launch policy without
-	// coupling this package to guard or configuration internals.
+	// coupling this package to guard or configuration internals. Its context
+	// carries the process's LaunchTarget (LaunchTargetFrom): the directory it
+	// starts in, the run's source repository, and the environment entries the
+	// callback adds to the process.
 	Admission func(context.Context, string, string) error
 	// CostDisplay resolves the developer cost display ("usd" or "tokens")
 	// that a kept commit's provenance footer follows (T-204). Nil is dollars.
 	CostDisplay func() string
+	// PermissionBypass answers, per drive, whether the harness's own
+	// permission checks may be skipped (OSH-R-005): cmd composes the
+	// operator's own config with a managed node's org policy. Nil answers
+	// no, so the standalone engine never skips them. The judge never skips
+	// them whatever this says (permlane.go laneTable).
+	PermissionBypass func(ctx context.Context, tool string) BypassDecision
 }
 
 // CandidateSpec names one harness slot in a run.
@@ -157,6 +166,9 @@ func (r *Runner) startRun(ctx context.Context, spec RunSpec, allowDirty bool) (*
 	if err := resolveRunModels(&spec, r.opts.ProxyURL); err != nil {
 		return nil, err
 	}
+	if err := r.checkPermissionLanes(ctx, spec); err != nil {
+		return nil, err
+	}
 	contextFiles, err := normalizeContextFiles(spec.ProjectRoot, spec.ContextFiles)
 	if err != nil {
 		return nil, fmt.Errorf("arena.StartRun: context files: %w", err)
@@ -176,6 +188,25 @@ func (r *Runner) startRun(ctx context.Context, spec RunSpec, allowDirty bool) (*
 		return nil, err
 	}
 	return prep, nil
+}
+
+// checkPermissionLanes refuses a run before any worktree exists when a
+// candidate or the judge has no permission lane it may run in here
+// (OSH-R-005), so the operator reads the reason at once instead of on every
+// candidate row after the spend started. The drive re-asks per process, so
+// a policy that changes mid-run is still honoured.
+func (r *Runner) checkPermissionLanes(ctx context.Context, spec RunSpec) error {
+	for _, c := range spec.Candidates {
+		ic, _ := integration.For(c.Tool)
+		if _, _, err := permissionArgs(ic.Headless, c.Tool, roleCandidate, r.bypassFor(ctx, c.Tool)); err != nil {
+			return fmt.Errorf("arena.StartRun: %w", err)
+		}
+	}
+	jc, _ := integration.For(spec.JudgeTool)
+	if _, _, err := permissionArgs(jc.Headless, spec.JudgeTool, roleJudge, BypassDecision{}); err != nil {
+		return fmt.Errorf("arena.StartRun: %w", err)
+	}
+	return nil
 }
 
 // validateRunSpec checks the run-level fields a candidate loop doesn't
@@ -505,6 +536,8 @@ func (r *Runner) driveOne(ctx context.Context, prep *PreparedRun, row models.Are
 		Tool:         row.Tool,
 		Model:        row.Model,
 		WorktreePath: row.WorktreePath,
+		SourceRoot:   prep.Spec.ProjectRoot,
+		ProjectRoot:  prep.Spec.ProjectRoot,
 		Prompt:       prep.Spec.Prompt,
 		ContextFiles: prep.Spec.ContextFiles,
 		ProxyURL:     r.opts.ProxyURL,
@@ -513,6 +546,8 @@ func (r *Runner) driveOne(ctx context.Context, prep *PreparedRun, row models.Are
 		OnStart:      onStart,
 		OnExit:       onExit,
 		Admission:    r.opts.Admission,
+		Role:         roleCandidate,
+		Bypass:       r.bypassFor(ctx, row.Tool),
 	})
 	if err != nil {
 		row.Status = models.ArenaCandidateStatusFailed
@@ -524,6 +559,7 @@ func (r *Runner) driveOne(ctx context.Context, prep *PreparedRun, row models.Are
 	}
 	row.ExitCode = res.ExitCode
 	row.WallMS = res.WallMS
+	row.PermissionLane = string(res.Lane)
 	row.TimedOut = res.TimedOut
 	row.SessionIDs = appendDistinct(res.SessionIDs, arenaSessionID)
 	row.FinalAnswerExcerpt = truncateStr(stripANSI(res.FinalAnswer), 2000)
@@ -704,15 +740,17 @@ func (r *Runner) JudgeRun(ctx context.Context, prep *PreparedRun) error {
 		if err != nil || len(patch) == 0 {
 			continue // nothing to judge (inert candidate)
 		}
-		scores, verdict, jerr := judgeCandidate(ctx, driveRequest{
-			Tool:      prep.Spec.JudgeTool,
-			Model:     prep.Spec.JudgeModel,
-			Prompt:    renderJudgePrompt(prep.Spec.Prompt, string(patch)),
-			ProxyURL:  r.opts.ProxyURL,
-			Timeout:   DefaultTimeout,
-			ConfigDir: judgeCfg,
-			Admission: r.opts.Admission,
-		}, jcap.Headless)
+		scores, verdict, jerr := judgeInScratch(ctx, driveRequest{
+			Tool:        prep.Spec.JudgeTool,
+			Model:       prep.Spec.JudgeModel,
+			ProjectRoot: prep.Spec.ProjectRoot,
+			Prompt:      renderJudgePrompt(prep.Spec.Prompt, string(patch)),
+			ProxyURL:    r.opts.ProxyURL,
+			Timeout:     DefaultTimeout,
+			ConfigDir:   judgeCfg,
+			Admission:   r.opts.Admission,
+			Role:        roleJudge,
+		}, jcap.Headless, r.opts.WorkspaceDir)
 		if jerr != nil {
 			row.Verdict = "judge error: " + truncateStr(jerr.Error(), 300)
 		} else {
@@ -728,6 +766,92 @@ func (r *Runner) JudgeRun(ctx context.Context, prep *PreparedRun) error {
 		return fmt.Errorf("arena.JudgeRun: %w", err)
 	}
 	return r.opts.Store.UpdateArenaRunStatus(ctx, prep.Spec.ID, models.ArenaRunStatusComplete)
+}
+
+// judgeScratchName is the judge's scratch directory under the Runner's
+// workspace root (typically ~/.observer/arena/judge-scratch).
+const judgeScratchName = "judge-scratch"
+
+// judgeScratchLock serialises the judge drives that share the one scratch
+// directory: a run judges its candidates one after another, and two runs
+// judging at once take turns rather than empty each other's directory. A
+// one-slot channel rather than a mutex, so a drive waiting its turn gives
+// up when its context ends (lockJudgeScratch).
+var judgeScratchLock = make(chan struct{}, 1)
+
+// lockJudgeScratch takes the scratch directory, or returns the context's
+// error if it ends first.
+func lockJudgeScratch(ctx context.Context) error {
+	select {
+	case judgeScratchLock <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// unlockJudgeScratch gives the scratch directory back.
+func unlockJudgeScratch() { <-judgeScratchLock }
+
+// judgeScratchDir is the one stable directory every judge drive runs in,
+// emptied before each drive: the judge reads the patch from its prompt and
+// needs no repository. A stable path, not a new temporary directory per
+// drive, so hook capture files every judge session under one project that
+// stays, not under a deleted /tmp one per run (plans decision log P-037).
+// A variable so a test can see where the judge ran.
+var judgeScratchDir = func(workspaceRoot string) (string, error) {
+	if strings.TrimSpace(workspaceRoot) == "" {
+		return "", errors.New("no arena workspace directory")
+	}
+	dir := filepath.Join(workspaceRoot, judgeScratchName)
+	if err := emptyDir(dir); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+// emptyDir makes dir an existing empty directory (0700), removing whatever
+// is inside it; a link at dir is replaced, never followed.
+func emptyDir(dir string) error {
+	if fi, err := os.Lstat(dir); err == nil && !fi.IsDir() {
+		if err := os.Remove(dir); err != nil {
+			return err
+		}
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range ents {
+		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// judgeInScratch runs one judge drive in the stable scratch directory under
+// workspaceRoot, emptied before the drive and again after it: a process
+// started with no directory of its own would run in the daemon's working
+// directory and load that directory's project settings unchecked. The
+// directory is also the launch target the admission callback checks
+// (LaunchTarget.Dir), with no source repository: nothing in it is the
+// run's, so no accepts are carried in.
+func judgeInScratch(ctx context.Context, req driveRequest, spec *integration.HeadlessSpec, workspaceRoot string) (*models.JudgeScores, string, error) {
+	if err := lockJudgeScratch(ctx); err != nil {
+		return nil, "", fmt.Errorf("arena.judgeInScratch: waiting for the judge scratch directory: %w", err)
+	}
+	defer unlockJudgeScratch()
+	dir, err := judgeScratchDir(workspaceRoot)
+	if err != nil {
+		return nil, "", fmt.Errorf("arena.judgeInScratch: %w", err)
+	}
+	defer func() { _ = emptyDir(dir) }()
+	req.WorktreePath, req.SourceRoot = dir, ""
+	return judgeCandidate(ctx, req, spec)
 }
 
 // MarkRunFailed records an asynchronous pipeline failure without destroying

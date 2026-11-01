@@ -179,7 +179,8 @@ var hookMechanismDialect = map[integration.HookMechanism]hookDialectEntry{
 	integration.HookPoolsideYAML:   {hook.PromptDialectPoolside, "UserPromptSubmit", "UserPromptSubmit"},
 	integration.HookCascadeJSON:    {hook.PromptDialectCascade, "pre_user_prompt", "pre_user_prompt"},
 	integration.HookCommandCodeMod: {hook.PromptDialectCommandCode, "transformInput", "transformInput"},
-	// Antigravity CLI PreInvocation (audit P1): warn-only.
+	// Antigravity CLI PreInvocation (audit P1): warns, and blocks by
+	// aborting the turn on agy >= 1.3.5 (guard-enforcement fix 2026-10-15).
 	integration.HookAntigravityJSON: {hook.PromptDialectAntigravityPreInvocation, "PreInvocation", "PreInvocation"},
 	// zcode: `observer init` registers it since hook-parity Lane A4
 	// (2026-10-03), so the probe checks its registration like any row.
@@ -366,7 +367,25 @@ var hookRegistrationOptions = func(binary, configPath string) hook.Options {
 	// The command the writers register (registration.go, U1) and the
 	// T-725 equivalence they apply, so an entry `observer start` keeps
 	// as equivalent is reported as registered here too.
-	return hook.Options{BinaryPath: registrationCommand(binary), ConfigPath: configPath, DryRun: true, KeepEquivalentHooks: true}
+	//
+	// ToolGateFailsClosed is the same answer the auto-registration writes
+	// with (autoRegisterOptions, T-885): a host whose hook entry differs by
+	// enforcement state (Goose's "on_failure":"block", written only while
+	// guard enforcement closes the tool gate) is otherwise compared with the
+	// entry for the OTHER state, so a current hook on an enforcing node read
+	// as "missing or stale" and the tool fell back to sandbox_enforce.
+	//
+	// Getenv stays nil, as for `observer init` and the auto-register loop:
+	// hook.NewRegistry applies the one pinned-home rule (crossmount.HomeEnv,
+	// R-188 F1), so a vendor home override (DIMCODE_HOME, DEEPAGENTS_HOME,
+	// ...) is read where the writer writes, and an unverified relocation
+	// note (DIRAC_DIR, S-17) reaches the doctor as the writer reports it.
+	return hook.Options{
+		BinaryPath: registrationCommand(binary), ConfigPath: configPath, DryRun: true, KeepEquivalentHooks: true,
+		WSLTwinBinaryPath:       registrationWSLTwinBinary(binary),
+		ToolGateFailsClosed:     registrationToolGateFailsClosed(configPath),
+		WindowsBridgeFailClosed: registrationWindowsBridgeFailClosed(configPath),
+	}
 }
 
 // windowsHookHomeDetected reports whether hook.Registry can actually

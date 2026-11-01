@@ -74,7 +74,7 @@ func jsonClientCases(home string) []jsonClientCase {
 			map[string]any{"url": relayURL, "headers": hdrs},
 		},
 		{
-			"cline", locate.ClineSettingsPath(home, runtime.GOOS),
+			"cline", testClineMCPPath(home, runtime.GOOS, nil),
 			map[string]any{"type": "streamableHttp", "url": relayURL, "headers": hdrs, "disabled": false},
 		},
 		{
@@ -207,7 +207,8 @@ func TestRelayWriter_SharedJSONWrapTable(t *testing.T) {
 			if got, _ := os.ReadFile(path); string(got) != string(st.After) {
 				t.Fatal("Commit wrote something other than the staged bytes")
 			}
-			if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o644 {
+			// POSIX-only: Windows has no mode bits (Perm reports 0666 or 0444).
+			if fi, _ := os.Stat(path); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o644 {
 				t.Fatalf("Commit changed the mode to %o", fi.Mode().Perm())
 			}
 			top := readJSONTop(t, path)
@@ -489,7 +490,8 @@ func TestRelayWriter_AbsentConfigRemoteOnly(t *testing.T) {
 	if err := r.Commit(ctx, c, st); err != nil {
 		t.Fatal(err)
 	}
-	if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != 0o600 {
+	// POSIX-only: Windows has no mode bits (Perm reports 0666 or 0444).
+	if fi, err := os.Stat(path); err != nil || (runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600) {
 		t.Fatalf("created file: %v %v", fi, err)
 	}
 	if err := r.Revert(ctx, c, rowsFromStage(c, st)); err != nil {
@@ -571,7 +573,7 @@ func TestRelayClients_InstalledAndVerified(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(locate.ClineSettingsPath(winHome, "windows")), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(locate.ClineLegacySettingsPath(winHome, "windows")), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	r, err := NewRegistrar(RegisterOptions{BinaryPath: observerBin, HomeDir: home, WindowsClineHome: winHome})

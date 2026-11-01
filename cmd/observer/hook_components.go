@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"strings"
+	"sync"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/clientwire"
 	"github.com/marmutapp/superbased-observer/internal/componentstate"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/hook"
@@ -87,6 +88,7 @@ var hookComponentSnapshotFn = func(ctx context.Context, configPath string) compo
 // nothing from stdin when it lets the invocation through.
 func hookAdapterGate(ctx context.Context, tool, event, label, configPath string, plan hookFailurePlan, stdin io.Reader, stdout, stderr io.Writer) bool {
 	snap := hookComponentSnapshotFn(ctx, configPath)
+	noteHookInvocationComponents(configPath, snap)
 	if hookComponentDecision(snap.AdapterActive(tool), plan.FailClosed) != hookAllowInert {
 		return false
 	}
@@ -102,6 +104,52 @@ func hookAdapterGate(ctx context.Context, tool, event, label, configPath string,
 	return true
 }
 
-// adapterBaseTool strips the cross-OS "-windows" suffix a Windows-side hook
-// registration carries, the same mapping componentstate.AdapterActive uses.
-func adapterBaseTool(tool string) string { return strings.TrimSuffix(tool, "-windows") }
+// adapterBaseTool maps a hook registration target to its adapter: the
+// cross-OS "-windows" bridge and an Xcode agent-home target resolve to their
+// base tool (clientwire.HookTargetBase), the same mapping
+// componentstate.AdapterActive uses.
+func adapterBaseTool(tool string) string { return clientwire.HookTargetBase(tool) }
+
+// The invocation's component snapshot: the adapter gate resolves it once per
+// `observer hook` invocation (above), and later decisions of the same
+// invocation that depend on a component's selection (the security feedback,
+// security_feedback.go hookFeedbackSelected) read it here instead of
+// loading the config again. It is the same component state the
+// registration writers use (registrationSelected resolves it the same way).
+// resetHookInvocationState clears it.
+var (
+	hookInvocationSnapMu   sync.Mutex
+	hookInvocationSnapPath string
+	hookInvocationSnap     *componentstate.Snapshot
+)
+
+// noteHookInvocationComponents records the invocation's snapshot for
+// configPath.
+func noteHookInvocationComponents(configPath string, snap componentstate.Snapshot) {
+	hookInvocationSnapMu.Lock()
+	defer hookInvocationSnapMu.Unlock()
+	hookInvocationSnapPath, hookInvocationSnap = configPath, &snap
+}
+
+// hookInvocationComponents returns the invocation's snapshot for
+// configPath, resolving (and recording) it when the adapter gate has not
+// run for this config (a handler called directly).
+func hookInvocationComponents(configPath string) componentstate.Snapshot {
+	hookInvocationSnapMu.Lock()
+	if hookInvocationSnap != nil && hookInvocationSnapPath == configPath {
+		snap := *hookInvocationSnap
+		hookInvocationSnapMu.Unlock()
+		return snap
+	}
+	hookInvocationSnapMu.Unlock()
+	snap := hookComponentSnapshotFn(context.Background(), configPath)
+	noteHookInvocationComponents(configPath, snap)
+	return snap
+}
+
+// resetHookInvocationComponents forgets the invocation's snapshot.
+func resetHookInvocationComponents() {
+	hookInvocationSnapMu.Lock()
+	defer hookInvocationSnapMu.Unlock()
+	hookInvocationSnapPath, hookInvocationSnap = "", nil
+}

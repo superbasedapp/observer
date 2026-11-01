@@ -22,7 +22,8 @@
 # failing `observer uninstall` keeping the binary unless --force), an
 # npm-style symlink that must not be replaced, and in-place upgrades over a
 # systemd unit (stood in for by OBSERVER_INSTALL_TEST_SYSTEMD; the stub logs
-# the `observer service upgrade` the installer hands the restart to).
+# the `observer service upgrade` the installer hands the restart to), and
+# the macOS 13 floor (a sw_vers fixture via OBSERVER_INSTALL_TEST_SW_VERS).
 #
 # Usage: scripts/test-install.sh
 #        INSTALL_SCRIPT=/path/to/install.sh scripts/test-install.sh
@@ -105,6 +106,7 @@ run() {
   if [[ -n "${OBSERVER_INSTALL_VERIFIER:-}" ]]; then extra+=("OBSERVER_INSTALL_VERIFIER=$OBSERVER_INSTALL_VERIFIER"); fi
   if [[ -n "${FAKE_UNINSTALL_FAIL:-}" ]]; then extra+=("FAKE_UNINSTALL_FAIL=$FAKE_UNINSTALL_FAIL"); fi
   if [[ -n "${OBSERVER_INSTALL_TEST_SYSTEMD:-}" ]]; then extra+=("OBSERVER_INSTALL_TEST_SYSTEMD=$OBSERVER_INSTALL_TEST_SYSTEMD"); fi
+  if [[ -n "${OBSERVER_INSTALL_TEST_SW_VERS:-}" ]]; then extra+=("OBSERVER_INSTALL_TEST_SW_VERS=$OBSERVER_INSTALL_TEST_SW_VERS"); fi
   # A fixture /proc with no daemon (U4): a test never reads this host's
   # real processes.
   mkdir -p "$T/noproc"
@@ -404,6 +406,30 @@ if script --version 2>/dev/null | grep -q util-linux; then
 else
   skp "interactive other-install menu: util-linux script(1) not available"
 fi
+
+# 23. the macOS 13 floor (P-206): a sw_vers fixture stands in for the Mac's
+# version on any host. 12.7 and an unreadable version are refused before
+# anything is installed, naming v1.36.0; 13.0 and 15.1 install.
+swvers() { # swvers <name> <version, or empty for unreadable>
+  local f="$T/swvers-$1"
+  if [[ -n "$2" ]]; then printf '#!/bin/sh\necho %s\n' "$2" >"$f"; else printf '#!/bin/sh\nexit 1\n' >"$f"; fi
+  chmod 0755 "$f"; printf '%s' "$f"
+}
+OBSERVER_INSTALL_TEST_SW_VERS="$(swvers 12 12.7)" run "$T/h23a" --from-dir "$T/rel" --prefix "$T/p23a"
+if [[ $rc -ne 0 ]] && has "needs macOS 13 Ventura or later" && has "runs macOS 12.7" && has "v1.36.0 is the last release for macOS 12" \
+  && [[ ! -e "$T/p23a" ]]; then
+  ok "macOS 12.7 is refused, naming v1.36.0, and nothing is installed"
+else bad "macOS 12.7 floor (rc=$rc)"; cat "$T/out"; fi
+OBSERVER_INSTALL_TEST_SW_VERS="$(swvers none "")" run "$T/h23b" --from-dir "$T/rel" --prefix "$T/p23b"
+if [[ $rc -ne 0 ]] && has "could not read the macOS version" && has "macOS 13 Ventura or later" && [[ ! -e "$T/p23b" ]]; then
+  ok "an unreadable macOS version is refused with a plain message"
+else bad "unreadable macOS version (rc=$rc)"; cat "$T/out"; fi
+for v in 13.0 15.1; do
+  OBSERVER_INSTALL_TEST_SW_VERS="$(swvers "$v" "$v")" run "$T/h23-$v" --from-dir "$T/rel" --prefix "$T/p23-$v" --edition developer
+  if [[ $rc -eq 0 ]] && [[ -x "$T/p23-$v/observer" ]] && ! has "needs macOS 13"; then
+    ok "macOS $v is accepted"
+  else bad "macOS $v floor (rc=$rc)"; cat "$T/out"; fi
+done
 
 echo
 echo "install.sh: $pass passed, $fail failed, $skip skipped"

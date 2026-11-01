@@ -1,5 +1,7 @@
 package policy
 
+import "sync"
+
 // Catalog introspection accessors for the guard composition layer and
 // the CLI/doc surfaces (G5 `observer guard rules`, G8 rule-doc
 // generation). Read-only summaries — matcher functions never leave
@@ -42,8 +44,24 @@ type RuleInfo struct {
 // decision does each rule currently carry, so a lower-trust override
 // that would relax it can be rejected); CLI surfaces render it.
 func Catalog() []RuleInfo {
-	return ruleInfos(builtinRules())
+	return append([]RuleInfo(nil), builtinCatalog()...)
 }
+
+// builtinCatalog and builtinIDs are the built-in table's summaries and id set,
+// computed once per process: the built-in rows are static, and rebuilding
+// them on every call cost a hook process about a tenth of a millisecond per
+// policy rule it parsed (lane sec-p2a, P-052 finding 5). Catalog hands out a
+// copy, so a caller can never change the cached rows.
+var (
+	builtinCatalog = sync.OnceValue(func() []RuleInfo { return ruleInfos(builtinRules()) })
+	builtinIDs     = sync.OnceValue(func() map[string]bool {
+		ids := map[string]bool{}
+		for _, info := range builtinCatalog() {
+			ids[info.ID] = true
+		}
+		return ids
+	})
+)
 
 // RuleInfos returns summaries of THIS engine's effective rule rows —
 // built-ins plus extra layers, with overrides applied and disabled
@@ -75,12 +93,7 @@ func ruleInfos(rules []Rule) []RuleInfo {
 // The guard policy loader uses it to reject user [[rule]] entries that
 // collide with built-in IDs (overrides are the way to tune built-ins).
 func IsBuiltinRuleID(id string) bool {
-	for _, r := range builtinRules() {
-		if r.ID == id {
-			return true
-		}
-	}
-	return false
+	return builtinIDs()[id]
 }
 
 // SensitiveResolvedPath reports whether an already-resolved path (a

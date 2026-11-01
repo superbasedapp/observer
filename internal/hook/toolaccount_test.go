@@ -1,6 +1,7 @@
 package hook
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/hookctx"
+	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/models"
 )
 
@@ -72,5 +75,70 @@ func TestCodexAccountFileStorageMode(t *testing.T) {
 				t.Fatalf("enabled=%v want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestLocalAccountObservationsReadThroughTheProcessContext (P-032): a
+// caller that passes a fresh context still reads the account snapshot
+// through the process's hook context, so a relay child (daemon path, the
+// run's confined Files) never falls back to a plain host read.
+func TestLocalAccountObservationsReadThroughTheProcessContext(t *testing.T) {
+	root := t.TempDir()
+	claude := []byte(`{"oauthAccount":{"emailAddress":"a@example.invalid","displayName":"A","accountUuid":"p1"}}`)
+	if err := os.WriteFile(filepath.Join(root, ".claude.json"), claude, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	transcript := filepath.Join(root, ".claude", "projects", "p", "s.jsonl")
+	body, _ := json.Marshal(map[string]string{"session_id": "s1", "tool_use_id": "c1", "transcript_path": transcript})
+	if got := LocalAccountObservations(context.Background(), models.ToolClaudeCode, "PostToolUse", body); len(got) != 1 {
+		t.Fatalf("host path: %d observations", len(got))
+	}
+	var reads []string
+	files := hookctx.Files{Open: func(p string) (hookctx.File, error) {
+		reads = append(reads, p)
+		return nil, &os.PathError{Op: "read", Path: p, Err: hookctx.ErrRefused}
+	}}
+	hookctx.SetProcess(hookctx.Daemon(context.Background(), hookctx.Request{Tool: models.ToolClaudeCode}, hookctx.Channel{Files: files}, hookctx.DaemonProviders{}))
+	t.Cleanup(func() { hookctx.SetProcess(nil) })
+	if got := LocalAccountObservations(context.Background(), models.ToolClaudeCode, "PostToolUse", body); len(got) != 0 {
+		t.Fatalf("daemon path read the snapshot past the confined reader: %+v", got)
+	}
+	if len(reads) == 0 {
+		t.Fatal("the confined reader was never asked")
+	}
+}
+
+// TestClaudeAccountProviderSelectorsSuppress pins CC-10 at the hook: a
+// Claude Code session on a cloud backend (Claude Platform on AWS and Mantle
+// included) is not labelled with the cached claude.ai login, and the
+// overrides read the integration registry's one selector table.
+func TestClaudeAccountProviderSelectorsSuppress(t *testing.T) {
+	root := t.TempDir()
+	claude := []byte(`{"oauthAccount":{"emailAddress":"a@example.invalid","accountUuid":"p1"}}`)
+	body, _ := json.Marshal(map[string]string{"session_id": "s1", "tool_use_id": "call1", "transcript_path": filepath.Join(root, ".claude", "projects", "p", "s.jsonl")})
+	read := func(string) ([]byte, error) { return claude, nil }
+	if got := localAccountObservations(models.ToolClaudeCode, "PreToolUse", body, read, func(string) string { return "" }, time.Now()); len(got) != 1 {
+		t.Fatalf("baseline: want one observation, got %+v", got)
+	}
+	selectors := integration.ProviderSelectorEnvKeys(models.ToolClaudeCode)
+	for _, key := range []string{"CLAUDE_CODE_USE_ANTHROPIC_AWS", "CLAUDE_CODE_USE_MANTLE"} {
+		found := false
+		for _, s := range selectors {
+			found = found || s == key
+		}
+		if !found {
+			t.Fatalf("selector table lacks %s", key)
+		}
+	}
+	for _, key := range selectors {
+		env := func(k string) string {
+			if k == key {
+				return "1"
+			}
+			return ""
+		}
+		if got := localAccountObservations(models.ToolClaudeCode, "PreToolUse", body, read, env, time.Now()); len(got) != 0 {
+			t.Errorf("%s=1: the cloud backend session was labelled with the cached login: %+v", key, got)
+		}
 	}
 }

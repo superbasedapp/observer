@@ -22,6 +22,9 @@ const (
 // file, or past its freshness window, is now ignored and the answer comes
 // from the config (+ signed bundle); a fresh posture is still authoritative.
 func TestStalePostureDoesNotKeepBlocking(t *testing.T) {
+	// The hook reads the org bundle under the home; the process temp home's
+	// .observer is a file (FU-20), which reads as an unverifiable org layer.
+	pinToolHomes(t)
 	setup := func(t *testing.T, cfg string, postureAt, configAt time.Time) string {
 		t.Helper()
 		cp := filepath.Join(t.TempDir(), "config.toml")

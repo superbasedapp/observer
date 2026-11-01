@@ -36,6 +36,11 @@ func routeSetupPreflight(tool string) string {
 	if !ok || capability.ProxyProbe == nil {
 		return ""
 	}
+	if capability.ProxyProbe.LiveGate.Waiting() {
+		// DEC-12: the writer is switched off, so "Observer adds the route"
+		// would not be true yet.
+		return ""
+	}
 	for _, status := range routeSetupInspect() {
 		if status.Tool != tool {
 			continue

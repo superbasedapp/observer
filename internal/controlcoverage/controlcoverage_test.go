@@ -2,6 +2,7 @@ package controlcoverage
 
 import (
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/guard"
@@ -27,7 +28,7 @@ import (
 //
 //   - PromptSubmit is "proxy_only" (never folded into "none") for every
 //     tool whose registry row declares PromptLane == PromptLaneProxyOnly
-//     (aider, cline-cli, copilot-cli, crush, gemini's proxy-routed
+//     (aider, crush, gemini's proxy-routed
 //     siblings, goose, grok, hermes, opencode, pi, prime-agent). ISSUE.md's
 //     own table marks most of these "none" — an understatement: the
 //     registry's PromptLaneProxyOnly doc comment (internal/integration/
@@ -50,14 +51,14 @@ var wantRow = map[string]struct {
 	"antigravity":      {integration.EnforceRecordedAcceptance, PromptSubmitNone, integration.BudgetAdmissionNone, RouteProofStateNone},
 	"antigravity-cli":  {integration.EnforceHookBlock, PromptSubmitNone, integration.BudgetAdmissionNone, RouteProofStateNone},
 	"chatgpt-web":      {integration.EnforceRecordedAcceptance, PromptSubmitNone, integration.BudgetAdmissionNone, RouteProofStateNone},
-	"claude-code":      {integration.EnforceHookBlock, PromptSubmitBlockAsk, integration.BudgetAdmissionObserverProxy, RouteProofStateProven},
+	"claude-code":      {integration.EnforceHookBlock, PromptSubmitBlockAsk, integration.BudgetAdmissionObserverProxy, RouteProofStateUnproven}, // OBS-4: proven per surface (CLI), not tool-wide; see TestRouteProofForSurface
 	"claude-web":       {integration.EnforceRecordedAcceptance, PromptSubmitNone, integration.BudgetAdmissionNone, RouteProofStateNone},
 	"cline":            {integration.EnforceRecordedAcceptance, PromptSubmitProbeRequired, integration.BudgetAdmissionNone, RouteProofStateNone},
-	"cline-cli":        {integration.EnforceHookBlock, PromptSubmitProxyOnly, integration.BudgetAdmissionObserverProxy, RouteProofStateProven}, // T-208: providers.json read-back is launch evidence
+	"cline-cli":        {integration.EnforceHookBlock, PromptSubmitBlockOnly, integration.BudgetAdmissionObserverProxy, RouteProofStateProven}, // T-208: providers.json read-back is launch evidence
 	"codex":            {integration.EnforceHookBlock, PromptSubmitBlockAsk, integration.BudgetAdmissionObserverProxy, RouteProofStateProven},
 	"command-code":     {integration.EnforceSandbox, PromptSubmitBlockOnly, integration.BudgetAdmissionNone, RouteProofStateNone},
 	"copilot":          {integration.EnforceRecordedAcceptance, PromptSubmitNone, integration.BudgetAdmissionNone, RouteProofStateNone},
-	"copilot-cli":      {integration.EnforceHookBlock, PromptSubmitProxyOnly, integration.BudgetAdmissionObserverProxy, RouteProofStateProven},
+	"copilot-cli":      {integration.EnforceHookBlock, PromptSubmitBlockAsk, integration.BudgetAdmissionObserverProxy, RouteProofStateProven},
 	"copilot-web":      {integration.EnforceRecordedAcceptance, PromptSubmitNone, integration.BudgetAdmissionNone, RouteProofStateNone},
 	"cowork":           {integration.EnforceRecordedAcceptance, PromptSubmitNone, integration.BudgetAdmissionNone, RouteProofStateNone},
 	"crush":            {integration.EnforceSandbox, PromptSubmitProxyOnly, integration.BudgetAdmissionObserverProxy, RouteProofStateUnproven},
@@ -76,7 +77,7 @@ var wantRow = map[string]struct {
 	"kilo-code":        {integration.EnforceRecordedAcceptance, PromptSubmitNone, integration.BudgetAdmissionNone, RouteProofStateNone},
 	"kilo-code-cli":    {integration.EnforceHookBlock, PromptSubmitNone, integration.BudgetAdmissionNone, RouteProofStateNone},
 	"kimi-code":        {integration.EnforceHookBlock, PromptSubmitBlockOnly, integration.BudgetAdmissionObserverProxy, RouteProofStateUnproven},
-	"kiro-cli":         {integration.EnforceSandbox, PromptSubmitProbeRequired, integration.BudgetAdmissionNone, RouteProofStateNone},
+	"kiro-cli":         {integration.EnforceSandbox, PromptSubmitNone, integration.BudgetAdmissionNone, RouteProofStateNone},
 	"kiro-crew":        {integration.EnforceRecordedAcceptance, PromptSubmitNone, integration.BudgetAdmissionNone, RouteProofStateNone},
 	"mistral-code":     {integration.EnforceSandbox, PromptSubmitNone, integration.BudgetAdmissionNone, RouteProofStateNone},
 	"muse":             {integration.EnforceHookBlock, PromptSubmitNone, integration.BudgetAdmissionNone, RouteProofStateNone},
@@ -91,12 +92,39 @@ var wantRow = map[string]struct {
 	"qwen-code":        {integration.EnforceHookBlock, PromptSubmitBlockAsk, integration.BudgetAdmissionObserverProxy, RouteProofStateUnproven},
 	"zcode":            {integration.EnforceSandbox, PromptSubmitBlockAsk, integration.BudgetAdmissionNone, RouteProofStateNone},
 	"zed":              {integration.EnforceRecordedAcceptance, PromptSubmitNone, integration.BudgetAdmissionNone, RouteProofStateNone},
+	// The 2026-10-21 wave: no launcher or proxy route. The tools whose
+	// tool-gate hook Observer registers live (IBM Bob, CodeBuddy, Deep
+	// Agents, DimCode, Dirac, VT Code, Kimchi's bash pre-gate, and Cortex
+	// Code through the rerouted Claude Code hooks) derive hook_block and a
+	// block-only prompt gate. Autohand's pre-tool gate passed its live E2E
+	// on 2026-10-22 (docs/guard.md "Live grounding: 2026-10-21 wave"), so
+	// it derives hook_block too, though it stays `observer init`-only
+	// (device sync); its prompt gate stays probe_required because the
+	// guard conformance matrix has no blocking prompt-submit row for it.
+	// Stakpak (no hook surface) stays recorded_acceptance.
+	"autohand":        {integration.EnforceHookBlock, PromptSubmitProbeRequired, integration.BudgetAdmissionNone, RouteProofStateNone},
+	"codebuddy":       {integration.EnforceHookBlock, PromptSubmitBlockOnly, integration.BudgetAdmissionNone, RouteProofStateNone},
+	"cortex-code":     {integration.EnforceHookBlock, PromptSubmitBlockOnly, integration.BudgetAdmissionNone, RouteProofStateNone},
+	"deepagents-code": {integration.EnforceHookBlock, PromptSubmitBlockOnly, integration.BudgetAdmissionNone, RouteProofStateNone},
+	"dimcode":         {integration.EnforceHookBlock, PromptSubmitBlockOnly, integration.BudgetAdmissionNone, RouteProofStateNone},
+	"dirac":           {integration.EnforceHookBlock, PromptSubmitBlockOnly, integration.BudgetAdmissionNone, RouteProofStateNone},
+	"ibm-bob":         {integration.EnforceHookBlock, PromptSubmitBlockOnly, integration.BudgetAdmissionNone, RouteProofStateNone},
+	"kimchi":          {integration.EnforceHookBlock, PromptSubmitBlockOnly, integration.BudgetAdmissionNone, RouteProofStateNone},
+	"stakpak":         {integration.EnforceRecordedAcceptance, PromptSubmitNone, integration.BudgetAdmissionNone, RouteProofStateNone},
+	"vtcode":          {integration.EnforceHookBlock, PromptSubmitBlockOnly, integration.BudgetAdmissionNone, RouteProofStateNone},
 }
 
-// TestRowsClassifiedForEveryAdapter pins every registered adapter into
-// exactly its expected 4-tuple, and fails loudly (naming the tool and the
-// drifted field) when a future registry/conformance edit silently
-// reclassifies a row.
+// wantRouteNotObserved pins, per tool, the surfaces the registry-only route
+// proof skips (integration.SurfaceRoute.NoProducer).
+var wantRouteNotObserved = map[string][]string{
+	"claude-code": {"ide/xcode"},
+	"codex":       {"ide/xcode"},
+}
+
+// TestControlCoverageRowsClassifiedForEveryAdapter pins every registered
+// adapter into exactly its expected 4-tuple, and fails loudly (naming the
+// tool and the drifted field) when a future registry/conformance edit
+// silently reclassifies a row.
 func TestControlCoverageRowsClassifiedForEveryAdapter(t *testing.T) {
 	rows := Rows()
 	if len(rows) != len(wantRow) {
@@ -121,6 +149,12 @@ func TestControlCoverageRowsClassifiedForEveryAdapter(t *testing.T) {
 		}
 		if r.RouteProof != want.RouteProof {
 			t.Errorf("%s: RouteProof = %q, want %q", r.Tool, r.RouteProof, want.RouteProof)
+		}
+		// AW-48: the registry-only view skips the surfaces no adapter can
+		// produce yet, and names them; codex stays proven only because its
+		// ide/xcode row (settings_ignored, MAC-1) is such a surface.
+		if got, want := r.RouteNotObserved, wantRouteNotObserved[r.Tool]; !slices.Equal(got, want) {
+			t.Errorf("%s: RouteNotObserved = %v, want %v", r.Tool, got, want)
 		}
 	}
 	for tool := range wantRow {
@@ -234,11 +268,11 @@ func TestForMatchesRows(t *testing.T) {
 // after it was sent. A registry edit that moves a tool in or out of this
 // set must be a deliberate one: update this list and the audit's table.
 var wantPostHocOnlyPromptTools = []string{
-	"antigravity", "antigravity-cli", "chatgpt-web", "claude-web", "cline",
+	"antigravity", "antigravity-cli", "autohand", "chatgpt-web", "claude-web", "cline",
 	"copilot", "copilot-web", "cowork", "deepseek", "freebuff", "gemini-web",
 	"grokbot", "junie", "kilo-code", "kilo-code-cli", "kiro-cli", "kiro-crew",
 	"mistral-code", "muse", "open-interpreter", "openclaw", "perplexity-web",
-	"zed",
+	"stakpak", "zed",
 }
 
 func TestPostHocOnlyPromptTools(t *testing.T) {

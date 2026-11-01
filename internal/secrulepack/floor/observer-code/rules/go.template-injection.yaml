@@ -1,0 +1,44 @@
+rules:
+  - id: go.template-injection
+    languages: [go]
+    severity: ERROR
+    message: Input from a web request is parsed as template source, so a caller can run template actions on the server; parse a fixed template and pass the input as data.
+    metadata:
+      category: code_vuln
+      cwe: CWE-1336
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: $R.URL.Query()
+              - pattern: $R.URL.RawQuery
+              - pattern: $R.FormValue(...)
+              - pattern: $R.PostFormValue(...)
+              - pattern: $R.PathValue(...)
+              - pattern: $R.Form
+              - pattern: $R.PostForm
+              - pattern: $R.Header.Get(...)
+              - pattern: $R.Body
+          - metavariable-regex:
+              metavariable: $R
+              regex: ^(r|req|request|httpReq)$
+      - pattern: mux.Vars(...)
+      - patterns:
+          - pattern-either:
+              - pattern: $C.Query(...)
+              - pattern: $C.Param(...)
+              - pattern: $C.PostForm(...)
+              - pattern: $C.DefaultQuery(...)
+              - pattern: $C.QueryParam(...)
+              - pattern: $C.FormValue(...)
+          - metavariable-regex:
+              metavariable: $C
+              regex: ^(c|ctx|gc|ec)$
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: template.New(...).Parse($T)
+              - pattern: template.New(...).Funcs(...).Parse($T)
+              - pattern: template.Must(template.New(...).Parse($T))
+              - pattern: $TM.New(...).Parse($T)
+          - focus-metavariable: $T

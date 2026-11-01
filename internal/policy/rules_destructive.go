@@ -409,16 +409,20 @@ func dangerousDeleteTarget(ctx *MatchContext, op operand, d Dialect, a deleteAnc
 		return tierNone, ""
 	}
 	outside := ""
-	if ev.ProjectRoot != "" && rp != "" && comparableFlavors(rp, ev.ProjectRoot) && !isUnder(rp, ev.ProjectRoot) {
+	root := deleteProjectRoot(ev)
+	if root != "" && rp != "" && comparableFlavors(rp, root) && !isUnder(rp, root) {
 		outside = "target " + raw + " resolves outside the project root"
-	} else if real := resolveLinks(ctx, rp); real != "" && ev.ProjectRoot != "" && comparableFlavors(real, ev.ProjectRoot) {
-		rootReal := resolveLinks(ctx, normPath(ev.ProjectRoot))
+	} else if real := resolveLinks(ctx, rp); real != "" && root != "" && comparableFlavors(real, root) {
+		rootReal := resolveLinks(ctx, normPath(root))
 		if rootReal == "" {
-			rootReal = ev.ProjectRoot
+			rootReal = root
 		}
-		if !isUnder(real, rootReal) && !isUnder(real, ev.ProjectRoot) {
+		if !isUnder(real, rootReal) && !isUnder(real, root) {
 			outside = "target " + raw + " resolves outside the project root through a symlink"
 		}
+	}
+	if outside == "" && root == "" {
+		outside = homeChildWithoutRoot(ctx, raw, rp, cand)
 	}
 	if outside == "" {
 		return tierNone, ""
@@ -428,6 +432,53 @@ func dangerousDeleteTarget(ctx *MatchContext, op operand, d Dialect, a deleteAnc
 			" fails and the line carries on" + confirmTail
 	}
 	return tierDeny, outside
+}
+
+// deleteProjectRoot is the root R-101's recursive-delete arms judge
+// "outside the project" against: the event's own ProjectRoot, else the git
+// working tree the hook found around its cwd (Event.RepoRoot, D-MU10).
+func deleteProjectRoot(ev *Event) string {
+	if ev.ProjectRoot != "" {
+		return ev.ProjectRoot
+	}
+	return ev.RepoRoot
+}
+
+// homeChildWithoutRoot is R-101's arm for an event whose project root is
+// unknown (D-MU10): with no root there is no outside-the-project check, so
+// a recursive delete of a folder directly in the home directory
+// (~/Desktop, $HOME/Documents, /Users/<u>/Downloads) is refused, the way
+// the home directory itself always is. The target is judged as resolved
+// and, through Config.ResolveLinks, where it really points, against the
+// home as written and as resolved. A deeper path is left to the other
+// rules: without a root nothing says it is outside a project.
+func homeChildWithoutRoot(ctx *MatchContext, raw, rp, cand string) string {
+	home := normPath(ctx.Cfg.Home)
+	if home == "" {
+		return ""
+	}
+	homes := []string{home}
+	if hr := resolveLinks(ctx, home); hr != "" {
+		homes = append(homes, hr)
+	}
+	paths := []string{rp, cand}
+	if real := resolveLinks(ctx, cand); real != "" {
+		paths = append(paths, real)
+	}
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		for _, h := range homes {
+			if !comparableFlavors(p, h) || pathsEqual(p, h) {
+				continue
+			}
+			if parent := parentDir(p); parent != "" && pathsEqual(parent, h) {
+				return "target " + raw + " is a folder directly in the home directory, and the project root is unknown"
+			}
+		}
+	}
+	return ""
 }
 
 // quoteStep renders the step that left a directory unresolved, or the
@@ -510,7 +561,7 @@ func sameCmdLinkHazard(ctx *MatchContext, op operand, d Dialect, a deleteAnchor,
 	}
 	home := ctx.Cfg.Home
 	homeReal := resolveLinks(ctx, normPath(home))
-	root := ctx.Event.ProjectRoot
+	root := deleteProjectRoot(ctx.Event)
 	var unresolved string
 	for _, pr := range probes {
 		sub, unknown, through := throughSameCmdLinks(pr.path, a.links)

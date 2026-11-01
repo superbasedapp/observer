@@ -87,10 +87,36 @@ func TestIsSessionFile(t *testing.T) {
 	}
 }
 
+// fixtureEmittableBlocks counts, straight from the fixture DB, the content
+// blocks the parser is documented to emit one event for (eventsForMessage):
+// a non-blank text block and a toolRequest carrying a toolCall. A row whose
+// content_json is not valid JSON is the malformed-content warning case and
+// emits nothing.
+func fixtureEmittableBlocks(t *testing.T) int {
+	t.Helper()
+	db, err := sql.Open("sqlite", fixtureDB)
+	if err != nil {
+		t.Fatalf("open fixture: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	var n int
+	if err := db.QueryRow(`
+		SELECT COUNT(*)
+		  FROM messages m, json_each(m.content_json) b
+		 WHERE json_valid(m.content_json)
+		   AND ((json_extract(b.value, '$.type') = 'text' AND trim(COALESCE(json_extract(b.value, '$.text'), '')) <> '')
+		     OR (json_extract(b.value, '$.type') = 'toolRequest' AND json_extract(b.value, '$.toolCall') IS NOT NULL))`).Scan(&n); err != nil {
+		t.Fatalf("count fixture blocks: %v", err)
+	}
+	return n
+}
+
 func TestParseFixture_Counts(t *testing.T) {
 	tools, tokens, warns := parseFixture(t)
-	if len(tools) != 14 {
-		t.Errorf("tool events = %d, want 14", len(tools))
+	// Derived from the fixture, not a literal: one event per emittable
+	// block, so a dropped or doubled event still fails here.
+	if want := fixtureEmittableBlocks(t); want == 0 || len(tools) != want {
+		t.Errorf("tool events = %d, want %d (one per emittable fixture block)", len(tools), want)
 	}
 	if len(tokens) != 4 {
 		t.Errorf("token events = %d, want 4 (token-bearing sessions)", len(tokens))

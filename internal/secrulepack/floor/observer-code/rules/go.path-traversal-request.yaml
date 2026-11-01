@@ -1,0 +1,55 @@
+rules:
+  - id: go.path-traversal-request
+    languages: [go]
+    severity: WARNING
+    message: A file path built from web request input is opened, so a caller can reach files outside the intended directory with ../; check the cleaned path stays under the base directory.
+    metadata:
+      category: code_vuln
+      cwe: CWE-22
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: $R.URL.Query()
+              - pattern: $R.FormValue(...)
+              - pattern: $R.PostFormValue(...)
+              - pattern: $R.PathValue(...)
+              - pattern: $R.Form
+              - pattern: $R.PostForm
+          - metavariable-regex:
+              metavariable: $R
+              regex: ^(r|req|request|httpReq)$
+      - pattern: mux.Vars(...)
+      - patterns:
+          - pattern-either:
+              - pattern: $C.Query(...)
+              - pattern: $C.Param(...)
+              - pattern: $C.PostForm(...)
+              - pattern: $C.DefaultQuery(...)
+              - pattern: $C.QueryParam(...)
+              - pattern: $C.FormValue(...)
+          - metavariable-regex:
+              metavariable: $C
+              regex: ^(c|ctx|gc|ec)$
+    pattern-sanitizers:
+      - pattern: filepath.Base(...)
+      - pattern: path.Base(...)
+      - pattern: filepath.Clean("/" + $X)
+      - pattern: path.Clean("/" + $X)
+      - pattern: filepath.Localize(...)
+      - pattern: strconv.Atoi(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: os.$F($P, ...)
+              - pattern: ioutil.ReadFile($P)
+              - pattern: http.ServeFile($W, $RQ, $P)
+          - metavariable-regex:
+              metavariable: $F
+              regex: ^(Open|OpenFile|ReadFile|Create|WriteFile|Remove|RemoveAll|ReadDir|Mkdir|MkdirAll)$
+          - focus-metavariable: $P
+      - patterns:
+          - pattern-either:
+              - pattern: ioutil.ReadFile($P)
+              - pattern: http.ServeFile($W, $RQ, $P)
+          - focus-metavariable: $P

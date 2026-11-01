@@ -1,6 +1,9 @@
 package govern
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // TestManagedAuthorityVocabulary pins the closed vocabulary: the four
 // managed-only tokens are KNOWN (so a grant can carry them and a node can
@@ -369,6 +372,8 @@ func TestGrantsEnforcementPerFamily(t *testing.T) {
 		{AuthorityEnforceEgress, Effective.GrantsEgressEnforcement},
 		{AuthorityEnforceBudget, Effective.GrantsBudgetEnforcement},
 		{AuthorityEnforceMCPAccess, Effective.GrantsMCPAccessEnforcement},
+		{AuthorityEnforceSandbox, Effective.GrantsSandboxEnforcement},
+		{AuthorityEnforceSecurity, Effective.GrantsSecurityEnforcement},
 	}
 	// The predicate table above must cover the closed enforce.* family
 	// exactly — a sibling added to EnforcementAuthorities without its own
@@ -406,5 +411,98 @@ func TestGrantsEnforcementPerFamily(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestManagedTenancyAcrossTheSwitch (OSH-R-013, operator ruling P-204):
+// managed tenancy is a managed enrolment, OR an enrolment whose own org
+// switched to enterprise and whose verified org-signed managed-consent
+// replacement grant from that same org carries authority. A switched node
+// keeps every managed authority; a grant from another org, an individual
+// enrolment's own (non-replacement) grant claiming managed, a replacement
+// whose stored copy no longer verifies, and an org that switched back (its
+// narrowing grant carries nothing) are not managed.
+func TestManagedTenancyAcrossTheSwitch(t *testing.T) {
+	auth := []string{AuthorityEnforceBudget, AuthorityDashboardVisibility}
+	cases := []struct {
+		name    string
+		g       Grant
+		managed bool
+		refusal string
+	}{
+		{"managed enrolment", Grant{ConsentMode: ConsentManaged, Tenancy: TenancyManaged, OrgID: "A", EnrolmentOrgID: "A", Authority: auth}, true, ""},
+		{"idp enrolment", Grant{ConsentMode: ConsentIdP, Tenancy: TenancyManaged, OrgID: "A", EnrolmentOrgID: "A", Authority: auth}, true, ""},
+		{"switched org, verified replacement", Grant{ConsentMode: ConsentManaged, Tenancy: TenancyIndividual, OrgID: "A", EnrolmentOrgID: "A", ReplacementGeneration: 1, Integrity: GrantIntegrityValid, Authority: auth}, true, ""},
+		{"switched org, key material not recorded", Grant{ConsentMode: ConsentManaged, Tenancy: TenancyIndividual, OrgID: "A", EnrolmentOrgID: "A", ReplacementGeneration: 2, Integrity: GrantIntegrityUnchecked, Authority: auth}, true, ""},
+		{"grant from org B on an org A enrolment", Grant{ConsentMode: ConsentManaged, Tenancy: TenancyManaged, OrgID: "B", EnrolmentOrgID: "A", ReplacementGeneration: 1, Integrity: GrantIntegrityValid, Authority: auth}, false, RefusalOtherOrg},
+		{"individual enrolment's own grant claiming managed", Grant{ConsentMode: ConsentManaged, Tenancy: TenancyIndividual, OrgID: "A", EnrolmentOrgID: "A", Authority: auth}, false, RefusalIndividualEnrolment},
+		{"tampered replacement", Grant{ConsentMode: ConsentManaged, Tenancy: TenancyIndividual, OrgID: "A", EnrolmentOrgID: "A", ReplacementGeneration: 1, Integrity: GrantIntegrityInvalid, Authority: auth}, false, RefusalUnverifiedSwitch},
+		{"org switched back to teams (narrowing replacement)", Grant{ConsentMode: ConsentManaged, Tenancy: TenancyIndividual, OrgID: "A", EnrolmentOrgID: "A", ReplacementGeneration: 3, Integrity: GrantIntegrityValid}, false, ""},
+		{"interactive consent", Grant{ConsentMode: ConsentInteractive, Tenancy: TenancyIndividual, OrgID: "A", EnrolmentOrgID: "A", Authority: auth}, false, ""},
+		{"tenancy not stated", Grant{ConsentMode: ConsentManaged, Authority: auth}, true, ""},
+	}
+	for _, c := range cases {
+		g := c.g
+		if got := GrantIsManaged(&g); got != c.managed {
+			t.Errorf("%s: GrantIsManaged = %v, want %v", c.name, got, c.managed)
+		}
+		hasBudget := false
+		for _, a := range HonoredAuthority(&g) {
+			if a == AuthorityEnforceBudget {
+				hasBudget = true
+			}
+		}
+		if hasBudget != (c.managed && len(g.Authority) > 0) {
+			t.Errorf("%s: enforce.budget honoured = %v", c.name, hasBudget)
+		}
+		if got := ManagedConsentRefusal(&g); got != c.refusal {
+			t.Errorf("%s: refusal = %q, want %q", c.name, got, c.refusal)
+		}
+	}
+}
+
+// TestSwitchedNodeResolvesManaged: end to end through Resolve, a node whose
+// org switched it to enterprise resolves Managed with its managed authority,
+// and the same node after the switch back does not.
+func TestSwitchedNodeResolvesManaged(t *testing.T) {
+	now := time.Now()
+	live := LiveIdentity{Enrolled: true, OrgKey: "k", Generation: 1, KeyPinSHA256: "pin"}
+	switched := &Grant{
+		OrgKey: "k", Generation: 1, OrgID: "A", EnrolmentOrgID: "A", KeyPinSHA256: "pin",
+		ConsentMode: ConsentManaged, Tenancy: TenancyIndividual, ReplacementGeneration: 1,
+		Integrity: GrantIntegrityValid, Authority: []string{AuthorityEnforceBudget}, ExpiresAt: now.Add(time.Hour),
+	}
+	e := Resolve(Delivered{}, switched, live, now)
+	if !e.Managed || !e.GrantsBudgetEnforcement() {
+		t.Fatalf("switched node: Managed=%v budget=%v, want both", e.Managed, e.GrantsBudgetEnforcement())
+	}
+	back := *switched
+	back.Authority, back.ReplacementGeneration = nil, 2
+	if e := Resolve(Delivered{}, &back, live, now); e.Managed || e.GrantsBudgetEnforcement() {
+		t.Fatalf("after the switch back: Managed=%v budget=%v, want neither", e.Managed, e.GrantsBudgetEnforcement())
+	}
+}
+
+// TestConsentWithinTenancyTable pins the one seam on plain facts.
+func TestConsentWithinTenancyTable(t *testing.T) {
+	auth := []string{AuthorityEnforceBudget}
+	cases := []struct {
+		mode string
+		auth []string
+		f    TenancyFacts
+		want bool
+	}{
+		{ConsentManaged, auth, TenancyFacts{Tenancy: TenancyManaged}, true},
+		{ConsentManaged, auth, TenancyFacts{Tenancy: TenancyIndividual, OrgSwitched: true}, true},
+		{ConsentManaged, auth, TenancyFacts{Tenancy: TenancyIndividual}, false},
+		{ConsentManaged, auth, TenancyFacts{Tenancy: TenancyManaged, OtherOrg: true}, false},
+		{ConsentManaged, auth, TenancyFacts{Tenancy: TenancyIndividual, OrgSwitched: true, OtherOrg: true}, false},
+		{ConsentManaged, nil, TenancyFacts{Tenancy: TenancyIndividual}, true},
+		{ConsentInteractive, auth, TenancyFacts{Tenancy: TenancyIndividual}, true},
+	}
+	for i, c := range cases {
+		if got := ConsentWithinTenancy(c.mode, c.auth, c.f); got != c.want {
+			t.Errorf("case %d: ConsentWithinTenancy = %v, want %v", i, got, c.want)
+		}
 	}
 }

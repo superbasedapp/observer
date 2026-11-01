@@ -49,6 +49,7 @@ func recordProbe(t *testing.T, out string) *[]string {
 }
 
 func TestRuntimeProbeRunsInTheLaunchDirectory(t *testing.T) {
+	skipLinuxFakeOnWindows(t)
 	spec := mustBinary(t, "gemini-cli") // registry floor: node >= 20
 	env := asdfEnv()
 	res := toolresolve.Resolve(*spec, env)
@@ -94,6 +95,7 @@ func TestRuntimeProbeRunsInTheLaunchDirectory(t *testing.T) {
 // TestLaunchRuntimeChecksTheWholeInstalledRange: a version above the floor
 // that the installed package's range leaves out is reported, never blocked.
 func TestLaunchRuntimeChecksTheWholeInstalledRange(t *testing.T) {
+	skipLinuxFakeOnWindows(t)
 	spec := mustBinary(t, "gemini-cli")
 	cases := []struct {
 		node      string

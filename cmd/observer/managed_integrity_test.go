@@ -7,7 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/marmutapp/superbased-observer/internal/govern"
 	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
+	"github.com/marmutapp/superbased-observer/internal/proxyroute"
 )
 
 // TestCollectIntegritySignals asserts the boundary seam assembles coarse labels
@@ -49,7 +51,7 @@ func TestCollectIntegritySignals(t *testing.T) {
 		{Path: nativeHome, OS: "linux", Origin: "native"},
 		{Path: foreignHome, OS: "windows", Origin: "wsl-mnt:marmu"},
 	}
-	report := collectIntegritySignalsFrom(daemonDB, nativeHome, "/current/observer", homes, false)
+	report := collectIntegritySignalsFrom(daemonDB, nativeHome, "/current/observer", homes, maintainedRoutes)
 
 	if len(report.SiblingDetail) != 1 || report.SiblingDetail[0] != "wsl-mnt/windows" {
 		t.Errorf("siblings = %v, want [wsl-mnt/windows]", report.SiblingDetail)
@@ -79,7 +81,7 @@ func TestCollectIntegritySignals_Clean(t *testing.T) {
 	// through env vars; pin them at this fixture host so the RUNNING
 	// developer's own configs can never be inspected by this test.
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(nativeHome, ".config"))
-	t.Setenv("CRUSH_CONFIG", "")
+	t.Setenv("CRUSH_GLOBAL_CONFIG", "")
 	t.Setenv("KIMI_CODE_HOME", "")
 	t.Setenv("QWEN_HOME", "")
 	daemonDir := filepath.Join(nativeHome, ".observer")
@@ -100,7 +102,7 @@ func TestCollectIntegritySignals_Clean(t *testing.T) {
 	}
 
 	homes := []crossmount.HomeRoot{{Path: nativeHome, OS: "linux", Origin: "native"}}
-	report := collectIntegritySignalsFrom(daemonDB, nativeHome, "/current/observer", homes, false)
+	report := collectIntegritySignalsFrom(daemonDB, nativeHome, "/current/observer", homes, noPostureRoutes)
 	if len(report.SiblingDetail) != 0 || len(report.DriftedTools) != 0 {
 		t.Errorf("clean host produced evidence: siblings=%v drifted=%v", report.SiblingDetail, report.DriftedTools)
 	}
@@ -111,7 +113,7 @@ func TestCollectIntegritySignals_Clean(t *testing.T) {
 	// this fixture host — so there is still nothing to report. A single-tool
 	// developer must not light up as a four-tool bypass the moment the
 	// stricter reading ships.
-	managed := collectIntegritySignalsFrom(daemonDB, nativeHome, "/current/observer", homes, true)
+	managed := collectIntegritySignalsFrom(daemonDB, nativeHome, "/current/observer", homes, maintainedRoutes)
 	if len(managed.DriftedTools) != 0 {
 		t.Errorf("managed+enforce host reported drift for tools that are not installed: %v", managed.DriftedTools)
 	}
@@ -126,16 +128,80 @@ func TestCollectIntegritySignals_Clean(t *testing.T) {
 		[]byte("model = \"gpt-5\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	managed = collectIntegritySignalsFrom(daemonDB, nativeHome, "/current/observer", homes, true)
+	managed = collectIntegritySignalsFrom(daemonDB, nativeHome, "/current/observer", homes, maintainedRoutes)
 	if len(managed.DriftedTools) != 1 || managed.DriftedTools[0] != "codex" {
 		t.Errorf("drifted = %v, want [codex] (config present, route key gone)", managed.DriftedTools)
 	}
 	if managed.RouteDrift != len(managed.DriftedTools) {
 		t.Errorf("RouteDrift = %d, want %d", managed.RouteDrift, len(managed.DriftedTools))
 	}
-	// The individual-node reading of the identical host is unchanged: an
-	// absent route key is not drift there.
-	if indiv := collectIntegritySignalsFrom(daemonDB, nativeHome, "/current/observer", homes, false); len(indiv.DriftedTools) != 0 {
-		t.Errorf("individual node reported drift for an absent route key: %v", indiv.DriftedTools)
+	// With no route posture the organization wrote no route here, so the
+	// same absent route key is the developer's own setup, not drift.
+	if indiv := collectIntegritySignalsFrom(daemonDB, nativeHome, "/current/observer", homes, noPostureRoutes); len(indiv.DriftedTools) != 0 {
+		t.Errorf("no posture reported drift for a route the organization never wrote: %v", indiv.DriftedTools)
+	}
+}
+
+// maintainedRoutes / noPostureRoutes are the drift readings of a node whose
+// routes are maintained and of a node with no route posture (ports not
+// compared).
+var (
+	maintainedRoutes = proxyroute.DriftPolicy{Mode: proxyroute.DriftModeMaintained}
+	noPostureRoutes  = proxyroute.DriftPolicy{Mode: proxyroute.DriftModeOrgRoutes}
+)
+
+// TestRouteDriftPolicyFollowsPosture pins T-900: the probe's drift reading
+// follows govern.Effective.RoutePosture, one case per posture rule
+// (govern/routeposture.go rules 1 to 5), and carries the daemon's own
+// listener port for the T-901 port comparison.
+func TestRouteDriftPolicyFollowsPosture(t *testing.T) {
+	cases := []struct {
+		name    string
+		verdict govern.RoutePostureVerdict
+		want    proxyroute.DriftMode
+	}{
+		{
+			"rule 1, not managed or grant refused: only organization routes left in place",
+			govern.RoutePostureVerdict{Posture: govern.RoutePostureNone, Source: govern.RoutePostureSourceNotManaged},
+			proxyroute.DriftModeOrgRoutes,
+		},
+		{
+			"rule 2, admin ON: maintained",
+			govern.RoutePostureVerdict{Posture: govern.RoutePostureMaintain, Source: govern.RoutePostureSourceAdminOn},
+			proxyroute.DriftModeMaintained,
+		},
+		{
+			"rule 3, admin OFF: nothing is drift",
+			govern.RoutePostureVerdict{Posture: govern.RoutePostureRelease, Source: govern.RoutePostureSourceAdminOff},
+			proxyroute.DriftModeOff,
+		},
+		{
+			"rule 4, unset with a proxy enforcement point: maintained",
+			govern.RoutePostureVerdict{Posture: govern.RoutePostureMaintain, Source: govern.RoutePostureSourceEnforceDefault},
+			proxyroute.DriftModeMaintained,
+		},
+		{
+			"rule 5, unset without one (D-738 leaves routes in place): only organization routes",
+			govern.RoutePostureVerdict{Posture: govern.RoutePostureNone, Source: govern.RoutePostureSourceNotRequired},
+			proxyroute.DriftModeOrgRoutes,
+		},
+		{
+			"a posture the table does not name reads on the loud side",
+			govern.RoutePostureVerdict{Posture: "future"},
+			proxyroute.DriftModeMaintained,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := routeDriftPolicy(tc.verdict, 9100, proxyroute.Selection{})
+			if got.Mode != tc.want || got.ProxyPort != 9100 {
+				t.Fatalf("routeDriftPolicy = %+v, want mode %q on port 9100", got, tc.want)
+			}
+		})
+	}
+	for _, p := range []govern.RoutePosture{govern.RoutePostureNone, govern.RoutePostureMaintain, govern.RoutePostureRelease} {
+		if _, ok := routeDriftModes[p]; !ok {
+			t.Errorf("posture %q has no routeDriftModes row", p)
+		}
 	}
 }

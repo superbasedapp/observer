@@ -450,3 +450,35 @@ func TestDecodeRetractionHasExactlyOneRepresentation(t *testing.T) {
 		}
 	}
 }
+
+// TestForVersion (WINNODE2 16b): an announcement fixed in a release is
+// dropped on a node at or past it, kept below it, and kept on a node whose
+// version is not a release (a dev build).
+func TestForVersion(t *testing.T) {
+	list := []Announcement{{ID: "fix", FixedIn: "1.32.0"}, {ID: "always"}}
+	cases := []struct {
+		running string
+		want    string
+	}{
+		{"1.36.0", "always"},
+		{"v1.32.0", "always"},
+		{"1.31.9", "fix,always"},
+		{"1.32.0-rc.1", "always"},
+		{"dev", "fix,always"},
+		{"", "fix,always"},
+	}
+	for _, tc := range cases {
+		var ids []string
+		for _, a := range ForVersion(list, tc.running) {
+			ids = append(ids, a.ID)
+		}
+		if got := strings.Join(ids, ","); got != tc.want {
+			t.Errorf("ForVersion(%q) = %q, want %q", tc.running, got, tc.want)
+		}
+	}
+	bad := valid()
+	bad.FixedIn = "soon"
+	if Validate(bad) == nil {
+		t.Fatal("a non-release fixed_in validated")
+	}
+}

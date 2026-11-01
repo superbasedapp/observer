@@ -244,6 +244,20 @@ func TestCloudAutoEnrichSkipsAfterFailedSpawn(t *testing.T) {
 		cloudAutoEnrichLoop(runCtx, st, "", 10*time.Millisecond, 0, 1, 25, 5*time.Millisecond, &out, &errOut, spawn)
 		close(done)
 	}()
+	// Wait for the first spawn (bounded) rather than a fixed window: under
+	// -race on a loaded host the loop had not reached its first tick after
+	// 150 ms (an RB1 gate flake). Then let many more 10 ms ticks pass; the
+	// skip window must suppress all of them.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		mu.Lock()
+		n := calls
+		mu.Unlock()
+		if n > 0 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	time.Sleep(150 * time.Millisecond)
 	cancel()
 	select {

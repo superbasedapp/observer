@@ -26,7 +26,9 @@
 //
 //  1. Trim ASCII whitespace.
 //  2. Strip matched surrounding quotes (`'...'` or `"..."`).
-//  3. Decode `file://` URIs (case-insensitive scheme).
+//  3. Decode `file:` URIs (case-insensitive scheme): `file:///C:/x`,
+//     the authority-less `file:/C:/x`, and the malformed `file://C:\x`
+//     a caller builds by prefixing `file://` to a bare Windows path.
 //  4. Strip Windows extended-length prefix (`\\?\`).
 //  5. Rewrite UNC-to-WSL (`\\wsl.localhost\<distro>\...` and
 //     `\\wsl$\<distro>\...`) when the distro matches

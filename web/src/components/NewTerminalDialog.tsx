@@ -1,7 +1,28 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { Suspense, useEffect, useId, useMemo, useRef, useState } from "react";
+import { SANDBOX_ISOLATION_PICKER } from "@/lib/components.gen";
 import { Link } from "react-router-dom";
 import { EyeOff, Lock, PowerOff, type LucideIcon } from "lucide-react";
-import { apiReason, fetchJSON } from "@/lib/api";
+import { ApiError, apiReason, fetchJSON, localConfirmHeaders } from "@/lib/api";
+import { terminalsRefusalSentence } from "@/lib/governanceRefusal";
+import {
+  acceptAllBody,
+  acceptNote,
+  acceptOffered,
+  acceptOneBody,
+  pendingReasons,
+  reasonLine,
+  trustChip,
+  type TrustAcceptBody,
+  type TrustReply,
+} from "@/lib/trustChip";
+import { projectPolicyView, type ProjectPolicyReply } from "@/lib/projectPolicyLine";
+import {
+  ISOLATION_AUTO,
+  ISOLATION_NONE,
+  defaultIsolationChoice,
+  isolationOptions,
+} from "@/lib/sandboxIsolation";
+import { SHELL_TOOL, isolationPickerProps, sandboxLaunchFields, sandboxStartBlock, sshSystemDisabledReason } from "@/lib/newTerminalSandbox";
 import { DashboardInstallRecord } from "@/components/DashboardInstallRecord";
 import type {
   GUILaunchable,
@@ -64,6 +85,16 @@ import {
 } from "@/lib/nodePageTabs";
 import { pushToast } from "@/components/Toast";
 import {
+  AllowFolderStep,
+  FreshLaunchStep,
+  SignInSeedStep,
+  applyLaunchPolicyChange,
+  isFreshLaunchDisabledError,
+  postLaunchAskingSignIn,
+  type SignInConsent,
+} from "@/components/LaunchPolicyInline";
+import { folderNeedsAllow, isPermittedRoot, stepHoldsStart } from "@/lib/launchPolicyStep";
+import {
   Button,
   ComboChip,
   type ComboOption,
@@ -81,13 +112,6 @@ import {
 // this whole file as binary, hiding every change from diff review.
 const CUSTOM_ROOT = "\u0000custom";
 
-// SHELL_TOOL is the reserved pseudo-tool sentinel for a fresh PLAIN SHELL
-// launch (must match internal/termsvc.ShellTool = "shell" verbatim). It is
-// deliberately never a member of launchable_tools (the capability registry) —
-// this dialog adds it client-side as its own option, gated by the SEPARATE
-// [terminal.launch].allow_shell opt-in (shell_enabled from GET
-// /api/terminal/sessions), not the AI-tool allow-list.
-const SHELL_TOOL = "shell";
 
 // LOCAL_SYSTEM is the "System" selector's sentinel for "this machine" — the
 // ONLY value before the SSH feature existed, and the value that keeps this
@@ -108,6 +132,50 @@ const SANDBOX_SOURCE_LABELS: Record<string, string> = {
   "clone-remote": "Clone a remote URL",
   worktree: "Worktree",
 };
+
+// The sources whose launch takes a branch: a clone checks the name out as a
+// new branch, a worktree run names its own branch's last component with it
+// (observer-sandbox/<run>/<label>, "work" when empty).
+const BRANCH_SOURCES: Record<string, { placeholder: string; hint: string }> = {
+  "clone-remote": { placeholder: "main", hint: "" },
+  worktree: {
+    placeholder: "work",
+    hint: "The run works on its own branch observer-sandbox/<run>/<name>; empty means \"work\".",
+  },
+};
+
+/** branchField returns how the workspace panel shows the branch field for a
+ * source: null when the source takes no branch. */
+export function branchField(source: string): { placeholder: string; hint: string } | null {
+  return BRANCH_SOURCES[source] ?? null;
+}
+
+// WORKTREE_BRANCH_RULES mirrors internal/workspace.ValidateRefComponent (git
+// check-ref-format's rules for one ref component), the check the daemon
+// enforces; here it only names the problem before a doomed submit.
+const WORKTREE_BRANCH_RULES: { why: string; bad: (s: string) => boolean }[] = [
+  { why: "is longer than 100 characters", bad: (s) => s.length > 100 },
+  { why: "must not contain / or \\", bad: (s) => /[/\\]/.test(s) },
+  // eslint-disable-next-line no-control-regex
+  { why: "must not contain spaces or control characters", bad: (s) => /[\x00-\x20\x7f]/.test(s) },
+  { why: "must not begin with - or .", bad: (s) => s.startsWith("-") || s.startsWith(".") },
+  { why: "must not end with . or .lock", bad: (s) => s.endsWith(".") || s.endsWith(".lock") },
+  { why: "must not contain .. or @{", bad: (s) => s.includes("..") || s.includes("@{") },
+  { why: "must not be @", bad: (s) => s === "@" },
+  { why: "must not contain any of ~ ^ : ? * [", bad: (s) => /[~^:?*[]/.test(s) },
+];
+
+/** worktreeBranchProblem names why a worktree branch name would be refused,
+ * or null (an empty name is fine: the run uses "work"). Other sources are
+ * checked by git itself. */
+export function worktreeBranchProblem(source: string, branch: string): string | null {
+  const b = branch.trim();
+  if (source !== "worktree" || b === "") return null;
+  for (const r of WORKTREE_BRANCH_RULES) {
+    if (r.bad(b)) return `The branch name ${r.why} (it must be one git branch name component).`;
+  }
+  return null;
+}
 
 // STATUS_ICONS gives each picker status badge its glyph, so a status pill
 // never reads like the neighbouring kind pill (CLI / IDE / Desktop). One row
@@ -169,90 +237,12 @@ function pickerOptionDetail(item: ToolPickerItem) {
   );
 }
 
-// sandboxDisabledReason computes the "Run in sandbox" checkbox's disabled
-// copy, honoring the honest-copy convention (CLAUDE.md): every disabled
-// control names the exact blocker verbatim from the server, never a generic
-// "unavailable", AND - where the operator can actually fix it - says where
-// the switch lives, the way sshSystemDisabledReason below does.
-//
-// Priority: no tool picked > the probe hasn't resolved yet (or failed -
-// B5's fail-silent pattern: a broken probe disables the control rather than
-// erroring the whole dialog) > the daemon-wide verdict > the shell
-// pseudo-tool (never in the capability registry the probe's per-tool map is
-// built from) > the selected tool's own SandboxToolAvail.reason (a tool
-// whose state dirs are not grounded carries an honest reason instead of
-// silently omitting itself from the map). Returns null when the checkbox
-// should be enabled.
-//
-// The daemon-wide verdict is split three ways on purpose, because the three
-// have three different fixes:
-//   - disabled_by_config: nothing is broken, the feature is off. The switch
-//     is two clicks away on this very dashboard and the save binds
-//     immediately, so say so instead of quoting a config key at the user.
-//   - runtime_init_failed: the operator ALREADY enabled it and the daemon
-//     could not build the runtime (e.g. an unwritable workspaces_dir). The
-//     server's reason is the actual error; telling them to "enable it"
-//     would send them to flip a switch that is already on.
-//   - everything else (backend_missing / backend_too_old / userns_denied /
-//     unsupported_platform): an environment gap, quoted verbatim.
-function sandboxDisabledReason(
-  tool: string,
-  probe: SandboxAvailability | null,
-): string | null {
-  if (!tool) return "Choose a tool first.";
-  if (!probe) {
-    return "Sandbox status unknown - this daemon may not support sandboxed terminals, or the probe request failed.";
-  }
-  if (!probe.available) {
-    // D-514: a build without terminals.sandbox cannot be switched on from
-    // Terminals -> Settings, so the copy must name the build, not the switch.
-    // "not_in_build" is the verdict the omit stub reports once it is updated
-    // (change list for cmd/observer/terminal_sandbox_omit.go); until then the
-    // stub's reason text is the signal.
-    if (probe.verdict === "not_in_build" || /not in this build/i.test(probe.reason ?? "")) {
-      return `Sandbox isolation is not in this build - ${probe.reason || "the terminal sandbox component is not compiled in"}. Settings -> Components lists the builds that include it.`;
-    }
-    if (probe.verdict === "disabled_by_config") {
-      return "Sandbox isolation is turned off. Enable it in Terminals -> Settings -> Sandbox isolation and save; it takes effect immediately.";
-    }
-    if (probe.verdict === "runtime_init_failed") {
-      return `Sandbox isolation is enabled but the daemon could not start it - ${probe.reason || "the sandbox runtime failed to initialize"}. Fix it in Terminals -> Settings -> Sandbox isolation.`;
-    }
-    return `Sandbox unavailable - ${probe.reason || "sandboxing is unavailable on this daemon"}`;
-  }
-  if (tool === SHELL_TOOL) {
-    return "A plain shell has no AI-tool state dirs to sandbox - not sandbox-launchable.";
-  }
-  const t = probe.tools?.[tool];
-  if (!t || !t.available) {
-    return t?.reason || "No grounded sandbox profile for this tool - not sandbox-launchable.";
-  }
-  return null;
-}
-
 // Deep links into the Terminals Settings cards this dialog points at
 // (T-488 / T-489): the dashboard controls that replaced the old
 // "edit config.toml and restart" instructions.
 const TERMINALS_LAUNCH_POLICY_HASH_PATH = `/terminals${TERMINALS_LAUNCH_POLICY_HASH}`;
 const TERMINALS_FOLDERS_HASH_PATH = `/terminals${TERMINALS_FOLDERS_HASH}`;
 const TERMINALS_REMOTE_SYSTEMS_HASH_PATH = `/terminals${TERMINALS_REMOTE_SYSTEMS_HASH}`;
-
-// sshSystemDisabledReason computes the System picker's disabled copy,
-// following the same honest-disabled-control convention as
-// sandboxDisabledReason above: name the exact blocker and where its switch
-// lives, never a generic "unavailable". Priority: the kill switch
-// ([terminal.ssh].enabled) beats an empty profile list, because turning the
-// feature back on is a prerequisite to a profile mattering at all. Returns
-// null when the picker should be enabled (at least one profile, feature on).
-function sshSystemDisabledReason(enabled: boolean, profileCount: number): string | null {
-  if (!enabled) {
-    return "SSH remote-system terminals are off. Turn them on in Terminals > Settings > Remote systems (applies to the next launch, no restart).";
-  }
-  if (profileCount === 0) {
-    return "No remote systems yet. Add one in Terminals > Settings > Remote systems (applies to the next launch, no restart).";
-  }
-  return null;
-}
 
 // shortenPath renders an absolute root as ".../parent/leaf" for the option
 // label (the full path rides along as the option title). Mirrors the
@@ -264,34 +254,13 @@ function shortenPath(p: string): string {
   return ".../" + parts.slice(-2).join("/");
 }
 
-// isUnderOrEqual mirrors internal/termsvc's server-side isUnderOrEqual: child is
-// permitted when it equals parent or is a descendant of it. Both operands are
-// the SERVER's canonical strings (allowed_project_roots is canonicalized daemon-
-// side; a known-project root is compared verbatim — this is a UX hint, the POST
-// re-runs the authoritative check). Trailing slashes are trimmed so "/a/" and
-// "/a" match. The embedded terminal only runs where the daemon hosts a PTY
-// (never native Windows), so POSIX separators are safe.
-function isUnderOrEqual(child: string, parent: string): boolean {
-  const c = child.replace(/\/+$/, "");
-  const p = parent.replace(/\/+$/, "");
-  return c === p || c.startsWith(p + "/");
-}
+// isPermittedRoot and folderNeedsAllow (the allow-list partition, a UX hint;
+// the server's canonical check is the only authority) live in
+// lib/launchPolicyStep.ts, beside the inline step's states.
 
-// isPermittedRoot reports whether a project root would pass the server's
-// allowed_project_roots check, using the canonical allow-list verbatim. An empty
-// allow-list permits nothing but the agent's own default cwd (deny-all).
-//
-// KNOWN COSMETIC MISMATCH (documented, not a gate): this check is LEXICAL while
-// the server canonicalizes the requested root through EvalSymlinks at launch
-// time, and known-project rows arrive as the tool-reported (unresolved) paths.
-// A symlinked project path can therefore render as permitted here yet be
-// rejected by the POST (surfaced via PROJECT_ROOT_DENIED_MSG), or render
-// disabled here yet be acceptable via "Custom path…" with the resolved target.
-// The server's canonical check remains the ONLY authority — this partition is a
-// UX hint and must never be loosened into (or mistaken for) authorization.
-function isPermittedRoot(path: string, allowedRoots: string[]): boolean {
-  return allowedRoots.some((r) => isUnderOrEqual(path, r));
-}
+// POLICY_STEP_PENDING is Start's tip while an inline launch-policy step
+// (Allow this folder, Turn on fresh-agent launch) has a change open.
+const POLICY_STEP_PENDING = "Save or cancel the config change above first";
 
 // NewTerminalDialog is the F1 "New terminal" affordance: start a FRESH agent
 // (no --continue-from) in the embedded web terminal. The tool picker is
@@ -327,6 +296,18 @@ export type NewTerminalDraft = {
 type Props = {
   onClose: () => void;
   initialDraft?: NewTerminalDraft;
+  /**
+   * initialSandboxProbe seeds the sandbox probe before its fetch answers.
+   * Only the component tests pass it (server rendering runs no effect, so
+   * the probe fetch never answers there); the dialog fetches it either way.
+   */
+  initialSandboxProbe?: SandboxAvailability;
+  /**
+   * initialWindowsPathsToWSL seeds the sessions meta's windows_paths_to_wsl
+   * before its fetch answers (component tests only, like
+   * initialSandboxProbe).
+   */
+  initialWindowsPathsToWSL?: boolean;
   resumedAfterInstall?: boolean;
   /**
    * Called with the minted handle + tool once a fresh launch succeeds. The
@@ -353,6 +334,8 @@ export function NewTerminalDialog({
   onClose,
   onLaunched,
   initialDraft,
+  initialSandboxProbe,
+  initialWindowsPathsToWSL = false,
   resumedAfterInstall = false,
 }: Props) {
   const [tools, setTools] = useState<string[]>([]);
@@ -376,10 +359,36 @@ export function NewTerminalDialog({
   // from GET /api/terminal/sessions. Used verbatim to mark which roots a fresh
   // launch will actually accept (empty = deny-all: only the agent's default cwd).
   const [allowedRoots, setAllowedRoots] = useState<string[]>([]);
+  // The launch route refused because [terminal.launch].allow_fresh_agent is
+  // off: the dialog then offers the inline step instead of the bare 403
+  // (Windows 11 Pro rerun 2026-10-25, R3).
+  const [freshOff, setFreshOff] = useState(false);
+  // The launch's sign-in consent question (lane BOXSIGNIN): set from the
+  // launch route's 409 and answered by the inline step, which starts the
+  // launch again with the answer.
+  const [signInConsent, setSignInConsent] = useState<SignInConsent | null>(null);
+  // Folders the inline "Allow this folder" step saved in this dialog (B4,
+  // Windows 11 Pro run 4): the step is gone once the folder is saved even
+  // where the server stores another spelling (a daemon in WSL keeps C:\x as
+  // /mnt/c/x), so the folder stays selected and Start works at once.
+  const [savedRoots, setSavedRoots] = useState<string[]>([]);
+  // An inline launch-policy step that is confirming, reviewing or saving its
+  // change holds Start until it ends (lib/launchPolicyStep.ts stepHoldsStart).
+  const [policyStepBusy, setPolicyStepBusy] = useState(false);
+  // refreshAllowedRoots re-reads the canonical allow-list after the inline
+  // "Allow this folder" step saved it (the server canonicalizes the path).
+  function refreshAllowedRoots() {
+    return fetchJSON<TerminalSessionsMeta>("/api/terminal/sessions").then((d) =>
+      setAllowedRoots(d.allowed_project_roots ?? []),
+    );
+  }
   // shell_enabled from GET /api/terminal/sessions — the SEPARATE
   // [terminal.launch].allow_shell opt-in that gates the Shell option below,
   // independent of allow_fresh_agent / allowed_tools.
   const [shellEnabled, setShellEnabled] = useState(false);
+  // windows_paths_to_wsl from the same reply: the custom-root hint about
+  // Windows paths shows only for a daemon inside WSL (B4).
+  const [windowsPathsToWSL, setWindowsPathsToWSL] = useState(initialWindowsPathsToWSL);
   // IDE / desktop-app rows (T2.3), from the SAME GET /api/terminal/sessions
   // reply — a sibling of launchable_tools, never a replacement. Empty on an
   // older daemon (the key is simply absent), which means "no GUI section",
@@ -456,11 +465,20 @@ export function NewTerminalDialog({
   // Fetched once on dialog open (the response already carries a per-tool
   // map covering every launchable tool, so a tool-change never needs its own
   // refetch — see sandboxDisabledReason).
-  const [sandboxProbe, setSandboxProbe] = useState<SandboxAvailability | null>(null);
+  const [sandboxProbe, setSandboxProbe] = useState<SandboxAvailability | null>(initialSandboxProbe ?? null);
   // Whether the user has opted into a sandboxed launch. Seeded from the
   // server's [terminal.sandbox].default_on signal once the probe resolves;
   // the checkbox remains an explicit per-launch override.
   const [sandboxOn, setSandboxOn] = useState(initialDraft?.sandboxOn ?? false);
+  // The Isolation picker's entry while sandboxOn is set: "Automatic" (the
+  // daemon picks, never a beta row) by default, or a row chosen for this
+  // launch (lane SBX-P3B), which the launch body then names.
+  const [isolationChoice, setIsolationChoice] = useState(
+    () => (initialSandboxProbe && defaultIsolationChoice(isolationOptions(initialSandboxProbe))) || ISOLATION_AUTO,
+  );
+  // True when the probe route answered 404 component_not_installed: the
+  // Sandboxes and VMs module is not installed, so no Isolation picker shows.
+  const [sandboxModuleAbsent, setSandboxModuleAbsent] = useState(false);
   const [workspaceSource, setWorkspaceSource] = useState(
     initialDraft?.workspaceSource ?? "live",
   );
@@ -503,12 +521,14 @@ export function NewTerminalDialog({
         });
         setAllowedRoots(d.allowed_project_roots ?? []);
         setShellEnabled(d.shell_enabled ?? false);
+        setWindowsPathsToWSL(d.windows_paths_to_wsl === true);
       })
       .catch((e) => {
         // DI-05: this route carries the whole picker. Swallowing its failure
         // left an empty dropdown reading "no launchable tools", which is a
         // FALSE statement about the daemon — say what actually happened.
-        if (!cancelled) setToolsError(apiReason(e));
+        // P-031: with Terminals hidden by the org, say so (lane SEC-E).
+        if (!cancelled) setToolsError(terminalsRefusalSentence(e) ?? apiReason(e));
       });
     // Suggest the projects Observer already knows about. We deliberately do NOT
     // auto-select the most-recent one: it may not be allow-listed, which would
@@ -624,10 +644,16 @@ export function NewTerminalDialog({
         if (!cancelled) {
           setSandboxProbe(d);
           if (!initialDraft) setSandboxOn(d.default_on ?? false);
+          const first = defaultIsolationChoice(isolationOptions(d));
+          if (first) setIsolationChoice(first);
         }
       })
-      .catch(() => {
-        if (!cancelled) setSandboxProbe(null);
+      .catch((e: unknown) => {
+        if (!cancelled) {
+          setSandboxProbe(null);
+          // 404 component_not_installed: the module is not installed here.
+          setSandboxModuleAbsent(e instanceof ApiError && e.status === 404 && e.body.includes("component_not_installed"));
+        }
       });
     return () => {
       cancelled = true;
@@ -698,6 +724,78 @@ export function NewTerminalDialog({
     () => (rootSel === CUSTOM_ROOT ? customRoot.trim() : rootSel.trim()),
     [rootSel, customRoot],
   );
+
+  // Repository trust chip (security Phase B, component security.trust): the
+  // read-only trust check for the chosen directory, the same one the launch
+  // runs. Fail-silent like the other probes: a daemon without the route, an
+  // inactive component (404) or a failed read renders no chip. Its review
+  // panel accepts from here (POST /api/security/trust), so an untrusted
+  // repository is never a CLI-only dead end (lane SEC-TRUSTFIX); where the
+  // organization keeps the accept off this dashboard (accept_allowed false)
+  // the panel hides Accept and says who can accept (lane SEC-TRUST4).
+  const [trustReply, setTrustReply] = useState<TrustReply | null>(null);
+  const [trustBusy, setTrustBusy] = useState(false);
+  const [trustErr, setTrustErr] = useState<string | null>(null);
+  const trustRemote = sshProfile !== LOCAL_SYSTEM;
+  async function acceptTrust(body: TrustAcceptBody | null) {
+    if (!body || trustBusy) return;
+    setTrustBusy(true);
+    setTrustErr(null);
+    try {
+      const reply = await fetchJSON<TrustReply>("/api/security/trust", undefined, {
+        method: "POST",
+        headers: await localConfirmHeaders(),
+        body: JSON.stringify(body),
+      });
+      setTrustReply(reply);
+    } catch (e) {
+      setTrustErr(apiReason(e) || "The accept did not go through.");
+    } finally {
+      setTrustBusy(false);
+    }
+  }
+  useEffect(() => {
+    if (trustRemote || !effectiveRoot) {
+      setTrustReply(null);
+      return;
+    }
+    let cancelled = false;
+    fetchJSON<TrustReply>("/api/security/trust", { dir: effectiveRoot })
+      .then((d) => {
+        if (!cancelled) setTrustReply(d);
+      })
+      .catch(() => {
+        if (!cancelled) setTrustReply(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [effectiveRoot, trustRemote]);
+  const trust = useMemo(() => trustChip(trustReply), [trustReply]);
+
+  // Project policy line (security plan 7.11, lane sec-p2b): whether the
+  // organization's project rules apply in the chosen directory, read from
+  // the machine's project match record. Shown only when the machine holds
+  // project rules; any error shows nothing.
+  const [projectPolicy, setProjectPolicy] = useState<ProjectPolicyReply | null>(null);
+  useEffect(() => {
+    if (trustRemote || !effectiveRoot) {
+      setProjectPolicy(null);
+      return;
+    }
+    let cancelled = false;
+    fetchJSON<ProjectPolicyReply>("/api/terminal/project-policy", { dir: effectiveRoot })
+      .then((d) => {
+        if (!cancelled) setProjectPolicy(d);
+      })
+      .catch(() => {
+        if (!cancelled) setProjectPolicy(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [effectiveRoot, trustRemote]);
+  const policyLine = useMemo(() => projectPolicyView(projectPolicy), [projectPolicy]);
 
   // Partition the working-directory options against the server's allow-list.
   // Permitted = every canonical allowed root PLUS any known project under one
@@ -836,6 +934,9 @@ export function NewTerminalDialog({
   );
 
   const noAllowList = allowedRoots.length === 0;
+  // A typed absolute folder the allow-list does not cover gets the inline
+  // "Allow this folder" step (R4): the launch would be refused otherwise.
+  const customFolderNeedsAllow = folderNeedsAllow(customRoot, allowedRoots, savedRoots);
   // Honest reason placed on every disabled option so hovering explains the block.
   const blockedTitle = noAllowList
     ? "No project folders are allow-listed - add one in Terminals > Settings > Folder Selection"
@@ -891,22 +992,32 @@ export function NewTerminalDialog({
 
   // Sandbox toggle (B9 U7): null when the checkbox should be enabled, else the
   // honest disabled-copy string (see sandboxDisabledReason above).
-  const sandboxReason = useMemo(
-    () => sandboxDisabledReason(tool, sandboxProbe),
-    [tool, sandboxProbe],
+  // On a host whose only available rows are beta the picker stays enabled
+  // and Automatic stays disabled (betaRowChoosable, audit SBX-P3B F1).
+  const isolationPicker = useMemo(
+    () => isolationPickerProps(tool, sandboxProbe, sandboxOn, isolationChoice),
+    [tool, sandboxProbe, sandboxOn, isolationChoice],
   );
-  const sandboxCheckboxDisabled = sandboxReason !== null;
+  const sandboxCheckboxDisabled = isolationPicker.disabled;
   // A source the user has currently picked but that isn't actually available
   // (e.g. left on "clone-remote" after switching to a probe/tool where it's
   // gated off) blocks the client-side hint the same way an empty remote URL
   // does — the server re-validates regardless, this only prevents an
   // obviously-doomed submit.
   const selectedSourceAvail = sandboxProbe?.sources?.find((s) => s.id === workspaceSource);
-  const sandboxRemoteURLMissing =
-    sandboxOn && !sandboxCheckboxDisabled && workspaceSource === "clone-remote" && workspaceRemote.trim() === "";
-  const sandboxSourceUnavailable =
-    sandboxOn && !sandboxCheckboxDisabled && selectedSourceAvail !== undefined && !selectedSourceAvail.available;
-  const sandboxBlocksStart = sandboxOn && !sandboxCheckboxDisabled && (sandboxRemoteURLMissing || sandboxSourceUnavailable);
+  const startBlock = sandboxStartBlock({
+    sandboxOn,
+    controlDisabled: sandboxCheckboxDisabled,
+    source: workspaceSource,
+    remote: workspaceRemote,
+    sources: sandboxProbe?.sources,
+  });
+  const sandboxRemoteURLMissing = startBlock.remoteURLMissing;
+  const sandboxSourceUnavailable = startBlock.sourceUnavailable;
+  const sandboxBranchProblem =
+    sandboxOn && !sandboxCheckboxDisabled ? worktreeBranchProblem(workspaceSource, workspaceBranch) : null;
+  const sandboxBlocksStart = startBlock.blocks || sandboxBranchProblem !== null;
+  const sandboxBranch = branchField(workspaceSource);
 
   // sshMode is the ONE predicate the rest of the dialog branches on. Everything
   // it disables is disabled because the capability genuinely does not exist for
@@ -941,11 +1052,19 @@ export function NewTerminalDialog({
   // sandbox checkbox becomes disabled, uncheck it rather than leaving a
   // stale "on" that the POST body would silently drop (sandbox fields are
   // only added when sandboxOn is true — see submit()).
+  // The same holds for a chosen entry the picker lists as disabled
+  // (Automatic on a beta-only host, where default_on would otherwise post a
+  // launch naming no backend that the daemon refuses).
   useEffect(() => {
-    if (sandboxCheckboxDisabled && sandboxOn) setSandboxOn(false);
-  }, [sandboxCheckboxDisabled, sandboxOn]);
+    if (sandboxOn && (sandboxCheckboxDisabled || isolationPicker.value === ISOLATION_NONE)) setSandboxOn(false);
+  }, [sandboxCheckboxDisabled, sandboxOn, isolationPicker.value]);
 
-  async function submit() {
+  // A new tool, sandbox choice or row asks the sign-in question again.
+  useEffect(() => {
+    setSignInConsent(null);
+  }, [tool, sandboxOn, isolationChoice]);
+
+  async function submit(signInSeed?: boolean) {
     // A remote system takes an entirely different path: POST /api/terminal/ssh
     // with a profile NAME and nothing else. None of the local-launch inputs
     // (tool, project root, model, sandbox) apply — see sshMode.
@@ -1016,11 +1135,7 @@ export function NewTerminalDialog({
       return;
     }
     if (sandboxBlocksStart) {
-      setErr(
-        sandboxRemoteURLMissing
-          ? "Enter a remote URL to clone into the sandbox."
-          : "The selected workspace source isn't available - pick another one.",
-      );
+      setErr(startBlock.blocks ? startBlock.message : sandboxBranchProblem);
       return;
     }
     setBusy(true);
@@ -1030,18 +1145,22 @@ export function NewTerminalDialog({
       // request body is byte-identical to a pre-U7 launch (plan §5). The
       // server re-validates workspace_source membership + everything else
       // and fail-CLOSES; this is a UX hint, not authorization.
-      const sandboxFields = sandboxOn
-        ? {
-            sandbox: true,
-            workspace_source: workspaceSource || "live",
-            ...(workspaceRemote.trim() ? { workspace_remote: workspaceRemote.trim() } : {}),
-            ...(workspaceBranch.trim() ? { workspace_branch: workspaceBranch.trim() } : {}),
-          }
-        : {};
-      const r = await fetchJSON<FreshLaunchResponse>(
-        "/api/terminal/launch",
-        undefined,
-        {
+      // The row chosen in the Isolation picker (a beta row too) is sent as
+      // `backend`; "Automatic" sends none (sandboxLaunchFields, B4).
+      const sandboxFields = sandboxLaunchFields({
+        sandboxOn,
+        isolationChoice,
+        workspaceSource,
+        workspaceRemote,
+        workspaceBranch,
+        branchApplies: sandboxBranch !== null,
+        signInSeed,
+      });
+      // A launch that can copy the tool's sign-in answers with the question
+      // instead (lane BOXSIGNIN): the inline step asks, its answer submits
+      // again.
+      const out = await postLaunchAskingSignIn(() =>
+        fetchJSON<FreshLaunchResponse>("/api/terminal/launch", undefined, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -1050,10 +1169,21 @@ export function NewTerminalDialog({
             model: modelSel || undefined,
             ...sandboxFields,
           }),
-        },
+        }),
       );
+      if ("consent" in out) {
+        setSignInConsent(out.consent);
+        setErr(null);
+        return;
+      }
+      const r = out.started;
       onLaunched(r.token, r.tool || tool, r.has_project_root);
     } catch (e) {
+      if (isFreshLaunchDisabledError(e)) {
+        setFreshOff(true);
+        setErr(null);
+        return;
+      }
       // Swap the raw server body for actionable guidance on the two known
       // policy gates — the remote allow_terminal 403 and the allowed_project_roots
       // 400 — and keep the verbatim message for every other failure so it stays
@@ -1098,6 +1228,8 @@ export function NewTerminalDialog({
             // before DI-17 they were two hand-rolled copies that already had.
             const tip = sshMode
               ? null
+              : policyStepBusy
+              ? POLICY_STEP_PENDING
               : remoteBlocked
               ? REMOTE_TERMINAL_OFF_MSG
               : launchBlockedByVerdict
@@ -1112,7 +1244,9 @@ export function NewTerminalDialog({
                 : sandboxBlocksStart
                   ? sandboxRemoteURLMissing
                     ? "Enter a remote URL to clone into the sandbox, or choose a different workspace"
-                    : "The selected workspace source isn't available - choose a different one"
+                    : startBlock.blocks
+                      ? "The selected workspace source isn't available - choose a different one"
+                      : sandboxBranchProblem
                   : null;
             // The shared Button: disabled renders the opaque bg-bg-3 look in
             // both themes, not a faded accent fill (T-339).
@@ -1128,9 +1262,9 @@ export function NewTerminalDialog({
                       // [remote].allow_terminal INBOUND tier - an orthogonal
                       // feature (the route is owner-local anyway).
                       !sshProfile
-                    : !tool || remoteBlocked || launchBlockedByVerdict || sandboxBlocksStart)
+                    : !tool || remoteBlocked || launchBlockedByVerdict || sandboxBlocksStart || policyStepBusy)
                 }
-                onClick={submit}
+                onClick={() => void submit()}
               >
                 {busy
                   ? "Starting…"
@@ -1511,6 +1645,19 @@ export function NewTerminalDialog({
                   </div>
                 </Tooltip>
               ) : null}
+              {rootSel === CUSTOM_ROOT && customFolderNeedsAllow && (
+                <AllowFolderStep
+                  path={customRoot.trim()}
+                  onPhase={(p) => setPolicyStepBusy(stepHoldsStart(p))}
+                  onConfirm={async (review) => {
+                    const root = customRoot.trim();
+                    await applyLaunchPolicyChange({ addRoot: root }, "Allow this folder for agent launches", review);
+                    setSavedRoots((s) => (s.includes(root) ? s : [...s, root]));
+                    await refreshAllowedRoots().catch(() => undefined);
+                  }}
+                />
+              )}
+
               <div className="mb-3" />
             </>
           ) : null}
@@ -1577,7 +1724,20 @@ export function NewTerminalDialog({
           </div>
         </Tooltip>
       ) : null}
-      {rootSel === CUSTOM_ROOT && (
+      {rootSel === CUSTOM_ROOT && customFolderNeedsAllow && (
+        <AllowFolderStep
+          path={customRoot.trim()}
+          onPhase={(p) => setPolicyStepBusy(stepHoldsStart(p))}
+          onConfirm={async (review) => {
+            const root = customRoot.trim();
+            await applyLaunchPolicyChange({ addRoot: root }, "Allow this folder for agent launches", review);
+            setSavedRoots((s) => (s.includes(root) ? s : [...s, root]));
+            await refreshAllowedRoots().catch(() => undefined);
+          }}
+        />
+      )}
+
+      {rootSel === CUSTOM_ROOT && windowsPathsToWSL && (
         <p className="mt-1 text-[10.5px] leading-relaxed text-fg-3">
           Windows paths (<code className="font-mono">C:\Users\…</code>) are
           accepted and translated to their WSL{" "}
@@ -1586,23 +1746,26 @@ export function NewTerminalDialog({
       )}
       <div className="mb-3" />
 
-      <label className="mb-1 flex items-start gap-2">
-        <input
-          type="checkbox"
-          checked={sandboxOn}
-          disabled={sandboxCheckboxDisabled}
-          title={sandboxReason ?? undefined}
-          onChange={(e) => setSandboxOn(e.target.checked)}
-          className="mt-0.5"
-        />
-        <span>
-          <span className="font-medium text-fg-1">Run in sandbox</span>
-          <span className="block text-[11px] text-fg-3">
-            {sandboxReason ??
-              "Launch inside a bubblewrap sandbox with an isolated $HOME - the agent can't read or write your real home directory or other projects."}
-          </span>
-        </span>
-      </label>
+      {/* Isolation picker (sandbox plan v2 section 9), a compgen feature
+          row of the Sandboxes and VMs module: null in a build without it, and
+          hidden while the module is not installed, so the dialog looks as it
+          does without the module. Choosing a backend is today's sandboxed
+          launch. */}
+      {!sandboxModuleAbsent && SANDBOX_ISOLATION_PICKER && (
+        <Suspense fallback={null}>
+          <SANDBOX_ISOLATION_PICKER
+            options={isolationPicker.options}
+            value={isolationPicker.value}
+            disabled={isolationPicker.disabled}
+            reason={isolationPicker.reason}
+            chip={isolationPicker.chip}
+            onChange={(v) => {
+              if (v !== ISOLATION_NONE) setIsolationChoice(v);
+              setSandboxOn(v !== ISOLATION_NONE);
+            }}
+          />
+        </Suspense>
+      )}
 
       {sandboxOn && !sandboxCheckboxDisabled && (
         <div className="mb-3 mt-2 rounded-2 border border-line-2 bg-bg-2 p-2">
@@ -1658,6 +1821,16 @@ export function NewTerminalDialog({
                 placeholder="https://github.com/org/repo.git"
                 className="w-full rounded-2 border bg-bg-0 px-2 py-1.5 font-mono text-[12px] text-fg-1"
               />
+              {sandboxRemoteURLMissing && (
+                <p className="mt-1 text-[10.5px] leading-relaxed text-warn">
+                  Enter a remote URL - the daemon will run `git clone` with your
+                  ambient auth into a managed workspace.
+                </p>
+              )}
+            </>
+          )}
+          {sandboxBranch && (
+            <>
               <label
                 htmlFor="new-terminal-sandbox-branch"
                 className="mb-1 mt-2 block text-[11px] font-medium text-fg-2"
@@ -1669,14 +1842,14 @@ export function NewTerminalDialog({
                 type="text"
                 value={workspaceBranch}
                 onChange={(e) => setWorkspaceBranch(e.target.value)}
-                placeholder="main"
+                placeholder={sandboxBranch.placeholder}
                 className="w-full rounded-2 border bg-bg-0 px-2 py-1.5 font-mono text-[12px] text-fg-1"
               />
-              {sandboxRemoteURLMissing && (
-                <p className="mt-1 text-[10.5px] leading-relaxed text-warn">
-                  Enter a remote URL - the daemon will run `git clone` with your
-                  ambient auth into a managed workspace.
-                </p>
+              {sandboxBranch.hint && (
+                <p className="mt-1 text-[10.5px] leading-relaxed text-fg-3">{sandboxBranch.hint}</p>
+              )}
+              {sandboxBranchProblem && (
+                <p className="mt-1 text-[10.5px] leading-relaxed text-warn">{sandboxBranchProblem}</p>
               )}
             </>
           )}
@@ -1692,6 +1865,93 @@ export function NewTerminalDialog({
           Notes render for EVERY verdict — the PATH-shim note arrives on a
           plain "ok" — and the not-installed branch always offers a next step:
           the runnable command, or the grounded reason there isn't one. */}
+      {!sshMode && policyLine !== null && (
+        <div
+          data-testid="project-policy-line"
+          title={policyLine.detail}
+          className={
+            "mb-2 text-[11px] leading-relaxed " + (policyLine.tone === "warn" ? "text-warn" : "text-fg-3")
+          }
+        >
+          {policyLine.text}
+        </div>
+      )}
+      {!sshMode && trust !== null && (
+        <div
+          data-testid="trust-chip"
+          title={trust.detail}
+          className={
+            "mb-3 rounded-2 border px-2 py-1.5 text-[11px] leading-relaxed " +
+            (trust.tone === "danger"
+              ? "border-danger/30 bg-danger/10 text-danger"
+              : trust.tone === "warn"
+                ? "border-warn/40 bg-warn/10 text-warn"
+                : "border-fg-3/30 bg-overlay-1 text-fg-3")
+          }
+        >
+          <span className="font-medium">{trust.label}</span>
+          {trust.tone !== "ok" && <span> - {trust.detail}</span>}
+          {pendingReasons(trustReply).length > 0 && (
+            <details data-testid="trust-review" className="mt-1.5 text-fg-2">
+              <summary className="cursor-pointer font-medium">
+                {acceptOffered(trustReply) ? "Review and accept" : "Review"}
+              </summary>
+              {acceptOffered(trustReply) ? (
+                <p className="mt-1 text-fg-3">
+                  Accept only what you have read. An accepted item in a local settings file becomes information;
+                  any other is lowered one level. Any change to an item asks again.
+                </p>
+              ) : (
+                <p data-testid="trust-accept-note" className="mt-1 text-fg-3">
+                  {acceptNote(trustReply)}
+                </p>
+              )}
+              <ul className="mt-1 space-y-1.5">
+                {pendingReasons(trustReply).map((r) => (
+                  <li key={r.digest} className="rounded-2 border border-fg-3/20 bg-overlay-1 px-2 py-1">
+                    <div className="font-mono break-all">{reasonLine(r)}</div>
+                    {r.excerpt && <div className="font-mono break-all text-fg-3">{r.excerpt}</div>}
+                    {r.files && r.files.length > 0 && (
+                      <div className="text-fg-3">runs {r.files.join(", ")} (their bytes are part of the digest)</div>
+                    )}
+                    {r.indicators && r.indicators.length > 0 && (
+                      <div className="text-fg-3">it {r.indicators.join(", ")}</div>
+                    )}
+                    {acceptOffered(trustReply) && (
+                      <button
+                        type="button"
+                        className="mt-1 rounded-2 border border-fg-3/30 px-1.5 py-0.5 disabled:opacity-50"
+                        disabled={trustBusy}
+                        onClick={() => void acceptTrust(acceptOneBody(effectiveRoot, r))}
+                      >
+                        Accept this item
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+              {acceptAllBody(effectiveRoot, trustReply) !== null && (
+                <button
+                  type="button"
+                  data-testid="trust-accept-all"
+                  className="mt-1.5 rounded-2 border border-fg-3/30 px-1.5 py-0.5 disabled:opacity-50"
+                  disabled={trustBusy}
+                  onClick={() => void acceptTrust(acceptAllBody(effectiveRoot, trustReply))}
+                >
+                  Accept the {pendingReasons(trustReply).length} item(s) shown
+                </button>
+              )}
+              {trustReply?.truncated && (
+                <p className="mt-1 text-fg-3">
+                  The check was cut short: entries it did not read stay untrusted and are not accepted here.
+                </p>
+              )}
+              {trustErr && <p className="mt-1 text-danger">{trustErr}</p>}
+            </details>
+          )}
+        </div>
+      )}
+
       {!sshMode &&
         tool &&
         tool !== SHELL_TOOL &&
@@ -1833,6 +2093,29 @@ export function NewTerminalDialog({
         </div>
       )}
 
+      {signInConsent && (
+        <div className="mb-3">
+          <SignInSeedStep
+            consent={signInConsent}
+            onPhase={(p) => setPolicyStepBusy(stepHoldsStart(p))}
+            onAnswer={(yes) => {
+              setSignInConsent(null);
+              void submit(yes);
+            }}
+          />
+        </div>
+      )}
+      {freshOff && (
+        <div className="mb-3">
+          <FreshLaunchStep
+            onPhase={(p) => setPolicyStepBusy(stepHoldsStart(p))}
+            onConfirm={async (review) => {
+              await applyLaunchPolicyChange({ allowFresh: true }, "Turn on fresh-agent launch", review);
+              setFreshOff(false);
+            }}
+          />
+        </div>
+      )}
       {err && (
         <div className="mb-3 rounded-2 border border-danger/30 bg-danger/10 px-2 py-1.5 text-[11px] text-danger">
           {err}

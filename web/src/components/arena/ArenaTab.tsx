@@ -39,6 +39,19 @@ interface JudgeScores {
   verdict_rationale?: string;
 }
 
+// permissionLaneLabel names the permission lane a drive ran in, in words.
+export function permissionLaneLabel(lane: string): string {
+  switch (lane) {
+    case "bypass":
+      return "permissions skipped";
+    case "edit":
+      return "edits only";
+    case "read_only":
+      return "read only";
+  }
+  return lane;
+}
+
 interface ArenaCandidate {
   id: string;
   tool: string;
@@ -60,6 +73,8 @@ interface ArenaCandidate {
   verdict?: string;
   final_answer?: string;
   has_patch?: boolean;
+  // The permission lane the drive ran in (OSH-R-005); absent on older rows.
+  permission_lane?: "bypass" | "edit" | "read_only" | string;
 }
 
 export interface ArenaRun {
@@ -486,6 +501,14 @@ function CandidateCard({ runId, runStatus, cand, onChanged }: { runId: string; r
       </div>
       <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-fg-3">
         <span>{cand.wall_ms.toLocaleString()} ms</span>
+        {cand.permission_lane && (
+          <span
+            className={cand.permission_lane === "bypass" ? "text-warn" : undefined}
+            title="How the harness's own permission prompts were handled during this unattended drive"
+          >
+            {permissionLaneLabel(cand.permission_lane)}
+          </span>
+        )}
         {cand.timed_out && <span className="text-warn">timed out</span>}
         {cand.exit_code !== 0 && <span className="text-danger">exit {cand.exit_code}</span>}
         <span>{cand.diff_files} files · +{cand.diff_added} / −{cand.diff_removed}</span>

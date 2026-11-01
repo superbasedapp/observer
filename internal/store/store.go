@@ -26,6 +26,8 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/identity"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/pidbridge"
+	"github.com/marmutapp/superbased-observer/internal/platform/pathnorm"
+	"github.com/marmutapp/superbased-observer/internal/platform/xcodehost"
 	"github.com/marmutapp/superbased-observer/internal/sessionend"
 )
 
@@ -80,11 +82,26 @@ type Store struct {
 	// nil (the New() default) disables it entirely, so internal/store's
 	// own test suite never shells out to git. See SetRootCommitResolver.
 	rootCommitResolver RootCommitResolverFunc
+	// postWriteSink is the security post-write seam (internal/store/
+	// postwrite.go, security plan section 5.3). nil (the New() default)
+	// reports nothing. See SetPostWriteSink.
+	postWriteSink PostWriteSink
 	// budgetPosture is the org BUDGET posture provider seam
 	// (internal/store/budgetposture.go, wave W3b). nil (the New() default)
 	// means "no posture reported", which is byte-identical to a build without
 	// the budget rail. See SetBudgetPostureProvider.
 	budgetPosture BudgetPostureProvider
+	// sandboxCapability is the sandbox module's capability seam
+	// (sandboxposture.go); nil while the module is inactive, which also keeps
+	// the posture aggregate off the wire.
+	sandboxCapability SandboxCapabilityProvider
+	// secOrg is the security pillar's org wire seam (secorgrows.go); the
+	// zero value (the module inactive) composes no security row.
+	secOrg SecurityOrgProviders
+	// secSalt is the security wire's change-probe salt (secorgrows.go): the
+	// share level, the raw-content flag, the org-key state and the scope the
+	// last compose ran under, so a change to any of them re-sends the rows.
+	secSalt secProbeSalt
 	// mcpInventory is the shadow-MCP discovery inventory seam
 	// (internal/store/mcpinventory.go, Agent Access P11 (c)). A zero value
 	// composes no MCPInventoryRow. See SetMCPInventoryProviders.
@@ -167,7 +184,10 @@ func (s *Store) SetGuard(g *guard.Guard) {
 
 // ProjectRoots returns every observed project's root path — the
 // cross-project-bleed rule R-151's reference set, snapshot at daemon
-// composition into guard.Options.KnownProjectRoots.
+// composition into guard.Options.KnownProjectRoots. A root that is not a
+// path in any flavor (FU-193's "Xcode (project unknown)", a placeholder) is
+// left out (projectRootIsPath, audit row 8): every caller treats a root as
+// a directory.
 func (s *Store) ProjectRoots(ctx context.Context) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT root_path FROM projects ORDER BY id`)
 	if err != nil {
@@ -180,12 +200,55 @@ func (s *Store) ProjectRoots(ctx context.Context) ([]string, error) {
 		if err := rows.Scan(&rp); err != nil {
 			return nil, fmt.Errorf("store.ProjectRoots: scan: %w", err)
 		}
-		if rp != "" {
+		if projectRootIsPath(rp) {
 			out = append(out, rp)
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store.ProjectRoots: rows: %w", err)
+	}
+	return out, nil
+}
+
+// projectRootIsPath reports whether a stored project root is an absolute
+// path in either flavor: POSIX, or a Windows drive or UNC path (a Windows
+// node's roots, kept in the reference set a WSL daemon compares across
+// flavors). FU-193's "Xcode (project unknown)" and a placeholder root are
+// not. A caller that opens the root on this host also checks
+// git.HostRooted.
+func projectRootIsPath(p string) bool {
+	return strings.HasPrefix(p, "/") || pathnorm.IsWindowsShaped(p)
+}
+
+// RecentProjectRoots returns up to limit observed project roots, the most
+// recently active first (last session, else creation): the bounded set the
+// project-scope hook-switch scan reads (T-910). limit <= 0 returns none. A
+// root that is not a path (projectRootIsPath) is left out.
+func (s *Store) RecentProjectRoots(ctx context.Context, limit int) ([]string, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT root_path FROM projects
+		 WHERE root_path <> ''
+		 ORDER BY COALESCE(NULLIF(last_session_at, ''), created_at) DESC, id DESC
+		 LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store.RecentProjectRoots: query: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var rp string
+		if err := rows.Scan(&rp); err != nil {
+			return nil, fmt.Errorf("store.RecentProjectRoots: scan: %w", err)
+		}
+		if projectRootIsPath(rp) {
+			out = append(out, rp)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store.RecentProjectRoots: rows: %w", err)
 	}
 	return out, nil
 }
@@ -230,6 +293,22 @@ func normalizeProjectRoot(rootPath string) string {
 	return rootPath
 }
 
+// canonicalProjectRoot is the one spelling a project root is stored
+// and compared under: a foreign or URI spelling (`C:\foo`, `/c:/foo`,
+// `file:///C:/foo`) is translated to the host's flavor first, then
+// folded out of any `.git` directory. Every ingest path goes through
+// it, so a raw Windows `cwd` (Claude Code's wsl.exe hook bridge, the
+// kimchi and autohand parsers reading a Windows store) lands on the
+// same row as the adapter that translated the same directory. A native
+// path is returned unchanged (pathnorm.NormalizeForeign), so no existing
+// row changes identity.
+//
+// A Windows drive letter is upper-cased (WINNODE2 item 11): one folder
+// reported as `c:\x` by one tool and `C:\x` by another is one project.
+func canonicalProjectRoot(rootPath string) string {
+	return normalizeProjectRoot(pathnorm.CanonicalDriveLetter(pathnorm.NormalizeForeign(rootPath)))
+}
+
 // UpsertProject inserts or returns the id of the projects row for rootPath.
 // remote may be empty. It is a thin wrapper over UpsertProjectWithIdentity
 // with a zero ProjectIdentity, kept so the ~dozens of existing call sites
@@ -247,7 +326,26 @@ func (s *Store) upsertProjectBase(ctx context.Context, rootPath, remote string) 
 	if rootPath == "" {
 		return 0, errors.New("store.UpsertProject: rootPath is required")
 	}
-	rootPath = normalizeProjectRoot(rootPath)
+	rootPath = canonicalProjectRoot(rootPath)
+	// FU-193: Xcode runs its agents in ~/Library/Autosave Information, not
+	// the open project; such a session is filed under the explicit
+	// "Xcode (project unknown)" answer, never a project named after that
+	// folder. Only the project row changes: the event keeps its real cwd
+	// for resolving relative targets.
+	rootPath = xcodehost.ProjectRoot(rootPath)
+	if pathnorm.IsWindowsShaped(rootPath) {
+		// Windows paths are case-insensitive (WINNODE2 item 11): an
+		// existing row for the same folder spelled in another case is
+		// this project. Its stored spelling and hash are kept, so the
+		// project keeps its identity on the org wire.
+		stored, ok, err := s.projectRootFolded(ctx, rootPath)
+		if err != nil {
+			return 0, err
+		}
+		if ok {
+			rootPath = stored
+		}
+	}
 	now := timestamp(time.Now().UTC())
 	rootPathHash := sha256Hex(rootPath)
 	var remoteHash string
@@ -2163,6 +2261,9 @@ func (s *Store) ingest(ctx context.Context, events []models.ToolEvent, tokens []
 		if e.SessionID == "" || e.ProjectRoot == "" {
 			continue
 		}
+		// One spelling per root for the project row AND everything below
+		// that reads it (the guard input, the classifier's absolute path).
+		e.ProjectRoot = canonicalProjectRoot(e.ProjectRoot)
 		// A terminal lifecycle marker (session_end) must not bootstrap a
 		// session that has no other record. Windows Claude Code fires a
 		// session_end hook for empty/probe sessions that never produced a
@@ -2260,7 +2361,7 @@ func (s *Store) ingest(ctx context.Context, events []models.ToolEvent, tokens []
 		// file event in this same batch sees the first one's hash.
 		// Non-file actions stay in the batched actions slice.
 		if opts.Classifier != nil && isFileAction(e.ActionType) {
-			abs := resolveAbs(e.ProjectRoot, e.Target)
+			abs := resolveAbs(e.ProjectRoot, e.Target, e.RawToolInput)
 			if abs != "" {
 				obs, err := opts.Classifier.Classify(ctx, pid, e.SessionID, e.ActionType, abs)
 				if err == nil {
@@ -2275,7 +2376,9 @@ func (s *Store) ingest(ctx context.Context, events []models.ToolEvent, tokens []
 				if err != nil {
 					return result, err
 				}
-				if inserted && act.ContentHash != "" {
+				// file_state refreshes on a re-read too (act.ID is bound to
+				// the existing row); the once-per-action stages below do not.
+				if act.ID != 0 && act.ContentHash != "" {
 					if err := opts.Classifier.UpsertFileState(
 						ctx, pid, abs,
 						freshness.FileObservation{
@@ -2353,6 +2456,7 @@ func (s *Store) ingest(ctx context.Context, events []models.ToolEvent, tokens []
 		if tk.SessionID == "" {
 			continue
 		}
+		tk.ProjectRoot = canonicalProjectRoot(tk.ProjectRoot)
 		if _, ok := sessionsSeen[tk.SessionID]; ok {
 			validTokens = append(validTokens, tk)
 			continue
@@ -2707,6 +2811,12 @@ func (s *Store) ingest(ctx context.Context, events []models.ToolEvent, tokens []
 		warnLOC("record", lerr)
 	}
 
+	// Security post-write seam (security plan section 5.3): ONE call, after
+	// every action row exists, reporting each successful write's session,
+	// action id, project root and project-relative path to the injected
+	// sink and nothing else. No-op when no sink is set.
+	s.notifyPostWrites(actions, projectIDs)
+
 	// Task-tracking post-hoc decode (internal/store/taskflow.go, migration
 	// 109): re-reads the todo_update / task_complete / post_tool_batch rows
 	// ACTUALLY INSERTED above into per-item task_items/task_transitions.
@@ -2982,9 +3092,11 @@ func (s *Store) recordOutcomeUpdateFailureContext(ctx context.Context, up models
 
 // insertSingleAction is the per-row path used for file-typed actions so the
 // freshness pipeline can read and write file_state between adjacent events in
-// the same batch. Returns (true, nil) when a new row was inserted;
-// (false, nil) means a duplicate (source_file, source_event_id) was skipped
-// via INSERT OR IGNORE.
+// the same batch. Returns (true, nil) only when a new row was inserted.
+// (false, nil) means the (source_file, source_event_id) row already existed:
+// the upsert refreshed it and a.ID is bound to that existing row, so the
+// caller can still refresh file_state, but nothing that must fire once per
+// action (guard evaluation, the inserted count) may run again.
 func (s *Store) insertSingleAction(ctx context.Context, a *models.Action) (bool, error) {
 	s.stamper.Stamp(actionOrgRow{a}) // no-op unless enrolled
 	// Pre-check upsert-vs-insert: the `INSERT ... ON CONFLICT DO UPDATE`
@@ -3055,8 +3167,12 @@ func (s *Store) insertSingleAction(ctx context.Context, a *models.Action) (bool,
 	if preCheckErr == nil {
 		// UPSERT-UPDATE path: bind a.ID to the existing row. The caller's
 		// downstream UpsertFileState then writes a valid last_action_id;
-		// without this we'd use the stale LastInsertId.
+		// without this we'd use the stale LastInsertId. Not an insert: a
+		// whole-store re-parse reaches this path for every file action it
+		// re-reads, and reporting true re-ran guard evaluation each time
+		// (duplicate guard_events rows).
 		a.ID = existingID
+		return false, nil
 	} else if id, err := res.LastInsertId(); err == nil {
 		// Genuine INSERT path: LastInsertId is the freshly-assigned rowid.
 		a.ID = id
@@ -3072,8 +3188,10 @@ func isFileAction(actionType string) bool {
 
 // resolveAbs resolves a possibly project-relative target into an absolute
 // filesystem path suitable for freshness hashing. Returns "" for
-// "[external]/..." pseudo-paths (handled as unknown).
-func resolveAbs(projectRoot, target string) string {
+// "[external]/..." pseudo-paths (handled as unknown). A target a linked
+// worktree's file was stored under resolves into that worktree, not the
+// main checkout (checkoutDiskPath, PT-39).
+func resolveAbs(projectRoot, target, rawInput string) string {
 	if target == "" {
 		return ""
 	}
@@ -3085,6 +3203,9 @@ func resolveAbs(projectRoot, target string) string {
 	}
 	if projectRoot == "" {
 		return ""
+	}
+	if p, ok := checkoutDiskPath(projectRoot, target, rawInput); ok {
+		return p
 	}
 	return filepath.Join(projectRoot, target)
 }

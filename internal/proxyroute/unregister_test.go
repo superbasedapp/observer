@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -170,7 +171,8 @@ func TestUnregisterCodexIsSurgical(t *testing.T) {
 	if root := readCodexTOML(t, path); root["model_provider"] != nil {
 		t.Fatalf("model_provider = %v, want removed (no prior recorded)", root["model_provider"])
 	}
-	if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o644 {
+	// POSIX-only: Windows has no mode bits (Perm reports 0666 or 0444).
+	if fi, _ := os.Stat(path); runtime.GOOS != "windows" && fi.Mode().Perm() != 0o644 {
 		t.Fatalf("mode = %v, want 0644 kept", fi.Mode().Perm())
 	}
 	if len(locked) != 1 || locked[0] != path {

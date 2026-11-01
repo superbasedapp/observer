@@ -75,7 +75,7 @@ func TestSelectTools_UninstallKeepsBaseOnlyScope(t *testing.T) {
 	}
 
 	// Init path: the same explicit selector DOES union the Windows target.
-	gotInit := selectToolsForInit(false, true, false, false, false, installed)
+	gotInit := selectToolsForInit(false, aliasTools([]bool{true}, nil), installed)
 	if !slices.Contains(gotInit, "claude-code-windows") {
 		t.Errorf("selectToolsForInit(--claude-code) = %v, want it to include claude-code-windows", gotInit)
 	}

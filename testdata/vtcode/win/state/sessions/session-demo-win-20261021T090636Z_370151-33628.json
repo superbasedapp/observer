@@ -1,0 +1,21 @@
+{
+  "metadata": {
+    "workspace_label": "demo-win",
+    "workspace_path": "C:\\Users\\user\\demo-win",
+    "model": "xiaomi/mimo-v2.6-pro",
+    "provider": "openrouter",
+    "theme": "ciapre",
+    "reasoning_effort": "none",
+    "loaded_skills": [],
+    "prompt_cache_lineage_id": "lineage-61b83b67-3238-409a-95dd-068bdd9b2c9e",
+    "primary_agent": "build"
+  },
+  "started_at": "2026-10-21T09:06:36.372647700Z",
+  "ended_at": "2026-10-21T09:15:07.991071600Z",
+  "total_messages": 77,
+  "distinct_tools": [
+    "code_search"
+  ],
+  "transcript": [],
+  "messages": []
+}

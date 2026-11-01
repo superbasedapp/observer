@@ -206,8 +206,8 @@ func TestDaemonAndHookAgreeOnUserPolicyMode(t *testing.T) {
 				defer database.Close()
 				gd = buildGuardForStore(context.Background(), cfg, store.New(database), slog.New(slog.DiscardHandler))
 			} else {
-				pin, managed := nodeGuardPolicyInputs(context.Background(), nil, nil)
-				gd, err = guard.New(guard.Options{Config: cfg.Guard, OrgKeyPinHash: pin, ManagedTenancy: managed})
+				pin, managed, expected := nodeGuardPolicyInputs(context.Background(), nil, nil)
+				gd, err = guard.New(guard.Options{Config: cfg.Guard, OrgKeyPinHash: pin, ManagedTenancy: managed, OrgBundleExpected: expected})
 				if err != nil {
 					t.Fatal(err)
 				}

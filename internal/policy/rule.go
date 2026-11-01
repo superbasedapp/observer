@@ -163,6 +163,14 @@ type Rule struct {
 	// and prompt alike, whatever the engine mode). verdictFor applies the
 	// cap; a later `enforce = true` override clears it.
 	EnforceCappedBy string
+	// DecisionPinnedBy is the policy layer whose [[override]] explicitly
+	// set this rule's stance, with a `decision = ...` or `enforce = true`,
+	// or "" when the row still carries its catalog defaults. A later
+	// `enforce = false` clears it (the cap wins). The prompt lanes read it
+	// so an ORG-pinned deny is a floor on [guard.prompt]'s local
+	// per-detector mode (internal/guard promptModeFloor), not a value the
+	// local ask-once default can soften.
+	DecisionPinnedBy string
 	// ReadsBudgetStamps declares that the row's matcher reads the guard-stamped
 	// spend or usage fields (Event.SessionCostUSD and its siblings). A compiled
 	// policy-file rule sets it when it uses a spend matcher; the built-in budget

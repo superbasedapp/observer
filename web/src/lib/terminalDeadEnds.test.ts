@@ -23,6 +23,7 @@ function codeOnly(path: string): string {
 
 const FILES = [
   "web/src/components/NewTerminalDialog.tsx",
+  "web/src/lib/newTerminalSandbox.ts",
   "web/src/lib/toolInstall.ts",
   "web/src/lib/toolUninstall.ts",
   "web/src/lib/remoteTerminal.ts",
@@ -57,7 +58,9 @@ test("the dialog's launch policy copy names the dashboard card, not [terminal.la
 });
 
 test("the System picker's empty and off states point at the Remote systems card, without a restart", () => {
-  const code = codeOnly("web/src/components/NewTerminalDialog.tsx");
+  // The picker's disabled copy lives in lib/newTerminalSandbox.ts since lane
+  // sbx-p2b; the dialog links the card.
+  const code = codeOnly("web/src/components/NewTerminalDialog.tsx") + codeOnly("web/src/lib/newTerminalSandbox.ts");
   assert.ok(!code.includes("[[terminal.ssh.profiles]] block"));
   assert.ok(!/restart the daemon/i.test(code), "the dialog still asks for a daemon restart");
   assert.ok(code.includes("TERMINALS_REMOTE_SYSTEMS_HASH_PATH"));

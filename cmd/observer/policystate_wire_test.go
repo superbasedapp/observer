@@ -72,7 +72,7 @@ func fourReaders() map[string]policystate.PointReader {
 	}
 	now := time.Now
 	return map[string]policystate.PointReader{
-		policystate.PointGuard:         newGuardPointReader(func() (int64, error) { return 0, nil }, func() guardRunning { return guardRunning{} }, func() orgclient.GuardFetchOutcome { return orgclient.GuardFetchOutcome{} }, now),
+		policystate.PointGuard:         newGuardPointReader(bundleAt(0), func() guardRunning { return guardRunning{} }, func() orgclient.GuardFetchOutcome { return orgclient.GuardFetchOutcome{} }, nil, now),
 		policystate.PointRouter:        newRouterPointReader(nil, func(context.Context) (int64, error) { return 0, nil }, func() orgclient.RoutingFetchOutcome { return orgclient.RoutingFetchOutcome{} }, now),
 		policystate.PointProxyAdmitter: ok(policystate.PointFacts{LastSeen: now()}),
 		policystate.PointProxyEgress:   ok(policystate.PointFacts{LastSeen: now()}),
@@ -141,9 +141,10 @@ func TestReporter_404LatchesOff(t *testing.T) {
 // from the injected running source (Guard.PolicyStates()), never split.
 func TestGuardReader_RunningVersionFromPolicyStates(t *testing.T) {
 	reader := newGuardPointReader(
-		func() (int64, error) { return 9, nil },
+		bundleAt(9),
 		func() guardRunning { return guardRunning{RunningVersion: 7, EffectiveHash: psHex64, Mode: "enforce"} },
 		func() orgclient.GuardFetchOutcome { return orgclient.GuardFetchOutcome{} },
+		nil,
 		time.Now,
 	)
 	f, _ := reader(context.Background())
@@ -162,9 +163,10 @@ func TestGuardReader_RunningVersionFromPolicyStates(t *testing.T) {
 // install / not-yet-loaded) reads 0 + empty hash (R3-B2).
 func TestGuardReader_AbsentOrgLayerIsZeroEmpty(t *testing.T) {
 	reader := newGuardPointReader(
-		func() (int64, error) { return 3, nil },
+		bundleAt(3),
 		func() guardRunning { return guardRunning{} }, // absent org layer
 		func() orgclient.GuardFetchOutcome { return orgclient.GuardFetchOutcome{} },
+		nil,
 		time.Now,
 	)
 	f, _ := reader(context.Background())
@@ -181,11 +183,12 @@ func TestGuardReader_AbsentOrgLayerIsZeroEmpty(t *testing.T) {
 // in-memory last-fetch slot, not the cache.
 func TestGuardReader_DeliveredRejectFromLastFetch(t *testing.T) {
 	reader := newGuardPointReader(
-		func() (int64, error) { return 5, nil },
+		bundleAt(5),
 		func() guardRunning { return guardRunning{RunningVersion: 5, EffectiveHash: psHex64, Mode: "enforce"} },
 		func() orgclient.GuardFetchOutcome {
 			return orgclient.GuardFetchOutcome{OK: true, Reached: true, RejectCode: orgclient.RejectLintFailed, Version: 6}
 		},
+		nil,
 		time.Now,
 	)
 	f, _ := reader(context.Background())
@@ -285,6 +288,7 @@ func TestReporter_MultiplePokesCoalesceToOneFollowup(t *testing.T) {
 // snapshot posts. This is the reporter-level analog of the deferred
 // TestStartupEmitsFourRows (which additionally needs the start.go g.Go launch).
 func TestBuildAndRunReporter(t *testing.T) {
+	pinToolHomes(t) // config.Default() puts the report_seq file and guard cache under the home (FU-20)
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "agent.db")
 	conn, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
@@ -349,6 +353,7 @@ func TestBuildAndRunReporter(t *testing.T) {
 // learn a node's mode schema version if the node's own policy-ack report
 // actually carries it.
 func TestBuildPolicyStateReporter_ReportCarriesModeCapabilityToken(t *testing.T) {
+	pinToolHomes(t) // config.Default() puts the report_seq file and guard cache under the home (FU-20)
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "agent.db")
 	conn, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
@@ -508,9 +513,10 @@ func TestAssemble_OmitsGuardPointOnCorruptCache(t *testing.T) {
 	}
 	readers := fourReaders()
 	readers[policystate.PointGuard] = newGuardPointReader(
-		guardCachedVersionFromFile(bad),
+		guardBundleCheckFrom(nil, bad),
 		func() guardRunning { return guardRunning{} },
 		func() orgclient.GuardFetchOutcome { return orgclient.GuardFetchOutcome{} },
+		nil,
 		time.Now,
 	)
 	rows, err := policystate.Assemble(context.Background(), readers)
@@ -1120,6 +1126,7 @@ func TestProjectGen1_StripsFieldsAndRemapsReasons(t *testing.T) {
 	}{
 		{"family_not_accepted folds to capability_mismatch", orgcontract.ReasonFamilyNotAccepted, orgcontract.ReasonCapabilityMismatch},
 		{"sidecar_unwritable folds to not_preauthorized", orgcontract.ReasonSidecarUnwritable, orgcontract.ReasonNotPreauthorized},
+		{"posture_loosened folds to capability_mismatch", orgcontract.ReasonPostureLoosened, orgcontract.ReasonCapabilityMismatch},
 		{"not_preauthorized passes through unchanged", orgcontract.ReasonNotPreauthorized, orgcontract.ReasonNotPreauthorized},
 		{"ok passes through unchanged", orgcontract.ReasonOK, orgcontract.ReasonOK},
 		{"no_policy passes through unchanged", orgcontract.ReasonNoPolicy, orgcontract.ReasonNoPolicy},
@@ -1161,5 +1168,27 @@ func TestProjectGen1_StripsFieldsAndRemapsReasons(t *testing.T) {
 				t.Fatalf("projectGen1 mutated the input row's Reason: got %q, want unchanged %q", in[0].Reason, tc.reason)
 			}
 		})
+	}
+}
+
+// bundleAt is a guard bundle check that reports version v and no integrity
+// verdict (the pre-gen3 shape).
+func bundleAt(v int64) func(context.Context) (guardBundleCheck, error) {
+	return func(context.Context) (guardBundleCheck, error) { return guardBundleCheck{Version: v}, nil }
+}
+
+// TestPostureLoosenedWireReasonAndFolds pins the F0-8 reject code's wire
+// reason and its fold in every older-server projection.
+func TestPostureLoosenedWireReasonAndFolds(t *testing.T) {
+	if got := wirePolicyResourceRejectReason(orgclient.PRRejectPostureLoosened); got != orgcontract.ReasonPostureLoosened {
+		t.Fatalf("wire reason %q", got)
+	}
+	rows := []orgcontract.PolicyStateRow{{Reason: orgcontract.ReasonPostureLoosened}}
+	for name, project := range map[string]func([]orgcontract.PolicyStateRow) []orgcontract.PolicyStateRow{
+		"gen1": projectGen1, "gen2": projectGen2, "gen3": projectGen3,
+	} {
+		if got := project(rows)[0].Reason; got != orgcontract.ReasonCapabilityMismatch {
+			t.Errorf("%s projection: %q", name, got)
+		}
 	}
 }

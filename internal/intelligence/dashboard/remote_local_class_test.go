@@ -222,30 +222,52 @@ var expectedClassification = map[string]string{
 	"/api/guard/evidence/download": "V",
 	// Guard tools (T-154): the dry run is a read (fresh engines, nothing
 	// persists); the job routes run `guard rescan|compile|mcp scan|report`.
-	"/api/guard/test":             "V",
-	"/api/guard/jobs/policy":      "L",
-	"/api/guard/jobs/mcp":         "L",
-	"/api/guard/mcp":              "V",
-	"/api/guard/mcp/approve":      "L",
-	"/api/guard/mcp/reputation":   "L",
-	"/api/guard/policy":           "L",
-	"/api/guard/policy/project":   "L",
-	"/api/guard/policy/backup":    "L",
-	"/api/guard/policy/lint":      "V",
-	"/api/guard/prompt/allow/":    "L",
-	"/api/guard/prompt/clear":     "L",
-	"/api/guard/prompt/detectors": "V",
-	"/api/guard/prompt/events":    "V",
-	"/api/guard/prompt/probe":     "L",
-	"/api/guard/prompt/status":    "V",
-	"/api/guard/rules":            "V",
-	"/api/guard/simulate":         "V",
-	"/api/requests":               "L",
-	"/api/requests/":              "L",
-	"/api/guard/summary":          "V",
-	"/api/health/doctor":          "V",
-	"/api/health/failures":        "V",
-	"/api/health/watcher":         "V",
+	"/api/guard/test":                     "V",
+	"/api/guard/jobs/policy":              "L",
+	"/api/guard/jobs/mcp":                 "L",
+	"/api/guard/mcp":                      "V",
+	"/api/guard/mcp/approve":              "L",
+	"/api/guard/mcp/reputation":           "L",
+	"/api/guard/policy":                   "L",
+	"/api/guard/policy/project":           "L",
+	"/api/guard/policy/backup":            "L",
+	"/api/guard/policy/lint":              "V",
+	"/api/guard/prompt/allow/":            "L",
+	"/api/guard/prompt/clear":             "L",
+	"/api/guard/prompt/detectors":         "V",
+	"/api/guard/prompt/events":            "V",
+	"/api/guard/prompt/probe":             "L",
+	"/api/guard/prompt/status":            "V",
+	"/api/guard/rules":                    "V",
+	"/api/guard/simulate":                 "V",
+	"/api/requests":                       "L",
+	"/api/requests/":                      "L",
+	"/api/messages":                       "L",
+	"/api/messages/":                      "L",
+	"/api/security/status":                "V",
+	"/api/security/org-notice":            "V",
+	"/api/security/findings":              "V",
+	"/api/security/scanners":              "V",
+	"/api/security/scanners/db":           "L",
+	"/api/security/import-sarif":          "L",
+	"/api/security/code/install":          "L",
+	"/api/security/iac/install":           "L",
+	"/api/security/provenance":            "L",
+	"/api/security/trust":                 "L",
+	"/api/security/exceptions":            "L",
+	"/api/security/exceptions/revoke":     "L",
+	"/api/security/baseline":              "L",
+	"/api/security/editor":                "L",
+	"/api/security/scan-history":          "L",
+	"/api/security/findings/{id}/explain": "L",
+	"/api/security/githooks":              "L",
+	"/api/security/scanners/custom":       "L",
+	"/api/security/scanners/custom/":      "L",
+	"/api/security/deps":                  "L",
+	"/api/guard/summary":                  "V",
+	"/api/health/doctor":                  "V",
+	"/api/health/failures":                "V",
+	"/api/health/watcher":                 "V",
 	// Instance switcher — same class and the same reasoning as
 	// /api/terminal/ssh below: GET discloses the operator's configured remote
 	// hostnames, and POST .../connect spawns an `ssh -N -L` child to a
@@ -291,6 +313,18 @@ var expectedClassification = map[string]string{
 	"/api/project/{id}/prompts":                   "V",
 	"/api/project/{id}/cost":                      "V",
 	"/api/project/{id}/prompts/{action_id}/grade": "V",
+	"/api/project/{id}/commit-scan":               "L",
+	// Delivery (D-689): the tab and the mirror list are reads; every write
+	// reaches the network, the keychain or the disk, and the link list names
+	// the connected account, so those are owner-local.
+	"/api/project/{id}/delivery":          "V",
+	"/api/project/{id}/delivery/check":    "L",
+	"/api/project/{id}/delivery/settings": "L",
+	"/api/delivery/links":                 "L",
+	"/api/delivery/links/{id}":            "L",
+	"/api/delivery/links/{id}/test":       "L",
+	"/api/delivery/mirrors":               "V",
+	"/api/delivery/mirrors/{id}":          "L",
 	// Agent-guidance inventory: metadata reads over already-persisted rows.
 	"/api/projects/guidance":         "V",
 	"/api/projects/guidance/summary": "V",
@@ -377,8 +411,12 @@ var expectedClassification = map[string]string{
 	"/api/suggestions/state":         "L",
 	// The notification bell (D-323): the owner's own inbox and its
 	// read / dismiss state write.
-	"/api/notifications":                  "L",
-	"/api/notifications/state":            "L",
+	"/api/notifications":       "L",
+	"/api/notifications/state": "L",
+	// T-922: the first-run capture view names this machine's session
+	// folders and project roots, and its seen flag is a node write.
+	"/api/firstrun":                       "L",
+	"/api/firstrun/seen":                  "L",
 	"/api/tasks":                          "V", // Phase-2 task-tracking project/tool/window rollup — read-side aggregate over already-captured actions/token_usage rows, same posture as /api/cache/status
 	"/api/terminal/":                      "V",
 	"/api/terminal/install":               "L", // spawns the registry-constant install command in a local-only setup PTY — owner-local only
@@ -388,6 +426,7 @@ var expectedClassification = map[string]string{
 	"/api/terminal/launch":                "X",
 	"/api/terminal/launch/preflight":      "L", // runs a $SHELL -lc login-shell PATH capture + reveals binary paths/home layout — owner-local only (reclassified V→L, 2026-07-23 review)
 	"/api/terminal/launch/models":         "V", // reads token_usage model history + registry Known list only — same posture as /api/models (B5 model picker)
+	"/api/terminal/project-policy":        "L", // lane sec-p2b: takes a local directory path and says whether the org's project rules apply there; owner-local like preflight
 	"/api/terminal/sandbox":               "V", // B9 fail-soft sandbox probe — reads the daemon's cached bwrap probe result + [terminal.sandbox] config only, same posture as /api/terminal/launch/models
 	"/api/terminal/ssh":                   "L", // SSH remote-system terminals — GET discloses the operator's internal hostnames (the sessions.git_branch privacy class) and POST opens an interactive shell on a THIRD-PARTY machine; both stay owner-local until remote-driven SSH gets its own threat model (ssh-remote-profiles plan §6.2 / D1)
 	"/api/terminal/sandbox/config":        "L", // owner-local editor for [terminal.sandbox], including remote-clone / extra-rw-bind authority expansion
@@ -414,6 +453,9 @@ var expectedClassification = map[string]string{
 	"/api/tools/launch":                   "L",
 	"/api/tools/status":                   "V",
 	"/api/update/apply":                   "L",
+	// Lane LEFT-SBX: the install version picker makes the daemon read a
+	// vendor registry for the picked tool; owner-local.
+	"/api/terminal/sandbox/install-versions": "L",
 	// W5 (enterprise update management). The STATUS read is View: it
 	// discloses this node's own version and update state to a viewer who can
 	// already see /api/status. The extension-version REPORT is Local: it is a
@@ -584,6 +626,11 @@ var mutationRoutes = []string{
 	"/api/suggest/write",
 	"/api/suggestions/state",
 	"/api/notifications/state",
+	"/api/firstrun/seen",
+	// T-854: a reply / Ask my admin, read and acknowledge receipts, retry
+	// and discard all reach the org or change what will.
+	"/api/messages",
+	"/api/messages/",
 	"/api/tools/launch",
 	"/api/terminal/install",
 	"/api/terminal/uninstall",

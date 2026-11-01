@@ -68,8 +68,12 @@ var noBareUSDAllow = map[string]noBareUSDEntry{
 		"authored dollar caps, not a developer's coding spend."},
 	"cmd/observer/cloud.go": {reason: "the Cloud Intelligence preview prints the exact bytes and metrics that " +
 		"would leave the machine (two-digest truth); re-denominating them would make the preview lie."},
-	"cmd/observer/cloudconsent.go":     {reason: "not money: a flag help string naming an environment variable ($SBO_CLOUD_BASE_URL)."},
-	"cmd/observer/cloudenable.go":      {reason: "not money: a flag help string naming an environment variable ($SBO_CLOUD_BASE_URL)."},
+	"cmd/observer/cloudconsent.go": {reason: "not money: a flag help string naming an environment variable ($SBO_CLOUD_BASE_URL)."},
+	"cmd/observer/cloudenable.go":  {reason: "not money: a flag help string naming an environment variable ($SBO_CLOUD_BASE_URL)."},
+	"cmd/observer/security_verify_org.go": {reason: "not money: an error naming the environment variable the CI " +
+		"credential is read from ($<name>)."},
+	"cmd/observer/security_verify_upload.go": {reason: "not money: an error naming the environment variable the CI " +
+		"credential is read from ($<name>)."},
 	"internal/accessgrant/describe.go": {reason: "the org decision preview an admin approves (web2), where admins always see dollars."},
 	"internal/arena/keep.go": {reason: "provenanceUsage writes the dollar figure only when the developer display " +
 		"shows dollars (Runner Options.CostDisplay)."},
@@ -92,6 +96,8 @@ var noBareUSDAllow = map[string]noBareUSDEntry{
 	"internal/policy/budget_display.go": {reason: "the ONE owner of the dollar budget and session-spend templates; " +
 		"BudgetReasonWithoutDollars / CostConditionReasonWithoutDollars render the token view."},
 	"internal/remoteauth/argon2.go": {reason: "not money: the PHC string format ($argon2id$...)."},
+	"internal/sandboxremote/vendors.go": {reason: "a remote sandbox vendor's compute list price for box-minutes, " +
+		"labelled an estimate; it is not model spend, so the token display has nothing to re-denominate it into."},
 	"internal/statusline/segments.go": {reason: "the statusline tile renders TodayTokens / SessionTokens under the " +
 		"token display (DaemonTile.tokenMode); the dollar formatter is the dollar view."},
 }

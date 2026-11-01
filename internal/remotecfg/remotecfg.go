@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/fsatomic"
 	"github.com/marmutapp/superbased-observer/internal/remoteauth"
 )
 
@@ -301,13 +302,14 @@ func BackendPortOnly(addr string) string {
 }
 
 // writeRemoteSecretAtomic writes the argon2id hash to path with 0600 perms via
-// a same-dir temp file + atomic rename (plan §4.3). On POSIX 0600 is enforced;
-// on Windows file perms are advisory (ACLs are the real control).
+// a same-dir temp file + atomic rename (plan §4.3). The temp file is
+// owner-only on every OS (fsatomic.CreateTempOwnerOnly: 0600, or on Windows a
+// protected DACL granting this user and SYSTEM only, R-160).
 func writeRemoteSecretAtomic(path, hash string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("ensure secret dir: %w", err)
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".remote-secret-*")
+	tmp, err := fsatomic.CreateTempOwnerOnly(filepath.Dir(path), ".remote-secret-*")
 	if err != nil {
 		return fmt.Errorf("create temp: %w", err)
 	}

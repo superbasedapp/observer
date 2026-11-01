@@ -53,7 +53,7 @@ const ruleReason = "blocked thing. Do this instead."
 // confirmLine is ExplainDegradedAsk's leading sentence for a shell command
 // (KindShellExec) in session s1.
 func confirmLine(what string) string {
-	return "observer: R-101 needs your confirmation before " + what + " runs, and this tool cannot ask you, so it was blocked. To allow it, run `observer guard approve R-101 --session s1` (or approve it on the Observer dashboard Security page), then let the agent retry the identical call. "
+	return "observer: R-101 needs your confirmation before " + what + " runs, and this tool cannot ask you, so it was blocked. To allow it, the developer (not the agent) runs `observer guard approve R-101 --session s1` (or approves it on the Observer dashboard Security page), then lets the agent retry the identical call. "
 }
 
 // TestConfirmLineMatchesGuard pins the expected-reply helper the dialect rows
@@ -141,7 +141,7 @@ func toolGateDialectRows() []toolGateRow {
 			// a deny that says how to confirm.
 			name: "qoder Write ask degrades to deny", tool: models.ToolQoder, dialect: ToolGateDialectClaudeJSON, event: "PreToolUse",
 			body: toolPayload("s1", "Write", map[string]any{"file_path": "/home/u/.ssh/x"}), askOn: ".ssh",
-			wantStdout:  `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"observer: R-101 needs your confirmation before this file access runs, and this tool cannot ask you, so it was blocked. To allow it, run ` + "`observer guard approve R-101 --session s1`" + ` (or approve it on the Observer dashboard Security page), then let the agent retry the identical call. blocked thing. Do this instead."}}` + "\n",
+			wantStdout:  `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"observer: R-101 needs your confirmation before this file access runs, and this tool cannot ask you, so it was blocked. To allow it, the developer (not the agent) runs ` + "`observer guard approve R-101 --session s1`" + ` (or approves it on the Observer dashboard Security page), then lets the agent retry the identical call. blocked thing. Do this instead."}}` + "\n",
 			wantTargets: []string{"/home/u/.ssh/x"}, wantKind: policy.KindFileAccess,
 		},
 		{
@@ -177,15 +177,34 @@ func toolGateDialectRows() []toolGateRow {
 			denyOn: "rm -rf",
 		},
 		{
+			// FU-122: the same Cursor payload reaching Observer's Claude Code
+			// hooks with Observer's cursor hooks absent judges the shell too.
+			name: "cursor Claude-hook replay Shell deny", tool: models.ToolCursor, dialect: ToolGateDialectCursorReplay, event: "preToolUse",
+			body:        []byte(`{"conversation_id":"s1","cursor_version":"3.4.1","hook_event_name":"preToolUse","tool_name":"Shell","tool_input":{"command":"rm -rf ~/x"}}`),
+			denyOn:      "rm -rf",
+			wantStdout:  fmt.Sprintf(`{"permission":"deny","continue":true,"user_message":%q,"agent_message":%q}`+"\n", ruleReason, ruleReason),
+			wantTargets: []string{"rm -rf ~/x"}, wantKind: policy.KindShellExec,
+		},
+		{
+			name: "cursor Claude-hook replay Write deny", tool: models.ToolCursor, dialect: ToolGateDialectCursorReplay, event: "preToolUse",
+			body:        []byte(`{"conversation_id":"s1","cursor_version":"3.4.1","hook_event_name":"preToolUse","tool_name":"Write","tool_input":{"file_path":"/home/u/.ssh/x"}}`),
+			denyOn:      ".ssh",
+			wantStdout:  fmt.Sprintf(`{"permission":"deny","continue":true,"user_message":%q,"agent_message":%q}`+"\n", ruleReason, ruleReason),
+			wantTargets: []string{"/home/u/.ssh/x"}, wantKind: policy.KindFileAccess,
+		},
+		{
 			name: "claude Bash deny (HandleGuarded's dialect)", tool: models.ToolClaudeCode, dialect: ToolGateDialectClaudeCode, event: "PreToolUse",
 			body: toolPayload("s1", "Bash", map[string]any{"command": "rm -rf ~/x"}), denyOn: "rm -rf",
 			wantStdout:  fmt.Sprintf(`{"decision":"block","reason":%q,"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%q}}`+"\n", ruleReason, ruleReason),
 			wantTargets: []string{"rm -rf ~/x"}, wantKind: policy.KindShellExec,
 		},
 		{
+			// The native ask is the modern field ALONE: a legacy
+			// decision:block beside it turned the ask into a block (live
+			// audit 2026-10-15).
 			name: "claude Bash native ask", tool: models.ToolClaudeCode, dialect: ToolGateDialectClaudeCode, event: "PreToolUse",
 			body: toolPayload("s1", "Bash", map[string]any{"command": "rm -rf ~/x"}), askOn: "rm -rf",
-			wantStdout:  fmt.Sprintf(`{"decision":"block","reason":%q,"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":%q}}`+"\n", ruleReason, ruleReason),
+			wantStdout:  fmt.Sprintf(`{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":%q}}`+"\n", ruleReason),
 			wantTargets: []string{"rm -rf ~/x"}, wantKind: policy.KindShellExec,
 		},
 		// Hook-parity Lanes A4-A6 (2026-10-03): one deny (and, where the
@@ -198,7 +217,10 @@ func toolGateDialectRows() []toolGateRow {
 			wantTargets: []string{"rm -rf ~/x"}, wantKind: policy.KindShellExec,
 		},
 		{
-			name: "antigravity ask degrades to deny (live: force_ask ran under --dangerously-skip-permissions)", tool: models.ToolAntigravityCLI, dialect: ToolGateDialectAntigravity, event: "PreToolUse",
+			// The test binary has no agy ancestor, so the ask probe answers
+			// "no native ask" (TestAgyToolGateAskFollowsHost covers the
+			// interactive host's force_ask).
+			name: "antigravity ask degrades to deny without an interactive agy host", tool: models.ToolAntigravityCLI, dialect: ToolGateDialectAntigravity, event: "PreToolUse",
 			body:        []byte(`{"conversationId":"s1","workspacePaths":["/home/u/proj"],"toolCall":{"name":"write_to_file","args":{"TargetFile":"/home/u/.ssh/x","CodeContent":"k"}}}`),
 			askOn:       ".ssh",
 			wantStdout:  fmt.Sprintf(`{"decision":"deny","reason":%q}`+"\n", confirmLine("this file access")+ruleReason),
@@ -247,58 +269,49 @@ func toolGateDialectRows() []toolGateRow {
 			wantTargets: []string{"rm -rf ~/x"}, wantKind: policy.KindShellExec,
 		},
 		{
-			// T-342: the gate runs under cline-cli, so the tool name is the
-			// CLI vocabulary (run_commands); its live batch operand
-			// ({"commands":[...]}) is fix/live-ground-2026-10-04's operandList.
-			name: "cline cancel", tool: models.ToolClineCLI, dialect: ToolGateDialectCline, event: "PreToolUse",
-			body:        []byte(`{"hookName":"tool_call","sessionContext":{"sessionId":"s1"},"workspaceRoots":["/home/u/proj"],"tool_call":{"id":"t1","name":"run_commands","input":{"command":"rm -rf ~/x"}},"preToolUse":{"toolName":"run_commands"}}`),
+			// Guard-fix lane B: the live Cline CLI tool vocabulary and operand
+			// shapes (fix/live-ground-2026-10-04's operandList, first seen on
+			// the file hook) now reach Observer through the plugin's
+			// beforeTool envelope. Another model sent the batch field as ONE
+			// bare string (poolside/laguna-xs-2.1 via -P nvidia, node 1).
+			name: "cline plugin run_commands single string", tool: models.ToolClineCLI, dialect: ToolGateDialectClinePlugin, event: "beforeTool",
+			body:        []byte(`{"session_id":"s1","cwd":"/tmp/lgcl/work","tool_name":"run_commands","tool_input":{"commands":"rm -rf ~/x","description":"Remove ~/x directory recursively"}}`),
 			denyOn:      "rm -rf",
-			wantStdout:  fmt.Sprintf(`{"cancel":true,"errorMessage":%q}`+"\n", ruleReason),
+			wantStdout:  fmt.Sprintf(`{"decision":"deny","reason":%q}`+"\n", ruleReason),
 			wantTargets: []string{"rm -rf ~/x"}, wantKind: policy.KindShellExec,
 		},
 		{
-			// The payload Cline CLI 3.0.68 (demo node 1, 2026-10-04) really
-			// sends: the SDK hook runtime names tools in the CLI vocabulary
-			// (run_commands, not execute_command) and batches commands in a
-			// list, so every element is judged.
-			name: "cline run_commands batch (cline 3.0.68 live payload)", tool: models.ToolClineCLI, dialect: ToolGateDialectCline, event: "PreToolUse",
-			body:        []byte(`{"clineVersion":"","timestamp":"2026-10-03T21:59:37.921Z","taskId":"s1","sessionContext":{"rootSessionId":"1791064775929_041f7"},"workspaceRoots":["/tmp/lgcl/work"],"workspaceInfo":{"rootPath":"/tmp/lgcl/work","hint":"work"},"userId":"u","agent_id":"agent_5770f334","parent_agent_id":null,"hookName":"tool_call","iteration":1,"tool_call":{"id":"187dd585","name":"run_commands","input":{"commands":["ls -la .","rm -rf ~/x"]}},"preToolUse":{"toolName":"run_commands","parameters":{"commands":"[\"ls -la .\",\"rm -rf ~/x\"]"}}}`),
+			name: "cline plugin run_commands object elements", tool: models.ToolClineCLI, dialect: ToolGateDialectClinePlugin, event: "beforeTool",
+			body:        []byte(`{"session_id":"s1","cwd":"/home/u/proj","tool_name":"run_commands","tool_input":{"commands":[{"command":"rm -rf ~/x"}]}}`),
 			denyOn:      "rm -rf",
-			wantStdout:  fmt.Sprintf(`{"cancel":true,"errorMessage":%q}`+"\n", ruleReason),
-			wantTargets: []string{"ls -la .", "rm -rf ~/x"}, wantKind: policy.KindShellExec,
-		},
-		{
-			// The same host with another model (poolside/laguna-xs-2.1 via
-			// -P nvidia, node 1, 2026-10-04) sent the batch field as ONE
-			// bare string.
-			name: "cline run_commands single string (cline 3.0.68 live payload)", tool: models.ToolClineCLI, dialect: ToolGateDialectCline, event: "PreToolUse",
-			body:        []byte(`{"clineVersion":"","timestamp":"2026-10-03T22:53:30.387Z","taskId":"s1","sessionContext":{"rootSessionId":"1791068001605_2mkup"},"workspaceRoots":["/tmp/lgcl/work"],"hookName":"tool_call","iteration":1,"tool_call":{"id":"be3c4dc2","name":"run_commands","input":{"commands":"rm -rf ~/x","description":"Remove ~/x directory recursively"}},"preToolUse":{"toolName":"run_commands","parameters":{"commands":"rm -rf ~/x","description":"Remove ~/x directory recursively"}}}`),
-			denyOn:      "rm -rf",
-			wantStdout:  fmt.Sprintf(`{"cancel":true,"errorMessage":%q}`+"\n", ruleReason),
+			wantStdout:  fmt.Sprintf(`{"decision":"deny","reason":%q}`+"\n", ruleReason),
 			wantTargets: []string{"rm -rf ~/x"}, wantKind: policy.KindShellExec,
-		},
-		{
-			name: "cline run_commands object elements", tool: models.ToolClineCLI, dialect: ToolGateDialectCline, event: "PreToolUse",
-			body:        []byte(`{"taskId":"s1","workspaceRoots":["/home/u/proj"],"tool_call":{"id":"t1","name":"run_commands","input":{"commands":[{"command":"rm -rf ~/x"}]}}}`),
-			denyOn:      "rm -rf",
-			wantStdout:  fmt.Sprintf(`{"cancel":true,"errorMessage":%q}`+"\n", ruleReason),
-			wantTargets: []string{"rm -rf ~/x"}, wantKind: policy.KindShellExec,
-		},
-		{
-			name: "cline read_files batch", tool: models.ToolClineCLI, dialect: ToolGateDialectCline, event: "PreToolUse",
-			body:        []byte(`{"taskId":"s1","workspaceRoots":["/home/u/proj"],"tool_call":{"id":"t1","name":"read_files","input":{"files":[{"path":"/home/u/.ssh/id_rsa"}]}}}`),
-			denyOn:      ".ssh",
-			wantStdout:  fmt.Sprintf(`{"cancel":true,"errorMessage":%q}`+"\n", ruleReason),
-			wantTargets: []string{"/home/u/.ssh/id_rsa"}, wantKind: policy.KindFileAccess,
 		},
 		{
 			// T-342: the extension's vocabulary (execute_command) reaching the
-			// cline-cli registered gate is still judged.
-			name: "cline-cli gate, extension vocabulary", tool: models.ToolClineCLI, dialect: ToolGateDialectCline, event: "PreToolUse",
-			body:        []byte(`{"taskId":"s1","workspaceRoots":["/home/u/proj"],"preToolUse":{"toolName":"execute_command"},"tool_call":{"id":"t1","name":"execute_command","input":{"command":"rm -rf ~/x"}}}`),
+			// cline-cli gate is still judged.
+			name: "cline plugin, extension vocabulary", tool: models.ToolClineCLI, dialect: ToolGateDialectClinePlugin, event: "beforeTool",
+			body:        []byte(`{"session_id":"s1","cwd":"/home/u/proj","tool_name":"execute_command","tool_input":{"command":"rm -rf ~/x"}}`),
 			denyOn:      "rm -rf",
-			wantStdout:  fmt.Sprintf(`{"cancel":true,"errorMessage":%q}`+"\n", ruleReason),
+			wantStdout:  fmt.Sprintf(`{"decision":"deny","reason":%q}`+"\n", ruleReason),
 			wantTargets: []string{"rm -rf ~/x"}, wantKind: policy.KindShellExec,
+		},
+		{
+			// Guard-fix lane B: the Cline plugin's beforeTool envelope (the
+			// shim's normalized shape), the CLI's batched run_commands.
+			name: "cline plugin skip, run_commands batch", tool: models.ToolClineCLI, dialect: ToolGateDialectClinePlugin, event: "beforeTool",
+			body:        []byte(`{"host":"cline-cli","event":"beforeTool","session_id":"s1","cwd":"/home/u/proj","pid":7,"tool_name":"run_commands","tool_input":{"commands":["ls -la .","rm -rf ~/x"]},"call_id":"call_1"}`),
+			denyOn:      "rm -rf",
+			wantStdout:  fmt.Sprintf(`{"decision":"deny","reason":%q}`+"\n", ruleReason),
+			wantTargets: []string{"ls -la .", "rm -rf ~/x"}, wantKind: policy.KindShellExec,
+		},
+		{
+			// The plugin maps an ask onto Cline's own y/N approval.
+			name: "cline plugin native ask", tool: models.ToolClineCLI, dialect: ToolGateDialectClinePlugin, event: "beforeTool",
+			body:        []byte(`{"host":"cline-cli","event":"beforeTool","session_id":"s1","cwd":"/home/u/proj","tool_name":"read_files","tool_input":{"files":[{"path":"/home/u/.ssh/id_rsa"}]}}`),
+			askOn:       ".ssh",
+			wantStdout:  `{"decision":"ask","reason":"blocked thing. Do this instead."}` + "\n",
+			wantTargets: []string{"/home/u/.ssh/id_rsa"}, wantKind: policy.KindFileAccess,
 		},
 		{
 			name: "poolside snake_case deny", tool: models.ToolPoolside, dialect: ToolGateDialectPoolside, event: "PreToolUse",
@@ -325,21 +338,21 @@ func toolGateDialectRows() []toolGateRow {
 			name: "cascade pre_run_command blocks by exit 2 with the reason alone on stderr", tool: models.ToolDevin, dialect: ToolGateDialectCascade, event: "pre_run_command",
 			body:     []byte(`{"agent_action_name":"pre_run_command","trajectory_id":"s1","execution_id":"e1","timestamp":"2026-10-03T00:00:00Z","tool_info":{"command_line":"rm -rf ~/x","cwd":"/home/u/proj"}}`),
 			denyOn:   "rm -rf",
-			wantExit: 2, wantStderr: ruleReason + "\n",
+			wantExit: 2, wantStderr: wantStderrBlock(ruleReason),
 			wantTargets: []string{"rm -rf ~/x"}, wantKind: policy.KindShellExec,
 		},
 		{
 			name: "cascade pre_write_code", tool: models.ToolDevin, dialect: ToolGateDialectCascade, event: "pre_write_code",
 			body:     []byte(`{"agent_action_name":"pre_write_code","trajectory_id":"s1","tool_info":{"file_path":"/home/u/.ssh/x","edits":[{"old_string":"a","new_string":"b"}]}}`),
 			denyOn:   ".ssh",
-			wantExit: 2, wantStderr: ruleReason + "\n",
+			wantExit: 2, wantStderr: wantStderrBlock(ruleReason),
 			wantTargets: []string{"/home/u/.ssh/x"}, wantKind: policy.KindFileAccess,
 		},
 		{
 			name: "cascade pre_mcp_tool_use judged by the server and tool name", tool: models.ToolDevin, dialect: ToolGateDialectCascade, event: "pre_mcp_tool_use",
 			body:     []byte(`{"agent_action_name":"pre_mcp_tool_use","trajectory_id":"s1","tool_info":{"mcp_server_name":"evil","mcp_tool_name":"exfil","mcp_tool_arguments":{"q":"x"}}}`),
 			denyOn:   "mcp__evil",
-			wantExit: 2, wantStderr: ruleReason + "\n",
+			wantExit: 2, wantStderr: wantStderrBlock(ruleReason),
 			wantTargets: []string{"mcp__evil__exfil"}, wantKind: policy.KindMCPCall,
 		},
 		{
@@ -352,7 +365,7 @@ func toolGateDialectRows() []toolGateRow {
 			name: "kimi-code PreToolUse blocks by exit 2 with the reason alone on stderr", tool: models.ToolKimiCode, dialect: ToolGateDialectKimi, event: "PreToolUse",
 			body:     toolPayload("s1", "Bash", map[string]any{"command": "rm -rf ~/x"}),
 			denyOn:   "rm -rf",
-			wantExit: 2, wantStderr: ruleReason + "\n",
+			wantExit: 2, wantStderr: wantStderrBlock(ruleReason),
 			wantTargets: []string{"rm -rf ~/x"}, wantKind: policy.KindShellExec,
 		},
 		{
@@ -418,6 +431,8 @@ func TestToolGateAllowReplies(t *testing.T) {
 		ToolGateDialectClaudeJSON: "{}\n",
 		ToolGateDialectGemini:     "{}\n",
 		ToolGateDialectCursor:     `{"permission":"allow","continue":true}` + "\n",
+		// FU-122: the Claude-hook replay answers on Cursor's own wire.
+		ToolGateDialectCursorReplay: `{"permission":"allow","continue":true}` + "\n",
 		// Hook-parity Lanes A4-A6. An explicit allow that would skip the
 		// host's own permission prompt (Copilot CLI "allow") is never
 		// written: the empty object is "no decision". On agy an empty
@@ -435,6 +450,18 @@ func TestToolGateAllowReplies(t *testing.T) {
 		ToolGateDialectCascade:  "",
 		ToolGateDialectKiro:     "",
 		ToolGateDialectKimi:     "",
+		// The Cline plugin transport: anything but deny / ask / modify is an
+		// allow to the plugin, which then returns undefined.
+		ToolGateDialectClinePlugin: `{"decision":"allow"}` + "\n",
+		// The 2026-10-21 wave (live): Deep Agents / Kimchi / Cortex read
+		// the empty object as no decision; Autohand must never see
+		// {"decision":"allow"}; VT Code echoes any stdout into the TUI and
+		// Dirac / Kimchi's bash gate take an empty stdout.
+		ToolGateDialectClaudeWire: "{}\n",
+		ToolGateDialectAutohand:   "{}\n",
+		ToolGateDialectVTCode:     "",
+		ToolGateDialectDirac:      "",
+		ToolGateDialectKimchiBash: "",
 	} {
 		var out bytes.Buffer
 		WriteToolGateAllow(dialect, &out)
@@ -445,7 +472,7 @@ func TestToolGateAllowReplies(t *testing.T) {
 			t.Errorf("%s: ToolGateAllowWritesStdout = %v, want %v", dialect, !silent, !silent)
 		}
 	}
-	if len(ToolGateDialects()) != 16 {
+	if len(ToolGateDialects()) != 23 {
 		t.Errorf("ToolGateDialects = %v: a new row needs an allow and a deny fixture here and in TestToolGateDialects", ToolGateDialects())
 	}
 }
@@ -508,8 +535,9 @@ func TestToolGateBlockMatchesFailClosed(t *testing.T) {
 }
 
 // TestToolGateExitCodeDialects pins the exit-code-only rows (Cascade, Kiro
-// CLI): a deny is exit 2 with NOTHING on stdout and the bare reason alone
-// on stderr (the host shows stderr as the block reason, T-048), and the
+// CLI): a deny is exit 2 with NOTHING on stdout and the reason alone, under
+// the DEC-1 header line, on stderr (the host shows stderr as the block
+// reason, T-048), and the
 // truncated-payload hold takes the same shape.
 func TestToolGateExitCodeDialects(t *testing.T) {
 	for _, d := range []string{ToolGateDialectCascade, ToolGateDialectKiro, ToolGateDialectKimi} {

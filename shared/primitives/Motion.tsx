@@ -18,6 +18,7 @@ import {
   planTween,
   prefersReducedMotion,
 } from "../lib/motion";
+import { Obs } from "./Obs";
 
 // Count-up happens only as part of a page ENTRY (the first ~2.5 s after the
 // app boots or PageTransition changes route), so a number that mounts later
@@ -139,16 +140,43 @@ export function UpdatingBadge({
  * TopProgress is the thin gradient bar pinned to the top edge of its
  * (position:relative) host. It appears only after a foreground request has
  * been running for 250 ms, so fast responses never flash it.
+ *
+ * `rider` (D-665..D-669): Obs flies along the line, small (28 px: the small
+ * cape, one afterimage, no loop). Pass it ONLY for a slow route load
+ * (shared/lib/routeRider.ts useRouteRider), never for a filter change, a
+ * refetch or polling; the skeletons stay as they are. It honours the same
+ * 250 ms threshold. Reduced motion: the static idle pose at the start of
+ * the line, no travel.
  */
-export function TopProgress({ active, className }: { active: boolean; className?: string }) {
+export function TopProgress({
+  active,
+  rider = false,
+  className,
+}: {
+  active: boolean;
+  rider?: boolean;
+  className?: string;
+}) {
   return (
-    <div
-      aria-hidden
-      data-active={active ? "true" : "false"}
-      className={clsx("sb-progress", className)}
-    />
+    <>
+      <div
+        aria-hidden
+        data-active={active ? "true" : "false"}
+        className={clsx("sb-progress", className)}
+      />
+      {rider && active && (
+        <div aria-hidden className={clsx("sb-progress-rider", className)}>
+          <span className="sb-progress-rider-run">
+            <Obs state="dash" size={RIDER_PX} decorative />
+          </span>
+        </div>
+      )}
+    </>
   );
 }
+
+/** The progress-line rider's size: small rules apply (<= 40 px). */
+const RIDER_PX = 28;
 
 /** Aurora paints the drifting brand glow behind a hero surface. */
 export function Aurora({ className }: { className?: string }) {

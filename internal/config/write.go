@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/marmutapp/superbased-observer/internal/testwriteguard"
 )
 
 // WriteToml saves cfg to path with a .bak fallback (Option A from the
@@ -47,6 +49,10 @@ func writeTOMLAtomic(path string, doc any) error {
 // text-rewrite path) so backup + atomicity semantics can't drift
 // between the two (CLAUDE.md #4 — one write owner).
 func writeBytesAtomic(path string, data []byte) error {
+	// FU-118: a test binary writes a config only under the test temp dir.
+	if err := testwriteguard.Check("write", path); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("ensure config dir: %w", err)
 	}

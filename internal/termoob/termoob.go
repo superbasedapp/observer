@@ -58,6 +58,12 @@ const (
 	PhaseToolExecBegin Phase = "tool_exec_begin"
 	// PhaseToolExecEnd — the tool exited; ExitCode is set.
 	PhaseToolExecEnd Phase = "tool_exec_end"
+	// PhaseSandboxEgressRefused - the run's sandbox gateway refused
+	// connections while the tool owned the terminal, so the notices were
+	// kept off the tool's screen (Windows 11 Pro run 4, N2); Count is the
+	// number refused so far. Sent by a sandbox host helper; an older daemon
+	// publishes it as an unknown lifecycle phase and nothing else.
+	PhaseSandboxEgressRefused Phase = "sandbox_egress_refused"
 )
 
 // Hello is the first frame: it authenticates the channel and declares the
@@ -81,6 +87,8 @@ type Lifecycle struct {
 	Phase Phase `json:"phase"`
 	// ExitCode is set only for PhaseToolExecEnd.
 	ExitCode *int `json:"exit_code,omitempty"`
+	// Count is set only for PhaseSandboxEgressRefused.
+	Count *int `json:"count,omitempty"`
 	// At is an informational unix-nano timestamp (0 = unset).
 	At int64 `json:"at,omitempty"`
 }

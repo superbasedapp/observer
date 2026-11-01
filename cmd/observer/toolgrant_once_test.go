@@ -36,7 +36,7 @@ func TestToolGrantCountedOncePerLaunch(t *testing.T) {
 	})
 	var cfg config.Config
 	cfg.Observer.DBPath = dbPath
-	makeFeaturesSidecarWriter(cfg, "v-test", nil)([]string{"codex", "crush"})
+	makeFeaturesSidecarWriter(cfg, "v-test", nil)([]string{"codex", "crush"}, nil)
 
 	gate := daemonToolGrant(store.New(database))
 	for i := 0; i < 3; i++ {

@@ -7,6 +7,7 @@
 //	sbo-components tags --distro <name>               print every build tag a distro build passes (omit tags + stamp), comma separated
 //	sbo-components tags --image <full|core>          print an observer-org image's build tags, comma separated
 //	sbo-components ids --distro <name>                print the distro's compiled component ids, one per line
+//	sbo-components distros                            print the stamped prebuilt distros (every one but full), one per line
 //	sbo-components validate --distro <name>           check a distro's compiled set as a selection
 //	sbo-components proof --distro <name> --binary <p>  the per-artifact proof gate (proof.go); --image core|full for observer-org
 //	sbo-components sbom --distro <name> --binary <p>   the per-artifact CycloneDX SBOM; --image core|full for observer-org
@@ -87,6 +88,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintf(stdout, "%s is current (catalog v%d)\n", *out, components.CatalogVersion)
 		return 0
+	case "distros":
+		// The distros whose build passes a tag set: every prebuilt distro
+		// with a stamp. full is the plain build and has none, so it is not
+		// listed. scripts/omit-tag-check.sh loops over this list.
+		for _, d := range components.Distros() {
+			if components.DistroTag(d) != "" {
+				fmt.Fprintln(stdout, d)
+			}
+		}
+		return 0
 	case "tags", "ids", "validate":
 		if args[0] == "tags" && *image != "" {
 			i := components.Image(*image)
@@ -124,7 +135,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 func usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: sbo-components gen-docs|check [-o path] | tags|ids|validate (--distro <minimal|developer|managed|full> | --manifest <m.toml>) | tags --image <full|core> | proof|sbom (--distro <name> | --image <full|core> | --manifest <m.toml>) --binary <path> | manifest|ldflags|build --manifest <m.toml>")
+	fmt.Fprintln(w, "usage: sbo-components gen-docs|check [-o path] | distros | tags|ids|validate (--distro <minimal|developer|managed|full> | --manifest <m.toml>) | tags --image <full|core> | proof|sbom (--distro <name> | --image <full|core> | --manifest <m.toml>) --binary <path> | manifest|ldflags|build --manifest <m.toml>")
 }
 
 // newFlagSet returns a flag set that reports to stderr and never exits.

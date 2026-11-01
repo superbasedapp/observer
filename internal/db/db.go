@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/db/migrations"
+	"github.com/marmutapp/superbased-observer/internal/migplan"
+	"github.com/marmutapp/superbased-observer/internal/migplan/sqliteledger"
 	"github.com/marmutapp/superbased-observer/internal/platform/sqlitedsn"
 
 	sqlite "modernc.org/sqlite" // sqlite driver registration + typed errors.
@@ -205,6 +207,12 @@ func dsnTempStoreAndHeapTerms(tempStore string, hardHeapLimitBytes int64) string
 func Open(ctx context.Context, opts Options) (*sql.DB, error) {
 	if opts.Path == "" {
 		return nil, errors.New("db.Open: Path is required")
+	}
+	// R-183: a path still starting with "~" was never expanded to a home
+	// (config.Load refuses that with home_unresolved); opening it would
+	// create a folder literally named "~" under the working directory.
+	if unexpandedHomePath(opts.Path) {
+		return nil, fmt.Errorf("db.Open: %w: %q", ErrUnexpandedHome, opts.Path)
 	}
 	// Live-DB test isolation gate (incident "task #17", 2026-07-30). Inert in
 	// production — see GuardLiveDB. This must stay ABOVE sql.Open: the whole
@@ -589,8 +597,16 @@ func integrityCheck(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
-// runMigrations applies any .sql files under the embedded migrations FS
-// that have not already been applied, recording progress in schema_meta.
+// runMigrations applies every .sql file under the embedded migrations FS
+// that has no per-step record in schema_meta, recording progress there.
+//
+// "Pending" is per step (internal/migplan, T-979): every embedded step without
+// a migration:<n> record runs in ascending order, including one numbered below
+// the highest applied version, so a migration that landed late from a parallel
+// line is never skipped. The 'version' record still holds the highest applied
+// step for Version's callers. A database written before the ledger existed
+// has its steps up to 'version' adopted (recorded without running), the old
+// behaviour, unless lateSteps lists one.
 //
 // Concurrency contract: the entire pending-migration batch runs inside
 // a single BEGIN IMMEDIATE transaction on a dedicated connection. SQLite
@@ -631,9 +647,49 @@ func migrationLockWait(busy time.Duration) time.Duration {
 	return defaultMigrationLockWait
 }
 
+// lateSteps is the closed table of node migrations known to have landed on a
+// parallel line under a number below a step another line already shipped in
+// a build (migplan.LateStep).
+//
+// A database that has a ledger never needs a row: its missing step simply has
+// no per-step record and runs. Add a row only when a PRE-LEDGER node database
+// (one last migrated by a binary older than T-979) may already hold a version
+// record above the step without having run it. Name a column the step adds,
+// so the probe adopts the step where it really ran and runs it where it did
+// not, and add a test that stages such a database. See
+// docs/migration-numbering.md.
+//
+// The two rows below are the wave lineage fork (2026-10-25): main's
+// wave-followups-2026-10-24 line shipped guard_action_anchor as 177 in local
+// builds (pre-ledger) while the plans line held 177-196, and the merge
+// renumbered the wave's step to 197. A wave-built node therefore records
+// version 177 from guard_action_anchor and has none of the plans line's
+// 177-196. Read together, the rows recognise that shape (action_anchor
+// present, the plans line's 177 objects absent): 177 runs instead of being
+// adopted under the horizon, 178-196 run as ordinary steps above it, and 197
+// is adopted instead of re-running an ALTER that would fail on the existing
+// column. On a plans-line or fresh database 177 is either recorded or runs,
+// and 197 runs. Each probe decides only its own step, so every other shape
+// keeps its ordinary plan.
+var lateSteps = []migplan.LateStep{
+	// 177_security_findings.sql (plans line, security pillar Phase A) creates
+	// sec_findings; a wave-built node at version 177 never ran it.
+	{Version: 177, Table: "sec_findings", Column: "local_key"},
+	// 197_guard_action_anchor.sql (main's 177, renumbered at the merge) adds
+	// guard_events.action_anchor; a wave-built node already has it.
+	{Version: 197, Table: "guard_events", Column: "action_anchor"},
+}
+
 // runMigrationsWait is runMigrations with an explicit wait for the
 // migration lock (the busy_timeout of the BEGIN IMMEDIATE connection).
 func runMigrationsWait(ctx context.Context, db *sql.DB, lockWait time.Duration) error {
+	return runMigrationsFrom(ctx, db, lockWait, migrations.Files, lateSteps)
+}
+
+// runMigrationsFrom is the runner over an explicit lineage and late-step
+// table, so tests can drive it with synthetic lineages. Every entry point
+// (Open, runMigrations, runMigrationsWait) reaches it.
+func runMigrationsFrom(ctx context.Context, db *sql.DB, lockWait time.Duration, source fs.FS, late []migplan.LateStep) error {
 	// Live-DB test isolation gate, handle form (incident "task #17"). Open is
 	// not the only route here: a caller can build a raw database/sql handle
 	// and call this runner directly (migrations_test.go does exactly that), so
@@ -642,30 +698,29 @@ func runMigrationsWait(ctx context.Context, db *sql.DB, lockWait time.Duration) 
 	if err := GuardLiveDBHandle(ctx, db); err != nil {
 		return err
 	}
-	entries, err := readMigrationEntries()
+	entries, err := readMigrationEntriesFrom(source)
 	if err != nil {
 		return err
 	}
 	if len(entries) == 0 {
 		return nil
 	}
-	maxVersion := entries[len(entries)-1].version
+	embedded, byVersion := lineageIndex(entries)
 
-	// Fast path: a lock-free read of the applied version (a plain SELECT;
-	// in WAL mode it never blocks on a writer). When the schema is already
-	// current there is provably nothing to apply, so we skip the BEGIN
-	// IMMEDIATE write lock below entirely. This is the overwhelmingly
-	// common case for short-lived CLI/hook db.Open calls (observer index,
-	// the hook subprocesses, doctor, guard, …): without it, every such
-	// open contends for the write lock the running daemon holds and burns
-	// up to busy_timeout (30s) on SQLITE_BUSY backoff just to confirm
-	// there is no migration to run. A missing schema_meta (fresh DB) or
-	// any read error makes currentVersion return a non-nil error, and a
-	// stale lower read returns applied < maxVersion — both fall through to
-	// the authoritative locked path, so the concurrent-first-migration
-	// race the lock guards against is unaffected. We only ever skip the
-	// lock when there is nothing to do.
-	if applied, err := currentVersion(ctx, db); err == nil && applied >= maxVersion {
+	// Fast path: a lock-free read of the ledger (two small indexed reads of
+	// schema_meta; in WAL mode they never block on a writer). When the plan
+	// writes nothing there is provably nothing to apply or record, so we skip
+	// the BEGIN IMMEDIATE write lock below entirely. This is the
+	// overwhelmingly common case for short-lived CLI/hook db.Open calls
+	// (observer index, the hook subprocesses, doctor, guard, …): without it,
+	// every such open contends for the write lock the running daemon holds
+	// and burns up to busy_timeout (30s) on SQLITE_BUSY backoff just to
+	// confirm there is no migration to run. A missing schema_meta (fresh DB)
+	// plans every step, and any read error falls through, so both take the
+	// authoritative locked path and the concurrent-first-migration race the
+	// lock guards against is unaffected. A pre-ledger database takes the
+	// locked path exactly once, to record its ledger.
+	if plan, err := sqliteledger.Plan(ctx, db, embedded, late); err == nil && plan.Noop() {
 		return nil
 	}
 
@@ -707,44 +762,24 @@ func runMigrationsWait(ctx context.Context, db *sql.DB, lockWait time.Duration) 
 		}
 	}()
 
-	// Re-read applied INSIDE the lock so we observe any commits that
-	// landed while we were waiting on BEGIN IMMEDIATE.
-	var applied int
-	var s sql.NullString
-	row := conn.QueryRowContext(ctx, `SELECT value FROM schema_meta WHERE key = 'version'`)
-	switch err := row.Scan(&s); {
-	case errors.Is(err, sql.ErrNoRows):
-		applied = 0
-	case err != nil:
-		return fmt.Errorf("db.runMigrations: read applied version: %w", err)
-	default:
-		if s.Valid {
-			applied, err = strconv.Atoi(s.String)
-			if err != nil {
-				return fmt.Errorf("db.runMigrations: parse applied version %q: %w", s.String, err)
-			}
-		}
+	// Re-plan INSIDE the lock so we observe any commits that landed while
+	// we were waiting on BEGIN IMMEDIATE.
+	plan, err := sqliteledger.Plan(ctx, conn, embedded, late)
+	if err != nil {
+		return fmt.Errorf("db.runMigrations: %w", err)
 	}
-
-	for _, e := range entries {
-		if e.version <= applied {
-			continue
-		}
-		body, readErr := fs.ReadFile(migrations.Files, e.filename)
+	if err := sqliteledger.Apply(ctx, conn, plan, func(version int) error {
+		e := byVersion[version]
+		body, readErr := fs.ReadFile(source, e.filename)
 		if readErr != nil {
-			return fmt.Errorf("db.runMigrations: read %s: %w", e.filename, readErr)
+			return fmt.Errorf("read %s: %w", e.filename, readErr)
 		}
 		if _, err := conn.ExecContext(ctx, string(body)); err != nil {
-			return fmt.Errorf("db.runMigrations: exec %s: %w", e.filename, err)
+			return fmt.Errorf("exec %s: %w", e.filename, err)
 		}
-		if _, err := conn.ExecContext(
-			ctx,
-			`INSERT INTO schema_meta(key, value) VALUES ('version', ?)
-			 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-			strconv.Itoa(e.version),
-		); err != nil {
-			return fmt.Errorf("db.runMigrations: record version %d: %w", e.version, err)
-		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("db.runMigrations: %w", err)
 	}
 
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
@@ -754,13 +789,63 @@ func runMigrationsWait(ctx context.Context, db *sql.DB, lockWait time.Duration) 
 	return nil
 }
 
+// AppliedSteps reports how many migration steps the runner has executed on
+// database (per-step records marked applied; adopted steps are not counted).
+// It is the "did a binary change the schema" seam for the update rollback:
+// it rises when any step runs, a late lower-numbered one included, and stays
+// put when a runner only records its ledger. A database without schema_meta
+// reports 0. Version stays the display number.
+func AppliedSteps(ctx context.Context, database *sql.DB) (int, error) {
+	n, err := sqliteledger.AppliedCount(ctx, database)
+	if err != nil {
+		return 0, fmt.Errorf("db.AppliedSteps: %w", err)
+	}
+	return n, nil
+}
+
+// PlanMigrations reports what Open's migration runner would do to database
+// without writing anything: it reads the schema_meta ledger (an absent table
+// is an empty ledger) and runs the late-step probes, then returns the plan the
+// runner would execute. plan.RunVersions() is the pending list a doctor or
+// status surface reports; it costs the same few indexed reads as the runner's
+// own fast path.
+func PlanMigrations(ctx context.Context, database *sql.DB) (migplan.Plan, error) {
+	entries, err := readMigrationEntries()
+	if err != nil {
+		return migplan.Plan{}, err
+	}
+	embedded, _ := lineageIndex(entries)
+	plan, err := sqliteledger.Plan(ctx, database, embedded, lateSteps)
+	if err != nil {
+		return migplan.Plan{}, fmt.Errorf("db.PlanMigrations: %w", err)
+	}
+	return plan, nil
+}
+
 type migrationEntry struct {
 	version  int
 	filename string
 }
 
+// lineageIndex returns the lineage's versions in order and the entry of each.
+func lineageIndex(entries []migrationEntry) ([]int, map[int]migrationEntry) {
+	embedded := make([]int, 0, len(entries))
+	byVersion := make(map[int]migrationEntry, len(entries))
+	for _, e := range entries {
+		embedded = append(embedded, e.version)
+		byVersion[e.version] = e
+	}
+	return embedded, byVersion
+}
+
+// readMigrationEntries lists this binary's embedded node lineage.
 func readMigrationEntries() ([]migrationEntry, error) {
-	dirEntries, err := fs.ReadDir(migrations.Files, ".")
+	return readMigrationEntriesFrom(migrations.Files)
+}
+
+// readMigrationEntriesFrom lists source's NNN_name.sql files, ascending.
+func readMigrationEntriesFrom(source fs.FS) ([]migrationEntry, error) {
+	dirEntries, err := fs.ReadDir(source, ".")
 	if err != nil {
 		return nil, fmt.Errorf("db.readMigrationEntries: %w", err)
 	}
@@ -800,8 +885,10 @@ func currentVersion(ctx context.Context, db *sql.DB) (int, error) {
 	return v, nil
 }
 
-// Version reports the highest applied migration version. Returns 0 on a
-// fresh database.
+// Version reports the highest applied migration version (the 'version'
+// record, which the per-step ledger keeps at the highest step it applied or
+// adopted). Returns 0 on a fresh database. It says nothing about a lower step
+// still pending; PlanMigrations does.
 func Version(ctx context.Context, db *sql.DB) (int, error) {
 	return currentVersion(ctx, db)
 }

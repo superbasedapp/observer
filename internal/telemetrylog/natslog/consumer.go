@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/marmutapp/superbased-observer/internal/telemetrylog"
@@ -24,6 +25,11 @@ type natsConsumer struct {
 	consumerCreated time.Time
 	orderGeneration string
 	maxAckPending   int
+	// conn is the connection the handle was created on; logClosed reports
+	// whether the owning Log was closed. Together they tell a connection the
+	// Log is rebuilding (reattach) from a closed Log.
+	conn      *nats.Conn
+	logClosed func() bool
 
 	mu     sync.Mutex
 	closed bool
@@ -47,6 +53,15 @@ func (c *natsConsumer) Fetch(ctx context.Context, max int, wait time.Duration) (
 		// (the incident's failure mode, one step earlier in the same path).
 		if isConsumerGone(err) {
 			return nil, fmt.Errorf("natslog.Fetch: durable %q no longer exists: %w",
+				c.name, telemetrylog.ErrReattachRequired)
+		}
+		if c.connReplaced() {
+			// The library closed the connection this handle is bound to and the
+			// Log rebuilds a new one (T-883). Every Fetch on this handle would
+			// fail the same way, so it is a reattach: the Runner re-subscribes by
+			// durable name on the rebuilt connection, with the durable's cursor
+			// and the stream identity fence unchanged.
+			return nil, fmt.Errorf("natslog.Fetch: durable %q: its connection was closed and is being rebuilt: %w",
 				c.name, telemetrylog.ErrReattachRequired)
 		}
 		if isStreamGone(err) {
@@ -74,6 +89,14 @@ func (c *natsConsumer) Fetch(ctx context.Context, max int, wait time.Duration) (
 	if max <= 0 {
 		max = 1
 	}
+	// Never ask for more than the durable's credit can deliver (T-807). A pull
+	// for records the credit cannot release is not refused by the engine: with a
+	// backlog pending it is parked as a waiting request until the engine's
+	// periodic sweep, about a second later. A MaxAckPending=1 durable fetched with
+	// max 64 therefore idled about a second after EVERY record (measured 0.96
+	// records/s against a 92 ms apply). Clamping here makes every caller safe,
+	// whatever batch size it was configured with.
+	max = creditBound(max, c.maxAckPending)
 	// Two pulls, not one: a single Fetch(max, FetchMaxWait(wait)) waits for the
 	// WHOLE batch, and when fewer than max records exist the engine keeps the
 	// request open for the full wait. During that window AckWait can expire on
@@ -100,6 +123,25 @@ func (c *natsConsumer) Fetch(ctx context.Context, max int, wait time.Duration) (
 		return nil, err
 	}
 	return append(out, rest...), nil
+}
+
+// connReplaced reports whether this handle's connection is closed while its Log
+// is still open, the one case a re-Subscribe (on the rebuilt connection) heals.
+func (c *natsConsumer) connReplaced() bool {
+	if c.conn == nil || !c.conn.IsClosed() {
+		return false
+	}
+	return c.logClosed == nil || !c.logClosed()
+}
+
+// creditBound caps a fetch size at the durable-wide credit. maxAckPending <= 0
+// means the durable asked for no explicit credit (the engine default, far above
+// any batch a consumer requests), so max is returned unchanged.
+func creditBound(max, maxAckPending int) int {
+	if maxAckPending > 0 && max > maxAckPending {
+		return maxAckPending
+	}
+	return max
 }
 
 // identityDrift reports, for the operator's log line, WHICH fact about the live

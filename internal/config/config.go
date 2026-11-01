@@ -9,6 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,7 +22,10 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/marmutapp/superbased-observer/internal/notifycfg"
+	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/sandboxcidr"
+	"github.com/marmutapp/superbased-observer/internal/sandboxenv"
+	"github.com/marmutapp/superbased-observer/internal/sandboxvocab"
 	"github.com/marmutapp/superbased-observer/internal/scrub"
 	"github.com/marmutapp/superbased-observer/internal/sshspec"
 	"github.com/marmutapp/superbased-observer/internal/updatespec"
@@ -33,6 +39,16 @@ type Config struct {
 	// cannot honour them yet (D-514), one reason each. Never read from or
 	// written to the file; `observer start` prints them once.
 	Deferred []string `toml:"-" json:"-"`
+	// Inert lists the config sections Load set aside because the optional
+	// component that owns them is not active and the section would not
+	// validate (component_sections.go), one line each. The loaded copy holds
+	// the section's defaults; the file keeps the operator's value. Never read
+	// from or written to the file; `observer start` prints them once.
+	Inert []string `toml:"-" json:"-"`
+	// TerminalLaunchSet records which agent keys of [terminal.launch] were
+	// actually set (a file, an env override or a verified pin), not
+	// defaulted (terminal_launch_set.go; Agent Arena, ruling P-203).
+	TerminalLaunchSet TerminalLaunchKeys `toml:"-" json:"-"`
 
 	Observer     ObserverConfig     `toml:"observer"`
 	Proxy        ProxyConfig        `toml:"proxy"`
@@ -48,6 +64,7 @@ type Config struct {
 	Loc          LocConfig          `toml:"loc"`
 	Guidance     GuidanceConfig     `toml:"guidance"`
 	Projects     ProjectsConfig     `toml:"projects"`
+	Delivery     DeliveryConfig     `toml:"delivery"`
 	Update       UpdateConfig       `toml:"update"`
 	Tasks        TasksConfig        `toml:"tasks"`
 	Browser      BrowserConfig      `toml:"browser"`
@@ -58,6 +75,14 @@ type Config struct {
 	// ShellWrap is the opt-in [shell_wrap] "wrapped command" shell
 	// integration (backlog item 7); see ShellWrapConfig. Zero value = off.
 	ShellWrap ShellWrapConfig `toml:"shell_wrap"`
+	// Security is the security pillar's [security] block (component
+	// `security`); see SecurityConfig. Validated only while the module is
+	// active (component_sections.go).
+	Security SecurityConfig `toml:"security"`
+	// Messages is the developer's own [messages] surface choice for admin
+	// and developer messaging (T-854); see MessagesConfig. LOCAL-ONLY: the
+	// org has no remote toggle for it.
+	Messages MessagesConfig `toml:"messages"`
 	// Archive is the [archive] surface — cold storage for the corpus
 	// archival arc (docs/plans/observer-corpus-archival-lazyload-design-
 	// 2026-08-26.md). LOCAL-ONLY, never distributed to an org server, and
@@ -894,6 +919,12 @@ type GuardConfig struct {
 	Dialects GuardDialectsConfig `toml:"dialects"`
 	Cloud    GuardCloudConfig    `toml:"cloud"`
 	Prompt   GuardPromptConfig   `toml:"prompt"`
+
+	// Lock is the runtime record of the managed-node org lock this Load
+	// applied (guardfloor.go, T-839 / T-844). Never TOML, never JSON: it is
+	// set by Load only, and the zero value (no lock) is every individual,
+	// un-enrolled and pre-lock node.
+	Lock GuardOrgLock `toml:"-" json:"-"`
 }
 
 // GuardRulesConfig is [guard.rules] (spec §16): rule disabling and
@@ -901,6 +932,11 @@ type GuardConfig struct {
 type GuardRulesConfig struct {
 	// Disable lists rule IDs turned off entirely.
 	Disable []string `toml:"disable"`
+	// EvasionWindowSeconds turns on rule A-613 (policy evasion, flag
+	// only): after a deny, other differently shaped attempts that hit the
+	// same rule within this many seconds in the same session are flagged.
+	// 0, the default, leaves A-613 off.
+	EvasionWindowSeconds int `toml:"evasion_window_seconds"`
 	// UserPolicy is the user policy file location. Default
 	// "~/.observer/guard-policy.toml".
 	UserPolicy string `toml:"user_policy"`
@@ -939,6 +975,10 @@ type GuardRulesConfig struct {
 type GuardBoundaryConfig struct {
 	AllowPaths        []string `toml:"allow_paths"`
 	ProtectedBranches []string `toml:"protected_branches"`
+	// ProtectedPathClasses makes these path classes read-only for agents
+	// (rule R-166): "tests", "ci" and "coverage". Empty, the default,
+	// leaves R-166 off, because ordinary test maintenance is common.
+	ProtectedPathClasses []string `toml:"protected_path_classes"`
 }
 
 // GuardTaintConfig is [guard.taint] (spec §4.5, §16).
@@ -1385,6 +1425,48 @@ type ProjectsConfig struct {
 	SkillHistorySkewSeconds int `toml:"skill_history_skew_seconds"`
 }
 
+// DeliveryConfig is the [delivery] surface: commit to PR to merge tracking
+// (docs/plans/commit-pr-merge-tracking-plan-2026-10-15.md, operator
+// decision D-689). LOCAL-ONLY; nothing here is distributed to an org server.
+//
+// Local landing detection (internal/landingscan) runs after each
+// successful commit scan, is read-only and network-free, and never writes
+// to the user's repository (no fetch, no merge-tree, no config write). A
+// code-host connection (GitHub in this release) is NOT a config switch: it
+// is made explicitly from the dashboard or `observer delivery connect`, off
+// until then.
+//
+// Same partial-merge invariant as ProjectsConfig: an install with no
+// [delivery] section gets the Default() seed for every field.
+type DeliveryConfig struct {
+	// Local gates the read-only landing scan (remotes, default branch,
+	// FETCH_HEAD age, patch fingerprints, landing rules G and L). Default
+	// TRUE. Turning it off stops new local evaluation; stored landings still
+	// render.
+	Local bool `toml:"local"`
+	// PollMinutes is the minimum interval between two landing evaluations of
+	// one project when nothing moved (HEAD and FETCH_HEAD unchanged), and the
+	// provider service's poll interval while a PR is open. Default 10.
+	PollMinutes int `toml:"poll_minutes"`
+	// MirrorCapMB caps the total size of Observer-owned mirrors under
+	// ~/.observer/delivery/mirrors; a clone that would exceed it is
+	// refused. Default 2048.
+	MirrorCapMB int `toml:"mirror_cap_mb"`
+	// AbandonAfterDays is how long an unpushed commit reads as "in flight"
+	// before "local only", and how long a commit rewritten out of HEAD waits
+	// before it reads as "abandoned, dropped" (rules L7 and L8). Default 30.
+	AbandonAfterDays int `toml:"abandon_after_days"`
+	// CountLikely is reserved for "likely landed" (content overlap, rule
+	// L5). Default false. Rule L5 is not implemented in this release, so
+	// nothing is "likely landed" and this switch has no effect: likely
+	// landed is never counted as landed until L5 ships.
+	CountLikely bool `toml:"count_likely"`
+	// ContentOverlapMin is the added-line overlap rule L5 will require
+	// (0 to 1). Default 0.8. Reserved: rule L5 is not implemented in this
+	// release.
+	ContentOverlapMin float64 `toml:"content_overlap_min"`
+}
+
 // DefaultPricingFeedURL is the public edge route serving the signed pricing
 // feed (docs/plans/pricing-sync-tokenomics-to-platform-plan-2026-09-11.md §B.4).
 // The body names no org and no subject, so it is cacheable and verified offline
@@ -1436,6 +1518,14 @@ type PricingFeedConfig struct {
 	// moves daily at most and a 304 is cheap). Ignored when Auto is false.
 	PollIntervalHours int `toml:"poll_interval_hours"`
 }
+
+// DefaultProxyClientTokenFile is where the proxy client token lives when
+// [proxy].client_token_file is unset (OSH-R-009).
+const DefaultProxyClientTokenFile = "~/.observer/proxy-client-token" //nolint:gosec // G101: a PATH, not a credential
+
+// ClientAuthWanted reports whether the node writes and accepts the proxy
+// client token: either switch turns it on (require implies routes).
+func (p ProxyConfig) ClientAuthWanted() bool { return p.ClientAuthRoutes || p.RequireClientAuth }
 
 // DefaultLocEditorTokenFile is where the daemon keeps the per-install
 // editor-endpoint secret when [loc].editor_token_file is unset. It sits in
@@ -2172,6 +2262,14 @@ type TerminalSandboxConfig struct {
 	// needs the main repo's .git bound rw and attributes the session to
 	// the MAIN repo root, not the workspace (ledger G18).
 	AllowWorktreeSource bool `toml:"allow_worktree_source"`
+	// VendorForcedNative decides a launch whose agent sandbox a vendor
+	// managed policy forces on and which cannot nest in the chosen stack
+	// (sandbox plan v2 section 4.4, D-746 Q17, lane SBX-P3D):
+	// "nest_or_refuse" (default) chooses a stack where both run (an hw_vm
+	// row, N13) and refuses tool_conflict when none is available, which is
+	// every host until P4; "refuse" refuses at once. Running without
+	// Observer's layer is deliberately not a value. An org may pin either.
+	VendorForcedNative string `toml:"vendor_forced_native"`
 	// WorkspacesDir overrides where prepared workspaces are minted.
 	// Empty (the default) uses `<observer dir>/workspaces`.
 	WorkspacesDir string `toml:"workspaces_dir"`
@@ -2193,6 +2291,12 @@ type TerminalSandboxConfig struct {
 	// PrepTimeoutSeconds bounds workspace-preparation subprocesses (git
 	// clone/worktree). Default 300.
 	PrepTimeoutSeconds int `toml:"prep_timeout_seconds"`
+	// LiveRunUpdatePolicy says how soon an update apply that is waiting for
+	// live sandboxed runs asks its owner (sandbox plan v2 sections 5.5 and
+	// 10.1, SBX-UPD-1): "defer" (the default; the question waits in the
+	// dashboard banner) or "ask_immediately" (the dialog opens at once).
+	// Neither value ever ends a run silently.
+	LiveRunUpdatePolicy string `toml:"live_run_update_policy"`
 	// Egress selects the sandbox network tier (security ledger SR27-SBX-1):
 	// "internet" (the default, also what an empty value means) gives the
 	// sandbox its own network namespace with the observer model proxy
@@ -2215,6 +2319,40 @@ type TerminalSandboxConfig struct {
 	// private ranges; loopback, link-local and the host's own addresses can
 	// never be listed. Empty by default.
 	EgressAllowCIDRs []string `toml:"egress_allow_cidrs"`
+	// EgressAllowHosts is a restrictive host allow-list for a sandboxed
+	// agent run under the "internet" tier (lane LEFT-SBX): when set, the
+	// egress gateway lets the box reach only these hosts (exact names, or
+	// "*.example.com" for every name below it; ports 443 and 80, the TLS
+	// server name equal to the host), beside the model proxy, and no literal
+	// IP. Empty (the default) keeps the tier's own behaviour. It never
+	// widens anything: the private-range rules and egress_allow_cidrs still
+	// apply. A tier with no gateway (host) cannot honour it, so a launch
+	// with it set there is refused. An org may pin it (the intersection: an
+	// org list narrows yours, and an empty yours takes the org's).
+	EgressAllowHosts []string `toml:"egress_allow_hosts"`
+	// PinnedNoEgressHost is set only by the governance overlay when an org
+	// pin of egress_allow_hosts left no host in common: the gateway then
+	// allows no host at all (the model proxy still works). Never read from
+	// the file.
+	PinnedNoEgressHost string `toml:"-" json:"-"`
+	// ProviderDirect is the organization's direct model-provider egress
+	// posture for sandboxed internet runs (operator ruling DEC-9, gap review
+	// OBS-8a, node.governance key terminal.sandbox.provider_direct):
+	// "refuse_all" (the egress gateway refuses the provider hosts in every
+	// sandboxed internet run it enforces), "capture_rule" (capture rule C6
+	// alone decides, the default, also what "" means) or "allow" (no
+	// refusal; a run whose full capture rested on the refusal reads
+	// proxy_and_transcripts). It exists so the pin resolves in this build's
+	// config. A launch reads only ProviderDirectInForce, never this local
+	// value: an individual node keeps capture_rule whatever it says, and a
+	// managed node takes only its organization's pin (the
+	// proxy.maintain_routes precedent).
+	ProviderDirect string `toml:"provider_direct"`
+	// ProviderDirectInForce is the resolved posture a launch applies: the
+	// organization's pinned ProviderDirect on a managed node (a valid org
+	// lock recording managed tenancy), capture_rule ("") everywhere else.
+	// Set only by Load; never read from the file.
+	ProviderDirectInForce string `toml:"-" json:"-"`
 	// AllowToolConfigWrites is an authority-EXPANDING opt-in. Default FALSE:
 	// files a later UNSANDBOXED session executes (the daemon config, the
 	// user guard policy, shell-wrap shims, each tool's hook/MCP/plugin
@@ -2222,7 +2360,381 @@ type TerminalSandboxConfig struct {
 	// re-bound read-only inside the sandbox. Set true only if a sandboxed
 	// tool must change its own user-level settings.
 	AllowToolConfigWrites bool `toml:"allow_tool_config_writes"`
+	// PassEnv lists the NAMES of extra environment variables a sandboxed
+	// agent may receive from the environment that launched it. Every
+	// backend builds the box's environment from an allow-list (the OS's own
+	// variables, the tool's provider variables from its integration row and
+	// Observer's own run variables; internal/sandboxenv), so a GITHUB_TOKEN,
+	// a cloud key or another session's variables never reach the box unless
+	// they are named here. Authority-expanding and local-only: an org has no
+	// fleet-wide value for it and cannot pin it. Each entry is a variable
+	// name (letters, digits and underscores, not starting with a digit, not
+	// OBSERVER_). The names a run passes are shown in its posture. Empty by
+	// default.
+	PassEnv []string `toml:"pass_env"`
+	// SignInSeedTools lists the tools whose sign-in a sandboxed run may
+	// copy into its box without asking each time (lane BOXSIGNIN, ruling
+	// P-180 (6)): the user's remembered consent, given at a launch (the CLI
+	// prompt's "always", the dashboard's inline step) or written here.
+	// Empty (the default) copies nothing unless the user consents at that
+	// launch. Only the files the tool's registry row names are copied,
+	// only into a box whose tool state is projected (a local container
+	// row), never to a hosted row; the copy is removed when the run ends.
+	// Local-only: an org has no value for it and cannot turn it on (it may
+	// forbid seeding through the sandbox managed policy).
+	SignInSeedTools []string `toml:"sign_in_seed_tools"`
+	// SignInSeedForbidden is set only by the sandbox managed policy's
+	// sign_in_seed_forbidden (an org forbid, lowering only). Never read
+	// from the file.
+	SignInSeedForbidden bool `toml:"-" json:"-"`
+	// AllowOSC52Clipboard lets a sandboxed tool's OSC 52 escape sequences
+	// (the terminal's clipboard set and query) reach the terminal that
+	// shows the run. Default FALSE: Observer removes them from a sandboxed
+	// run's output on the dashboard terminal and on the CLI host console,
+	// so a box refused the clipboard (the Windows box's job carries
+	// READCLIPBOARD and WRITECLIPBOARD) cannot write it through the
+	// terminal (WINFIX4 audit finding 2, ruling P-175). Unsandboxed runs are
+	// never filtered. Authority-expanding and local-only: an org has no
+	// fleet-wide value for it and cannot pin it. A run that allows it says
+	// so in its posture.
+	AllowOSC52Clipboard bool `toml:"allow_osc52_clipboard"`
+	// Backends is the backend preference order (sandbox plan v2 section 10),
+	// for example ["bwrap"]. When set it wins over Backend; empty means
+	// Backend as a one-element list. Each entry is a registry backend id; an
+	// id this build has no driver for is listed by `observer sandbox status`
+	// with its reason and never selected.
+	Backends []string `toml:"backends"`
+	// MinIsolation is the local isolation floor: "" (none), "process",
+	// "container", "userspace_kernel" or "hw_vm". A sandboxed launch on a
+	// backend that builds a weaker class is refused, never run weaker.
+	MinIsolation string `toml:"min_isolation"`
+	// PinnedNoBackend is set only by the governance overlay and never read
+	// from or written to TOML: when the organization's
+	// terminal.sandbox.backends pin (an ordered filter) leaves none of the
+	// node's own backends, no backend is enabled, and this names the pin a
+	// sandboxed launch's refusal quotes. Empty otherwise.
+	PinnedNoBackend string `toml:"-" json:"-"`
+	// OCI is [terminal.sandbox.oci], the oci-runc driver (Docker Engine or
+	// Podman through the Engine API on a local unix socket; sandbox plan v2
+	// section 10.1, lane SBX-P3A). Read only while the terminals.sandbox.oci
+	// component is active AND "oci-runc" is in Backends.
+	OCI TerminalSandboxOCIConfig `toml:"oci"`
+	// MXC is [terminal.sandbox.mxc], the mxc-process driver (Microsoft
+	// Execution Containers' ProcessContainer on native Windows 11; sandbox
+	// plan v2 section 13 P6, lane SBX-P6). Read only while the
+	// terminals.sandbox.mxc component is active AND "mxc-process" is in
+	// Backends.
+	MXC TerminalSandboxMXCConfig `toml:"mxc"`
+	// Seatbelt is [terminal.sandbox.seatbelt], the macOS Seatbelt driver
+	// (sandbox plan v2 section 13 P5, lane SBX-P5; beta). Read only while
+	// the terminals.sandbox.seatbelt component is active AND "seatbelt" is
+	// in Backends.
+	Seatbelt TerminalSandboxSeatbeltConfig `toml:"seatbelt"`
+	// AppleContainer is [terminal.sandbox.apple_container], the Apple
+	// container driver (macOS 26 on Apple silicon; lane SBX-P5; beta). Read
+	// only while the terminals.sandbox.apple-container component is active
+	// AND "apple-container" is in Backends.
+	AppleContainer TerminalSandboxAppleContainerConfig `toml:"apple_container"`
+	// Landlock is [terminal.sandbox.landlock], the Landlock-only
+	// process_lite row (sandbox plan v2 section 4.1, lane SBX-P3B; beta).
+	// Read only while the terminals.sandbox.landlock component is active
+	// AND "process_lite" is in Backends.
+	Landlock TerminalSandboxLandlockConfig `toml:"landlock"`
+	// Hosted is [terminal.sandbox.hosted], the hosted sandbox rows (E2B,
+	// Modal, Vercel Sandbox; sandbox plan v2 section 10, lane SBX-P7; beta).
+	// Read only while a hosted driver's component is active AND its row is
+	// in Backends. No credential is ever a key here: credentials live in
+	// the OS keychain (or the vendor's environment variables).
+	Hosted TerminalSandboxHostedConfig `toml:"hosted"`
+	// Readopt, WSLC and HCS are lane GATES-SBX's blocks
+	// (internal/config/sandbox_gates.go), each read only while its own
+	// component is selected.
+	Readopt TerminalSandboxReadoptConfig `toml:"readopt"`
+	WSLC    TerminalSandboxWSLCConfig    `toml:"wslc"`
+	HCS     TerminalSandboxHCSConfig     `toml:"hcs"`
+	// Windows is [terminal.sandbox.windows]: the MXC tier floor (R-034).
+	Windows TerminalSandboxWindowsConfig `toml:"windows"`
+
+	// VM is [terminal.sandbox.vm], the Cloud Hypervisor microVM driver
+	// (sandbox plan v2 sections 10 and 10.1, lane SBX-P4; beta). Read only
+	// while the terminals.sandbox.vm component is active AND
+	// "cloud-hypervisor" is in Backends.
+	VM TerminalSandboxVMConfig `toml:"vm"`
 }
+
+// TerminalSandboxVMConfig is the [terminal.sandbox.vm] block. Every key is
+// local; none widens what the VM may reach (it has no network device in
+// any tier). The guest image set is never a path: it comes only from the
+// signed content kinds sandbox.rootfs and sandbox.guest_binary.
+type TerminalSandboxVMConfig struct {
+	// VMM is the virtual machine monitor: "cloud-hypervisor" (the default
+	// and only value).
+	VMM string `toml:"vmm"`
+	// ImageSet is the verified guest image set to boot, named by its
+	// version (MAJOR.MINOR.PATCH); "" (the default) is the newest verified
+	// set. Never a path.
+	ImageSet string `toml:"image_set"`
+	// VCPUs is the guest's vCPU count. Default 2, 1 to 64.
+	VCPUs int `toml:"vcpus"`
+	// MemoryMB is the guest's memory in MiB (shared with virtiofsd, so the
+	// host reserves it whole). Default 4096, 512 to 262144.
+	MemoryMB int `toml:"memory_mb"`
+	// InstallCache lets a run whose image set holds no agent tool install it
+	// at first start into a per-image-set cache disk (SBX-P3C's install
+	// sources, host allow-list, consent and version pin). Default false: a
+	// run with no tool in the image and no cache is refused
+	// tool_unavailable_in_image.
+	InstallCache bool `toml:"install_cache"`
+	// WorkspaceDelivery is how a workspace copy reaches the VM:
+	// "virtiofs" (the default: shared by a virtiofsd) or "disk_image" (the
+	// copy written into an ext4 image with mkfs.ext4 -d, no root, and read
+	// back with debugfs for the scanned return; copies only, never live or
+	// worktree).
+	WorkspaceDelivery string `toml:"workspace_delivery"`
+	// CloudHypervisorPath and VirtiofsdPath are optional absolute paths to
+	// the two programs, owner-checked at the probe ("" resolves each on
+	// PATH with Observer's own shims excluded).
+	CloudHypervisorPath string `toml:"cloud_hypervisor_path"`
+	VirtiofsdPath       string `toml:"virtiofsd_path"`
+}
+
+// TerminalSandboxLandlockConfig is the [terminal.sandbox.landlock] block.
+type TerminalSandboxLandlockConfig struct {
+	// MinABI is the lowest Landlock ABI a process_lite launch accepts.
+	// Default 9 (Linux 7.1+), which is also the floor: below ABI 9 the
+	// daemon's relay endpoint and the attach socket would be reachable from
+	// the box, so a lower value is refused. Raising it is stricter.
+	MinABI int `toml:"min_abi"`
+}
+
+// TerminalSandboxHostedConfig is the [terminal.sandbox.hosted] block.
+type TerminalSandboxHostedConfig struct {
+	// MinSessionMinutes drops a hosted row whose provider caps a box below
+	// it (selection rule S13). Default 30, 5 to 1440, at most
+	// MaxRunMinutes (so a short max_run_minutes needs it lowered too).
+	MinSessionMinutes int `toml:"min_session_minutes"`
+	// KeyCustody is where the model credential sits: home_relay (the
+	// default; only the org gateway key or a routing key-pool key can stay
+	// home today), in_box_api_key, in_box_oauth_seed, or provider_injected
+	// (no hosted row offers it yet).
+	KeyCustody string `toml:"key_custody"`
+	// MemoryImages is avoid (the default: a provider pause image is switched
+	// off where the vendor allows, disclosed and deleted at teardown) or
+	// refuse (a row whose provider could take one is dropped).
+	MemoryImages string `toml:"memory_images"`
+	// CheckpointMinutes is how often the run's transcripts are pulled home
+	// while it runs (and always at teardown). Default 5, 1 to 60.
+	CheckpointMinutes int `toml:"checkpoint_minutes"`
+	// MaxRunMinutes is the vendor timeout every box is created with (never
+	// none). Default 60, 5 to 1440.
+	MaxRunMinutes int `toml:"max_run_minutes"`
+	// DailyBoxMinutes caps the box-minutes per provider per UTC day; a
+	// launch over it refuses. Default 240, 5 to 10080.
+	DailyBoxMinutes int `toml:"daily_box_minutes"`
+	// DBExport turns on the in-box database export at teardown (lane
+	// LEFT-SBX, opt-in by orchestrator ruling P-141): consistent copies of
+	// the tool's SQLite stores (conversation content, up to 1 GiB a run)
+	// are pulled home under <observer dir>/sandbox-hosted/dbcopies/<run>
+	// before the box is deleted, and swept after
+	// [terminal.sandbox].workspace_retention_days. Default false.
+	DBExport bool `toml:"db_export"`
+	// E2B, Modal and Vercel are the per-provider tables.
+	E2B    TerminalSandboxHostedProviderConfig `toml:"e2b"`
+	Modal  TerminalSandboxHostedProviderConfig `toml:"modal"`
+	Vercel TerminalSandboxHostedProviderConfig `toml:"vercel"`
+}
+
+// TerminalSandboxHostedProviderConfig is one provider's table.
+type TerminalSandboxHostedProviderConfig struct {
+	// Region is the region to run in ("" is the provider's default; E2B's
+	// region is the API endpoint its key belongs to).
+	Region string `toml:"region"`
+	// Template is the vendor template, image or runtime that holds the
+	// agent tool ("" is the vendor's default, which holds none: the tool
+	// then installs from its vendor at first start on the internet tier
+	// only).
+	Template string `toml:"template"`
+	// BoxBinary is an absolute path to a Linux observer binary of this
+	// version for the box ("" uses the running binary when it is a Linux
+	// binary of the box's architecture).
+	BoxBinary string `toml:"box_binary"`
+	// Endpoint is the provider's API origin, E2B only (lane SBX-UPD, plan
+	// section 10.1's hosted.e2b.api_base): "" is the region's own endpoint.
+	// A local value must be on the vendor's own domain; an origin elsewhere
+	// (a self-hosted E2B) reaches a node only as an org-published endpoint
+	// on a managed node (SBX-GOV-2), and a credential is sent there only
+	// when it was connected for that origin (SBX-GOV-4).
+	Endpoint string `toml:"endpoint"`
+	// EndpointSPKISHA256 pins the endpoint server's public key (the SHA-256
+	// of its SubjectPublicKeyInfo, 64 lowercase hex), E2B only; "" pins
+	// nothing beyond the usual certificate checks.
+	EndpointSPKISHA256 string `toml:"endpoint_spki_sha256"`
+	// OrgPublished marks an Endpoint the org's managed pull set (never read
+	// from a file): only such an endpoint may leave the vendor's domain.
+	OrgPublished bool `toml:"-" json:"-"`
+}
+
+// TerminalSandboxSeatbeltConfig is the [terminal.sandbox.seatbelt] block.
+type TerminalSandboxSeatbeltConfig struct {
+	// AllowKeychain lets the sandboxed agent reach the Keychain's mach
+	// services (com.apple.SecurityServer, com.apple.securityd.xpc), which a
+	// Keychain-backed login (Claude Code, Codex on macOS) needs. It widens
+	// what the box can ask the Keychain for, so it defaults to FALSE.
+	AllowKeychain bool `toml:"allow_keychain"`
+	// Driver is the Seatbelt driver (sandbox plan v2 section 10.1's
+	// seatbelt_driver, lane SBX-UPD): "sandbox-exec" (the default, also what
+	// an empty value means) or "mxc-exec-mac", Microsoft's declared
+	// fallback, which the probe refuses fallback_driver_unavailable until a
+	// documented binary can be pinned and a Mac run proves it (MAC-10).
+	Driver string `toml:"driver"`
+}
+
+// TerminalSandboxAppleContainerConfig is the [terminal.sandbox.apple_container]
+// block.
+type TerminalSandboxAppleContainerConfig struct {
+	// Image is the run's image, pinned by digest (name@sha256:<64 hex>): a
+	// linux/arm64 image that holds the agent CLI and a linux/arm64 observer
+	// (the host's macOS binary cannot run in the container). Empty (the
+	// default) leaves the driver unavailable.
+	Image string `toml:"image"`
+	// MemoryMiB is the container's memory (--memory). Default 4096.
+	MemoryMiB int `toml:"memory_mib"`
+	// CPUs is the container's CPU count (--cpus). Default 4.
+	CPUs int `toml:"cpus"`
+}
+
+// TerminalSandboxMXCConfig is the [terminal.sandbox.mxc] block. Every key
+// is local; none widens what the box may reach. The MXC files themselves
+// are not configurable: the driver only ever uses the copies bundled
+// beside the observer binary and checked against the hashes compiled into
+// it.
+type TerminalSandboxMXCConfig struct {
+	// StopGraceSeconds is how long a stopping run gets after Ctrl-Break
+	// before its container is closed (MXC kills what is left). Default 5.
+	StopGraceSeconds int `toml:"stop_grace_seconds"`
+	// ProbeTimeoutSeconds bounds the probe helper (the library load, MXC's
+	// request probe and its create-and-close check). Default 30, at least
+	// 5: the first run of a freshly updated binary is scanned by Defender
+	// and can take seconds (sandbox plan revision 6.1, JSP-2).
+	ProbeTimeoutSeconds int `toml:"probe_timeout_seconds"`
+}
+
+// TerminalSandboxOCIConfig is the [terminal.sandbox.oci] block. Every key
+// is local; the authority-expanding ones (AllowRootful,
+// AllowDevcontainerImage) default to false.
+type TerminalSandboxOCIConfig struct {
+	// AllowRootful lets the driver use a ROOTFUL engine socket, which is
+	// root-equivalent (anyone who can reach it can become root). Default
+	// FALSE: rootless Docker or Podman is preferred (D-746 Q29). Even when
+	// true, a rootful engine never runs container root: the container runs
+	// as your uid and gid.
+	AllowRootful bool `toml:"allow_rootful"`
+	// Socket is the engine socket: an absolute path or unix:///path. Empty
+	// (the default) uses $DOCKER_HOST, then $CONTAINER_HOST, then the
+	// rootless sockets under $XDG_RUNTIME_DIR, then /run/docker.sock and
+	// /run/podman/podman.sock. A TCP or SSH endpoint is never used.
+	Socket string `toml:"socket"`
+	// Image is the run's image, pinned by digest (name@sha256:<64 hex>). A
+	// tag is refused. Empty (the default) leaves the driver unavailable:
+	// Observer's own default image is not published yet. Once a signed
+	// sandbox.image manifest is installed, empty uses Observer's verified
+	// default image instead (plan 12.3). An org may pin this key, to an image
+	// pinned by digest only.
+	Image string `toml:"image"`
+	// PodmanUserns is the rootless Podman user namespace: "keep-id" (the
+	// default, the container runs as your uid) or "default" (container root
+	// is you). Both leave files you own in the workspace.
+	PodmanUserns string `toml:"podman_userns"`
+	// StopGraceSeconds is how long a stopping run gets before the engine
+	// kills it. Default 10.
+	StopGraceSeconds int `toml:"stop_grace_seconds"`
+	// AllowDevcontainerImage lets a repository's .devcontainer image (by
+	// digest only) be used for that repository after you consent to it once
+	// per repository and digest; every host-executing or privilege field of
+	// devcontainer.json is ignored. Default FALSE.
+	AllowDevcontainerImage bool `toml:"allow_devcontainer_image"`
+	// InstallCache lets a launch whose image cannot run this host's copy of
+	// the tool install the tool first, into a per-image cache volume: a
+	// short setup container from the same image, with no workspace, no
+	// credential and egress only to the tool's documented install hosts,
+	// runs the vendor's npm install pinned to the host's version, after the
+	// launch says what it downloads and from where and you answer yes. A
+	// tool the image holds itself then runs on a projected tool state, never
+	// your real one. Default FALSE: nothing creates a volume or runs an
+	// install, and such a launch is refused as before.
+	InstallCache bool `toml:"install_cache"`
+	// InstallScripts says whether the first-start install may run a tool
+	// package's own install script (lane LEFT-SBX, operator ruling P-136):
+	// "none" never runs one, "pinned" (the default; empty reads as pinned)
+	// runs a tool's scripts only when each script file matches a reviewed
+	// pin for that package version (Observer's own, one you added, or your
+	// organization's), under the same host allow-list as the download. A
+	// tool that needs its script is refused naming why otherwise. Only read
+	// while install_cache is on. An org may pin it to "none".
+	InstallScripts string `toml:"install_scripts"`
+	// InstallScriptsTools limits the tools whose pinned scripts may run to
+	// these install-source tools (the dashboard picks them from the
+	// catalog). Empty (the default) is every tool of the catalog. An org may
+	// narrow it.
+	InstallScriptsTools []string `toml:"install_scripts_tools"`
+	// InstallScriptPins are pins you added: a tool, the package version and
+	// the sha256 of its install script file. The dashboard adds one only
+	// after you confirm it.
+	InstallScriptPins []TerminalSandboxOCIScriptPin `toml:"install_script_pins"`
+	// InstallVersions picks the version the first-start install installs,
+	// per tool ({"claude-code" = "2.1.310"}). A tool with no entry installs
+	// the host's own installed version, as before; with neither, the launch
+	// is refused install_version_unknown. The dashboard offers the vendor's
+	// published versions.
+	InstallVersions map[string]string `toml:"install_versions"`
+	// OrgInstallScriptPins are the organization's signed install-script pins
+	// from the managed sandbox body in force (never read from the file;
+	// cmd/observer's managed compose fills it on a managed node holding
+	// enforce.sandbox).
+	OrgInstallScriptPins []TerminalSandboxOCIScriptPin `toml:"-" json:"-"`
+}
+
+// TerminalSandboxOCIScriptPin is one user-added install script pin.
+type TerminalSandboxOCIScriptPin struct {
+	// Tool is the registry tool id.
+	Tool string `toml:"tool" json:"tool"`
+	// Version is the package version the pin covers.
+	Version string `toml:"version" json:"version"`
+	// SHA256 is the script file's sha256, lowercase hex.
+	SHA256 string `toml:"sha256" json:"sha256"`
+	// Added is when the pin was added (YYYY-MM-DD), shown with it.
+	Added string `toml:"added" json:"added,omitempty"`
+	// Packages pin what the install fetches by the registry's integrity
+	// value (sha512): the package itself and every platform package its
+	// script may place (R-014, ruling P-142). A tool whose install script
+	// fetches more packages (opencode, kilo) runs its script under this pin
+	// only when they are set; the setup container checks every installed
+	// package against them before any script runs, as for Observer's own
+	// pins.
+	Packages []TerminalSandboxOCIPackagePin `toml:"packages" json:"packages,omitempty"`
+}
+
+// TerminalSandboxOCIPackagePin is one fetched npm artifact pinned by its
+// registry integrity value.
+type TerminalSandboxOCIPackagePin struct {
+	// Name is the npm package name (scoped names allowed).
+	Name string `toml:"name" json:"name"`
+	// Version is the package version.
+	Version string `toml:"version" json:"version"`
+	// Integrity is the registry's sha512 integrity value
+	// ("sha512-<base64>"), as the package's version document lists it.
+	Integrity string `toml:"integrity" json:"integrity"`
+}
+
+// sandboxIsolationClasses is the closed min_isolation vocabulary, weakest
+// first. It mirrors internal/sandboxvocab's class ladder above "none"
+// (config stays a leaf; the mirror is pinned by a test in
+// cmd/observer).
+var sandboxIsolationClasses = []string{"process", "container", "userspace_kernel", "hw_vm"}
+
+// SandboxIsolationClasses returns the closed [terminal.sandbox].min_isolation
+// values, weakest first.
+func SandboxIsolationClasses() []string { return append([]string(nil), sandboxIsolationClasses...) }
 
 // TerminalStatusConfig is the [terminal.status] block — agent-status
 // detection (plan §8/F4). Default-on. Per-tool prompt patterns are shipped
@@ -2295,6 +2807,18 @@ type BenchmarkConfig struct {
 	// rationales, so the default is bounded — 180 days keeps ~6 months of run
 	// history for baseline diffs. 0 = keep forever.
 	RetentionDays int `toml:"retention_days"`
+	// ArenaAllowSkipPermissions lets an Agent Arena candidate or judge_merge
+	// keep run a harness with its own permission checks skipped (claude-code
+	// --dangerously-skip-permissions, grok --always-approve, aider --yes, an
+	// opencode run that asks nothing) when the harness has no grounded mode
+	// that keeps them on. Default false: a candidate then runs in its
+	// harness's edit-only mode (claude-code acceptEdits, codex
+	// workspace-write), and a harness with no such mode is refused. The Arena
+	// judge never skips permissions. On a managed node the organization's AI
+	// tool settings still win: an enforced approval mode stricter than
+	// full_auto (or claude-code's disableBypassPermissionsMode) refuses the
+	// skip whatever this says (OSH-R-005). Read at every run, no restart.
+	ArenaAllowSkipPermissions bool `toml:"arena_allow_skip_permissions"`
 }
 
 // CodeIntelConfig is the [codeintel] surface — the in-process code-
@@ -2901,6 +3425,17 @@ type OrgClientPolicyConfig struct {
 	// its body requests enforce — the signed body and its BodyHash are
 	// never rewritten to reflect this, only the local enforcement gate is.
 	PreauthorizeEnforce []string `toml:"preauthorize_enforce"`
+	// AcceptModuleFamilies and PreauthorizeModuleEnforce are the additive
+	// twins of the two keys above for the families a released binary does
+	// not know (the module floor families security.scanning and
+	// terminals.isolation, and every later one; policyfamilies.go). They are
+	// read TOGETHER with the old keys (AcceptedFamilies,
+	// PreauthorizedFamilies) and obey the same rules; the managed
+	// accept-list writers put a newly linked module family here, never in
+	// the old keys, because an older binary refuses a config whose old keys
+	// name a family it does not know but ignores a key it does not know.
+	AcceptModuleFamilies      []string `toml:"accept_module_families"`
+	PreauthorizeModuleEnforce []string `toml:"preauthorize_module_enforce"`
 
 	// NodeWorkspace / NodeEnvironment / NodeService are this node's
 	// targeting attributes over the closed selector vocabulary
@@ -3086,6 +3621,17 @@ type OrgClientShareConfig struct {
 	// node-side only on an individual node; org-raisable on a managed node via
 	// the DISTINCT extract.tool_accounts authority.
 	ToolAccountDetail bool `toml:"tool_account_detail"`
+	// HookActivity opts the per-session hook liveness counts (the node-local
+	// hook_activity table, agent migration 198) onto the wire: surface-gap
+	// review 2026-10-25, OBS-7, decision DEC-5. A metadata tier: this key
+	// alone ships, per (session, tool, event), the invocation count, the
+	// first and last time and the coarse route env classes, so the org Guard
+	// tab can show a hook capability that was not observed on a surface. The
+	// CLAUDE_CONFIG_DIR path hash additionally requires full_content or
+	// admin_managed. Default false, node-side only on an individual node;
+	// org-raisable on a managed node via extract.hook_activity (or the
+	// umbrella extract.managed).
+	HookActivity bool `toml:"hook_activity"`
 	// MCPActivity opts an INDIVIDUAL (non-org-enrolled) node's HMAC-only daily
 	// MCP relay aggregate (day x virtual server x keyed tool HMAC x decision x
 	// client attestation counts, orgcontract.MCPRelayActivityRow) onto the
@@ -3101,6 +3647,15 @@ type OrgClientShareConfig struct {
 	// vocabulary): there is nothing for an org to raise on a node it does not
 	// manage.
 	MCPActivity bool `toml:"mcp_activity"`
+	// Security is the security pillar's share level on an INDIVIDUAL node
+	// (security plan 6.5 and 7.4, ruling Q7): "off" (the default, also what
+	// an empty or unknown value means), "posture" (the enum-and-count daily
+	// posture row) or "findings" (posture plus finding rows; their paths and
+	// redacted evidence still need full_content). Rows ship only while the
+	// security module is active. Node-side only, never raised remotely: a
+	// MANAGED node ignores it and follows the finding_share of its in-force
+	// enforce.security pull (posture by default).
+	Security string `toml:"security"`
 	// PolicyState opts the P0-6 effective-policy-state reverse channel
 	// (docs/plans/plane-a-p0-6-effective-policy-state-plan.md §2.3) onto a
 	// dedicated POST /api/agent/policy-ack. CONTENT-FREE — the report carries
@@ -3252,6 +3807,7 @@ type ObserverConfig struct {
 	Secrets     SecretsConfig     `toml:"secrets"`
 	Retention   RetentionConfig   `toml:"retention"`
 	Hooks       HooksConfig       `toml:"hooks"`
+	MCP         ObserverMCPConfig `toml:"mcp"`
 	Antigravity AntigravityConfig `toml:"antigravity"`
 	Process     ProcessConfig     `toml:"process"`
 	DB          DBConfig          `toml:"db"`
@@ -3684,6 +4240,13 @@ type WatchConfig struct {
 	PollIntervalSeconds int      `toml:"poll_interval_seconds"`
 	MaxFileSizeMB       int      `toml:"max_file_size_mb"`
 	EnabledAdapters     []string `toml:"enabled_adapters"`
+	// HomeWalk allows adapters with no project index of their own (aider)
+	// to find transcripts by a bounded background walk of the home folder.
+	// Default true. With false they use only their environment overrides
+	// and the project roots Observer already knows. On macOS the walk never
+	// opens the privacy-guarded home folders (Desktop, Documents,
+	// Downloads, Library, ...) unless a known project root lives in one.
+	HomeWalk bool `toml:"home_walk"`
 }
 
 // FreshnessConfig controls content hashing and classification.
@@ -3744,6 +4307,29 @@ type RetentionConfig struct {
 	// api_turns, so this table is the per-decision debugging tail behind
 	// them and can age out on its own, longer horizon.
 	CompressionEventsDays int `toml:"compression_events_days"`
+	// HeldMaxMB caps the data an ENROLLED node keeps only because the org
+	// has not accepted it yet (T-839 / D-673). Retention never deletes a row
+	// above the org push cursor while the node is enrolled, whether
+	// [org_client].enabled is true or false (a pause), so a push that is
+	// paused or refused for weeks would otherwise grow the database until
+	// the disk fills. Past this estimate the OLDEST held rows are deleted
+	// anyway, at ERROR in the daemon log, and `observer doctor` FAILs
+	// (retention.push_hold): those rows never reached the org. Default 2048
+	// (about 2 GB). 0 removes the ceiling (hold without limit). Has no
+	// effect on a node that is not enrolled.
+	HeldMaxMB int `toml:"held_max_mb"`
+}
+
+// ObserverMCPConfig controls how Observer registers its own MCP server entry.
+type ObserverMCPConfig struct {
+	// StableCommand, when true on an org-managed Linux or macOS node,
+	// registers the bare `observer` as the MCP entry's command whenever the
+	// first `observer` on PATH runs this same install (surface-gap FU-24),
+	// so one managed allowedMcpServers entry matches every node. Default
+	// false: it waits on a live check (a GUI-launched host such as VS Code or
+	// Claude Desktop on a managed Mac must still resolve the bare name on its
+	// own PATH), so until that check passes it is an explicit opt-in.
+	StableCommand bool `toml:"stable_command"`
 }
 
 // HooksConfig controls hook runtime.
@@ -3756,7 +4342,27 @@ type HooksConfig struct {
 	// default: never overwrites user-authored hook entries — conflicts
 	// log a warning and skip. Default: true.
 	AutoRegister bool `toml:"auto_register"`
+	// PeriodicRegister controls whether the daemon re-runs the same
+	// idempotent auto-registration on the policy-state heartbeat (about 5
+	// minutes), so a removed or weakened hook is repaired and reported
+	// without waiting for a restart (T-849):
+	//
+	//   - "managed" (default): only on a managed-tenancy enrolment;
+	//   - "always": on every node;
+	//   - "off": never (start-time registration only, the pre-T-849
+	//     behaviour).
+	//
+	// auto_register = false disables it in every mode. Unknown values read
+	// as "managed".
+	PeriodicRegister string `toml:"periodic_register"`
 }
+
+// The [observer.hooks] periodic_register values.
+const (
+	HooksPeriodicRegisterManaged = "managed"
+	HooksPeriodicRegisterAlways  = "always"
+	HooksPeriodicRegisterOff     = "off"
+)
 
 // ProxyConfig controls the API reverse proxy.
 type ProxyConfig struct {
@@ -3767,6 +4373,35 @@ type ProxyConfig struct {
 	ChatGPTUpstream   string `toml:"chatgpt_upstream"`
 	GeminiUpstream    string `toml:"gemini_upstream"`
 	ForceChatGPTHTTP  bool   `toml:"force_chatgpt_http"`
+	// MaintainRoutes is the org-pinned managed route-maintenance switch (lane
+	// P1, node.governance key proxy.maintain_routes). It exists so the pin
+	// resolves in this build's config; the daemon reads the pinned value live
+	// from the governance posture (govern.Effective.RoutePosture) and never
+	// reads this local value, which an individual node has no use for.
+	MaintainRoutes bool `toml:"maintain_routes"`
+	// RequireClientAuth refuses a proxy request whose base URL does not
+	// carry the node's client token (OSH-R-009,
+	// docs/plans/proxy-client-auth-2026-10-30.md). Default false: every
+	// local client is served, as before. Turning it on implies
+	// ClientAuthRoutes, and the daemon enforces it only when no route
+	// pointed at the proxy is still in the plain form (proxyauth.Enforce),
+	// so a live route is never broken. Read at daemon start; follow the
+	// restart runbook. A local switch only in this release: no org pin
+	// sets it (the start-time hold-off does not yet see every route a
+	// managed node can carry; docs/plans/proxy-client-auth-2026-10-30.md).
+	RequireClientAuth bool `toml:"require_client_auth"`
+	// ClientAuthRoutes makes `observer init`, the managed route writer and
+	// the launchers write the client token form of a route
+	// (http://127.0.0.1:<port>/t/<token>...) for every tool whose writer
+	// supports it, and has the daemon create the token file. Default false.
+	// It is the first, non-breaking step of the migration: the proxy keeps
+	// serving plain requests until RequireClientAuth is also on.
+	ClientAuthRoutes bool `toml:"client_auth_routes"`
+	// ClientTokenFile is where the proxy client token lives (32 random
+	// bytes, hex, mode 0600, created on first use when ClientAuthRoutes or
+	// RequireClientAuth is on). Default ~/.observer/proxy-client-token. A
+	// sandboxed run sees it read-only (it is granted the model proxy).
+	ClientTokenFile string `toml:"client_token_file"`
 	// PrewarmTargets are URLs the proxy fires HEAD against at startup
 	// to populate the http.Transport connection pool with warm TLS
 	// sessions (V6-3 mitigation). The first real proxy request reuses
@@ -4383,8 +5018,9 @@ func Default() Config {
 			Watch: WatchConfig{
 				PollIntervalSeconds: 2,
 				MaxFileSizeMB:       50,
+				HomeWalk:            true,
 				EnabledAdapters: []string{
-					"claude-code", "codex", "cline", "cline-cli", "roo-code", "zoo-code", "cursor", "copilot", "copilot-cli", "cowork", "opencode", "openclaw", "pi", "gemini-cli", "antigravity", "antigravity-cli", "hermes", "kilo-code", "kilo-code-cli", "qwen-code", "kiro-cli", "crush", "kimi-code", "grok", "devin", "qoder", "aider", "goose", "chatgpt-web", "claude-web", "perplexity-web", "gemini-web", "copilot-web", "droid", "open-interpreter", "command-code", "muse", "prime-agent", "deepseek", "junie", "zcode", "mistral-code", "freebuff", "grokbot", "kiro-crew", "poolside", "zed",
+					"claude-code", "codex", "cline", "cline-cli", "roo-code", "zoo-code", "cursor", "copilot", "copilot-cli", "cowork", "opencode", "openclaw", "pi", "gemini-cli", "antigravity", "antigravity-cli", "hermes", "kilo-code", "kilo-code-cli", "qwen-code", "kiro-cli", "crush", "kimi-code", "grok", "devin", "qoder", "aider", "goose", "chatgpt-web", "claude-web", "perplexity-web", "gemini-web", "copilot-web", "droid", "open-interpreter", "command-code", "muse", "prime-agent", "deepseek", "junie", "zcode", "mistral-code", "freebuff", "grokbot", "kiro-crew", "poolside", "zed", "autohand", "ibm-bob", "cortex-code", "codebuddy", "deepagents-code", "dimcode", "dirac", "kimchi", "stakpak", "vtcode",
 				},
 			},
 			Freshness: FreshnessConfig{
@@ -4410,10 +5046,12 @@ func Default() Config {
 				WALWatchMinutes:       10,
 				CompactionEventsDays:  30,
 				CompressionEventsDays: 90,
+				HeldMaxMB:             2048,
 			},
 			Hooks: HooksConfig{
-				TimeoutMS:    500,
-				AutoRegister: true,
+				TimeoutMS:        500,
+				AutoRegister:     true,
+				PeriodicRegister: HooksPeriodicRegisterManaged,
 			},
 			// Process observability (docs/process-observability.md §11) is
 			// OPT-IN: Enabled defaults false (D1). The non-zero defaults
@@ -4620,6 +5258,17 @@ func Default() Config {
 			SkillHistory:            true,
 			SkillHistorySkewSeconds: 120,
 		},
+		// Delivery (commit to PR to merge, D-689): local landing detection
+		// is default-ON for the same reasons as the commit scan (local,
+		// read-only, network-free). Provider egress is not a config switch.
+		Delivery: DeliveryConfig{
+			Local:             true,
+			PollMinutes:       10,
+			MirrorCapMB:       2048,
+			AbandonAfterDays:  30,
+			CountLikely:       false,
+			ContentOverlapMin: 0.8,
+		},
 		// Pricing feed (standalone-node pricing sync) is ON by default,
 		// including its background poller (Auto). This is a deliberate
 		// reversal (operator decision 2026-09-20) of the former
@@ -4669,6 +5318,12 @@ func Default() Config {
 		// actions.raw_tool_input/raw_tool_output, no new capture surface.
 		// Same partial-merge rule as CacheTrack/Predict — an install with
 		// no [tasks] section keeps Enabled=true.
+		// Messages: the developer's surfaces for org messages (T-854, D-688
+		// ruling 1). Every in-editor surface defaults ON; the OS desktop
+		// notification stays OFF until the developer turns it on. Partial
+		// merge keeps these for an install with no [messages] section.
+		Messages: DefaultMessagesConfig(),
+		Security: DefaultSecurityConfig(),
 		Tasks: TasksConfig{
 			Enabled:               true,
 			MatchMode:             "exact",
@@ -4798,9 +5453,20 @@ func Default() Config {
 				DefaultOn:              false,
 				AllowRemoteClone:       false,
 				AllowWorktreeSource:    false,
+				VendorForcedNative:     "nest_or_refuse",
 				WorkspaceRetentionDays: 0,
 				PrepTimeoutSeconds:     300,
+				LiveRunUpdatePolicy:    "defer",
 				Egress:                 "internet",
+				OCI:                    TerminalSandboxOCIConfig{PodmanUserns: "keep-id", StopGraceSeconds: 10},
+				MXC:                    TerminalSandboxMXCConfig{StopGraceSeconds: 5, ProbeTimeoutSeconds: 30},
+				AppleContainer:         TerminalSandboxAppleContainerConfig{MemoryMiB: 4096, CPUs: 4},
+				Landlock:               TerminalSandboxLandlockConfig{MinABI: 9},
+				VM:                     TerminalSandboxVMConfig{VMM: "cloud-hypervisor", VCPUs: 2, MemoryMB: 4096, WorkspaceDelivery: "virtiofs"},
+				Hosted: TerminalSandboxHostedConfig{
+					MinSessionMinutes: 30, KeyCustody: "home_relay", MemoryImages: "avoid",
+					CheckpointMinutes: 5, MaxRunMinutes: 60, DailyBoxMinutes: 240,
+				},
 			},
 			// [terminal.ssh] — default ON for VISIBILITY (2026-08-28 operator
 			// ruling); the surface still launches nothing without an
@@ -4967,18 +5633,12 @@ func Default() Config {
 				ReconsiderMinDelay: "3s",
 				SuppressInCode:     true,
 				MaxFindings:        64,
-				Detectors: map[string]string{
-					"credit_card": "ask-once",
-					"iban":        "ask-once",
-					"us_ssn":      "ask-once",
-					"uk_nino":     "ask-once",
-					"in_aadhaar":  "ask-once",
-					"in_pan":      "ask-once",
-					"email":       "off",
-					"phone_e164":  "off",
-					"phone_nanp":  "off",
-					"github_pat":  "block",
-				},
+				// The shipped per-detector set (certain PII asks once,
+				// a GitHub token blocks, email and phone numbers off) is
+				// owned by orgcontract so the org server judges a
+				// managed node's detector modes against the SAME
+				// defaults (T-864 gap 3).
+				Detectors: orgcontract.LocalGuardDefaultDetectorModes(),
 			},
 		},
 		Profiles: defaultProfiles(),
@@ -5003,7 +5663,8 @@ func Default() Config {
 			// existed a Zen session bypassed the proxy entirely: no
 			// accurate tokens and no prompt-lane intervention (demo node 1,
 			// 2026-10-02). `observer opencode` points that provider here.
-			AgentUpstreams: map[string]string{OpenCodeZenLane: "https://opencode.ai/zen"},
+			AgentUpstreams:  map[string]string{OpenCodeZenLane: "https://opencode.ai/zen"},
+			ClientTokenFile: DefaultProxyClientTokenFile,
 		},
 		Compression: CompressionConfig{
 			Shell: ShellConfig{
@@ -5150,6 +5811,11 @@ type LoadOptions struct {
 	// evaluated against. Nil means time.Now. Injected so the offboarding
 	// rule is testable without sleeping.
 	GovernanceNow func() time.Time
+	// NoGlobal reads no global file at all (GlobalPath is ignored): the
+	// defaults, the project file and the environment, exactly what Load
+	// gives for a global file that does not exist. A hook whose explicit
+	// --config cannot be read runs on this outside enforcement (FU-185).
+	NoGlobal bool
 }
 
 // Load merges defaults ← global TOML ← project TOML ← environment overrides.
@@ -5209,11 +5875,14 @@ func LoadGovernance(opts LoadOptions) (Config, GovernanceOutcome, error) {
 	// cmd/observer.
 
 	globalPath := opts.GlobalPath
-	if globalPath == "" {
+	if globalPath == "" && !opts.NoGlobal {
 		home, err := os.UserHomeDir()
 		if err == nil {
 			globalPath = filepath.Join(home, ".observer", "config.toml")
 		}
+	}
+	if opts.NoGlobal {
+		globalPath = ""
 	}
 	globalMeta, err := mergeTOMLFile(&cfg, globalPath)
 	if err != nil {
@@ -5250,16 +5919,26 @@ func LoadGovernance(opts LoadOptions) (Config, GovernanceOutcome, error) {
 		emitDeprecationOnce(w)
 	}
 
-	cfg.Observer.DBPath = expandHome(cfg.Observer.DBPath)
-	cfg.Archive.Path = expandHome(cfg.Archive.Path)
-	cfg.MCPRelay.IPCPath = expandHome(cfg.MCPRelay.IPCPath)
-	cfg.Compression.Conversation.Stash.Dir = expandHome(cfg.Compression.Conversation.Stash.Dir)
-	cfg.Loc.EditorTokenFile = expandHome(cfg.Loc.EditorTokenFile)
-	cfg.Update.StateDir = expandHome(cfg.Update.StateDir)
+	// R-183: a "~" path expands from the real home or the load is refused
+	// (home_unresolved), never used as a relative "~" folder.
+	if err := expandHomePaths(&cfg); err != nil {
+		return Config{}, GovernanceOutcome{}, err
+	}
 
 	// D-514: a setting this build cannot honour yet is switched off here,
 	// with one reason, instead of failing Validate (deferred.go).
 	cfg.Deferred = deferUnsupported(&cfg)
+
+	// A section an inactive (or compiled-out) optional component owns is not
+	// validated: a bad value there is set aside with one line instead of
+	// failing Load (component_sections.go).
+	cfg.Inert = setAsideInactiveSections(&cfg)
+
+	// T-875: the [guard] switches the developer set, before a governance pin
+	// replaces any of them. Reporting only (the guard floor's Local
+	// snapshot); nothing that enforces reads it.
+	ownGuard := ownGuardSwitchesOf(cfg.Guard, metas, opts.Env)
+	cfg.TerminalLaunchSet = terminalLaunchKeysOf(metas, opts.Env)
 
 	// Governance overlay — the LAST merge step (§1.3). Everything above is
 	// the ungoverned config; the overlay is applied to a COPY so a
@@ -5269,11 +5948,17 @@ func LoadGovernance(opts LoadOptions) (Config, GovernanceOutcome, error) {
 		now = opts.GovernanceNow
 	}
 	at := now()
-	file, gout := readGovernanceSidecar(cfg, opts.GovernanceSidecar, at)
+	// T-839 / T-844 / T-845: the daemon's MAC'd org lock, read once here and
+	// shared by the governance read (its verified sidecar copy) and the
+	// managed-node guard floor (finishGuardFloor, the last step on every
+	// return path below).
+	lock := loadOrgLockFor(globalPath, opts.GovernanceSidecar)
+	file, gout, exceptionsRaw := readGovernanceSidecar(cfg, opts.GovernanceSidecar, at, lock)
 	if file == nil {
 		if err := Validate(cfg); err != nil {
 			return Config{}, gout, err
 		}
+		finishGuardFloor(&cfg, lock, gout.Path, globalPath, ownGuard)
 		return cfg, gout, nil
 	}
 	governed := cfg
@@ -5281,10 +5966,13 @@ func LoadGovernance(opts LoadOptions) (Config, GovernanceOutcome, error) {
 	// node's own value stands) until its own instant. Exceptions live in
 	// their OWN file beside the sidecar, bound to this posture's hash, so
 	// the sidecar body stays readable by released builds.
-	pinned, excepted := governancePinsInForce(file, gout.Path, at)
+	pinned, excepted := governancePinsInForce(file, gout.Path, at, exceptionsRaw)
 	gout.Excepted = excepted
+	gout.PinsInForce = pinned
 	applyGovernancePins(&governed, pinned, &gout)
+	governed.TerminalLaunchSet = governed.TerminalLaunchSet.withPinned(gout.Applied)
 	governed.Deferred = append(append([]string(nil), governed.Deferred...), deferUnsupported(&governed)...)
+	governed.Inert = append(append([]string(nil), governed.Inert...), setAsideInactiveSections(&governed)...)
 	if err := Validate(governed); err != nil {
 		// Review B4: a well-formed, correctly-typed pinned value that
 		// Validate rejects must NEVER make Load fail. Six of the nine
@@ -5294,11 +5982,15 @@ func LoadGovernance(opts LoadOptions) (Config, GovernanceOutcome, error) {
 		// return the ungoverned config.
 		gout.Discarded, gout.DiscardErr = true, err.Error()
 		gout.Applied = nil
+		gout.PinsInForce = nil
 		if verr := Validate(cfg); verr != nil {
 			return Config{}, gout, verr
 		}
+		finishGuardFloor(&cfg, lock, gout.Path, globalPath, ownGuard)
 		return cfg, gout, nil
 	}
+	finishGuardFloor(&governed, lock, gout.Path, globalPath, ownGuard)
+	governed.Terminal.Sandbox.ProviderDirectInForce = sandboxProviderDirectInForce(governed, gout)
 	return governed, gout, nil
 }
 
@@ -5366,6 +6058,22 @@ func resetDeprecationEmitForTest() {
 	deprecationEmit.hintDone = false
 }
 
+// ReadError is a config file that exists but could not be read (permission
+// denied, an I/O error). It carries the path, so a launcher whose own errors
+// are silenced can still say which file it could not read (Linux live check
+// 2026-10-23, LIN-1 F3: a sandboxed launcher denied its config.toml exited 1
+// with no message). Its message is the loader's usual one.
+type ReadError struct {
+	Path string
+	Err  error
+}
+
+// Error is the loader's message for the failed read.
+func (e *ReadError) Error() string { return fmt.Sprintf("config.Load: read %s: %v", e.Path, e.Err) }
+
+// Unwrap returns the underlying error.
+func (e *ReadError) Unwrap() error { return e.Err }
+
 func mergeTOMLFile(cfg *Config, path string) (toml.MetaData, error) {
 	if path == "" {
 		return toml.MetaData{}, nil
@@ -5375,9 +6083,11 @@ func mergeTOMLFile(cfg *Config, path string) (toml.MetaData, error) {
 		return toml.MetaData{}, nil
 	}
 	if err != nil {
-		return toml.MetaData{}, fmt.Errorf("config.Load: read %s: %w", path, err)
+		return toml.MetaData{}, &ReadError{Path: path, Err: err}
 	}
-	meta, err := toml.Decode(string(body), cfg)
+	// An older plan-branch string form of index_download still loads
+	// (security_indexdownload_legacy.go).
+	meta, err := toml.Decode(string(normalizeLegacyIndexDownload(body)), cfg)
 	if err != nil {
 		return toml.MetaData{}, fmt.Errorf("config.Load: parse %s: %w", path, err)
 	}
@@ -5547,7 +6257,11 @@ func Validate(cfg Config) error {
 	if err := validateMCPRelay(cfg.MCPRelay); err != nil {
 		return err
 	}
-	return nil
+	// Sections an optional component owns (component_sections.go). Validate
+	// is strict: it checks every one, whatever the component state, so a
+	// save path never writes a bad value. Load is the component-aware side:
+	// it sets aside a bad section of an inactive component before this runs.
+	return validateComponentSections(&cfg)
 }
 
 // validateMCPRelay checks the [mcp_relay] block: closed mode / audit_mode
@@ -5713,6 +6427,25 @@ var policyResourceSupportedFamilies = map[string]bool{
 	// component-set family. Added in the SAME change as
 	// policyfam.FamilyNodeComponents (policyfam_sync_test.go pins the two).
 	"node.components": true,
+	// security.scanning and terminals.isolation (roadmap F0-9/F0-10, lane
+	// SHR-KIT): the security and sandbox modules' raise-only floor families.
+	// Without them here the managed accept-list backfill's verified reload
+	// would roll its write back (JSP-1 R4).
+	"security.scanning":   true,
+	"terminals.isolation": true,
+}
+
+// policyResourceFamilyList renders policyResourceSupportedFamilies, sorted,
+// for the unsupported-family errors. Built from the map so a family can no
+// longer be missing from the message (it omitted node.components until
+// roadmap F0-10).
+func policyResourceFamilyList() string {
+	out := make([]string, 0, len(policyResourceSupportedFamilies))
+	for f := range policyResourceSupportedFamilies {
+		out = append(out, f)
+	}
+	sort.Strings(out)
+	return strings.Join(out, ", ")
 }
 
 // validateOrgClientPolicy checks [org_client.policy]: every listed family
@@ -5722,15 +6455,15 @@ var policyResourceSupportedFamilies = map[string]bool{
 // "half-opted-in" state).
 func validateOrgClientPolicy(p OrgClientPolicyConfig) error {
 	accepted := make(map[string]bool, len(p.AcceptFamilies))
-	for _, f := range p.AcceptFamilies {
+	for _, f := range p.AcceptedFamilies() {
 		if !policyResourceSupportedFamilies[f] {
-			return fmt.Errorf("config: org_client.policy.accept_families contains unsupported family %q (want one of admission.input, egress.routing_guardrail, gateway.providers, node.governance, node.features, planeb.admission, tools.mcp_access)", f)
+			return fmt.Errorf("config: org_client.policy.accept_families contains unsupported family %q (want one of %s)", f, policyResourceFamilyList())
 		}
 		accepted[f] = true
 	}
-	for _, f := range p.PreauthorizeEnforce {
+	for _, f := range p.PreauthorizedFamilies() {
 		if !policyResourceSupportedFamilies[f] {
-			return fmt.Errorf("config: org_client.policy.preauthorize_enforce contains unsupported family %q (want one of admission.input, egress.routing_guardrail, gateway.providers, node.governance, node.features, planeb.admission, tools.mcp_access)", f)
+			return fmt.Errorf("config: org_client.policy.preauthorize_enforce contains unsupported family %q (want one of %s)", f, policyResourceFamilyList())
 		}
 		if !accepted[f] {
 			return fmt.Errorf("config: org_client.policy.preauthorize_enforce contains %q, which is not in accept_families (preauthorize_enforce must be a subset of accept_families)", f)
@@ -5816,9 +6549,9 @@ func validateTerminal(c TerminalConfig) error {
 			return fmt.Errorf("config: terminal.idle_timeout %q must not be negative (use \"0\" to disable idle reaping)", c.IdleTimeout)
 		}
 	}
-	if err := validateTerminalSandbox(c.Sandbox); err != nil {
-		return err
-	}
+	// [terminal.sandbox] belongs to the terminals.sandbox component and is
+	// validated from the component section table (component_sections.go),
+	// not here.
 	if err := validateTerminalSSH(c.SSH); err != nil {
 		return err
 	}
@@ -5897,14 +6630,21 @@ func SSHOptions(c TerminalSSHConfig) sshspec.Options {
 }
 
 // validateTerminalSandbox checks semantic constraints on the [terminal.sandbox]
-// block (B9). Runs unconditionally (not gated on Enabled) so a typo'd
-// backend/home_mode is caught at load time even before an operator flips the
-// master switch on.
+// block (B9). Not gated on Enabled, so a typo'd backend/home_mode is caught at
+// load time even before an operator flips the master switch on. It is gated
+// on the terminals.sandbox COMPONENT instead: it runs from the component
+// section table (component_sections.go), so while that component is inactive
+// or compiled out a bad block is set aside by Load, never a load failure.
 func validateTerminalSandbox(c TerminalSandboxConfig) error {
 	switch c.Backend {
 	case "", "bwrap":
 	default:
-		return fmt.Errorf("config: terminal.sandbox.backend %q not in {bwrap}", c.Backend)
+		// The key names the bwrap profile only; every other row is chosen
+		// through backends, so the refusal names that key (LIN-1 F1).
+		if sandboxvocab.ValidBackendID(c.Backend) {
+			return fmt.Errorf("config: terminal.sandbox.backend %q not in {bwrap}: that key names the bwrap profile only; list %q in terminal.sandbox.backends instead (backends = [%q]) and name it per launch", c.Backend, c.Backend, c.Backend)
+		}
+		return fmt.Errorf("config: terminal.sandbox.backend %q not in {bwrap}: that key names the bwrap profile only; other backends are listed in terminal.sandbox.backends", c.Backend)
 	}
 	switch c.HomeMode {
 	case "", "tmpfs", "readonly":
@@ -5917,6 +6657,9 @@ func validateTerminalSandbox(c TerminalSandboxConfig) error {
 	if c.PrepTimeoutSeconds < 0 {
 		return errors.New("config: terminal.sandbox.prep_timeout_seconds must be >= 0")
 	}
+	if err := validateSandboxChoices(c); err != nil {
+		return err
+	}
 	switch c.Egress {
 	case "", "host", "internet", "proxy_only", "none":
 	default:
@@ -5925,8 +6668,332 @@ func validateTerminalSandbox(c TerminalSandboxConfig) error {
 	if _, err := sandboxcidr.ParseAllowCIDRs(c.EgressAllowCIDRs); err != nil {
 		return fmt.Errorf("config: terminal.sandbox.egress_allow_cidrs: %w", err)
 	}
+	for _, h := range c.EgressAllowHosts {
+		if !sandboxHostRuleRE.MatchString(h) || strings.HasPrefix(strings.TrimPrefix(h, "*."), "xn--") {
+			return fmt.Errorf("config: terminal.sandbox.egress_allow_hosts entry %q is not a lowercase host name (or *.name) with at least two labels", h)
+		}
+	}
+	if err := validateSandboxNameLists(c); err != nil {
+		return err
+	}
+	if len(c.EgressAllowHosts) > 0 && c.Egress == "host" {
+		return errors.New("config: terminal.sandbox.egress_allow_hosts needs a tier with the egress gateway; the host tier shares the host's network and cannot honour it")
+	}
+	seen := map[string]bool{}
+	for _, b := range c.Backends {
+		if !sandboxvocab.ValidBackendID(b) {
+			return fmt.Errorf("config: terminal.sandbox.backends entry %q is not a backend id (lower-case letters, digits, dashes and underscores)", b)
+		}
+		if seen[b] {
+			return fmt.Errorf("config: terminal.sandbox.backends lists %q twice", b)
+		}
+		seen[b] = true
+	}
+	if c.MinIsolation != "" {
+		ok := false
+		for _, v := range sandboxIsolationClasses {
+			ok = ok || v == c.MinIsolation
+		}
+		if !ok {
+			return fmt.Errorf("config: terminal.sandbox.min_isolation %q not in {process, container, userspace_kernel, hw_vm}", c.MinIsolation)
+		}
+	}
+	if b := c.Readopt.BoundMinutes; b < 0 || b > 1440 {
+		return fmt.Errorf("config: terminal.sandbox.readopt.bound_minutes %d must be 0 (the default) to 1440", b)
+	}
+	if m := c.Readopt.CheckpointCapMiB; m < 0 || m > 1<<20 {
+		return fmt.Errorf("config: terminal.sandbox.readopt.checkpoint_cap_mib %d must be 0 (the default) to %d", m, 1<<20)
+	}
 	return nil
 }
+
+// sandboxChoice is one closed-choice [terminal.sandbox] key: its name under
+// terminal.sandbox, the value set, and the allowed values ("" is always
+// allowed: the default).
+type sandboxChoice struct {
+	key     string
+	value   string
+	allowed []string
+}
+
+// sandboxChoices is the table validateSandboxChoices walks, one row per
+// closed-choice key.
+func sandboxChoices(c TerminalSandboxConfig) []sandboxChoice {
+	return []sandboxChoice{
+		{"vendor_forced_native", c.VendorForcedNative, []string{"nest_or_refuse", "refuse"}},
+		{"live_run_update_policy", c.LiveRunUpdatePolicy, []string{"defer", "ask_immediately"}},
+		{"provider_direct", c.ProviderDirect, []string{string(sandboxvocab.ProviderDirectRefuseAll), string(sandboxvocab.ProviderDirectCaptureRule), string(sandboxvocab.ProviderDirectAllow)}},
+		{"seatbelt.driver", c.Seatbelt.Driver, []string{"sandbox-exec", "mxc-exec-mac"}},
+		{"windows.mxc_tier", c.Windows.MXCTier, []string{"process_container", "appcontainer"}},
+	}
+}
+
+// validateSandboxChoices refuses a closed-choice key set to a value outside
+// its set.
+func validateSandboxChoices(c TerminalSandboxConfig) error {
+	for _, ch := range sandboxChoices(c) {
+		if ch.value == "" || slices.Contains(ch.allowed, ch.value) {
+			continue
+		}
+		return fmt.Errorf("config: terminal.sandbox.%s %q not in {%s}", ch.key, ch.value, strings.Join(ch.allowed, ", "))
+	}
+	return nil
+}
+
+// validateTerminalSandboxOCI checks the [terminal.sandbox.oci] block. It
+// runs from the component section table under terminals.sandbox.oci, so a
+// bad block of an inactive driver is set aside, never a load failure.
+func validateTerminalSandboxOCI(c TerminalSandboxOCIConfig) error {
+	switch c.PodmanUserns {
+	case "", "keep-id", "default":
+	default:
+		return fmt.Errorf("config: terminal.sandbox.oci.podman_userns %q not in {keep-id, default}", c.PodmanUserns)
+	}
+	if c.StopGraceSeconds < 0 || c.StopGraceSeconds > 600 {
+		return errors.New("config: terminal.sandbox.oci.stop_grace_seconds must be 0 to 600")
+	}
+	if s := strings.TrimSpace(c.Socket); s != "" {
+		p := strings.TrimPrefix(s, "unix://")
+		if !strings.HasPrefix(p, "/") || filepath.Clean(p) != p {
+			return fmt.Errorf("config: terminal.sandbox.oci.socket %q must be an absolute unix socket path (a TCP or SSH endpoint is never used)", c.Socket)
+		}
+	}
+	if img := strings.TrimSpace(c.Image); img != "" && !sandboxImageDigestRE.MatchString(img) {
+		return fmt.Errorf("config: terminal.sandbox.oci.image %q must be pinned by digest (name@sha256:<64 hex>)", c.Image)
+	}
+	switch c.InstallScripts {
+	case "", "none", "pinned":
+	default:
+		return fmt.Errorf("config: terminal.sandbox.oci.install_scripts %q not in {none, pinned}", c.InstallScripts)
+	}
+	for _, t := range c.InstallScriptsTools {
+		if !sandboxToolIDRE.MatchString(t) {
+			return fmt.Errorf("config: terminal.sandbox.oci.install_scripts_tools entry %q is not a tool id", t)
+		}
+	}
+	for i, p := range c.InstallScriptPins {
+		switch {
+		case !sandboxToolIDRE.MatchString(p.Tool):
+			return fmt.Errorf("config: terminal.sandbox.oci.install_script_pins[%d].tool %q is not a tool id", i, p.Tool)
+		case !sandboxInstallVersionRE.MatchString(p.Version):
+			return fmt.Errorf("config: terminal.sandbox.oci.install_script_pins[%d].version %q is not a plain package version", i, p.Version)
+		case !sandboxSHA256RE.MatchString(p.SHA256):
+			return fmt.Errorf("config: terminal.sandbox.oci.install_script_pins[%d].sha256 must be 64 lowercase hex characters", i)
+		case p.Added != "" && !sandboxDateRE.MatchString(p.Added):
+			return fmt.Errorf("config: terminal.sandbox.oci.install_script_pins[%d].added %q is not YYYY-MM-DD", i, p.Added)
+		case len(p.Packages) > sandboxPinMaxPackages:
+			return fmt.Errorf("config: terminal.sandbox.oci.install_script_pins[%d].packages holds more than %d packages", i, sandboxPinMaxPackages)
+		}
+		for j, pk := range p.Packages {
+			switch {
+			case !sandboxPackageNameRE.MatchString(pk.Name):
+				return fmt.Errorf("config: terminal.sandbox.oci.install_script_pins[%d].packages[%d].name %q is not a package name", i, j, pk.Name)
+			case !sandboxInstallVersionRE.MatchString(pk.Version):
+				return fmt.Errorf("config: terminal.sandbox.oci.install_script_pins[%d].packages[%d].version %q is not a plain package version", i, j, pk.Version)
+			case !sandboxIntegrityRE.MatchString(pk.Integrity):
+				return fmt.Errorf("config: terminal.sandbox.oci.install_script_pins[%d].packages[%d].integrity is not a registry sha512 value (sha512-<base64>)", i, j)
+			}
+		}
+	}
+	for t, v := range c.InstallVersions {
+		if !sandboxToolIDRE.MatchString(t) || !sandboxInstallVersionRE.MatchString(v) {
+			return fmt.Errorf("config: terminal.sandbox.oci.install_versions %q = %q: a tool id and a plain package version", t, v)
+		}
+	}
+	return nil
+}
+
+// sandboxPinMaxPackages bounds one pin's package list (a main package and
+// its platform packages; opencode and kilo ship 12 platform packages).
+const sandboxPinMaxPackages = 64
+
+// The shapes of the first-start install keys (lane LEFT-SBX): a registry
+// tool id, a plain package version (the sandboxoci install pin rule), a
+// sha256 and a date. config stays a leaf, so they are restated here; a
+// cmd/observer test pins them to sandboxoci's.
+var (
+	sandboxToolIDRE         = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+	sandboxInstallVersionRE = regexp.MustCompile(`^[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}([-+][0-9A-Za-z][0-9A-Za-z.-]{0,40})?$`)
+	sandboxSHA256RE         = regexp.MustCompile(`^[a-f0-9]{64}$`)
+	sandboxDateRE           = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}$`)
+	// sandboxPackageNameRE and sandboxIntegrityRE restate sandboxoci's npm
+	// package name and registry sha512 integrity rules (R-014).
+	sandboxPackageNameRE = regexp.MustCompile(`^(@[a-z0-9][a-z0-9._-]{0,100}/)?[a-z0-9][a-z0-9._-]{0,100}$`)
+	sandboxIntegrityRE   = regexp.MustCompile(`^sha512-[A-Za-z0-9+/]{86}==$`)
+	// sandboxHostRuleRE is an egress host rule's shape (sandboxnet's
+	// ParseHostRules is the full check, at launch).
+	sandboxHostRuleRE = regexp.MustCompile(`^(\*\.)?[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$`)
+	// sandboxSignInToolRE is a sign_in_seed_tools entry's shape (a registry
+	// tool id; an unknown id is simply never matched at launch).
+	sandboxSignInToolRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+)
+
+// validateSandboxNameLists checks [terminal.sandbox]'s name lists:
+// pass_env's variable names and sign_in_seed_tools' tool ids (lane
+// BOXSIGNIN).
+func validateSandboxNameLists(c TerminalSandboxConfig) error {
+	for _, n := range c.PassEnv {
+		if err := sandboxenv.ValidName(n); err != nil {
+			return fmt.Errorf("config: terminal.sandbox.pass_env: %w", err)
+		}
+	}
+	for _, tool := range c.SignInSeedTools {
+		if !sandboxSignInToolRE.MatchString(tool) {
+			return fmt.Errorf("config: terminal.sandbox.sign_in_seed_tools entry %q is not a tool id (lower-case letters, digits and dashes)", tool)
+		}
+	}
+	return nil
+}
+
+// validateTerminalSandboxMXC checks the [terminal.sandbox.mxc] block. It
+// runs from the component section table under terminals.sandbox.mxc, so a
+// bad block of an inactive driver is set aside, never a load failure.
+func validateTerminalSandboxMXC(c TerminalSandboxMXCConfig) error {
+	if c.StopGraceSeconds < 0 || c.StopGraceSeconds > 600 {
+		return errors.New("config: terminal.sandbox.mxc.stop_grace_seconds must be 0 to 600")
+	}
+	if c.ProbeTimeoutSeconds != 0 && (c.ProbeTimeoutSeconds < 5 || c.ProbeTimeoutSeconds > 300) {
+		return errors.New("config: terminal.sandbox.mxc.probe_timeout_seconds must be 5 to 300")
+	}
+	return nil
+}
+
+// validateTerminalSandboxAppleContainer checks the
+// [terminal.sandbox.apple_container] block. It runs from the component
+// section table under terminals.sandbox.apple-container.
+func validateTerminalSandboxAppleContainer(c TerminalSandboxAppleContainerConfig) error {
+	if img := strings.TrimSpace(c.Image); img != "" && !sandboxImageDigestRE.MatchString(img) {
+		return fmt.Errorf("config: terminal.sandbox.apple_container.image %q must be pinned by digest (name@sha256:<64 hex>)", c.Image)
+	}
+	if c.MemoryMiB != 0 && (c.MemoryMiB < 512 || c.MemoryMiB > 262144) {
+		return errors.New("config: terminal.sandbox.apple_container.memory_mib must be 512 to 262144")
+	}
+	if c.CPUs != 0 && (c.CPUs < 1 || c.CPUs > 64) {
+		return errors.New("config: terminal.sandbox.apple_container.cpus must be 1 to 64")
+	}
+	return nil
+}
+
+// vmImageSetRE is a guest image set id: its descriptor's version.
+var vmImageSetRE = regexp.MustCompile(`^[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}$`)
+
+// validateTerminalSandboxVM checks the [terminal.sandbox.vm] block (lane
+// SBX-P4). It runs from the component section table under
+// terminals.sandbox.vm, so a bad block of an inactive driver is set aside,
+// never a load failure.
+func validateTerminalSandboxVM(c TerminalSandboxVMConfig) error {
+	if v := strings.TrimSpace(c.VMM); v != "" && v != "cloud-hypervisor" {
+		return fmt.Errorf("config: terminal.sandbox.vm.vmm %q: only \"cloud-hypervisor\" is supported", c.VMM)
+	}
+	if c.ImageSet != "" && !vmImageSetRE.MatchString(c.ImageSet) {
+		return fmt.Errorf("config: terminal.sandbox.vm.image_set %q must be a verified set's version (MAJOR.MINOR.PATCH) or empty for the newest, never a path", c.ImageSet)
+	}
+	if c.VCPUs != 0 && (c.VCPUs < 1 || c.VCPUs > 64) {
+		return errors.New("config: terminal.sandbox.vm.vcpus must be 1 to 64")
+	}
+	if c.MemoryMB != 0 && (c.MemoryMB < 512 || c.MemoryMB > 262144) {
+		return errors.New("config: terminal.sandbox.vm.memory_mb must be 512 to 262144")
+	}
+	switch c.WorkspaceDelivery {
+	case "", "virtiofs", "disk_image":
+	default:
+		return fmt.Errorf("config: terminal.sandbox.vm.workspace_delivery %q must be virtiofs or disk_image", c.WorkspaceDelivery)
+	}
+	for _, kv := range []struct{ key, val string }{{"cloud_hypervisor_path", c.CloudHypervisorPath}, {"virtiofsd_path", c.VirtiofsdPath}} {
+		if kv.val == "" {
+			continue
+		}
+		if !filepath.IsAbs(kv.val) || filepath.Clean(kv.val) != kv.val {
+			return fmt.Errorf("config: terminal.sandbox.vm.%s %q must be a clean absolute path", kv.key, kv.val)
+		}
+	}
+	return nil
+}
+
+// landlockMinABIFloor mirrors internal/sandboxlandlock.MinABI (config stays
+// a leaf; the mirror is pinned by a test in cmd/observer).
+const landlockMinABIFloor = 9
+
+// validateTerminalSandboxLandlock checks the [terminal.sandbox.landlock]
+// block. It runs from the component section table under
+// terminals.sandbox.landlock, so a bad block of an inactive driver is set
+// aside, never a load failure.
+func validateTerminalSandboxLandlock(c TerminalSandboxLandlockConfig) error {
+	if c.MinABI != 0 && (c.MinABI < landlockMinABIFloor || c.MinABI > 64) {
+		return fmt.Errorf("config: terminal.sandbox.landlock.min_abi must be %d to 64 (below ABI %d the daemon's sockets would be reachable from the box)", landlockMinABIFloor, landlockMinABIFloor)
+	}
+	return nil
+}
+
+// validateTerminalSandboxHosted checks the [terminal.sandbox.hosted]
+// block (lane SBX-P7). It runs from the component section table under
+// terminals.sandbox, so a bad block of an inactive module is set aside,
+// never a load failure.
+func validateTerminalSandboxHosted(c TerminalSandboxHostedConfig) error {
+	// The floor is the shortest box a launch makes (sandboxremote
+	// MinRunMinutes, 5), so max_run_minutes can go down to 5 (live run
+	// 2026-10-23, finding F10: a floor of 15 kept it there).
+	if c.MinSessionMinutes < 5 || c.MinSessionMinutes > 1440 {
+		return errors.New("config: terminal.sandbox.hosted.min_session_minutes must be 5 to 1440")
+	}
+	if c.MaxRunMinutes < 5 || c.MaxRunMinutes > 1440 {
+		return errors.New("config: terminal.sandbox.hosted.max_run_minutes must be 5 to 1440")
+	}
+	if c.MinSessionMinutes > c.MaxRunMinutes {
+		return fmt.Errorf("config: terminal.sandbox.hosted.min_session_minutes (%d) must not exceed max_run_minutes (%d); lower min_session_minutes too", c.MinSessionMinutes, c.MaxRunMinutes)
+	}
+	if c.DailyBoxMinutes < 5 || c.DailyBoxMinutes > 10080 {
+		return errors.New("config: terminal.sandbox.hosted.daily_box_minutes must be 5 to 10080")
+	}
+	if c.CheckpointMinutes < 1 || c.CheckpointMinutes > 60 {
+		return errors.New("config: terminal.sandbox.hosted.checkpoint_minutes must be 1 to 60")
+	}
+	switch c.KeyCustody {
+	case "home_relay", "in_box_api_key", "in_box_oauth_seed", "provider_injected":
+	default:
+		return fmt.Errorf("config: terminal.sandbox.hosted.key_custody %q not in {home_relay, in_box_api_key, in_box_oauth_seed, provider_injected}", c.KeyCustody)
+	}
+	switch c.MemoryImages {
+	case "avoid", "refuse":
+	default:
+		return fmt.Errorf("config: terminal.sandbox.hosted.memory_images %q not in {avoid, refuse}", c.MemoryImages)
+	}
+	for name, p := range map[string]TerminalSandboxHostedProviderConfig{"e2b": c.E2B, "modal": c.Modal, "vercel": c.Vercel} {
+		if r := p.Region; r != "" && !hostedRegionRE.MatchString(r) {
+			return fmt.Errorf("config: terminal.sandbox.hosted.%s.region %q must be a region name (letters, digits and dashes)", name, r)
+		}
+		if tpl := p.Template; tpl != "" && !hostedTemplateRE.MatchString(tpl) {
+			return fmt.Errorf("config: terminal.sandbox.hosted.%s.template %q must be a template, image or runtime name", name, tpl)
+		}
+		if b := strings.TrimSpace(p.BoxBinary); b != "" && (!filepath.IsAbs(b) || filepath.Clean(b) != b) {
+			return fmt.Errorf("config: terminal.sandbox.hosted.%s.box_binary %q must be an absolute, clean path", name, p.BoxBinary)
+		}
+		if (p.Endpoint != "" || p.EndpointSPKISHA256 != "") && name != "e2b" {
+			return fmt.Errorf("config: terminal.sandbox.hosted.%s.endpoint is E2B only", name)
+		}
+		if e := p.Endpoint; e != "" && !hostedEndpointRE.MatchString(e) {
+			return fmt.Errorf("config: terminal.sandbox.hosted.%s.endpoint %q must be an https origin (scheme, host and an optional port)", name, e)
+		}
+		if k := p.EndpointSPKISHA256; k != "" && !hostedSPKIRE.MatchString(k) {
+			return fmt.Errorf("config: terminal.sandbox.hosted.%s.endpoint_spki_sha256 must be 64 lowercase hex characters", name)
+		}
+	}
+	return nil
+}
+
+// hostedRegionRE and hostedTemplateRE bound the per-provider values.
+var (
+	hostedRegionRE   = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+	hostedTemplateRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,255}$`)
+	// hostedEndpointRE is an https origin: a lower-case host and an
+	// optional port, nothing after it but an optional "/".
+	hostedEndpointRE = regexp.MustCompile(`^https://[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?(:[0-9]{1,5})?/?$`)
+	hostedSPKIRE     = regexp.MustCompile(`^[a-f0-9]{64}$`)
+)
+
+// sandboxImageDigestRE mirrors internal/sandboxoci's digest rule (config
+// stays a leaf; the mirror is pinned by a test in cmd/observer).
+var sandboxImageDigestRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._/:-]*@sha256:[a-f0-9]{64}$`)
 
 // validateAggregateShare enforces the endpoint binding (design §9.2, finding
 // #21): the collector endpoint must be HTTPS, carry no credentials or query
@@ -6372,6 +7439,10 @@ func validateGuidance(g GuidanceConfig) error {
 	return nil
 }
 
+// maxEvasionWindowSeconds bounds [guard.rules].evasion_window_seconds
+// (one hour): the A-613 tracker keeps that much history per session.
+const maxEvasionWindowSeconds = 3600
+
 func validateGuard(g GuardConfig) error {
 	if !g.Enabled {
 		return nil
@@ -6390,6 +7461,9 @@ func validateGuard(g GuardConfig) error {
 	case "", "flag", "mask", "deny":
 	default:
 		return fmt.Errorf("config: guard.proxy.egress_action %q not in {flag, mask, deny}", g.Proxy.EgressAction)
+	}
+	if g.Rules.EvasionWindowSeconds < 0 || g.Rules.EvasionWindowSeconds > maxEvasionWindowSeconds {
+		return fmt.Errorf("config: guard.rules.evasion_window_seconds %d must be in [0, %d]", g.Rules.EvasionWindowSeconds, maxEvasionWindowSeconds)
 	}
 	if g.Rules.CEL {
 		return errors.New("config: guard.rules.cel is not yet supported (CEL user rules are deferred - matchers v1)")
@@ -6481,17 +7555,6 @@ func validateGuardPrompt(p GuardPromptConfig) error {
 // HookTimeout returns the hook timeout as a time.Duration.
 func (c HooksConfig) HookTimeout() time.Duration {
 	return time.Duration(c.TimeoutMS) * time.Millisecond
-}
-
-func expandHome(p string) string {
-	if !strings.HasPrefix(p, "~/") {
-		return p
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return p
-	}
-	return filepath.Join(home, p[2:])
 }
 
 // applyEnvOverrides walks cfg via reflection and applies any matching

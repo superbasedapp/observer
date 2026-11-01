@@ -368,10 +368,7 @@ func TestRunSeedOnlyLaunchSeededNeverStartsMuseUnderManagedHardBudget(t *testing
 	cfgPath, dbPath := writeManagedBudgetLaunchFixture(t, true, "enforce")
 	marker := filepath.Join(t.TempDir(), "started")
 	bin := filepath.Join(t.TempDir(), "fake-muse")
-	body := "#!/bin/sh\n: > " + marker + "\n"
-	if err := os.WriteFile(bin, []byte(body), 0o700); err != nil {
-		t.Fatalf("write fake Muse: %v", err)
-	}
+	bin = writeShellStub(t, bin, "#!/bin/sh\n: > "+stubShPath(marker)+"\n")
 	err := runSeedOnlyLaunchSeeded(cfgPath, dbPath, "muse", "muse", bin, nil, "")
 	if !errors.Is(err, errBudgetLaunchUncontrolled) {
 		t.Fatalf("runSeedOnlyLaunchSeeded error = %v, want managed hard-budget refusal", err)
@@ -386,10 +383,7 @@ func TestRunSeedOnlyLaunchSeededAllowsMuseMaintenanceUnderManagedHardBudget(t *t
 	cfgPath, dbPath := writeManagedBudgetLaunchFixture(t, true, "enforce")
 	marker := filepath.Join(t.TempDir(), "started")
 	bin := filepath.Join(t.TempDir(), "fake-muse")
-	body := "#!/bin/sh\n: > " + marker + "\n"
-	if err := os.WriteFile(bin, []byte(body), 0o700); err != nil {
-		t.Fatalf("write fake Muse: %v", err)
-	}
+	bin = writeShellStub(t, bin, "#!/bin/sh\n: > "+stubShPath(marker)+"\n")
 	args := []string{"auth"}
 	err := runSeedOnlyLaunchSeededWithEvidence(cfgPath, dbPath, "muse", "muse", bin, args, "",
 		museBudgetLaunchEvidence(args))
@@ -405,7 +399,9 @@ func writeManagedBudgetLaunchFixture(t *testing.T, withBudget bool, guardMode st
 	t.Helper()
 	ctx := context.Background()
 	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "observer.db")
+	// The cold launch's shared Guard keeps this database open for the
+	// process's life by design; Windows cannot delete an open file.
+	dbPath := filepath.Join(processLifetimeDBDir(t), "observer.db")
 	database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)

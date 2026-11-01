@@ -175,3 +175,49 @@ func honouredGrantTargets(ctx context.Context, s *store.Store, typ string, now t
 	}
 	return accessgrant.HonouredTargets(typ, v.Grants, v.Receipt, now), nil
 }
+
+// FindingExceptionGrant is one honoured finding_exception grant (lane
+// SEC-E3): the finding's wire handle, its rule and when the grant stops
+// being honoured on this node (zero: perpetual and online).
+type FindingExceptionGrant struct {
+	GrantID    int64
+	FindingRef string
+	RuleID     string
+	UntilNs    int64
+}
+
+// FindingExceptionGrants lists the honoured finding_exception grants on this
+// machine. Fail closed like PageGrants: an unverified cache, or no
+// enrolment, yields none, so every org exception ends and its finding
+// reopens.
+func FindingExceptionGrants(ctx context.Context, s *store.Store, now time.Time) ([]FindingExceptionGrant, error) {
+	if s == nil {
+		return nil, nil
+	}
+	enr, err := s.LoadEnrolment(ctx)
+	if err != nil || enr == nil {
+		return nil, err
+	}
+	v, err := LoadVerifiedAccessGrants(ctx, s)
+	if err != nil {
+		if errors.Is(err, ErrGrantCacheUnverified) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if !v.Present {
+		return nil, nil
+	}
+	var out []FindingExceptionGrant
+	for _, c := range v.Grants {
+		g := c.Grant
+		if g.Type != accessgrant.TypeFindingException || g.Target == "" {
+			continue
+		}
+		if ok, _ := accessgrant.Honoured(g, c.UsesUsed, v.Receipt, now); !ok {
+			continue
+		}
+		out = append(out, FindingExceptionGrant{GrantID: g.ID, FindingRef: g.Target, RuleID: g.RuleID, UntilNs: accessgrant.HonouredUntilNs(g, v.Receipt)})
+	}
+	return out, nil
+}

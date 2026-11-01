@@ -13,6 +13,8 @@ import (
 // token is rendered honestly as "this version of Observer does not understand
 // this, and will not act on it". The CLI prompt and the dashboard consent
 // screen both render these exact sentences.
+//
+//nolint:gocyclo // one case per authority token by design; complexity grows with the closed vocabulary, not logic depth.
 func AuthorityPlainEnglish(tok string) string {
 	switch tok {
 	case govern.AuthorityDashboardVisibility:
@@ -38,6 +40,10 @@ func AuthorityPlainEnglish(tok string) string {
 		return "make the organization's spend cap AUTHORITATIVE on this machine - its numbers and enforcement mode replace your own, and if no verified organization budget has reached this machine yet, proxied requests are refused until one does (managed tenancy only)"
 	case govern.AuthorityEnforceMCPAccess:
 		return "make the organization's MCP access policy (tools.mcp_access) AUTHORITATIVE on this machine - the org's enforcement mode replaces your own, and an MCP server the org registry does not know is refused rather than left ungoverned (managed tenancy only)"
+	case govern.AuthorityEnforceSecurity:
+		return "let the organization switch code security checks ON on this machine - which scanners and drivers run, with the organization's mirror as their source and its scan schedule; it never installs git hooks, never sends a credential and never turns on online lookups without showing you first (managed tenancy only)"
+	case govern.AuthorityEnforceSandbox:
+		return "let the organization switch sandboxed terminals ON on this machine - which sandbox backends are enabled and their preference order, within the limits this machine and the organization set; it never turns on a mode that loses capture and never sends a credential (managed tenancy only)"
 	case govern.AuthorityExtractManaged:
 		return "raise this machine to FULL content sharing - raw command bodies, assistant prose, tool inputs/outputs, raw folder names, git identity and file paths ship to the organization (managed tenancy only; the teams/enterprise capture posture, and what raises a machine enrolled before that default)"
 	case govern.AuthorityExtractCodeintel:
@@ -72,6 +78,8 @@ func AuthorityPlainEnglish(tok string) string {
 		return "let the organization RAISE extraction of this machine's effective-policy-state reports - which governance settings are actually applied here (managed tenancy only)"
 	case govern.AuthorityExtractObsEgress:
 		return "let the organization RAISE extraction of this machine's egress-routing decisions for its own hosted-app traffic - part of the same trace family as full traces (managed tenancy only)"
+	case govern.AuthorityExtractHookActivity:
+		return "let the organization RAISE extraction of which AI tool hooks fired in each session on this machine, as per-session counts, times and coarse route classes - the config-folder hash still needs full content (managed tenancy only)"
 	default:
 		return "UNKNOWN to this version of Observer - no description is available, though it is still recorded on this grant"
 	}

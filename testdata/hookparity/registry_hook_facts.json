@@ -32,6 +32,17 @@
     "prompt_scope": "",
     "prompt_warn_only": true
   },
+  "autohand": {
+    "auto_wired": true,
+    "cross_os_bridge": false,
+    "enforcement": "hook_block",
+    "enforcement_no_sbx": "hook_block",
+    "mechanism": "autohand_config_json",
+    "prompt_lane": "hook",
+    "prompt_lane_only": false,
+    "prompt_scope": "",
+    "prompt_warn_only": false
+  },
   "chatgpt-web": {
     "auto_wired": true,
     "cross_os_bridge": false,
@@ -82,7 +93,18 @@
     "enforcement": "hook_block",
     "enforcement_no_sbx": "hook_block",
     "mechanism": "cline_hook_files",
-    "prompt_lane": "proxy_only",
+    "prompt_lane": "hook",
+    "prompt_lane_only": false,
+    "prompt_scope": "",
+    "prompt_warn_only": false
+  },
+  "codebuddy": {
+    "auto_wired": true,
+    "cross_os_bridge": true,
+    "enforcement": "hook_block",
+    "enforcement_no_sbx": "hook_block",
+    "mechanism": "codebuddy_settings_json",
+    "prompt_lane": "hook",
     "prompt_lane_only": false,
     "prompt_scope": "",
     "prompt_warn_only": false
@@ -122,11 +144,11 @@
   },
   "copilot-cli": {
     "auto_wired": true,
-    "cross_os_bridge": false,
+    "cross_os_bridge": true,
     "enforcement": "hook_block",
     "enforcement_no_sbx": "hook_block",
     "mechanism": "copilot_cli_hooks_json",
-    "prompt_lane": "proxy_only",
+    "prompt_lane": "hook",
     "prompt_lane_only": false,
     "prompt_scope": "",
     "prompt_warn_only": false
@@ -138,6 +160,17 @@
     "enforcement_no_sbx": "recorded_acceptance",
     "mechanism": "chrome_native_messaging",
     "prompt_lane": "",
+    "prompt_lane_only": false,
+    "prompt_scope": "",
+    "prompt_warn_only": false
+  },
+  "cortex-code": {
+    "auto_wired": true,
+    "cross_os_bridge": false,
+    "enforcement": "hook_block",
+    "enforcement_no_sbx": "hook_block",
+    "mechanism": "cortex_hooks_json",
+    "prompt_lane": "hook",
     "prompt_lane_only": false,
     "prompt_scope": "",
     "prompt_warn_only": false
@@ -175,6 +208,17 @@
     "prompt_scope": "",
     "prompt_warn_only": false
   },
+  "deepagents-code": {
+    "auto_wired": true,
+    "cross_os_bridge": true,
+    "enforcement": "hook_block",
+    "enforcement_no_sbx": "hook_block",
+    "mechanism": "deepagents_hooks_json",
+    "prompt_lane": "hook",
+    "prompt_lane_only": false,
+    "prompt_scope": "",
+    "prompt_warn_only": false
+  },
   "deepseek": {
     "auto_wired": false,
     "cross_os_bridge": false,
@@ -195,6 +239,28 @@
     "prompt_lane": "hook",
     "prompt_lane_only": false,
     "prompt_scope": "Devin Desktop / Windsurf only (Cascade pre_user_prompt). Devin CLI sessions have no registered prompt hook, so the rule flags them after send.",
+    "prompt_warn_only": false
+  },
+  "dimcode": {
+    "auto_wired": true,
+    "cross_os_bridge": true,
+    "enforcement": "hook_block",
+    "enforcement_no_sbx": "hook_block",
+    "mechanism": "dimcode_hooks_json",
+    "prompt_lane": "hook",
+    "prompt_lane_only": false,
+    "prompt_scope": "",
+    "prompt_warn_only": false
+  },
+  "dirac": {
+    "auto_wired": true,
+    "cross_os_bridge": true,
+    "enforcement": "hook_block",
+    "enforcement_no_sbx": "hook_block",
+    "mechanism": "dirac_hook_files",
+    "prompt_lane": "hook",
+    "prompt_lane_only": false,
+    "prompt_scope": "",
     "prompt_warn_only": false
   },
   "droid": {
@@ -285,6 +351,17 @@
     "prompt_scope": "",
     "prompt_warn_only": false
   },
+  "ibm-bob": {
+    "auto_wired": true,
+    "cross_os_bridge": true,
+    "enforcement": "hook_block",
+    "enforcement_no_sbx": "hook_block",
+    "mechanism": "ibm_bob_settings_json",
+    "prompt_lane": "hook",
+    "prompt_lane_only": false,
+    "prompt_scope": "",
+    "prompt_warn_only": false
+  },
   "junie": {
     "auto_wired": true,
     "cross_os_bridge": false,
@@ -318,6 +395,17 @@
     "prompt_scope": "",
     "prompt_warn_only": false
   },
+  "kimchi": {
+    "auto_wired": true,
+    "cross_os_bridge": false,
+    "enforcement": "hook_block",
+    "enforcement_no_sbx": "hook_block",
+    "mechanism": "kimchi_bash_hook",
+    "prompt_lane": "hook",
+    "prompt_lane_only": false,
+    "prompt_scope": "",
+    "prompt_warn_only": false
+  },
   "kimi-code": {
     "auto_wired": true,
     "cross_os_bridge": false,
@@ -330,15 +418,15 @@
     "prompt_warn_only": false
   },
   "kiro-cli": {
-    "auto_wired": false,
+    "auto_wired": true,
     "cross_os_bridge": false,
     "enforcement": "sandbox_enforce",
     "enforcement_no_sbx": "recorded_acceptance",
-    "mechanism": "",
-    "prompt_lane": "probe_required",
+    "mechanism": "kiro_agent_json",
+    "prompt_lane": "",
     "prompt_lane_only": false,
     "prompt_scope": "",
-    "prompt_warn_only": false
+    "prompt_warn_only": true
   },
   "kiro-crew": {
     "auto_wired": false,
@@ -467,6 +555,28 @@
     "enforcement": "hook_block",
     "enforcement_no_sbx": "hook_block",
     "mechanism": "qwen_settings_json",
+    "prompt_lane": "hook",
+    "prompt_lane_only": false,
+    "prompt_scope": "",
+    "prompt_warn_only": false
+  },
+  "stakpak": {
+    "auto_wired": false,
+    "cross_os_bridge": false,
+    "enforcement": "recorded_acceptance",
+    "enforcement_no_sbx": "recorded_acceptance",
+    "mechanism": "",
+    "prompt_lane": "",
+    "prompt_lane_only": false,
+    "prompt_scope": "",
+    "prompt_warn_only": false
+  },
+  "vtcode": {
+    "auto_wired": true,
+    "cross_os_bridge": true,
+    "enforcement": "hook_block",
+    "enforcement_no_sbx": "hook_block",
+    "mechanism": "vtcode_config_toml",
     "prompt_lane": "hook",
     "prompt_lane_only": false,
     "prompt_scope": "",

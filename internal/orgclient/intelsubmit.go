@@ -84,7 +84,9 @@ func (c *Client) SubmitIntelEvidence(ctx context.Context, row store.OrgIntelSubm
 }
 
 // intelSendConsented reports whether evidence for orgID may leave now: a
-// managed enrolment needs no developer consent (the org decides); an
+// managed node needs no developer consent (the org decides), including one
+// whose org switched it to enterprise (P-205: the org server admits it as
+// managed); an
 // individual one needs an active accepted consent for this org. A different
 // or missing enrolment answers true and leaves the decision to the send
 // path's own enrolment_changed / not_enrolled branches.
@@ -93,7 +95,12 @@ func (c *Client) intelSendConsented(ctx context.Context, orgID string) (bool, er
 	if err != nil {
 		return false, err
 	}
-	if enr == nil || enr.OrgID != orgID || enr.IsManaged() {
+	if enr == nil || enr.OrgID != orgID {
+		return true, nil
+	}
+	if managed, merr := NodeManagedFor(ctx, c.store, enr); merr != nil {
+		return false, merr
+	} else if managed {
 		return true, nil
 	}
 	_, ok, err := c.store.ActiveOrgIntelConsent(ctx, orgID)

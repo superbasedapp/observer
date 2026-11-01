@@ -32,10 +32,10 @@ func TestHermesMCPKeepsCredentials(t *testing.T) {
 		if strings.Index(s, "model:") > strings.Index(s, "mcp_servers:") {
 			t.Errorf("%s: top-level keys were re-sorted:\n%s", stage, s)
 		}
-		if strings.Contains(s, HermesMCPServerName) != wantObserver {
+		if strings.Contains(s, "  "+HermesMCPServerName+":") != wantObserver {
 			t.Errorf("%s: observer entry present = %v, want %v:\n%s", stage, !wantObserver, wantObserver, s)
 		}
-		if fi, _ := os.Stat(cfg); fi.Mode().Perm() != 0o640 {
+		if fi, _ := os.Stat(cfg); posixModes && fi.Mode().Perm() != 0o640 {
 			t.Errorf("%s: mode = %v, want 0640 kept", stage, fi.Mode().Perm())
 		}
 		if _, err := os.Stat(cfg + ".bak"); !os.IsNotExist(err) {

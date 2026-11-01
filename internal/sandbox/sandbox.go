@@ -82,12 +82,19 @@ type Availability struct {
 // caller sets it only when the configured egress tier needs a private network
 // namespace, so a host that cannot build one gets netns_denied instead of a
 // launch that fails later (or, worse, a silently shared namespace).
+//
+// A canary that keeps bwrap's stderr returns it as a *CanaryFailure, which
+// Probe classifies (canary.go) so the refusal names the real cause.
+// ReadSysctl, when set, reads a kernel sysctl by its dotted name (ok false
+// when the host has no such key); the refusal names a sysctl only when it
+// reads restrictive.
 type Env struct {
-	GOOS      string
-	LookBwrap func() (string, error)
-	Version   func() (string, error)
-	Canary    func() error
-	NetCanary func() error
+	GOOS       string
+	LookBwrap  func() (string, error)
+	Version    func() (string, error)
+	Canary     func() error
+	NetCanary  func() error
+	ReadSysctl func(key string) (string, bool)
 }
 
 // Probe walks the platform/backend readiness ladder (§7) over the injected
@@ -106,7 +113,7 @@ func Probe(env Env) Availability {
 		return Availability{
 			Verdict: VerdictUnsupportedPlatform,
 			Backend: BackendBwrap,
-			Reason:  fmt.Sprintf("sandboxing requires a Linux daemon (incl. WSL2); this daemon runs %q", env.GOOS),
+			Reason:  fmt.Sprintf("bubblewrap sandboxing requires a Linux daemon (incl. WSL2); this daemon runs %q", env.GOOS),
 		}
 	}
 
@@ -157,7 +164,7 @@ func Probe(env Env) Availability {
 				Verdict:        VerdictUserNSDenied,
 				Backend:        BackendBwrap,
 				BackendVersion: version,
-				Reason:         fmt.Sprintf("unprivileged user namespaces appear disabled (kernel.unprivileged_userns_clone / user.max_user_namespaces): %v", cerr),
+				Reason:         CanaryReason(cerr, env.ReadSysctl),
 			}
 		}
 	}
@@ -168,7 +175,7 @@ func Probe(env Env) Availability {
 				Verdict:        VerdictNetNSDenied,
 				Backend:        BackendBwrap,
 				BackendVersion: version,
-				Reason:         fmt.Sprintf("bwrap could not create a private network namespace, which the configured egress tier needs (set [terminal.sandbox].egress = \"host\" to share the host network, which leaves the dashboard reachable from inside the sandbox): %v", nerr),
+				Reason:         fmt.Sprintf("bwrap could not create a private network namespace, which the configured egress tier needs (set [terminal.sandbox].egress = \"host\" to share the host network, which leaves the dashboard reachable from inside the sandbox): %s", canaryErrorText(nerr)),
 			}
 		}
 	}

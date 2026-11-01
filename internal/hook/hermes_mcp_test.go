@@ -7,11 +7,13 @@ import (
 	"testing"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/marmutapp/superbased-observer/internal/models"
 )
 
 // TestRegisterHermesMCP_FreshConfig pins the install-into-empty
 // case. No config.yaml exists; RegisterHermesMCP creates one with
-// just the superbased-observer entry.
+// just the observer entry.
 func TestRegisterHermesMCP_FreshConfig(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
@@ -24,7 +26,7 @@ func TestRegisterHermesMCP_FreshConfig(t *testing.T) {
 	}
 	out := loadYAML(t, got)
 	mcp := out["mcp_servers"].(map[string]any)
-	entry := mcp["superbased-observer"].(map[string]any)
+	entry := mcp[HermesMCPServerName].(map[string]any)
 	if entry["command"] != "observer" {
 		t.Errorf("command = %v", entry["command"])
 	}
@@ -32,7 +34,7 @@ func TestRegisterHermesMCP_FreshConfig(t *testing.T) {
 
 // TestRegisterHermesMCP_MergesIntoExistingConfig pins the merge
 // semantics. A pre-existing config with `inference:` block and one
-// non-observer mcp_server gets the superbased-observer entry added
+// non-observer mcp_server gets the observer entry added
 // without touching the rest.
 func TestRegisterHermesMCP_MergesIntoExistingConfig(t *testing.T) {
 	t.Parallel()
@@ -66,8 +68,8 @@ plugins:
 	if _, ok := mcp["filesystem"]; !ok {
 		t.Error("pre-existing filesystem MCP entry was dropped")
 	}
-	if _, ok := mcp["superbased-observer"]; !ok {
-		t.Error("superbased-observer not added")
+	if _, ok := mcp[HermesMCPServerName]; !ok {
+		t.Error("observer entry not added")
 	}
 	// plugins block preserved.
 	if _, ok := out["plugins"]; !ok {
@@ -88,7 +90,7 @@ func TestRegisterHermesMCP_BinaryPathLandsInCommand(t *testing.T) {
 		t.Fatalf("RegisterHermesMCP: %v", err)
 	}
 	out := loadYAML(t, filepath.Join(home, "config.yaml"))
-	entry := out["mcp_servers"].(map[string]any)["superbased-observer"].(map[string]any)
+	entry := out["mcp_servers"].(map[string]any)[HermesMCPServerName].(map[string]any)
 	if entry["command"] != "/usr/local/bin/observer-v1.8.3" {
 		t.Errorf("command = %v, want absolute BinaryPath", entry["command"])
 	}
@@ -105,7 +107,7 @@ func TestUnregisterHermesMCP_RemovesOnlyOurEntry(t *testing.T) {
     command: mcp-fs
     args:
     - serve
-  superbased-observer:
+  observer:
     command: observer
     args:
     - serve
@@ -118,11 +120,79 @@ func TestUnregisterHermesMCP_RemovesOnlyOurEntry(t *testing.T) {
 	}
 	out := loadYAML(t, path)
 	mcp := out["mcp_servers"].(map[string]any)
-	if _, ok := mcp["superbased-observer"]; ok {
-		t.Error("superbased-observer not removed")
+	if _, ok := mcp[HermesMCPServerName]; ok {
+		t.Error("observer entry not removed")
 	}
 	if _, ok := mcp["filesystem"]; !ok {
 		t.Error("sibling filesystem entry was removed")
+	}
+}
+
+// TestHermesMCPUsesTheSharedServerName pins FU-2: the Hermes writer uses
+// the one Observer MCP server name every other writer uses.
+func TestHermesMCPUsesTheSharedServerName(t *testing.T) {
+	if HermesMCPServerName != models.ObserverMCPServerName {
+		t.Fatalf("HermesMCPServerName = %q, want the shared %q", HermesMCPServerName, models.ObserverMCPServerName)
+	}
+	if HermesLegacyMCPServerName == HermesMCPServerName {
+		t.Fatal("the legacy name must differ from the shared one")
+	}
+}
+
+// TestHermesMCPLegacyEntry pins FU-2's migration: register and unregister
+// remove a `superbased-observer` entry an older Observer build wrote, and
+// never one Observer did not write (a user's own server under that name,
+// or an `observer` server that runs something else).
+func TestHermesMCPLegacyEntry(t *testing.T) {
+	const ours = "  superbased-observer:\n    command: /opt/observer\n    args:\n    - serve\n"
+	const oursCfg = "  superbased-observer:\n    command: observer.exe\n    args:\n    - serve\n    - --config\n    - /home/u/.observer/config.toml\n"
+	const theirs = "  superbased-observer:\n    command: npx\n    args:\n    - -y\n    - some-other-server\n"
+	const theirsURL = "  superbased-observer:\n    url: https://example.invalid/mcp\n"
+	const foreignObserver = "  observer:\n    command: node\n    args:\n    - mine.js\n"
+	cases := []struct {
+		name         string
+		seed         string
+		register     bool
+		wantLegacy   bool
+		wantObserver bool
+	}{
+		{"register drops our legacy entry", ours, true, false, true},
+		{"register drops our legacy entry with --config", oursCfg, true, false, true},
+		{"register keeps a foreign legacy-named entry", theirs, true, true, true},
+		{"register keeps a remote legacy-named entry", theirsURL, true, true, true},
+		{"unregister drops our legacy entry", ours, false, false, false},
+		{"unregister keeps a foreign legacy-named entry", theirs, false, true, false},
+		{"unregister keeps a foreign observer entry", foreignObserver, false, false, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			home := t.TempDir()
+			path := filepath.Join(home, "config.yaml")
+			seed := "mcp_servers:\n  filesystem:\n    command: mcp-fs\n" + c.seed
+			if err := os.WriteFile(path, []byte(seed), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			opts := HermesOptions{HermesHome: home, BinaryPath: "/opt/observer"}
+			var err error
+			if c.register {
+				_, err = RegisterHermesMCP(opts)
+			} else {
+				_, err = UnregisterHermesMCP(opts)
+			}
+			if err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			mcp := loadYAML(t, path)["mcp_servers"].(map[string]any)
+			if _, ok := mcp[HermesLegacyMCPServerName]; ok != c.wantLegacy {
+				t.Errorf("legacy entry present = %v, want %v", ok, c.wantLegacy)
+			}
+			if _, ok := mcp[HermesMCPServerName]; ok != c.wantObserver {
+				t.Errorf("observer entry present = %v, want %v", ok, c.wantObserver)
+			}
+			if _, ok := mcp["filesystem"]; !ok {
+				t.Error("sibling filesystem entry was removed")
+			}
+		})
 	}
 }
 
@@ -337,14 +407,14 @@ func TestWriteYAMLMap_PreservesPermissionBits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat rewritten: %v", err)
 	}
-	if info.Mode().Perm() != 0o640 {
+	if posixModes && info.Mode().Perm() != 0o640 {
 		t.Errorf("rewritten file mode = %v, want 0640", info.Mode().Perm())
 	}
 	bakInfo, err := os.Stat(path + ".bak")
 	if err != nil {
 		t.Fatalf("stat backup: %v", err)
 	}
-	if bakInfo.Mode().Perm() != 0o640 {
+	if posixModes && bakInfo.Mode().Perm() != 0o640 {
 		t.Errorf("backup file mode = %v, want 0640", bakInfo.Mode().Perm())
 	}
 }

@@ -29,7 +29,19 @@ var kiroCLICatalog = toolCatalog{
 		{
 			ID: "kiro-cli/user-cli", Tool: "kiro-cli", Shape: kiroCLISettings, Kind: KindSettings, Scope: ScopeUser,
 			Paths: samePath("~/.kiro/settings/cli.json"), Format: FormatJSON, Precedence: 20, WriteNeeds: PrivUser, Grounding: doc(kiroCLIRef),
-			Note: "CLI-only, no project scope; kiro-cli settings <key> <value> edits it. KIRO_HOME relocates ~/.kiro (Windows %USERPROFILE%\\.kiro).",
+			Note: "CLI-only; kiro-cli settings <key> <value> edits it. A workspace .kiro/settings/cli.json overrides it per project (kiro-cli/project-cli). " +
+				"KIRO_HOME relocates ~/.kiro (Windows %USERPROFILE%\\.kiro) when it is an absolute path that is not the root, the home directory or an ancestor of it.",
+		},
+		{
+			// surface-gap S-11 (NEW-4): the settings reference documents a
+			// workspace file that overrides the global one. Its own shape, so
+			// the user-file rows (some keys are global-only, and the reference
+			// does not say which) never become writable at project scope.
+			ID: "kiro-cli/project-cli", Tool: "kiro-cli", Shape: "kiro-cli/cli-workspace", Kind: KindSettings, Scope: ScopeProjectShared,
+			Paths: samePath("<project>/.kiro/settings/cli.json"), Format: FormatJSON, Precedence: 30, WriteNeeds: PrivUser, Grounding: doc(kiroCLIRef),
+			Note: "Workspace settings: override the global cli.json in this project's terminal UI sessions; some keys are global-only. " +
+				"A workspace chat.defaultAgent replaces the default agent Observer sets, so that project's sessions run without Observer's 2.x agent hooks " +
+				"unless the named agent carries them (Observer merges its hooks into every global agent JSON, not workspace ones).",
 		},
 		{
 			ID: "kiro-cli/user-mcp", Tool: "kiro-cli", Shape: kiroCLIMCP, Kind: KindMCP, Scope: ScopeUser,

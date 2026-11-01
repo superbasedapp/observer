@@ -1,0 +1,1 @@
+{"ID":"6f2e1c2a-6a4b-4f4e-9d61-1c1f2a3b4c5d","Name":"host","OperatingSystem":"Ubuntu 26.04 LTS","KernelVersion":"7.0.0-15-generic","DockerRootDir":"/var/lib/docker","SecurityOptions":["name=apparmor","name=seccomp,profile=builtin","name=cgroupns"],"LiveRestoreEnabled":true}

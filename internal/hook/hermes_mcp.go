@@ -9,12 +9,67 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/marmutapp/superbased-observer/internal/integration"
+	"github.com/marmutapp/superbased-observer/internal/models"
+	"github.com/marmutapp/superbased-observer/internal/testwriteguard"
 )
 
 // HermesMCPServerName is the key we write under config.yaml's
-// `mcp_servers` block. Matches the dashboard's expected server-name
-// convention for observer-installed servers.
-const HermesMCPServerName = "superbased-observer"
+// `mcp_servers` block: the one name every Observer MCP writer uses
+// (models.ObserverMCPServerName), so Hermes carries the same server name
+// as every other client (surface-gap FU-2).
+const HermesMCPServerName = models.ObserverMCPServerName
+
+// HermesLegacyMCPServerName is the key builds before FU-2 wrote the Hermes
+// MCP entry under. Register and unregister remove an entry under it, but
+// only when that entry is Observer's own (hermesObserverMCPEntry); a
+// server the user named this way themselves is left alone.
+const HermesLegacyMCPServerName = "superbased-observer"
+
+// hermesObserverMCPEntry reports whether an mcp_servers value is the entry
+// an Observer Hermes writer wrote: a mapping whose command names an
+// observer binary (IsObserverBinary) and whose args are `serve` or
+// `serve --config <path>`, and nothing else that would make it a
+// different server (no url).
+func hermesObserverMCPEntry(v any) bool {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return false
+	}
+	if _, remote := m["url"]; remote {
+		return false
+	}
+	cmd, _ := m["command"].(string)
+	if cmd == "" || !IsObserverBinary(cmd) {
+		return false
+	}
+	raw, _ := m["args"].([]any)
+	args := make([]string, 0, len(raw))
+	for _, a := range raw {
+		s, ok := a.(string)
+		if !ok {
+			return false
+		}
+		args = append(args, s)
+	}
+	switch len(args) {
+	case 1:
+		return args[0] == "serve"
+	case 3:
+		return args[0] == "serve" && args[1] == "--config"
+	}
+	return false
+}
+
+// dropLegacyHermesMCPEntry removes the pre-FU-2 `superbased-observer` entry
+// from mcpServers when Observer wrote it, reporting whether it did.
+func dropLegacyHermesMCPEntry(mcpServers map[string]any) bool {
+	v, ok := mcpServers[HermesLegacyMCPServerName]
+	if !ok || !hermesObserverMCPEntry(v) {
+		return false
+	}
+	delete(mcpServers, HermesLegacyMCPServerName)
+	return true
+}
 
 // RegisterHermesPluginEnabled adds the superbased-observer plugin
 // name to the `plugins.enabled` allow-list in
@@ -142,7 +197,9 @@ func unregisterHermesPluginEnabled(opts HermesOptions) (string, error) {
 // RegisterHermesMCP merges the SuperBased Observer MCP entry into
 // `<hermes-home>/config.yaml` under the `mcp_servers` key. The merge
 // is point-mutating — we read the file, set / overwrite the one
-// `mcp_servers.superbased-observer` entry, and write back. Other
+// `mcp_servers.observer` entry (HermesMCPServerName), drop the legacy
+// `mcp_servers.superbased-observer` entry when Observer wrote it, and
+// write back. Other
 // top-level keys (inference, plugins, gateway, …) and other
 // mcp_servers.* siblings are preserved verbatim.
 //
@@ -181,6 +238,7 @@ func registerHermesMCP(opts HermesOptions) (string, error) {
 	if mcpServers == nil {
 		mcpServers = map[string]any{}
 	}
+	dropLegacyHermesMCPEntry(mcpServers)
 	mcpServers[HermesMCPServerName] = entry
 	doc["mcp_servers"] = mcpServers
 
@@ -194,7 +252,10 @@ func registerHermesMCP(opts HermesOptions) (string, error) {
 }
 
 // UnregisterHermesMCP removes the SuperBased Observer entry from
-// config.yaml's mcp_servers block. Safe against an absent file or an
+// config.yaml's mcp_servers block: `observer` (HermesMCPServerName) and the
+// legacy `superbased-observer` (HermesLegacyMCPServerName), each only when
+// it is Observer's own entry (hermesObserverMCPEntry), so a server the user
+// gave either name survives. Safe against an absent file or an
 // already-clean configuration (returns nil + the path that would
 // have been written).
 //
@@ -226,10 +287,14 @@ func unregisterHermesMCP(opts HermesOptions) (string, error) {
 	if mcpServers == nil {
 		return configPath, nil
 	}
-	if _, exists := mcpServers[HermesMCPServerName]; !exists {
+	removed := dropLegacyHermesMCPEntry(mcpServers)
+	if v, exists := mcpServers[HermesMCPServerName]; exists && hermesObserverMCPEntry(v) {
+		delete(mcpServers, HermesMCPServerName)
+		removed = true
+	}
+	if !removed {
 		return configPath, nil
 	}
-	delete(mcpServers, HermesMCPServerName)
 	if len(mcpServers) == 0 {
 		delete(doc, "mcp_servers")
 	} else {
@@ -329,6 +394,9 @@ func backupYAMLConfig(path string) (os.FileMode, error) {
 // rewrite destroyed ~750 comment lines of a real operator's config once
 // (2026-06-26).
 func writeYAMLMap(path string, m map[string]any) error {
+	if err := testwriteguard.Check("write", path); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}

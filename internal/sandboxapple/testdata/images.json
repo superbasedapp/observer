@@ -1,0 +1,4 @@
+[
+  {"reference": "ghcr.io/example/agent@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "descriptor": {"digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "mediaType": "application/vnd.oci.image.index.v1+json", "size": 1609}},
+  {"reference": "docker.io/library/alpine:latest", "descriptor": {"digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "mediaType": "application/vnd.oci.image.index.v1+json", "size": 9218}}
+]

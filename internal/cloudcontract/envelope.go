@@ -101,6 +101,61 @@ type MetricsBlock struct {
 	ExplorationEfficiency float64 `json:"exploration_efficiency"`
 	// ContinuityScore is a 0–1 ratio.
 	ContinuityScore float64 `json:"continuity_score"`
+	// UsageStatus says whether the token and cost figures above were measured
+	// at all (D-866). A node that captured no token usage for the session
+	// (hooks only, no watcher or proxy) sends UsageNotMeasured, so its zeros
+	// read as "not captured", never as "free". It is ADDITIVE (omitempty) and
+	// present only where the numbers alone cannot answer the question: a node
+	// omits it when the figures are non-zero (they were measured), sends
+	// UsageMeasured only for a measured session whose figures are all zero,
+	// and sends UsageNotMeasured when nothing was captured. Absent is what an
+	// older node sends; readers resolve it with MetricsBlock.ResolvedUsage.
+	UsageStatus UsageStatus `json:"usage_status,omitempty"`
+}
+
+// UsageStatus is the closed vocabulary of MetricsBlock.UsageStatus.
+type UsageStatus string
+
+const (
+	// UsageMeasured marks figures the node measured from captured token rows,
+	// including a measured total of zero.
+	UsageMeasured UsageStatus = "measured"
+	// UsageNotMeasured marks a session the node holds no token usage for: its
+	// token and cost figures are absent data, not zero usage.
+	UsageNotMeasured UsageStatus = "not_measured"
+)
+
+// Valid reports whether u is a member of the closed vocabulary. The empty
+// value is valid on the wire (an older node, or figures that speak for
+// themselves) and is handled by MetricsBlock.ResolvedUsage.
+func (u UsageStatus) Valid() bool {
+	switch u {
+	case "", UsageMeasured, UsageNotMeasured:
+		return true
+	default:
+		return false
+	}
+}
+
+// hasUsageFigures reports whether any token or cost figure is non-zero.
+func (m MetricsBlock) hasUsageFigures() bool {
+	return m.TokensIn > 0 || m.TokensOut > 0 || m.CacheReadTokens > 0 || m.CostUSD > 0
+}
+
+// ResolvedUsage is the ONE reading of whether a metrics block's usage was
+// measured, used by every consumer (the hosted session snapshot, the digest
+// fold, the node preview). An explicit status wins. An absent status (an
+// older node) is resolved conservatively from the figures: non-zero figures
+// were measured; all-zero figures cannot be told apart from "not captured",
+// so they resolve to UsageNotMeasured rather than claiming zero usage.
+func (m MetricsBlock) ResolvedUsage() UsageStatus {
+	if m.UsageStatus != "" {
+		return m.UsageStatus
+	}
+	if m.hasUsageFigures() {
+		return UsageMeasured
+	}
+	return UsageNotMeasured
 }
 
 // Action is one bounded normalized action: a category, not a path.
@@ -332,6 +387,12 @@ func (m MetricsBlock) validate() error {
 	}
 	if m.CostUSD < 0 {
 		return fmt.Errorf("cloudcontract.MetricsBlock: negative cost_usd")
+	}
+	if !m.UsageStatus.Valid() {
+		return fmt.Errorf("cloudcontract.MetricsBlock: unknown usage_status %q", m.UsageStatus)
+	}
+	if m.UsageStatus == UsageNotMeasured && m.hasUsageFigures() {
+		return fmt.Errorf("cloudcontract.MetricsBlock: usage_status %q with non-zero token or cost figures", m.UsageStatus)
 	}
 	if m.DeterministicScore < 0 || m.DeterministicScore > 100 {
 		return fmt.Errorf("cloudcontract.MetricsBlock: deterministic_score %v out of [0,100]", m.DeterministicScore)

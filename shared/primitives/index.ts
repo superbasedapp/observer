@@ -107,9 +107,11 @@ export { EmptyIllustration, ILLUSTRATION_TITLES, type IllustrationKind } from ".
 export { Spinner, InlineLoading } from "./Spinner";
 export { ErrorState } from "./ErrorState";
 export { Obs, Mascot, toMascotState, type ObsState, type MascotState } from "./Obs";
+export { ObsFlight, ObsLoader, ObsInline, ObsMoment, ObsLanding, ObsJobRider } from "./ObsFlight";
 export { PermissionDenied, ReadOnlyBanner } from "./PermissionDenied";
 export { LiveDot, type LiveTone } from "./LiveDot";
 export { Modal } from "./Modal";
+export { MarkTile } from "./MarkTile";
 export { Meter } from "./Meter";
 export { ProgressRing } from "./ProgressRing";
 export { ConvergenceRing } from "./ConvergenceRing";
@@ -123,7 +125,7 @@ export {
   formatJsonPreview,
   type JsonPreviewProps,
 } from "./JsonPreview";
-export { ConfirmButton, type ConfirmButtonProps, type ConfirmReason } from "./ConfirmButton";
+export { ConfirmButton, armedBehaviour, type ArmedBehaviour, type ConfirmButtonProps, type ConfirmReason } from "./ConfirmButton";
 export { OneTimeSecret } from "./OneTimeSecret";
 export { SetupChecklist, type SetupChecklistStep } from "./SetupChecklist";
 export {

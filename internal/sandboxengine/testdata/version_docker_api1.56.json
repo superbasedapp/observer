@@ -1,0 +1,1 @@
+{"Platform":{"Name":"Docker Engine - Community"},"Components":[{"Name":"Engine","Version":"31.0.0","Details":{"ApiVersion":"1.56","Arch":"amd64","MinAPIVersion":"1.44","Os":"linux"}},{"Name":"containerd","Version":"2.4.2"},{"Name":"runc","Version":"1.5.2"}],"Version":"31.0.0","ApiVersion":"1.56","MinAPIVersion":"1.44","Os":"linux","Arch":"amd64","KernelVersion":"6.18.44"}

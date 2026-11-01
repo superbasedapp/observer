@@ -84,7 +84,7 @@ func cursorBudgetLaunchEvidence(args []string) budgetLaunchEvidence {
 // newCursorCmd implements `observer cursor` — a PURE SEEDING wrapper around
 // the `cursor-agent` CLI. It does NOT route traffic through the observer
 // proxy: cursor talks to its own backend (registry Proxy:nil,
-// RouteStatusProbeRequired), so the child inherits the ambient environment
+// RouteStatusNativeExempt), so the child inherits the ambient environment
 // unchanged (child.Env = os.Environ()). Token capture for cursor is via the
 // watcher + chats/store.db adapter + the cursor hook (registered by
 // `observer init --cursor`), not the proxy — seeding is orthogonal to
@@ -233,6 +233,7 @@ func newCursorCmd() *cobra.Command {
 			child.Stderr = os.Stderr
 			discovery := prepareGenericDiscovery(cmd.Context(), "cursor", continueDir)
 			if startErr := child.Start(); startErr != nil {
+				noteBoxToolLaunch(cmd.ErrOrStderr(), "cursor", bin, args, startErr)
 				return fmt.Errorf("exec cursor-agent: %w", startErr)
 			}
 			if allocatedSessionID != "" {
@@ -258,6 +259,7 @@ func newCursorCmd() *cobra.Command {
 				defer discoverCancel()
 			}
 			if runErr := child.Wait(); runErr != nil {
+				noteBoxToolLaunch(cmd.ErrOrStderr(), "cursor", bin, args, runErr)
 				var ee *exec.ExitError
 				if errors.As(runErr, &ee) {
 					return exitErr(ee.ExitCode())

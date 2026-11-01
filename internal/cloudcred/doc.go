@@ -27,8 +27,9 @@
 //
 // # Backends
 //
-// The OS keychain (github.com/zalando/go-keyring, the same library the org
-// bearer store uses) is the primary backend and provides OS-backed at-rest
+// The OS keychain (github.com/zalando/go-keyring, reached through
+// internal/keystore's namespaced seam like the org bearer store) is the
+// primary backend and provides OS-backed at-rest
 // encryption (Keychain / libsecret / Credential Manager). When the keychain is
 // unavailable — headless Linux with no Secret Service, a CIFS-mounted HOME —
 // the store falls back to a hardened 0600 file backend.
@@ -70,7 +71,7 @@
 //
 // # Purity
 //
-// stdlib, github.com/zalando/go-keyring and internal/keystore only (pinned by
+// stdlib and internal/keystore only (pinned by
 // imports_test.go). No other internal package, no database/sql, net/http, or
 // fsnotify.
 package cloudcred

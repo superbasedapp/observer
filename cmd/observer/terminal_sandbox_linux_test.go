@@ -1,4 +1,4 @@
-//go:build linux && !sbo_omit_terminals_sandbox && !sbo_omit_terminals
+//go:build linux && !sbo_omit_terminals_sandbox && !sbo_omit_isolation && !sbo_omit_terminals
 
 package main
 
@@ -88,6 +88,11 @@ func prepLiveWrapArgvCfg(t *testing.T, cfg config.TerminalSandboxConfig, proxyPo
 	}
 	if proxyPort > 0 {
 		rt.proxyPort = proxyPort
+		// A test that runs a proxy listener stands for a node that serves
+		// the proxy (applyDaemonConfig's fact); without it every launch
+		// computed unrouted and the A1 provider-block test could never see
+		// the block (found in lane sbx-p2, the first lane with bwrap here).
+		rt.proxyServing = true
 	}
 
 	res, err := rt.Prepare(context.Background(), termsvc.PrepareRequest{
@@ -190,9 +195,17 @@ echo BOUNDARY_OK
 	}
 }
 
+// bwrapTeardownReapBound is how long TestBwrapIntegrationTeardown waits for
+// the killed group to be reaped. It is a ceiling, not a timing claim: the
+// wait returns the moment the group is gone. The old 3s wall-clock bound
+// failed under -race and a loaded gate host while passing in isolation, so
+// the bound is generous and the assertion is that the group is fully gone.
+const bwrapTeardownReapBound = 30 * time.Second
+
 // TestBwrapIntegrationTeardown proves the G12 teardown ladder: a long-running
-// inner process, launched as a process-group leader, is reaped within 3s when
-// the group is killed (the same kill(-pgid) the unix PTY backend uses).
+// inner process, launched as a process-group leader, is reaped when the group
+// is killed (the same kill(-pgid) the unix PTY backend uses), and no member of
+// the group survives it.
 func TestBwrapIntegrationTeardown(t *testing.T) {
 	bwrapUsableForTest(t)
 	if _, err := exec.LookPath("bash"); err != nil {
@@ -200,7 +213,8 @@ func TestBwrapIntegrationTeardown(t *testing.T) {
 	}
 
 	wrap, home, _, _ := prepLiveWrapArgv(t)
-	argv := append(append([]string(nil), wrap...), "bash", "-c", "sleep 300")
+	const marker = "300.31"
+	argv := append(append([]string(nil), wrap...), "bash", "-c", "sleep "+marker)
 	//nolint:gosec // argv[0] is the Prepare-resolved bwrap path; fixed test argv.
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = append(os.Environ(), "HOME="+home)
@@ -212,17 +226,41 @@ func TestBwrapIntegrationTeardown(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 
-	// Give it a beat to establish the group, then kill the whole group.
-	time.Sleep(200 * time.Millisecond)
+	// Wait until the inner process runs, then kill the whole group. A fixed
+	// beat sent SIGTERM during bwrap's own setup on a loaded host, so the
+	// inner process started after the signal and outlived it (TESTSLOW
+	// audit finding 1); the marker wait is the sibling test's.
+	startDeadline := time.Now().Add(bwrapTeardownReapBound)
+	for !sleepMarkerRunning(marker) && time.Now().Before(startDeadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !sleepMarkerRunning(marker) {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		t.Fatalf("inner process never started within %s", bwrapTeardownReapBound)
+	}
 	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM); err != nil {
 		t.Fatalf("kill -pgid: %v", err)
 	}
+	deadline := time.Now().Add(bwrapTeardownReapBound)
 	select {
 	case <-done:
 		// reaped
-	case <-time.After(3 * time.Second):
+	case <-time.After(bwrapTeardownReapBound):
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		t.Fatal("inner process not reaped within 3s of SIGTERM to the group")
+		t.Fatalf("inner process not reaped within %s of SIGTERM to the group", bwrapTeardownReapBound)
+	}
+	// The leader is reaped; every other member of the group must be gone too
+	// (kill with signal 0 reports ESRCH once the group is empty).
+	for {
+		err := syscall.Kill(-cmd.Process.Pid, 0)
+		if errors.Is(err, syscall.ESRCH) {
+			return
+		}
+		if time.Now().After(deadline) {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			t.Fatalf("process group %d still has members %s after SIGTERM (kill -0 err = %v)", cmd.Process.Pid, bwrapTeardownReapBound, err)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

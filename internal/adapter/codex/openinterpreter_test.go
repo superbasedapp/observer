@@ -177,9 +177,10 @@ func TestOpenInterpreterWatchPathsHonorsInterpreterHome(t *testing.T) {
 // desktop app declared, $CODEX_HOME still collapses to exactly one
 // root.
 func TestCodexWatchPathsHonorsCodexHomeStaysSingle(t *testing.T) {
-	t.Setenv("CODEX_HOME", "/custom/codex")
+	custom := filepath.Join(t.TempDir(), "custom", "codex")
+	t.Setenv("CODEX_HOME", custom)
 	paths := New().WatchPaths()
-	want := filepath.Join("/custom/codex", "sessions")
+	want := filepath.Join(custom, "sessions")
 	if len(paths) != 1 || paths[0] != want {
 		t.Errorf("CODEX_HOME root set = %v; want exactly [%s]", paths, want)
 	}

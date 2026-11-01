@@ -168,6 +168,29 @@ func TestRewriteBash(t *testing.T) {
 	}
 }
 
+// TestRewriteBashQuotesTheBinary pins FU-163: the binary is one POSIX shell
+// word, so a path with a space (Windows `Program Files`) is not split and a
+// backslash or a quote reaches exec as written.
+func TestRewriteBashQuotesTheBinary(t *testing.T) {
+	cases := []struct{ bin, want string }{
+		{"/usr/local/bin/observer", "/usr/local/bin/observer run -- git status"},
+		{"C:/Users/dev/AppData/Local/SuperBased/Observer/bin/observer.exe", "C:/Users/dev/AppData/Local/SuperBased/Observer/bin/observer.exe run -- git status"},
+		{"C:/Program Files/SuperBased/observer.exe", "'C:/Program Files/SuperBased/observer.exe' run -- git status"},
+		{"/home/a b/observer", "'/home/a b/observer' run -- git status"},
+		{`C:\observer\observer.exe`, `'C:\observer\observer.exe' run -- git status`},
+		{"/opt/it's/observer", `'/opt/it'\''s/observer' run -- git status`},
+		{"/opt/x=y/observer", "'/opt/x=y/observer' run -- git status"},
+		{"~/bin/observer", "'~/bin/observer' run -- git status"},
+		{"/opt/$x/observer", "'/opt/$x/observer' run -- git status"},
+	}
+	for _, tc := range cases {
+		got, changed := RewriteBash(tc.bin, "git status", nil)
+		if !changed || got != tc.want {
+			t.Errorf("RewriteBash(%q) = %q, %v; want %q", tc.bin, got, changed, tc.want)
+		}
+	}
+}
+
 func TestRewriteBashEmptyBinary(t *testing.T) {
 	got, changed := RewriteBash("", "git status", nil)
 	if changed {

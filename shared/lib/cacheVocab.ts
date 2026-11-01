@@ -45,7 +45,9 @@ export const CACHE_EVENT_KIND: VocabTable = {
 export const CACHE_CAUSE: VocabTable = {
   suffix_growth: { tone: "info", label: "Conversation grew" },
   implicit_hit: { tone: "info", label: "Prefix reused" },
-  reanchor: { tone: "neutral", label: "Re-anchored" },
+  // Plain words (WINNODE2 16b); the engine's term "re-anchor" stays in the
+  // help entry.
+  reanchor: { tone: "neutral", label: "Cache restarted" },
   handoff_rehydration: { tone: "neutral", label: "Handoff reload" },
   below_min_cacheable: { tone: "neutral", label: "Too short to cache" },
   unknown: { tone: "neutral", label: "Unknown" },

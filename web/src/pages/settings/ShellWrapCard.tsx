@@ -370,6 +370,11 @@ function ToolList({
                 runs <code className={CODE}>{t.wrapped}</code>
               </span>
               <Pill variant={HONESTY_TONE[t.honesty]}>{t.honesty_text}</Pill>
+              {t.route_flag && (
+                <span className="text-[10.5px] text-fg-3">
+                  route with <code className={CODE}>{t.route_flag}</code>
+                </span>
+              )}
               {sideLabel(st, t) && (
                 <span title={t.where} className="text-[10.5px] text-fg-3">
                   {sideLabel(st, t)}

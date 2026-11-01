@@ -16,9 +16,10 @@ const (
 	// SourceCloneRemote clones RemoteURL host-side with the operator's
 	// ambient git auth. Gated by AllowRemoteClone.
 	SourceCloneRemote Source = "clone-remote"
-	// SourceWorktree adds a `git worktree` off ProjectRoot. Gated by
-	// AllowWorktreeSource — it requires ProjectRoot's own .git bound
-	// read-write and attributes the run to the main repo.
+	// SourceWorktree adds a `git worktree` off ProjectRoot on a fresh
+	// branch. Gated by AllowWorktreeSource: it mounts the main
+	// repository's .git folder writable in the box (PlanWorktreeBox) and
+	// attributes the run to the main repository.
 	SourceWorktree Source = "worktree"
 )
 

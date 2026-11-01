@@ -20,6 +20,16 @@ import { navIcon } from "@/lib/nav";
 import { PageVisibilityCard } from "@/components/PageVisibilityCard";
 import { orgDisplayLabelSentence } from "@/lib/orgName";
 import { pricingFeedFromConfig } from "@/lib/pricingFeed";
+import type { ConfigKeysDryRun, ConfigKeysError, ConfigKeysResponse } from "@/lib/configSchema";
+import { markRestartPending } from "@/lib/restartPending";
+import {
+  SECURITY_SHARE_CHOICES,
+  SECURITY_SHARE_KEY,
+  type SecurityShareLevel,
+  securityShareLevel,
+  securityShareNote,
+  securitySharePatch,
+} from "@/lib/securityShare";
 
 // Privacy center (P6.5): one page answering "what does the observer
 // capture, what never leaves this machine, and how do I verify it?".
@@ -118,6 +128,7 @@ export function PrivacyPage() {
 
       <ScrubTesterCard scrubbingEnabled={secrets?.EnableScrubbing ?? true} />
       <SharingSourceCard config={cfg.data?.config as Record<string, any> | undefined} />
+      <SecurityShareCard config={cfg.data ?? null} managed={managed} onSaved={() => void cfg.reload()} />
       <PageVisibilityCard />
       <OrgPushCard />
     </div>
@@ -195,6 +206,92 @@ function ScrubTesterCard({ scrubbingEnabled }: { scrubbingEnabled: boolean }) {
   );
 }
 
+// SecurityShareCard is the "Code security sharing" picker (lane SEC-H2,
+// security plan 6.5): Off, Posture or Findings for this machine's own
+// org_client.share.security, written through PUT /api/config/keys (a dry run
+// first, then the write under the same etag). A managed machine follows its
+// organization's managed security policy, so the picker is read-only there.
+function SecurityShareCard({
+  config,
+  managed,
+  onSaved,
+}: {
+  config: ConfigResponse | null;
+  managed: boolean;
+  onSaved: () => void;
+}) {
+  const level = securityShareLevel(config?.config);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  if (level === null) return null;
+  const pick = async (next: SecurityShareLevel) => {
+    const patch = securitySharePatch(level, next);
+    if (!config || !patch) return;
+    setBusy(true);
+    setMsg(null);
+    const put = async <T,>(dryRun: boolean): Promise<T> => {
+      const res = await fetch("/api/config/keys", {
+        method: "PUT",
+        headers: {
+          "content-type": "application/json",
+          ...(config.confirm_token ? { "X-Observer-Confirm": config.confirm_token } : {}),
+        },
+        body: JSON.stringify({ base_etag: config.config_etag ?? "", patches: [patch], ...(dryRun ? { dry_run: true } : {}) }),
+      });
+      const text = await res.text();
+      let body: unknown = null;
+      try {
+        body = text ? JSON.parse(text) : null;
+      } catch {
+        body = null;
+      }
+      if (!res.ok) {
+        const e = (body ?? {}) as ConfigKeysError;
+        throw new Error(e.key_errors?.find((k) => k.key === SECURITY_SHARE_KEY)?.message || e.message || text || `HTTP ${res.status}`);
+      }
+      return body as T;
+    };
+    try {
+      await put<ConfigKeysDryRun>(true);
+      const out = await put<ConfigKeysResponse>(false);
+      if (out.restart_required_keys.length > 0) markRestartPending("privacy", out.restart_required_keys);
+      setMsg({ ok: true, text: "Saved." });
+      onSaved();
+    } catch (e: unknown) {
+      setMsg({ ok: false, text: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <ChartShell
+      title={<TitleWithHelp text="Code security sharing" helpId="card.privacy_share_source" />}
+      sub={securityShareNote(managed)}
+    >
+      <div role="radiogroup" aria-label="Code security sharing" className="space-y-2">
+        {SECURITY_SHARE_CHOICES.map((c) => (
+          <label key={c.id} className="flex items-start gap-2 text-[12px] text-fg-1">
+            <input
+              type="radio"
+              name="security-share"
+              value={c.id}
+              checked={level === c.id}
+              disabled={busy || managed || !config}
+              onChange={() => void pick(c.id)}
+              className="mt-0.5"
+            />
+            <span>
+              <span className="font-medium">{c.label}</span>
+              <span className="block text-[11.5px] text-fg-3">{c.sends}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+      {msg && <p className={msg.ok ? "mt-2 text-[11px] text-success" : "mt-2 text-[11px] text-danger"}>{msg.text}</p>}
+    </ChartShell>
+  );
+}
+
 // SHARE_ROWS is the sharing posture this page explains, one row per
 // [org_client.share] key, paired with the wire key the org rail names it by.
 //
@@ -228,6 +325,12 @@ const SHARE_ROWS: { key: string; field: string; label: string; help: string; lis
     field: "PolicyState",
     label: "Effective-policy-state reports",
     help: "Which policy version this machine is running. Content-free.",
+  },
+  {
+    key: "security",
+    field: "Security",
+    label: "Code security",
+    help: "Off, posture (daily counts and states) or findings; chosen with the Code security sharing picker below.",
   },
 ];
 

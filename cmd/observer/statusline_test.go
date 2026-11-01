@@ -51,7 +51,7 @@ func baseStatuslineDeps(dbDir, daemonBase string) statuslineDeps {
 }
 
 func TestStatusline_DaemonUp_FullLine(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	dbDir := newStatuslineLockDir(t)
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -91,7 +91,7 @@ func TestStatusline_DaemonUp_FullLine(t *testing.T) {
 }
 
 func TestStatusline_NoLockfile_WordmarkOnly_ZeroDials(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	emptyDBDir := t.TempDir() // no lockfile ever written here
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -138,7 +138,7 @@ func TestStatusline_NoLockfile_WordmarkOnly_ZeroDials(t *testing.T) {
 }
 
 func TestStatusline_LockfilePresent_DeadPort_DegradesBounded(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	dbDir := newStatuslineLockDir(t)
 
 	// Grab an ephemeral port, then close it immediately so nothing is
@@ -177,7 +177,7 @@ func TestStatusline_LockfilePresent_DeadPort_DegradesBounded(t *testing.T) {
 }
 
 func TestStatusline_StdinJSON_SessionSegment_DaemonDown(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	emptyDBDir := t.TempDir() // no lockfile -> daemon path never attempted
 
 	deps := statuslineDeps{
@@ -203,7 +203,7 @@ func TestStatusline_StdinJSON_SessionSegment_DaemonDown(t *testing.T) {
 }
 
 func TestStatusline_MalformedStdin_NoPanic(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	emptyDBDir := t.TempDir()
 
 	deps := statuslineDeps{
@@ -234,7 +234,7 @@ func TestStatusline_MalformedStdin_NoPanic(t *testing.T) {
 }
 
 func TestStatusline_Explain_StderrOnly_StdoutUnchanged(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	dbDir := newStatuslineLockDir(t)
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -276,7 +276,7 @@ func TestStatusline_Explain_StderrOnly_StdoutUnchanged(t *testing.T) {
 }
 
 func TestStatusline_JSONOutput_SchemaAndFields(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	dbDir := newStatuslineLockDir(t)
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -329,7 +329,7 @@ func TestStatusline_JSONOutput_SchemaAndFields(t *testing.T) {
 }
 
 func TestStatusline_SegmentsSubset(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	emptyDBDir := t.TempDir()
 
 	deps := statuslineDeps{
@@ -355,7 +355,7 @@ func TestStatusline_SegmentsSubset(t *testing.T) {
 }
 
 func TestStatusline_NoDaemonFlag_SkipsResolveAndDial(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 
 	resolveCalled := false
 	deps := statuslineDeps{
@@ -391,7 +391,7 @@ func TestStatusline_NoDaemonFlag_SkipsResolveAndDial(t *testing.T) {
 // prefix. The payload is built so the JSON closes EXACTLY at the
 // documented limit, with one extra byte appended past it.
 func TestStatusline_OversizedStdin_TreatedAsAbsent(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	emptyDBDir := t.TempDir()
 
 	deps := statuslineDeps{
@@ -437,7 +437,7 @@ func TestStatusline_OversizedStdin_TreatedAsAbsent(t *testing.T) {
 // deadline (statuslineStdinReadTimeout, 500ms) must save this well
 // inside the total wall-clock budget.
 func TestStatusline_StalledStdinPipe_BoundedWordmarkOnly(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	emptyDBDir := t.TempDir()
 
 	pr, pw, err := os.Pipe()
@@ -482,7 +482,7 @@ func TestStatusline_StalledStdinPipe_BoundedWordmarkOnly(t *testing.T) {
 // overall run never resembling "an hour"; the --explain output is what
 // actually proves the clamp took effect.
 func TestStatusline_TimeoutClampedTo2s(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	dbDir := newStatuslineLockDir(t)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -520,7 +520,7 @@ func TestStatusline_TimeoutClampedTo2s(t *testing.T) {
 // the overall budget, not just the per-call daemon HTTP timeout, that
 // bounds this command.
 func TestStatusline_TotalDeadline_FallsBackAndExits0(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 
 	origDeadline := statuslineTotalDeadline
 	statuslineTotalDeadline = 150 * time.Millisecond
@@ -590,7 +590,7 @@ func findNonLoopbackIPv4(t *testing.T) string {
 // must never be dialed at all — the request carries session_id, and a
 // non-loopback destination could exfiltrate it off-machine in plaintext.
 func TestStatusline_NonLoopbackDaemonAddr_SkippedZeroDials(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	dbDir := newStatuslineLockDir(t)
 
 	nonLoopbackIP := findNonLoopbackIPv4(t)
@@ -654,7 +654,7 @@ func TestStatusline_LockfilePIDReused_TreatedDeadZeroDials(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("F5's cmdline corroboration only runs on Linux; other platforms fail open by design")
 	}
-	t.Setenv("HOME", t.TempDir())
+	setTestHome(t, t.TempDir())
 	dbDir := t.TempDir()
 
 	info := diag.LockInfo{

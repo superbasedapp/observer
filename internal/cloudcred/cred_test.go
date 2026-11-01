@@ -14,6 +14,9 @@ import (
 
 // newFileStore returns a hardened file store rooted in a fresh 0700 temp dir.
 func newFileStore(t *testing.T) *fileStore {
+	if !fileFallbackSecure() {
+		t.Skip("the 0600 file fallback is unix-only; Windows fails closed instead (fileFallbackSecure)")
+	}
 	t.Helper()
 	return &fileStore{dir: filepath.Join(t.TempDir(), "cloud-cred")}
 }
@@ -349,6 +352,9 @@ func TestRecordNameTable(t *testing.T) {
 // refresh material do not cross host boundaries: a node signed into staging
 // must never see production's token, and vice versa.
 func TestFileStoreHostScopedTokensAreIsolated(t *testing.T) {
+	if !fileFallbackSecure() {
+		t.Skip("the 0600 file fallback is unix-only; Windows fails closed instead (fileFallbackSecure)")
+	}
 	dir := filepath.Join(t.TempDir(), "cloud-cred")
 	prod := &fileStore{dir: dir, host: testProdHost}
 	staging := &fileStore{dir: dir, host: testStagingHost}
@@ -382,6 +388,9 @@ func TestFileStoreHostScopedTokensAreIsolated(t *testing.T) {
 // the SAME across every host: it is one device identity, registered with
 // each estate on exchange, not a per-estate secret.
 func TestFileStoreHostScopedDeviceKeyIsShared(t *testing.T) {
+	if !fileFallbackSecure() {
+		t.Skip("the 0600 file fallback is unix-only; Windows fails closed instead (fileFallbackSecure)")
+	}
 	dir := filepath.Join(t.TempDir(), "cloud-cred")
 	prod := &fileStore{dir: dir, host: testProdHost}
 	staging := &fileStore{dir: dir, host: testStagingHost}
@@ -407,6 +416,9 @@ func TestFileStoreHostScopedDeviceKeyIsShared(t *testing.T) {
 // unscoped record (migrating it to its own scoped name and deleting the
 // unscoped one), and no other host adopts it afterwards.
 func TestFileStoreLegacyAdoptionMigratesExactlyOnce(t *testing.T) {
+	if !fileFallbackSecure() {
+		t.Skip("the 0600 file fallback is unix-only; Windows fails closed instead (fileFallbackSecure)")
+	}
 	dir := filepath.Join(t.TempDir(), "cloud-cred")
 	legacy := &fileStore{dir: dir} // host == "" — a pre-scoping sign-in.
 	if err := legacy.SaveAPIToken("legacy-token"); err != nil {
@@ -452,6 +464,9 @@ func TestFileStoreLegacyAdoptionMigratesExactlyOnce(t *testing.T) {
 // scoped records, any still-present legacy unscoped records, AND the shared
 // device key (a full device reset).
 func TestFileStoreHostScopedClearRemovesScopedLegacyAndDeviceKey(t *testing.T) {
+	if !fileFallbackSecure() {
+		t.Skip("the 0600 file fallback is unix-only; Windows fails closed instead (fileFallbackSecure)")
+	}
 	dir := filepath.Join(t.TempDir(), "cloud-cred")
 	prod := &fileStore{dir: dir, host: testProdHost}
 	if err := prod.SaveAPIToken("prod-token"); err != nil {
@@ -494,6 +509,9 @@ func TestFileStoreHostScopedClearRemovesScopedLegacyAndDeviceKey(t *testing.T) {
 // TestFileStoreOpenForHostEmptyHostIsLegacyShape proves host == "" is
 // byte-for-byte the pre-scoping behaviour: no "@" suffix is ever applied.
 func TestFileStoreOpenForHostEmptyHostIsLegacyShape(t *testing.T) {
+	if !fileFallbackSecure() {
+		t.Skip("the 0600 file fallback is unix-only; Windows fails closed instead (fileFallbackSecure)")
+	}
 	dir := filepath.Join(t.TempDir(), "cloud-cred")
 	s := &fileStore{dir: dir}
 	if err := s.SaveAPIToken("tok"); err != nil {

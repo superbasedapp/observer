@@ -17,6 +17,11 @@ import (
 const ModeProviderRetentionDisclosed = "provider_retention_disclosed"
 
 // DisclosedAttestor is the explicit, operator-asserted disclosed-posture mode.
+// It is the ONLY mode that can authorize a provider family whose dialect row
+// declares inference.AttestationDisclosedOnly (the Anthropic API: there is no
+// ContentLogging capability to read or assert, so the ARM canary and the
+// operator-attested mode do not apply; the bound resource is the
+// "anthropic:messages:<model>" identity the route is bound to).
 // It exists so that a resource whose ContentLogging capability is NOT false
 // (the default for every Azure AI Foundry resource without Modified Abuse
 // Monitoring approval) can be authorized honestly: OperatorAttestor asserts
@@ -67,9 +72,24 @@ func (d DisclosedAttestor) Attest(_ context.Context, b Binding, now time.Time) (
 	}
 	res.Healthy = true
 	res.ContentLoggingValue = "not-disabled (" + ModeProviderRetentionDisclosed + "; policy v" + ver + ")"
-	res.Reason = ModeProviderRetentionDisclosed + ": provider flagged-sample retention disclosed under privacy policy v" + ver +
-		" for " + want + " by " + by
+	res.Reason = DisclosedReason(ver, want, by)
 	return res, nil
+}
+
+// DisclosedReason is the verdict text of a healthy disclosed attestation. It
+// says in its own words what was and was NOT checked: the provider's own
+// retention of prompts and completions (including any longer retention of
+// content its safety systems flag) is NOT verified by this service, because no
+// machine-readable provider attestation exists for it (Azure without Modified
+// Abuse Monitoring, or the Anthropic API); it is DISCLOSED to users under the
+// named privacy-policy version, for exactly one bound provider resource, by the
+// named operator. Every other execution-lease gate (consent generation, kill
+// switches, evidence TTL, route binding, credential presence) is enforced as
+// usual and is not part of this sentence.
+func DisclosedReason(policyVersion, resourceID, attestedBy string) string {
+	return ModeProviderRetentionDisclosed + ": provider-side retention NOT verified (no machine-readable provider attestation); " +
+		"the provider's default retention is disclosed under privacy policy v" + policyVersion +
+		" for " + resourceID + " by " + attestedBy
 }
 
 // RefusingAttestor always fails closed with a fixed reason. It is what a

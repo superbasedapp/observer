@@ -644,7 +644,7 @@ func (a *Adapter) extractTarget(toolName string, rawInput json.RawMessage, proje
 			return ""
 		}
 		if projectRoot != "" {
-			return git.RelativePath(projectRoot, p)
+			return git.CheckoutRelativePath(projectRoot, p)
 		}
 		return p
 	case "search_files":

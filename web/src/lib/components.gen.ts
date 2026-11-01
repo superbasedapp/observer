@@ -82,6 +82,12 @@ export const PAGE_ROUTES: readonly PageRoute[] = [
     Page: lazy(() => import("@/pages/Security").then((m) => ({ default: m.SecurityPage }))),
   },
   {
+    navId: "code-security",
+    path: "code-security",
+    component: "security",
+    Page: lazy(() => import("@/pages/CodeSecurity").then((m) => ({ default: m.CodeSecurityPage }))),
+  },
+  {
     navId: "egress",
     path: "egress",
     component: "obs",
@@ -154,6 +160,12 @@ export const PAGE_ROUTES: readonly PageRoute[] = [
     Page: lazy(() => import("@/pages/Privacy").then((m) => ({ default: m.PrivacyPage }))),
   },
   {
+    navId: "messages",
+    path: "messages",
+    component: "org.client",
+    Page: lazy(() => import("@/pages/Messages").then((m) => ({ default: m.MessagesPage }))),
+  },
+  {
     navId: "requests",
     path: "requests",
     component: "org.client",
@@ -197,6 +209,7 @@ export const NAV_COMPONENTS: Readonly<Record<string, string>> = {
   actions: "core",
   projects: "projects",
   security: "guard",
+  "code-security": "security",
   egress: "obs",
   policies: "obs",
   "agent-config": "integration.agent-config",
@@ -209,6 +222,7 @@ export const NAV_COMPONENTS: Readonly<Record<string, string>> = {
   discovery: "analytics",
   patterns: "analytics",
   privacy: "core",
+  messages: "org.client",
   requests: "org.client",
   settings: "core",
   remote: "remote",
@@ -218,3 +232,11 @@ export const NAV_COMPONENTS: Readonly<Record<string, string>> = {
 /** LaunchTerminal from @/components/LaunchTerminal (component terminals), or null when this build does not compile it. */
 export const LAUNCH_TERMINAL: LazyExoticComponent<typeof import("@/components/LaunchTerminal").LaunchTerminal> | null =
   lazy(() => import("@/components/LaunchTerminal").then((m) => ({ default: m.LaunchTerminal })));
+
+/** SandboxSettingsCard from @/components/SandboxSettingsCard (component terminals.sandbox), or null when this build does not compile it. */
+export const SANDBOX_SETTINGS_CARD: LazyExoticComponent<typeof import("@/components/SandboxSettingsCard").SandboxSettingsCard> | null =
+  lazy(() => import("@/components/SandboxSettingsCard").then((m) => ({ default: m.SandboxSettingsCard })));
+
+/** SandboxIsolationPicker from @/components/SandboxIsolationPicker (component terminals.sandbox), or null when this build does not compile it. */
+export const SANDBOX_ISOLATION_PICKER: LazyExoticComponent<typeof import("@/components/SandboxIsolationPicker").SandboxIsolationPicker> | null =
+  lazy(() => import("@/components/SandboxIsolationPicker").then((m) => ({ default: m.SandboxIsolationPicker })));

@@ -1,0 +1,36 @@
+rules:
+  - id: java.template-injection
+    languages: [java]
+    severity: ERROR
+    message: Input from a web request is evaluated as template or expression source, so a caller can run code on the server; use a fixed template and pass the input as data.
+    metadata:
+      category: code_vuln
+      cwe: CWE-1336
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern: $REQ.$GET(...)
+          - metavariable-regex:
+              metavariable: $GET
+              regex: ^(getParameter|getParameterValues|getParameterMap|getHeader|getHeaders|getQueryString|getCookies|getInputStream|getReader|getPathInfo|getRequestURI)$
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: (?i)^(req|request|httpRequest|servletRequest|httpServletRequest)$
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $RT $M(..., @$ANN $T $X, ...) { ... }
+              - pattern-inside: |
+                  $RT $M(..., @$ANN(...) $T $X, ...) { ... }
+          - metavariable-regex:
+              metavariable: $ANN
+              regex: ^(RequestParam|PathVariable|RequestHeader|RequestBody|QueryParam|PathParam|FormParam|HeaderParam|CookieValue)$
+          - pattern: $X
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: Velocity.evaluate($CTX, $W, $TAG, $T)
+              - pattern: $VE.evaluate($CTX, $W, $TAG, $T)
+              - pattern: new Template($N, new StringReader($T), ...)
+              - pattern: $PARSER.parseExpression($T, ...)
+          - focus-metavariable: $T

@@ -1,0 +1,69 @@
+rules:
+  - id: go.tls-verify-off
+    languages: [go]
+    severity: ERROR
+    message: TLS certificate verification is turned off (InsecureSkipVerify) outside an opt-in flag or config condition, so anyone on the network path can read or change the traffic; keep verification on and trust a specific CA pool if needed.
+    metadata:
+      category: code_vuln
+      cwe: CWE-295
+    patterns:
+      # Not under a flag- or config-named condition (an explicit opt-in).
+      # The second branch keeps a sink under any other condition (an error
+      # or status-code branch): its condition text contains none of verify,
+      # insecure, skip, tls, ssl, debug, allow, config, opt, flag (any
+      # case), one generated lookahead-free regex per word (the pack
+      # validator compiles every regex as Go RE2).
+      - pattern-either:
+          - patterns:
+              - pattern-either:
+                  - pattern: 'tls.Config{..., InsecureSkipVerify: true, ...}'
+                  - pattern: $C.InsecureSkipVerify = true
+              - pattern-not-inside: |
+                  if $COND { ... }
+              - pattern-not-inside: |
+                  if $COND { ... } else { ... }
+          - patterns:
+              - pattern-either:
+                  - pattern: 'tls.Config{..., InsecureSkipVerify: true, ...}'
+                  - pattern: $C.InsecureSkipVerify = true
+              - pattern-either:
+                  - pattern-inside: |
+                      if $COND { ... }
+                  - pattern-inside: |
+                      if $COND { ... } else { ... }
+              - metavariable-regex:
+                  metavariable: $COND
+                  regex: '^(?:(?:[^vV]|[vV](?:(?:[vV]|[eE](?:[vV]|[rR](?:[vV]|[iI](?:[vV]|[fF][vV])))))*(?:[^eEvV]|[eE](?:[^rRvV]|[rR](?:[^iIvV]|[iI](?:[^fFvV]|[fF][^vVyY]))))))*(?:|[vV](?:(?:[vV]|[eE](?:[vV]|[rR](?:[vV]|[iI](?:[vV]|[fF][vV])))))*(?:|[eE](?:|[rR](?:|[iI](?:|[fF])))))\z'
+              - metavariable-regex:
+                  metavariable: $COND
+                  regex: '^(?:(?:[^iI]|[iI](?:(?:[iI]|[nN](?:[iI]|[sS](?:[iI]|[eE](?:[iI]|[cC](?:[iI]|[uU](?:[iI]|[rR][iI])))))))*(?:[^iInN]|[nN](?:[^iIsS]|[sS](?:[^eEiI]|[eE](?:[^cCiI]|[cC](?:[^iIuU]|[uU](?:[^iIrR]|[rR][^eEiI]))))))))*(?:|[iI](?:(?:[iI]|[nN](?:[iI]|[sS](?:[iI]|[eE](?:[iI]|[cC](?:[iI]|[uU](?:[iI]|[rR][iI])))))))*(?:|[nN](?:|[sS](?:|[eE](?:|[cC](?:|[uU](?:|[rR])))))))\z'
+              - metavariable-regex:
+                  metavariable: $COND
+                  regex: '^(?:(?:[^sS]|[sS](?:(?:[sS]|[kK](?:[sS]|[iI][sS])))*(?:[^kKsS]|[kK](?:[^iIsS]|[iI][^pPsS]))))*(?:|[sS](?:(?:[sS]|[kK](?:[sS]|[iI][sS])))*(?:|[kK](?:|[iI])))\z'
+              - metavariable-regex:
+                  metavariable: $COND
+                  regex: '^(?:(?:[^tT]|[tT](?:(?:[tT]|[lL][tT]))*(?:[^lLtT]|[lL][^sStT])))*(?:|[tT](?:(?:[tT]|[lL][tT]))*(?:|[lL]))\z'
+              - metavariable-regex:
+                  metavariable: $COND
+                  regex: '^(?:(?:[^sS]|[sS](?:[^sS]|[sS](?:[sS])*[^lLsS])))*(?:|[sS](?:|[sS](?:[sS])*))\z'
+              - metavariable-regex:
+                  metavariable: $COND
+                  regex: '^(?:(?:[^dD]|[dD](?:(?:[dD]|[eE](?:[dD]|[bB](?:[dD]|[uU][dD]))))*(?:[^dDeE]|[eE](?:[^bBdD]|[bB](?:[^dDuU]|[uU][^dDgG])))))*(?:|[dD](?:(?:[dD]|[eE](?:[dD]|[bB](?:[dD]|[uU][dD]))))*(?:|[eE](?:|[bB](?:|[uU]))))\z'
+              - metavariable-regex:
+                  metavariable: $COND
+                  regex: '^(?:(?:[^aA]|[aA](?:(?:[aA]|[lL](?:[aA]|[lL](?:[aA]|[oO][aA]))))*(?:[^aAlL]|[lL](?:[^aAlL]|[lL](?:[^aAoO]|[oO][^aAwW])))))*(?:|[aA](?:(?:[aA]|[lL](?:[aA]|[lL](?:[aA]|[oO][aA]))))*(?:|[lL](?:|[lL](?:|[oO]))))\z'
+              - metavariable-regex:
+                  metavariable: $COND
+                  regex: '^(?:(?:[^cC]|[cC](?:(?:[cC]|[oO](?:[cC]|[nN](?:[cC]|[fF](?:[cC]|[iI][cC])))))*(?:[^cCoO]|[oO](?:[^cCnN]|[nN](?:[^cCfF]|[fF](?:[^cCiI]|[iI][^cCgG]))))))*(?:|[cC](?:(?:[cC]|[oO](?:[cC]|[nN](?:[cC]|[fF](?:[cC]|[iI][cC])))))*(?:|[oO](?:|[nN](?:|[fF](?:|[iI])))))\z'
+              - metavariable-regex:
+                  metavariable: $COND
+                  regex: '^(?:(?:[^oO]|[oO](?:(?:[oO]|[pP][oO]))*(?:[^oOpP]|[pP][^oOtT])))*(?:|[oO](?:(?:[oO]|[pP][oO]))*(?:|[pP]))\z'
+              - metavariable-regex:
+                  metavariable: $COND
+                  regex: '^(?:(?:[^fF]|[fF](?:(?:[fF]|[lL](?:[fF]|[aA][fF])))*(?:[^fFlL]|[lL](?:[^aAfF]|[aA][^fFgG]))))*(?:|[fF](?:(?:[fF]|[lL](?:[fF]|[aA][fF])))*(?:|[lL](?:|[aA])))\z'
+      - pattern-not-inside: |
+          func $F($T *testing.T) { ... }
+      - pattern-not-inside: |
+          func $F($B *testing.B) { ... }
+      - pattern-not-inside: |
+          func $F($TB testing.TB, ...) { ... }

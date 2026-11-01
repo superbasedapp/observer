@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/marmutapp/superbased-observer/internal/config"
 )
 
 // visibleLauncherError preserves the internal error chain while carrying the
@@ -45,13 +47,21 @@ func renderSuppressedLauncherError(stderr io.Writer, root, executed *cobra.Comma
 		return false
 	}
 	var visible launcherMessageError
-	if !errors.As(err, &visible) {
-		return false
+	if errors.As(err, &visible) {
+		message := strings.TrimSpace(visible.launcherMessage())
+		if message == "" {
+			return false
+		}
+		_, _ = fmt.Fprintln(stderr, message)
+		return true
 	}
-	message := strings.TrimSpace(visible.launcherMessage())
-	if message == "" {
-		return false
+	// A config file that exists but cannot be read is said, never a silent
+	// exit 1 (Linux live check 2026-10-23, LIN-1 F3): the path and the
+	// operating system's reason, nothing from the file.
+	var unreadable *config.ReadError
+	if errors.As(err, &unreadable) {
+		_, _ = fmt.Fprintf(stderr, "observer %s: cannot read its config file %s: %v\n", executed.Name(), unreadable.Path, unreadable.Err)
+		return true
 	}
-	_, _ = fmt.Fprintln(stderr, message)
-	return true
+	return false
 }

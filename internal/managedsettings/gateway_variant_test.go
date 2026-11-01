@@ -40,6 +40,7 @@ func TestManagedSettingsGatewayVariants(t *testing.T) {
 			arts, err := GenerateClaudeCode(ClaudeCodeOptions{
 				AnthropicBaseURL: v.baseURL,
 				IncludeMCP:       true,
+				ExclusiveMCP:     true,
 			})
 			if err != nil {
 				t.Fatalf("%s: GenerateClaudeCode: %v", v.name, err)

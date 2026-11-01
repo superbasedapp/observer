@@ -217,11 +217,66 @@ var hookSpanWriters = map[integration.HookMechanism][]spanTemplate{
 			Writer: "internal/hook/register_agy.go (agyObserverHookName)", Note: "Observer owns one top-level hook name; every other key round-trips.",
 		},
 	},
+	// The 2026-10-21 wave writers into a shared user file (surface-gap lane
+	// w4-catalog): Observer owns its own entries under the hooks key; the
+	// user's other hooks stay theirs.
+	integration.HookIBMBobSettings: {
+		{
+			Rel: "~/.bob/settings/settings.json", Path: KeyPath{"hooks"}, Owner: SpanOwnerHook, Match: SpanEntries, Verb: verbHooks,
+			Writer: "internal/hook/register_wave1021.go (ibm-bob)",
+		},
+	},
+	integration.HookCodeBuddySettings: {
+		{
+			Rel: "~/.codebuddy/settings.json", Path: KeyPath{"hooks"}, Owner: SpanOwnerHook, Match: SpanEntries, Verb: verbHooks,
+			Writer: "internal/hook/register_wave1021.go (codebuddy)",
+		},
+	},
+	integration.HookDeepAgentsJSON: {
+		{
+			Rel: "~/.deepagents/hooks.json", Path: KeyPath{"hooks"}, Owner: SpanOwnerHook, Match: SpanEntries, Verb: verbHooks,
+			Writer: "internal/hook/register_wave1021.go (deepAgentsHooksTarget)",
+		},
+	},
+	integration.HookDimCodeJSON: {
+		{
+			Rel: "~/.dimcode/v2/hooks.json", Path: KeyPath{"hooks"}, Owner: SpanOwnerHook, Match: SpanEntries, Verb: verbHooks,
+			Writer: "internal/hook/register_wave1021.go (dimCodeHooksTarget)",
+		},
+	},
+	// Autohand (FU-45, decision D16): config.json holds provider keys and
+	// the account token, and D16 allows the member-only read and write of
+	// its hooks member, so the span lands: Observer's own hooks.hooks[]
+	// entries. The editor never opens the file (PrivNever); the span names
+	// the owner for the hygiene pipeline and the parity docs.
+	integration.HookAutohandConfig: {
+		{
+			Rel: "~/.autohand/config.json", Path: KeyPath{"hooks", "hooks"}, Owner: SpanOwnerHook, Match: SpanEntries, Verb: verbHooks,
+			Writer: "internal/hook/register_wave1021_config.go (registerAutohand, hooks member only)",
+			Note:   "Only the hooks member is read or written (D16); hooks.enabled is the user's switch and is never flipped off.",
+		},
+	},
+	integration.HookVTCodeTOML: {
+		{
+			Rel: "$XDG_CONFIG_HOME/vtcode/vtcode.toml", Path: KeyPath{"hooks", "lifecycle"}, Owner: SpanOwnerHook, Match: SpanEntries, Verb: verbHooks,
+			Writer: "internal/hook/register_wave1021_config.go (registerVTCodeAt)",
+			Note:   "The writer hard-codes ~/.config/vtcode on Linux and skips macOS (location matrix Part 7 items 8 and 9).",
+		},
+	},
 }
 
 // hookNoSpan names the registry mechanisms that write no vendor config key.
 var hookNoSpan = map[integration.HookMechanism]string{
-	integration.HookNone:             "no hook surface",
+	// The 2026-10-21 wave writers that own no user file key (surface-gap
+	// lane w4-catalog catalogued their files; the shared-file writers moved
+	// to hookSpanWriters).
+	integration.HookDiracHookFiles: "dedicated Observer script files under ~/.dirac/Hooks (internal/hook/register_wave1021.go); no user file key is touched",
+	integration.HookKimchiBashHook: "a dedicated Observer script, ~/.config/kimchi/harness/hooks/bash/superbased-observer.sh (internal/hook/register_wave1021.go); no user file key is touched",
+	integration.HookNone:           "no hook surface",
+	// Surface-gap W-2a / DEC-12: the writer is built but switched off, so
+	// no key is Observer's yet; the span lands with the switch-on commit.
+	integration.HookCortexHooksJSON: "the W-2a writer (internal/hook/register_cortex.go) is switched off until live check LC18, so it owns no entry in ~/.snowflake/cortex/hooks.json yet; " +
+		"its span (the hooks entries) lands with the commit that switches it on",
 	integration.HookClineCLIJSONL:    "a tailer over the tool's own hooks.jsonl: Observer writes nothing into Cline's config",
 	integration.HookBrowserExtension: "a native-messaging host manifest (internal/browserhost), not an AI tool config file",
 	integration.HookZcodeJSON: "the hook-parity Lane A6 writer (internal/hook/register_toolgate_vendors.go zcodeHooksTarget) writes hooks.events and hooks.enabled " +
@@ -234,9 +289,12 @@ var hookNoSpan = map[integration.HookMechanism]string{
 	integration.HookGrokHooksJSON:        "a dedicated Observer file, ~/.grok/hooks/superbased-observer.json (internal/hook/register_toolgate_vendors.go); no user file key is touched",
 	integration.HookCopilotCLIHooks:      "a dedicated Observer file, ~/.copilot/hooks/superbased-observer.json (internal/hook/register_toolgate_vendors.go); no user file key is touched",
 	integration.HookGoosePlugin:          "a dedicated Observer plugin, ~/.agents/plugins/superbased-observer/ (internal/hook/register_toolgate_vendors.go); no user file key is touched",
-	integration.HookClineHookFiles:       "a dedicated executable per event under ~/.cline/hooks/ (internal/hook/register_vibe_cline.go); no user file key is touched",
+	integration.HookClineHookFiles:       "a dedicated Observer plugin, ~/.cline/plugins/superbased-observer-guard.js, plus a no-op PreToolUse keep-alive under ~/.cline/hooks/ (internal/hook/register_vibe_cline.go); no user file key is touched",
 	integration.HookOpenInterpreterHooks: "~/.openinterpreter/hooks.json (internal/hook/register_toolgate_vendors.go) is not a catalogued settings file, so its entries are not addressable here",
 	integration.HookPluginShimTS:         "a dedicated Observer plugin file in the host's plugin directory (internal/hook/register_pluginshim.go); no user config key is touched",
+	integration.HookKiroAgentJSON: "the gfiD writer (internal/hook/register_kiro.go) owns a dedicated agent ~/.kiro/agents/superbased-observer.json and a dedicated V3 file " +
+		"~/.kiro/hooks/superbased-observer.json, adds its own entries to the user's ~/.kiro/agents/*.json (not catalogued files) and sets the flat cli.json key " +
+		"chat.defaultAgent only when no default is set; no span until the catalogue models agent JSONs and the flat-versus-nested cli.json spelling is grounded live",
 }
 
 // mcpSpanWriters maps an MCP config format to the observer entry's path in
@@ -297,6 +355,14 @@ var proxySpanWriters = map[string][]spanTemplate{
 
 // proxyNoSpan names the file-writing route rows with no span row, and why.
 var proxyNoSpan = map[string]string{
+	// Ready for the cline row's ProxyProbe (surface-gap lane w2-d, IDE-8):
+	// the writer is internal/proxyroute/cline.go.
+	"cline": "the probe writer sets <provider>BaseUrl in ~/.cline/data/globalState.json, extension-managed state the catalogue lists as never form-editable; its span is not addressable",
+	"open-interpreter": "the member writer (internal/proxyroute/memberroute.go) is switched off until live check LC11, so it owns no key in ~/.openinterpreter/config.toml yet; " +
+		"its spans (model_providers.openai-observer, model_provider) land with the commit that switches it on",
+	"poolside": "the member writer (internal/proxyroute/memberroute.go) is switched off until live check LCR-1, so it owns no key in settings.yaml yet; " +
+		"its span (pool.api_url) lands with the commit that switches it on",
+	"stakpak":   "the member writer (internal/proxyroute/memberroute.go, switched off until live check LC37) sets api_endpoint in ~/.stakpak/config.toml, a credential file the catalogue lists as never readable; its span is not addressable",
 	"cline-cli": "the launcher writes settings.baseUrl into ~/.cline/data/settings/providers.json, a credential file the catalogue lists as never readable; its span is not addressable",
 }
 

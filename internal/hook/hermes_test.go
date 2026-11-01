@@ -50,20 +50,27 @@ func TestRegisterHermes_DryRunNoFilesystemChange(t *testing.T) {
 
 // TestRegisterHermes_Idempotent confirms re-running against an
 // already-installed location works without error and refreshes the
-// embedded copies.
+// embedded copies. A file that no longer reads as Observer's is kept without
+// --force (FU-207) and restored with it.
 func TestRegisterHermes_Idempotent(t *testing.T) {
 	t.Parallel()
 	home := t.TempDir()
 	if _, err := RegisterHermes(HermesOptions{HermesHome: home}); err != nil {
 		t.Fatalf("first RegisterHermes: %v", err)
 	}
-	// Garbage one of the files; second run must restore it.
+	if _, err := RegisterHermes(HermesOptions{HermesHome: home}); err != nil {
+		t.Fatalf("re-run RegisterHermes: %v", err)
+	}
+	// Garbage one of the files; a second run keeps it, --force restores it.
 	garbage := filepath.Join(home, "plugins", "superbased-observer", "plugin.yaml")
 	if err := os.WriteFile(garbage, []byte("stale"), 0o600); err != nil {
 		t.Fatalf("garbage write: %v", err)
 	}
-	if _, err := RegisterHermes(HermesOptions{HermesHome: home}); err != nil {
-		t.Fatalf("second RegisterHermes: %v", err)
+	if _, err := RegisterHermes(HermesOptions{HermesHome: home}); err == nil {
+		t.Fatal("second RegisterHermes overwrote a file that is not Observer's without --force")
+	}
+	if _, err := RegisterHermes(HermesOptions{HermesHome: home, Force: true}); err != nil {
+		t.Fatalf("second RegisterHermes --force: %v", err)
 	}
 	data, err := os.ReadFile(garbage)
 	if err != nil {
@@ -86,12 +93,12 @@ func TestUnregisterHermes_RoundTripRemovesPluginDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UnregisterHermes: %v", err)
 	}
-	if _, err := os.Stat(got); !os.IsNotExist(err) {
-		t.Errorf("plugin dir still exists after uninstall: %v", err)
+	if _, err := os.Stat(got.PluginDir); !os.IsNotExist(err) || !got.DirRemoved {
+		t.Errorf("plugin dir still exists after uninstall: %v (%+v)", err, got)
 	}
 	// Sibling dirs (other plugins) must NOT have been removed —
 	// confirm by ensuring the parent `plugins/` still exists.
-	parent := filepath.Dir(got)
+	parent := filepath.Dir(got.PluginDir)
 	if _, err := os.Stat(parent); err != nil {
 		t.Errorf("parent plugins/ dir removed: %v", err)
 	}

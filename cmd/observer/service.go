@@ -1,8 +1,10 @@
-// service.go — `observer service` systemd command group.
+// service.go — `observer service` command group: a systemd unit on Linux, a
+// per-user launchd LaunchAgent on macOS (service_launchd.go).
 
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -20,14 +22,15 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/toolresolve"
 )
 
-// errNoSystemd is returned when the host has no systemd manager. The
-// command surfaces it as a clear, actionable message (macOS launchd /
-// Windows-via-WSL are documented alternatives, not handled here yet).
+// errNoSystemd is returned when the host has neither systemd nor launchd
+// (macOS is handled by service_launchd.go). The command surfaces it as a
+// clear, actionable message.
 var errNoSystemd = errors.New(
-	"systemd not detected on this host (no /run/systemd/system).\n" +
-		"  `observer service` currently supports Linux systemd only.\n" +
-		"  - On macOS, run `observer start` under launchd, or use a tmux/screen session.\n" +
-		"  - On Windows, the daemon runs inside WSL; install the service there.",
+	"no supported service manager on this host (no systemd at /run/systemd/system, no launchd).\n" +
+		"  `observer service` supports Linux systemd and macOS launchd.\n" +
+		"  - On Windows, start at sign-in is `observer setup autostart on` (the Windows installer\n" +
+		"    from superbased.app/download sets it up), or install the service inside WSL.\n" +
+		"  - Otherwise run `observer start` in a tmux/screen session.",
 )
 
 // unitPathEnv joins the merged PATH dirs (toolresolve.MergedPathDirs —
@@ -99,10 +102,12 @@ func lingerNoticeFor(username string) string {
 func newServiceCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "service",
-		Short: "Install and manage observer as a long-running systemd service",
+		Short: "Install and manage observer as a long-running service (systemd on Linux, launchd on macOS)",
 		Long: "Supervises `observer start` (proxy + watcher + dashboard) as a\n" +
 			"systemd unit, so the daemon survives crashes and reboots without\n" +
-			"a tmux/screen babysitter.\n\n" +
+			"a tmux/screen babysitter. On macOS the same commands manage a per-user\n" +
+			"launchd LaunchAgent (~/Library/LaunchAgents/app.superbased.observer.plist)\n" +
+			"that starts at login; its log is ~/Library/Logs/SuperBased/observer.log.\n\n" +
 			"Default scope is --user (per-login, no root). Use --system on a\n" +
 			"headless box (e.g. a worker node running as root) so the daemon\n" +
 			"survives logout. Subcommands:\n" +
@@ -121,7 +126,7 @@ func newServiceCmd() *cobra.Command {
 		newServiceUpgradeCmd(),
 		newServiceLifecycleCmd("start", "Start the observer service"),
 		newServiceLifecycleCmd("stop", "Stop the observer service"),
-		newServiceLifecycleCmd("restart", "Restart the observer service (drops active proxy sessions)"),
+		newServiceRestartCmd(),
 		newServiceLifecycleCmd("status", "Show the observer service status"),
 		newServiceLogsCmd(),
 		newServiceUninstallCmd(),
@@ -161,6 +166,8 @@ func newServiceInstallCmd() *cobra.Command {
 		configPath string
 		recipe     string
 		port       int
+		whenIdle   bool
+		endRuns    bool
 	)
 	cmd := &cobra.Command{
 		Use:   "install",
@@ -182,6 +189,7 @@ func newServiceInstallCmd() *cobra.Command {
 				recipe:     recipe,
 				port:       port,
 				stdout:     cmd.OutOrStdout(),
+				liveRuns:   serviceLiveRunChoice(whenIdle, endRuns),
 			})
 		},
 	}
@@ -190,6 +198,8 @@ func newServiceInstallCmd() *cobra.Command {
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml to bake into the unit (defaults to the daemon's own lookup)")
 	cmd.Flags().StringVar(&recipe, "recipe", "", "Compression recipe to bake into the unit")
 	cmd.Flags().IntVar(&port, "port", 0, "Proxy port to bake into the unit (0 = config default)")
+	cmd.Flags().BoolVar(&whenIdle, "when-idle", false, "With --now: wait for live sandboxed runs to finish before restarting a running service")
+	cmd.Flags().BoolVar(&endRuns, "end-sandboxed-runs", false, "With --now: end live sandboxed runs before restarting a running service")
 	return cmd
 }
 
@@ -204,6 +214,9 @@ type serviceInstallOptions struct {
 	// binary), and a stopped unit is left stopped.
 	upgrade bool
 	stdout  io.Writer
+	// liveRuns is the answer to the live sandboxed run question a restart
+	// of a running service asks (install --now, upgrade).
+	liveRuns cliLiveRunChoice
 	// deps are the injected I/O (zero value = production).
 	deps serviceInstallDeps
 }
@@ -217,11 +230,17 @@ type serviceInstallDeps struct {
 	pathDirs func() []string
 	// linger returns the linger note for the user scope (nil = loginctl).
 	linger func() string
+	// liveRuns asks the running daemon about its live sandboxed runs (zero
+	// value = the loopback client for the config).
+	liveRuns *daemonLiveRunsClient
 	// probe is the systemctl / process / route I/O (nil = production).
 	probe *serviceProbe
 }
 
 func runServiceInstall(opts serviceInstallOptions) error {
+	if launchdAvailable() {
+		return runLaunchdInstall(opts, launchdDeps{exe: opts.deps.exe, pathDirs: opts.deps.pathDirs})
+	}
 	if !systemdAvailable() {
 		return errNoSystemd
 	}
@@ -324,6 +343,12 @@ func runServiceInstall(opts serviceInstallOptions) error {
 		startIfInactive: opts.now && !opts.upgrade, port: serviceProxyPort(opts.configPath, opts.port), w: opts.stdout,
 	}
 	if opts.now || opts.upgrade {
+		// A restart of a running daemon ends its live sandboxed runs: ask
+		// first (install --now refuses naming them; upgrade leaves the old
+		// process running and says why, like a live proxy route).
+		if lerr := serviceInstallLiveRunCheck(opts, refresh, probe); lerr != nil {
+			return lerr
+		}
 		if err := applyServiceRefresh(refresh, probe); err != nil {
 			return err
 		}
@@ -332,6 +357,48 @@ func runServiceInstall(opts serviceInstallOptions) error {
 	}
 	fmt.Fprintln(opts.stdout, serviceRestartNote(snap.Active("capture.proxy")))
 	return nil
+}
+
+// serviceInstallLiveRunCheck runs the live-run gate before install --now or
+// upgrade may restart a running service. The unit file is already written,
+// so a refusal leaves the old process running on the new unit until the
+// owner answers.
+func serviceInstallLiveRunCheck(opts serviceInstallOptions, r serviceRefresh, p serviceProbe) error {
+	if !serviceRefreshMayRestart(r, p) {
+		return nil
+	}
+	c := opts.deps.liveRuns
+	if c == nil {
+		lc := newDaemonLiveRunsClient(opts.configPath)
+		c = &lc
+	}
+	err := cliLiveRunCheck(context.Background(), opts.stdout, liveRunTriggerServiceInstall, *c, opts.liveRuns)
+	if err == nil || (!errors.Is(err, errLiveSandboxedRuns) && !errors.Is(err, errLiveRunsUnknown)) {
+		return err
+	}
+	if opts.upgrade {
+		fmt.Fprintf(opts.stdout, "The unit was rewritten; the running service keeps its current process because %v.\n"+
+			"Run `observer service install --now%s` with --when-idle or --end-sandboxed-runs to restart it.\n", err, scopeFlagSuffix(r.scope))
+		return nil
+	}
+	return err
+}
+
+// serviceRefreshMayRestart reports whether applyServiceRefresh could
+// restart the running unit (the same inputs it decides on): a running
+// process whose executable or ExecStart changed, or is unknown. A stopped
+// unit, or one already running this binary with the same arguments, is not
+// restarted, so it ends nothing and asks nothing.
+func serviceRefreshMayRestart(r serviceRefresh, p serviceProbe) bool {
+	active, pid, err := p.show(r.scope)
+	if err != nil || !active {
+		return false
+	}
+	link, lerr := p.readExe(pid)
+	if pid <= 0 || lerr != nil {
+		return true
+	}
+	return runningExeDiffers(link, r.exe) || (r.oldExecStart != "" && r.oldExecStart != r.newExecStart)
 }
 
 // reportInstalledNotStarted is `install` without --now: it starts nothing and
@@ -494,6 +561,9 @@ func newServiceLifecycleCmd(verb, short string) *cobra.Command {
 		Use:   verb,
 		Short: short,
 		RunE: func(_ *cobra.Command, _ []string) error {
+			if launchdAvailable() {
+				return runLaunchdLifecycle(verb, system, launchdDeps{})
+			}
 			if !systemdAvailable() {
 				return errNoSystemd
 			}
@@ -505,6 +575,50 @@ func newServiceLifecycleCmd(verb, short string) *cobra.Command {
 	return cmd
 }
 
+// newServiceRestartCmd is `observer service restart`: before systemctl
+// restarts the unit it asks the running daemon over loopback for its live
+// sandboxed runs and refuses naming them, unless --when-idle (wait, then
+// restart) or --end-sandboxed-runs (end them through the daemon, then
+// restart). A daemon that does not answer restarts as before, with a
+// warning (sandbox plan v2 section 5.5, SBX-UPD-1).
+func newServiceRestartCmd() *cobra.Command {
+	var (
+		system, whenIdle, endRuns bool
+		configPath                string
+	)
+	cmd := &cobra.Command{
+		Use:   "restart",
+		Short: "Restart the observer service (drops active proxy sessions; asks first when sandboxed runs are live)",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if !systemdAvailable() {
+				return errNoSystemd
+			}
+			if whenIdle && endRuns {
+				return fmt.Errorf("--when-idle and --end-sandboxed-runs are two different answers; pass one")
+			}
+			if err := cliLiveRunCheck(cmd.Context(), cmd.OutOrStdout(), liveRunTriggerServiceRestart,
+				newDaemonLiveRunsClient(configPath), serviceLiveRunChoice(whenIdle, endRuns)); err != nil {
+				return err
+			}
+			return serviceSystemctl(service.Systemctl(resolveScope(system), "restart", service.UnitName))
+		},
+	}
+	cmd.Flags().BoolVar(&system, "system", false, "Target the system unit instead of the --user unit")
+	cmd.Flags().BoolVar(&whenIdle, "when-idle", false, "Wait for the live sandboxed runs to finish, then restart")
+	cmd.Flags().BoolVar(&endRuns, "end-sandboxed-runs", false, "End the live sandboxed runs (a tool with its own resume continues afterwards), then restart")
+	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml naming the daemon's dashboard address (defaults to the daemon's own lookup)")
+	return cmd
+}
+
+// serviceLiveRunChoice is the service verbs' answer to the live-run
+// question.
+func serviceLiveRunChoice(whenIdle, endRuns bool) cliLiveRunChoice {
+	return cliLiveRunChoice{whenIdle: whenIdle, endRuns: endRuns, flagHint: "--when-idle (restart when they finish) or --end-sandboxed-runs (end them now)"}
+}
+
+// serviceSystemctl runs a systemctl command (a seam for tests).
+var serviceSystemctl = runServiceCommand
+
 func newServiceLogsCmd() *cobra.Command {
 	var (
 		system bool
@@ -513,8 +627,11 @@ func newServiceLogsCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "logs",
-		Short: "Show the observer service logs (journalctl)",
+		Short: "Show the observer service logs (journalctl; the agent log file on macOS)",
 		RunE: func(_ *cobra.Command, _ []string) error {
+			if launchdAvailable() {
+				return runLaunchdLogs(system, follow, lines, launchdDeps{})
+			}
 			if !systemdAvailable() {
 				return errNoSystemd
 			}
@@ -534,6 +651,9 @@ func newServiceUninstallCmd() *cobra.Command {
 		Use:   "uninstall",
 		Short: "Stop, disable, and remove the observer service unit",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if launchdAvailable() {
+				return runLaunchdUninstall(cmd.OutOrStdout(), system, launchdDeps{})
+			}
 			if !systemdAvailable() {
 				return errNoSystemd
 			}

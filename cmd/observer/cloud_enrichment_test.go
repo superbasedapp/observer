@@ -155,7 +155,9 @@ func TestCloudEnvelopeCarriesStructuralSignal(t *testing.T) {
 	for _, e := range env.ActivityMix {
 		mix[e.Key] = e.Count
 	}
-	if mix["run_command"] != 4 || mix["user_prompt"] != 2 || mix["edit_file"] != 1 {
+	// The `/clear` command envelope is the harness, not a prompt (T-966): it
+	// counts as prompt_context, leaving the one real prompt.
+	if mix["run_command"] != 4 || mix["user_prompt"] != 1 || mix["prompt_context"] != 1 || mix["edit_file"] != 1 {
 		t.Errorf("activity_mix = %+v, want the whole-session histogram", env.ActivityMix)
 	}
 

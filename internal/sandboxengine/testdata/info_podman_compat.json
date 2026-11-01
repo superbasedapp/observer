@@ -1,0 +1,1 @@
+{"ID":"","Containers":0,"Driver":"overlay","DockerRootDir":"/home/dev/.local/share/containers/storage","Name":"devbox","OperatingSystem":"ubuntu","KernelVersion":"6.18.44","SecurityOptions":["name=apparmor","name=seccomp,profile=default","name=rootless"],"ServerVersion":"5.6.2"}

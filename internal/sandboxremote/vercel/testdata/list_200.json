@@ -1,0 +1,7 @@
+{
+  "sandboxes": [
+    {"name": "observer-run-1", "persistent": false, "status": "running", "currentSessionId": "sbx_abc123", "region": "iad1", "tags": {"observer-run": "run-1"}},
+    {"name": "observer-run-9", "persistent": false, "status": "running", "currentSessionId": "sbx_def456", "region": "iad1", "tags": {"observer-run": "run-9"}}
+  ],
+  "pagination": {"count": 2, "next": null}
+}

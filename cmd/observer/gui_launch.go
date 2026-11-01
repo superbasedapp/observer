@@ -107,8 +107,15 @@ func (g *guiLauncher) SpawnGUI(req termsvc.GUISpawnRequest) (termsvc.GUISpawnRes
 	// reads the declared class and applies the org's existing partial-coverage
 	// posture instead of refusing an under-cap launch at $0. An unknown launch
 	// id resolves to nothing and keeps the fail-closed refusal.
-	if err := enforceBudgetControlledLaunch(context.Background(), configPath, req.ID,
-		guiBudgetEvidence(req.ID)); err != nil {
+	//
+	// The daemon starts this process itself, so the walk is the daemon-started
+	// one: the repository trust row checks the launch's own project root,
+	// never asks on the daemon's stdin (the New Terminal dialog is where the
+	// developer reviews and accepts), and its checked marker goes only to this
+	// child's environment.
+	trustEnv, err := enforceDaemonStartedLaunch(context.Background(), configPath, req.ID,
+		guiBudgetEvidence(req.ID), daemonLaunch{dir: req.ProjectRoot})
+	if err != nil {
 		return termsvc.GUISpawnResult{}, err
 	}
 	composed, err := g.composeLaunch(req.ID, req.Spec, req.ProjectRoot, resolveProxyURL(g.proxyPort, ""), nil)
@@ -117,7 +124,7 @@ func (g *guiLauncher) SpawnGUI(req termsvc.GUISpawnRequest) (termsvc.GUISpawnRes
 	}
 	plan, bin, notes := composed.plan, composed.bin, composed.notes
 
-	env := guiChildEnv(plan.Env)
+	env := guiChildEnv(append(plan.Env, trustEnv...))
 	proc, err := spawnDetached(plan.Argv, composed.dir, env)
 	if err != nil {
 		return termsvc.GUISpawnResult{}, err
@@ -166,6 +173,9 @@ func (g *guiLauncher) composeLaunch(id string, spec integration.GUILaunchSpec, p
 		ProxyURL:    proxyURL,
 		ViaInterop:  viaInterop,
 		ExtraArgs:   extraArgs,
+		// IDE-2: a running single-instance app receives the launch and
+		// keeps its own environment (the probe runs only for such a launch).
+		InstanceRunning: guiInstanceRunning,
 	})
 	if err != nil {
 		return guiComposedLaunch{}, err

@@ -23,20 +23,16 @@ import (
 //
 // dumpCursorStopReject closes that blind spot: on every stop-reject
 // branch in processCursorEvent it appends one CONTENT-SAFE forensic row
-// to ~/.observer/cursor-stop-debug.jsonl. It records only the SET of
+// to <observer home>/cursor-stop-debug.jsonl. It records only the SET of
 // top-level JSON keys plus the values of short scalar fields — never
 // conversation content — which is exactly enough to spot a shape change
 // (e.g. keys carrying "inputTokens" instead of "input_tokens", or a
 // missing "generation_id") without capturing prompts or transcripts.
 
-// cursorStopDebugPath returns the per-user cursor stop-reject debug log
-// location, mirroring hookEventLogPath's ~/.observer/ convention.
+// cursorStopDebugPath returns the cursor stop-reject debug log location,
+// in the same Observer home as hookEventLogPath (hookStateDir).
 func cursorStopDebugPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".observer", "cursor-stop-debug.jsonl")
+	return stateFilePath("cursor-stop-debug.jsonl")
 }
 
 // cursorStopReject is one forensic row. Fields are flat for jq/grep
@@ -58,7 +54,7 @@ var cursorStopDebugMu sync.Mutex
 // every error is swallowed so the hook stays fail-open (spec P1).
 func dumpCursorStopReject(body []byte, reason string) {
 	path := cursorStopDebugPath()
-	if path == "" {
+	if path == "" || !forensicLogAllowed(path) {
 		return
 	}
 	row := cursorStopReject{

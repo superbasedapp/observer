@@ -13,6 +13,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/fsatomic"
 	"github.com/marmutapp/superbased-observer/internal/hook"
 	"github.com/marmutapp/superbased-observer/internal/integration"
+	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
 	"github.com/marmutapp/superbased-observer/internal/telemetrywire"
 )
 
@@ -78,11 +79,7 @@ func TelemetryConfigPath(tool string, opts TelemetryOptions) (string, error) {
 	}
 	w := c.OTLP.Wire
 	if opts.HomeDir == "" && w.DirEnv != "" {
-		getenv := opts.Getenv
-		if getenv == nil {
-			getenv = os.Getenv
-		}
-		if dir := getenv(w.DirEnv); dir != "" {
+		if dir := crossmount.HomeEnv("", opts.Getenv)(w.DirEnv); dir != "" {
 			return filepath.Join(dir, filepath.Base(w.File)), nil
 		}
 	}

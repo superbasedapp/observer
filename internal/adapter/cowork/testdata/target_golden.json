@@ -1,0 +1,10 @@
+{
+  "audit.jsonl": [
+    "uuser-0001\tPlease read the file foo.go and summarize it",
+    "uasst-0001:text:0\tI'll read the file.",
+    "toolu_read_001\tfoo.go",
+    "url-0001\tfive_hour",
+    "uasst-sidechain:text:0\tThe file declares package foo with one empty function Bar.",
+    "ures-0001\tDone summarizing foo.go."
+  ]
+}

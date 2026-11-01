@@ -1,0 +1,5 @@
+{
+  "sandbox": {"name": "observer-run-1", "persistent": false, "status": "stopped", "currentSessionId": "sbx_abc123", "region": "iad1", "tags": {"observer-run": "run-1"}},
+  "session": {"id": "sbx_abc123", "status": "stopped", "region": "iad1", "timeout": 2700000, "startedAt": 1792800001000, "stoppedAt": 1792800300000},
+  "routes": []
+}

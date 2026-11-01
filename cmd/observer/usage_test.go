@@ -44,7 +44,7 @@ func newUsageTestEnv(t *testing.T, adapters ...adapter.Adapter) *usageTestEnv {
 	tmpdir := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home) // windows equivalent
-	t.Setenv("TMPDIR", tmpdir)
+	setTestTempDir(t, tmpdir)
 	t.Setenv("NO_COLOR", "1")
 	return &usageTestEnv{
 		home:   home,
@@ -60,6 +60,11 @@ func newUsageTestEnv(t *testing.T, adapters ...adapter.Adapter) *usageTestEnv {
 
 // run executes `observer usage` with args and returns (stdout, stderr, err).
 func (e *usageTestEnv) run(t *testing.T, args ...string) (string, string, error) {
+	// Not nil: nil makes cobra read the test binary's own os.Args (a
+	// `-test.run X` given as two arguments became an unknown command).
+	if args == nil {
+		args = []string{}
+	}
 	t.Helper()
 	cmd := newUsageCmd(e.deps)
 	var out, errOut bytes.Buffer
@@ -389,7 +394,7 @@ func TestUsageCmd_IgnoresObserverEnvAndConfig(t *testing.T) {
 		t.Fatalf("mkdir config dir: %v", err)
 	}
 	cfgPath := filepath.Join(cfgDir, "config.toml")
-	if err := os.WriteFile(cfgPath, []byte("[observer]\ndb_path = \""+live+"\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("[observer]\ndb_path = \""+filepath.ToSlash(live)+"\"\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 
@@ -1119,7 +1124,8 @@ func TestBareRootFallthroughMatrix(t *testing.T) {
 		var out, errOut bytes.Buffer
 		root.SetOut(&out)
 		root.SetErr(&errOut)
-		root.SetArgs(nil)
+		// Not nil: nil makes cobra read the test binary's own os.Args.
+		root.SetArgs([]string{})
 		err := root.Execute()
 		return out.String(), errOut.String(), err
 	}

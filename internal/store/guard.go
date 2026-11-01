@@ -118,6 +118,12 @@ type GuardEventRow struct {
 	// the byte-level timestamp form, so it is captured once at insert
 	// time and round-tripped verbatim on load.
 	tsStored string
+	// actionAnchor is the action id the row was hashed with (the
+	// action_anchor column, agent migration 197): copied from ActionID at
+	// insert and never cleared, unlike action_id, which action retention
+	// and purge set to NULL when the action goes. The chain's action slot
+	// reads it (see hashedActionID).
+	actionAnchor *int64
 }
 
 // canonicalBytes returns the audit-canonical serialization of the row:
@@ -142,6 +148,14 @@ type GuardEventRow struct {
 // covered by the chain. A row's version is stored beside it (chain_v) and
 // the verifier recomputes with that row's version, so older chains verify
 // unchanged; rewriting a v2 row as v1 changes its recomputed hash.
+//
+// THE ACTION SLOT (GUARD-CHAIN-1, agent migration 197). Every version
+// hashes the action id the row was written with, read from action_anchor
+// (hashedActionID), not from the live action_id foreign key: maintenance
+// NULLs action_id when it removes the action, and before migration 197
+// that changed the hashed bytes, so the row failed verification as a
+// rewritten row. The preimage format is unchanged (the same decimal id),
+// so no new chain version was needed and every chain verifies as before.
 func (r *GuardEventRow) canonicalBytes() []byte {
 	build, ok := guardChainInputs[r.chainVersion()]
 	if !ok {
@@ -185,7 +199,7 @@ func (r *GuardEventRow) v1Fields() []string {
 	return []string{
 		r.tsStored,
 		r.SessionID,
-		formatNullableID(r.ActionID),
+		formatNullableID(r.hashedActionID()),
 		formatNullableID(r.APITurnID),
 		r.Tool,
 		r.EventKind,
@@ -201,6 +215,64 @@ func (r *GuardEventRow) v1Fields() []string {
 		r.TargetExcerpt,
 		r.TaintOrigin,
 	}
+}
+
+// hashedActionID is the id the chain's action slot hashes: action_anchor,
+// else action_id (a row written before migration 197 whose anchor was not
+// backfilled because its action_id had already been cleared, or one
+// written by a binary that predates the column).
+func (r *GuardEventRow) hashedActionID() *int64 {
+	if r.actionAnchor != nil {
+		return r.actionAnchor
+	}
+	return r.ActionID
+}
+
+// anchorRepointed reports a row whose live action_id names a different
+// action than the one it was hashed with. Maintenance only ever clears
+// action_id, so a mismatch is an edit, not a prune.
+func (r *GuardEventRow) anchorRepointed() bool {
+	return r.ActionID != nil && r.actionAnchor != nil && *r.ActionID != *r.actionAnchor
+}
+
+// Guard chain failure classes, in the order guardRowBreak checks them.
+const (
+	guardBreakLink      = "broken link"
+	guardBreakRepointed = "re-pointed anchor"
+	guardBreakRewritten = "rewritten row"
+)
+
+// guardBreakDetail is the verify-audit line for each failure class.
+var guardBreakDetail = map[string]string{
+	guardBreakLink:      "broken link at id %d: chain_prev does not match the prior row's chain_hash (possible mid-chain deletion or reorder)",
+	guardBreakRepointed: "re-pointed anchor at id %d: action_id names a different action than the one the row was hashed with",
+	guardBreakRewritten: "rewritten row at id %d: recomputed hash does not match chain_hash (row contents changed after insert)",
+}
+
+// guardRowBreaks checks one row against the link it must follow (prev) and
+// returns every class it fails, in check order; empty when it verifies.
+// The one rule set the verifier, dedup-events and repair-anchors share.
+func guardRowBreaks(prev string, r *GuardEventRow) []string {
+	var classes []string
+	if r.ChainPrev != prev {
+		classes = append(classes, guardBreakLink)
+	}
+	if r.anchorRepointed() {
+		classes = append(classes, guardBreakRepointed)
+	}
+	if guardChainHash(r.ChainPrev, r.canonicalBytes()) != r.ChainHash {
+		classes = append(classes, guardBreakRewritten)
+	}
+	return classes
+}
+
+// guardRowBreak is the first class guardRowBreaks reports, "" when the row
+// verifies.
+func guardRowBreak(prev string, r *GuardEventRow) string {
+	if classes := guardRowBreaks(prev, r); len(classes) > 0 {
+		return classes[0]
+	}
+	return ""
 }
 
 // guardChainHash computes SHA-256(prev || 0x1e || canonical row bytes)
@@ -249,8 +321,8 @@ INSERT INTO guard_events (
     ts, session_id, action_id, api_turn_id, tool, event_kind,
     rule_id, category, severity, decision, degraded_from, enforced,
     source, reason, target_hash, target_excerpt, taint_origin,
-    chain_prev, chain_hash, grant_id, chain_v
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    chain_prev, chain_hash, grant_id, chain_v, action_anchor
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 // InsertGuardEvents appends a batch of guard_events rows inside a
 // single transaction, computing the §10.4 hash chain link for each:
@@ -287,15 +359,27 @@ func (s *Store) InsertGuardEvents(ctx context.Context, events []GuardEventRow) (
 		return 0, fmt.Errorf("store.InsertGuardEvents: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := insertGuardEventsTx(ctx, tx, events); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("store.InsertGuardEvents: commit: %w", err)
+	}
+	return len(events), nil
+}
 
+// insertGuardEventsTx appends events to the chain inside the caller's
+// transaction: InsertGuardEvents' body, shared with the chain repair that
+// must append its marker row in the same transaction as its rewrite.
+func insertGuardEventsTx(ctx context.Context, tx *sql.Tx, events []GuardEventRow) error {
 	prev, err := guardChainTailTx(ctx, tx)
 	if err != nil {
-		return 0, fmt.Errorf("store.InsertGuardEvents: read chain tail: %w", err)
+		return fmt.Errorf("store.InsertGuardEvents: read chain tail: %w", err)
 	}
 
 	stmt, err := tx.PrepareContext(ctx, insertGuardEventSQL)
 	if err != nil {
-		return 0, fmt.Errorf("store.InsertGuardEvents: prepare: %w", err)
+		return fmt.Errorf("store.InsertGuardEvents: prepare: %w", err)
 	}
 	defer stmt.Close()
 
@@ -304,6 +388,11 @@ func (s *Store) InsertGuardEvents(ctx context.Context, events []GuardEventRow) (
 		ev.Reason = truncateRunes(ev.Reason, guardMaxReasonRunes)
 		ev.TargetExcerpt = truncateRunes(ev.TargetExcerpt, guardMaxExcerptRunes)
 		ev.tsStored = timestamp(ev.TS)
+		ev.actionAnchor = nil
+		if ev.ActionID != nil {
+			anchor := *ev.ActionID
+			ev.actionAnchor = &anchor
+		}
 		ev.ChainV = guardChainVersionCurrent
 		ev.ChainPrev = prev
 		ev.ChainHash = guardChainHash(prev, ev.canonicalBytes())
@@ -330,15 +419,13 @@ func (s *Store) InsertGuardEvents(ctx context.Context, events []GuardEventRow) (
 			ev.ChainHash,
 			nullableGrantID(ev.GrantID),
 			ev.ChainV,
+			nullableInt64Ptr(ev.actionAnchor),
 		); err != nil {
-			return 0, fmt.Errorf("store.InsertGuardEvents: exec[%d]: %w", i, err)
+			return fmt.Errorf("store.InsertGuardEvents: exec[%d]: %w", i, err)
 		}
 		prev = ev.ChainHash
 	}
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("store.InsertGuardEvents: commit: %w", err)
-	}
-	return len(events), nil
+	return nil
 }
 
 // guardChainTailTx returns the chain anchor for the next guard_events
@@ -386,6 +473,12 @@ type GuardChainReport struct {
 	// `observer guard verify-audit` (G5) can report without
 	// re-deriving.
 	Detail string
+	// Breaks counts every failing row by class (guardBreakLink,
+	// guardBreakRepointed, guardBreakRewritten), each row checked against
+	// the stored chain_hash of the row before it, so one deletion counts
+	// once and does not cascade. A row that fails more than one way counts
+	// in each class. Nil when OK.
+	Breaks map[string]int
 }
 
 // VerifyGuardChain walks the full guard_events chain in id order and
@@ -413,15 +506,7 @@ func (s *Store) VerifyGuardChain(ctx context.Context) (GuardChainReport, error) 
 		return GuardChainReport{}, fmt.Errorf("store.VerifyGuardChain: read checkpoint: %w", err)
 	}
 
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, ts, COALESCE(session_id,''), action_id, api_turn_id,
-		       COALESCE(tool,''), COALESCE(event_kind,''), rule_id,
-		       COALESCE(category,''), COALESCE(severity,''), COALESCE(decision,''),
-		       COALESCE(degraded_from,''), enforced, COALESCE(source,''),
-		       COALESCE(reason,''), COALESCE(target_hash,''),
-		       COALESCE(target_excerpt,''), COALESCE(taint_origin,''),
-		       chain_prev, chain_hash, COALESCE(grant_id, 0), chain_v
-		FROM guard_events ORDER BY id ASC`)
+	rows, err := s.db.QueryContext(ctx, guardEventSelectColumns+` ORDER BY id ASC`)
 	if err != nil {
 		return GuardChainReport{}, fmt.Errorf("store.VerifyGuardChain: query: %w", err)
 	}
@@ -429,45 +514,21 @@ func (s *Store) VerifyGuardChain(ctx context.Context) (GuardChainReport, error) 
 
 	report := GuardChainReport{OK: true}
 	for rows.Next() {
-		var r GuardEventRow
-		var enforced int
-		var actionID, apiTurnID sql.NullInt64
-		if err := rows.Scan(
-			&r.ID, &r.tsStored, &r.SessionID, &actionID, &apiTurnID,
-			&r.Tool, &r.EventKind, &r.RuleID,
-			&r.Category, &r.Severity, &r.Decision,
-			&r.DegradedFrom, &enforced, &r.Source,
-			&r.Reason, &r.TargetHash,
-			&r.TargetExcerpt, &r.TaintOrigin,
-			&r.ChainPrev, &r.ChainHash, &r.GrantID, &r.ChainV,
-		); err != nil {
+		r, err := scanGuardEventRow(rows)
+		if err != nil {
 			return GuardChainReport{}, fmt.Errorf("store.VerifyGuardChain: scan: %w", err)
 		}
-		r.Enforced = enforced != 0
-		if actionID.Valid {
-			v := actionID.Int64
-			r.ActionID = &v
-		}
-		if apiTurnID.Valid {
-			v := apiTurnID.Int64
-			r.APITurnID = &v
-		}
 		report.Checked++
-		if !report.OK {
-			continue // keep counting rows, first divergence already recorded
-		}
-		if r.ChainPrev != expectedPrev {
-			report.OK = false
-			report.FirstDivergenceID = r.ID
-			report.Detail = fmt.Sprintf(
-				"broken link at id %d: chain_prev does not match the prior row's chain_hash (possible mid-chain deletion or reorder)", r.ID,
-			)
-		} else if recomputed := guardChainHash(r.ChainPrev, r.canonicalBytes()); recomputed != r.ChainHash {
-			report.OK = false
-			report.FirstDivergenceID = r.ID
-			report.Detail = fmt.Sprintf(
-				"rewritten row at id %d: recomputed hash does not match chain_hash (row contents changed after insert)", r.ID,
-			)
+		if classes := guardRowBreaks(expectedPrev, &r); len(classes) > 0 {
+			if report.OK {
+				report.OK = false
+				report.FirstDivergenceID = r.ID
+				report.Detail = fmt.Sprintf(guardBreakDetail[classes[0]], r.ID)
+				report.Breaks = map[string]int{}
+			}
+			for _, class := range classes {
+				report.Breaks[class]++
+			}
 		}
 		expectedPrev = r.ChainHash
 	}
@@ -487,8 +548,41 @@ const guardEventSelectColumns = `
 	       COALESCE(degraded_from,''), enforced, COALESCE(source,''),
 	       COALESCE(reason,''), COALESCE(target_hash,''),
 	       COALESCE(target_excerpt,''), COALESCE(taint_origin,''),
-	       chain_prev, chain_hash, COALESCE(grant_id, 0), chain_v
+	       chain_prev, chain_hash, COALESCE(grant_id, 0), chain_v, action_anchor
 	FROM guard_events`
+
+// scanGuardEventRow scans one guardEventSelectColumns row.
+func scanGuardEventRow(sc rowScanner) (GuardEventRow, error) {
+	var r GuardEventRow
+	var enforced int
+	var actionID, apiTurnID, anchor sql.NullInt64
+	if err := sc.Scan(
+		&r.ID, &r.tsStored, &r.SessionID, &actionID, &apiTurnID,
+		&r.Tool, &r.EventKind, &r.RuleID,
+		&r.Category, &r.Severity, &r.Decision,
+		&r.DegradedFrom, &enforced, &r.Source,
+		&r.Reason, &r.TargetHash,
+		&r.TargetExcerpt, &r.TaintOrigin,
+		&r.ChainPrev, &r.ChainHash, &r.GrantID, &r.ChainV, &anchor,
+	); err != nil {
+		return r, err
+	}
+	r.Enforced = enforced != 0
+	r.ActionID = scannedID(actionID)
+	r.APITurnID = scannedID(apiTurnID)
+	r.actionAnchor = scannedID(anchor)
+	r.TS = parseStamp(r.tsStored)
+	return r, nil
+}
+
+// scannedID is a scanned nullable id as a pointer, nil when NULL.
+func scannedID(v sql.NullInt64) *int64 {
+	if !v.Valid {
+		return nil
+	}
+	n := v.Int64
+	return &n
+}
 
 // LoadGuardEventsForSession returns all guard events for a session,
 // ordered by id ascending (insert order == chain order). Used by the
@@ -612,30 +706,10 @@ func loadGuardEventRows(rows *sql.Rows, caller string) ([]GuardEventRow, error) 
 	defer rows.Close()
 	var out []GuardEventRow
 	for rows.Next() {
-		var r GuardEventRow
-		var enforced int
-		var actionID, apiTurnID sql.NullInt64
-		if err := rows.Scan(
-			&r.ID, &r.tsStored, &r.SessionID, &actionID, &apiTurnID,
-			&r.Tool, &r.EventKind, &r.RuleID,
-			&r.Category, &r.Severity, &r.Decision,
-			&r.DegradedFrom, &enforced, &r.Source,
-			&r.Reason, &r.TargetHash,
-			&r.TargetExcerpt, &r.TaintOrigin,
-			&r.ChainPrev, &r.ChainHash, &r.GrantID, &r.ChainV,
-		); err != nil {
+		r, err := scanGuardEventRow(rows)
+		if err != nil {
 			return nil, fmt.Errorf("%s: scan: %w", caller, err)
 		}
-		r.Enforced = enforced != 0
-		if actionID.Valid {
-			v := actionID.Int64
-			r.ActionID = &v
-		}
-		if apiTurnID.Valid {
-			v := apiTurnID.Int64
-			r.APITurnID = &v
-		}
-		r.TS = parseStamp(r.tsStored)
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {
@@ -1156,6 +1230,16 @@ func (s *Store) PersistGuardVerdicts(ctx context.Context, verdicts []guard.Actio
 			// was found worth auditing; only the mark above is written.
 			continue
 		}
+		if s.absorbedByPreExecDeny(ctx, v) {
+			// A post-hoc flag of a call a pre-execution gate already
+			// blocked (WINNODE2 item 10): a store that records attempted
+			// calls (Copilot's session-state keeps a denied call) would
+			// otherwise add a second, weaker row (enforced=0, a builtin
+			// source) for a call that never ran, and the Security page
+			// would count it as observe-only. One deny absorbs at most
+			// one record (absorbedByPreExecDeny); every other flag is kept.
+			continue
+		}
 		reason := v.Verdict.Reason
 		if v.Verdict.Advice != "" {
 			reason += " Advice: " + v.Verdict.Advice
@@ -1202,6 +1286,145 @@ func (s *Store) PersistGuardVerdicts(ctx context.Context, verdicts []guard.Actio
 		err = markErr
 	}
 	return n, err
+}
+
+// preExecBlockWindow is how far apart a pre-execution block and the
+// post-hoc record of the same call may be and still be one call. A retry
+// the agent makes after the deny (a hook that timed out and failed open, a
+// tool the gate does not match) lands later than this and is kept.
+const preExecBlockWindow = 10 * time.Second
+
+// absorbedByPreExecDeny reports whether v, a post-hoc (watcher) flag, is
+// the record of a call a pre-execution gate already denied, so the call
+// keeps the one enforced row the gate wrote. The rule is one-to-one (merge
+// fix for the WINNODE2 audit H2, which found one deny hiding every flag on
+// its target for two minutes, retries and other rules included):
+//
+//   - the deny is an enforced deny row with no action anchor, with the
+//     same session, target hash, tool, event kind (the classified action
+//     type) and rule id as v, within preExecBlockWindow of v;
+//   - among the session's actions with the same tool, action type and
+//     target within preExecBlockWindow of the deny, the deny's record is
+//     the one nearest in time (ties to the lowest id);
+//   - v is absorbed only when its action IS that record, so a deny absorbs
+//     at most one record and every other flag (a retry, a second call, a
+//     different rule on the same call) is kept.
+//
+// The candidate actions come from the actions table, so the choice does
+// not depend on how the post-hoc batch was split. Any read failure answers
+// false (the post-hoc row is kept).
+func (s *Store) absorbedByPreExecDeny(ctx context.Context, v *guard.ActionVerdict) bool {
+	in := v.Input
+	if in.ActionID == 0 || v.Enforced || in.SessionID == "" || in.Target == "" || in.Timestamp.IsZero() || v.Verdict.RuleID == "" {
+		return false
+	}
+	denies, err := s.preExecDenyTimes(ctx, in.SessionID, sha256Hex(in.Target), in.Tool, string(v.Kind), v.Verdict.RuleID)
+	if err != nil || len(denies) == 0 {
+		return false
+	}
+	var near []time.Time
+	for _, d := range denies {
+		if within(in.Timestamp, d, preExecBlockWindow) {
+			near = append(near, d)
+		}
+	}
+	if len(near) == 0 {
+		return false
+	}
+	cands, err := s.preExecCandidateActions(ctx, in.SessionID, in.Tool, in.ActionType, in.Target)
+	if err != nil {
+		return false
+	}
+	for _, d := range near {
+		if nearestAction(cands, d, preExecBlockWindow) == in.ActionID {
+			return true
+		}
+	}
+	return false
+}
+
+// preExecDenyTimes are the timestamps of the enforced pre-execution deny
+// rows matching one post-hoc flag's identity.
+func (s *Store) preExecDenyTimes(ctx context.Context, sessionID, targetHash, tool, kind, ruleID string) ([]time.Time, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT ts FROM guard_events
+		  WHERE session_id = ? AND target_hash = ? AND action_id IS NULL
+		    AND enforced = 1 AND decision = 'deny'
+		    AND COALESCE(tool, '') = ? AND COALESCE(event_kind, '') = ? AND rule_id = ?`,
+		sessionID, targetHash, tool, kind, ruleID)
+	if err != nil {
+		return nil, fmt.Errorf("store.preExecDenyTimes: %w", err)
+	}
+	defer rows.Close()
+	var out []time.Time
+	for rows.Next() {
+		var ts string
+		if err := rows.Scan(&ts); err != nil {
+			return nil, fmt.Errorf("store.preExecDenyTimes: scan: %w", err)
+		}
+		if t := parseStamp(ts); !t.IsZero() {
+			out = append(out, t)
+		}
+	}
+	return out, rows.Err()
+}
+
+// preExecAction is one candidate record for a pre-execution deny.
+type preExecAction struct {
+	id int64
+	at time.Time
+}
+
+// preExecCandidateActions are the session's actions with one tool, action
+// type and target: the records a pre-execution deny may have left.
+func (s *Store) preExecCandidateActions(ctx context.Context, sessionID, tool, actionType, target string) ([]preExecAction, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, timestamp FROM actions
+		  WHERE session_id = ? AND target = ? AND tool = ? AND action_type = ?
+		  ORDER BY id`,
+		sessionID, target, tool, actionType)
+	if err != nil {
+		return nil, fmt.Errorf("store.preExecCandidateActions: %w", err)
+	}
+	defer rows.Close()
+	var out []preExecAction
+	for rows.Next() {
+		var a preExecAction
+		var ts string
+		if err := rows.Scan(&a.id, &ts); err != nil {
+			return nil, fmt.Errorf("store.preExecCandidateActions: scan: %w", err)
+		}
+		if a.at = parseStamp(ts); !a.at.IsZero() {
+			out = append(out, a)
+		}
+	}
+	return out, rows.Err()
+}
+
+// nearestAction is the id of the candidate nearest in time to at within
+// window (ties to the lowest id; cands are in id order), 0 when none is.
+func nearestAction(cands []preExecAction, at time.Time, window time.Duration) int64 {
+	var best int64
+	var bestGap time.Duration
+	for _, c := range cands {
+		gap := c.at.Sub(at)
+		if gap < 0 {
+			gap = -gap
+		}
+		if gap > window {
+			continue
+		}
+		if best == 0 || gap < bestGap {
+			best, bestGap = c.id, gap
+		}
+	}
+	return best
+}
+
+// within reports whether a and b are at most window apart.
+func within(a, b time.Time, window time.Duration) bool {
+	d := a.Sub(b)
+	return d <= window && d >= -window
 }
 
 // GuardEventSummary aggregates guard_events for the status surfaces
@@ -1477,6 +1700,55 @@ func (s *Store) PreSendPromptJudged(ctx context.Context, sessionID, digest strin
 	return false, nil
 }
 
+// StoppedPrompt is one prompt a pre-send lane stopped in a conversation
+// (PromptSessionStops).
+type StoppedPrompt struct {
+	RuleID   string
+	Severity string
+}
+
+// promptSessionStopsLimit bounds PromptSessionStops: enough to look past a
+// run of budget stops to an earlier content stop.
+const promptSessionStopsLimit = 50
+
+// PromptSessionStops returns the prompts a pre-send prompt lane STOPPED in
+// sessionID for tool, newest first: guard_events user_prompt rows that were
+// enforced with an ask or deny decision (a redact persists as flag and a
+// forwarded verdict is not enforced, so neither counts). This is the
+// stopped-conversation taint read (internal/guard promptsessionstop.go,
+// which decides which stops taint): the row the first stop wrote is the
+// taint, so no table of its own exists. Empty tool or sessionID returns
+// nothing.
+func (s *Store) PromptSessionStops(ctx context.Context, tool, sessionID string) ([]StoppedPrompt, error) {
+	if tool == "" || sessionID == "" {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT rule_id, severity FROM guard_events
+		  WHERE session_id = ? AND tool = ? AND event_kind = ?
+		    AND enforced = 1 AND decision IN ('ask', 'deny')
+		  ORDER BY id DESC LIMIT ?`,
+		sessionID, tool, string(policy.KindUserPrompt), promptSessionStopsLimit)
+	if err != nil {
+		return nil, fmt.Errorf("store.PromptSessionStops: query: %w", err)
+	}
+	defer rows.Close()
+	var out []StoppedPrompt
+	for rows.Next() {
+		var sp StoppedPrompt
+		var sev sql.NullString
+		if err := rows.Scan(&sp.RuleID, &sev); err != nil {
+			return nil, fmt.Errorf("store.PromptSessionStops: scan: %w", err)
+		}
+		sp.Severity = sev.String
+		out = append(out, sp)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store.PromptSessionStops: rows: %w", err)
+	}
+	return out, nil
+}
+
 // LoadGuardReplayInputs loads historical actions as guard evaluation
 // inputs for `observer guard simulate` / `observer guard rescan`
 // (§11.1: replay history against CURRENT policy — possible only
@@ -1548,7 +1820,13 @@ func (s *Store) LoadGuardReplayInputs(ctx context.Context, since time.Time, limi
 //
 // retentionDays <= 0 is "no prune" (returns 0) so callers can pass
 // config straight through. Returns total rows removed.
-func (s *Store) PruneGuardRows(ctx context.Context, retentionDays int) (int, error) {
+//
+// keepFromID is the org push hold (T-839): when > 0, no guard_events row
+// with id >= keepFromID is pruned, because the org has not accepted it yet
+// (retention.Result.GuardKeepFromID: the guard_events push cursor plus one,
+// raised past any rows the held-data cap released). 0 means no hold (a node
+// that is not enrolled), the pre-T-839 behaviour.
+func (s *Store) PruneGuardRows(ctx context.Context, retentionDays int, keepFromID int64) (int, error) {
 	if retentionDays <= 0 {
 		return 0, nil
 	}
@@ -1575,6 +1853,9 @@ func (s *Store) PruneGuardRows(ctx context.Context, retentionDays int) (int, err
 		cutoff).Scan(&firstKeep)
 	if err != nil {
 		return 0, fmt.Errorf("store.PruneGuardRows: boundary: %w", err)
+	}
+	if keepFromID > 0 && keepFromID < firstKeep {
+		firstKeep = keepFromID
 	}
 
 	// Checkpoint BEFORE deleting: the chain_hash of the newest row

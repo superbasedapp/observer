@@ -55,6 +55,11 @@ type policyBundleRunner struct {
 	// onGuardReload, when set, runs after a successful live org-layer
 	// reload (start.go wires the hook-posture re-publish here).
 	onGuardReload func(*guard.Guard)
+	// cachePath is the bundle cache the poll writes (named in a repair's
+	// tamper event); posture is the writer that owns the bundle tamper
+	// incident (nil: the daemon's, daemonGuardPosture).
+	cachePath string
+	posture   *guardPostureWriter
 
 	mu         sync.Mutex
 	lastReject string
@@ -69,7 +74,35 @@ func newPolicyBundleRunner(cfg config.Config, st *store.Store, logger *slog.Logg
 		acquire: func(ctx context.Context) *guard.Guard {
 			return acquireProcessGuard(ctx, cfg, st, logger)
 		},
+		cachePath: orgBundleCachePath(cfg),
+		posture:   daemonGuardPosture,
 	}
+}
+
+// noteCacheRepair records the tamper an Applied poll repaired (a cache that
+// no longer verified, was deleted, or was displaced; T-869 and D-704) as one
+// org_bundle_tamper event, unless the posture check already recorded the
+// same incident (bundleIncidentTable). It runs before the live reload so the
+// repair reaches the incident record as soon after the write as it can.
+func (r *policyBundleRunner) noteCacheRepair(res orgclient.PolicyResult) {
+	if res.RepairedCache == orgclient.CacheRepairNone && res.DisplacedTo == "" {
+		return
+	}
+	var gd *guard.Guard
+	if r.acquire != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		gd = r.acquire(ctx)
+		cancel()
+	}
+	detail, ok := bundleRepairDetail(bundleRepair{res: res, cachePath: r.cachePath, deletionIsTamper: deletionIsTamper(gd)})
+	if !ok {
+		return
+	}
+	w := r.posture
+	if w == nil {
+		w = daemonGuardPosture
+	}
+	w.noteBundleRepair(detail)
 }
 
 // onResult is the PolicyPollLoop callback. A rejection emits R-205
@@ -88,6 +121,7 @@ func (r *policyBundleRunner) onResult(res orgclient.PolicyResult) {
 		// A healthy outcome re-arms the dedup so a LATER rejection emits
 		// again even if it textually matches an old one.
 		r.lastReject = ""
+		r.noteCacheRepair(res)
 		r.reloadGuardLayer(res, false)
 	case orgclient.PolicyUnchanged:
 		r.lastReject = ""

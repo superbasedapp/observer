@@ -13,7 +13,15 @@
 // Identical on WSL (~/.dsh) and native Windows (%USERPROFILE%\.dsh, seen
 // from WSL at /mnt/c/Users/<user>/.dsh):
 //
-//	~/.dsh/sessions/<cwd-slug>/session-<uuid>/session.jsonl.zstd
+//	~/.dsh/sessions/<cwd-slug>/session-<uuid>/session.v4.jsonl.zstd  (current builds)
+//	~/.dsh/sessions/<cwd-slug>/session-<uuid>/session.jsonl.zstd     (older builds)
+//
+// Both basenames are accepted through the closed sessionLogForms table
+// (session.jsonl.zstd and session.v<N>.jsonl.zstd for any decimal N). When
+// one session directory holds more than one log, only the highest version
+// is parsed (the unversioned name ranks below every explicit version) and
+// every lower one yields no events, so a session is never ingested twice
+// under two source files. See supersedingSibling.
 //
 // <cwd-slug> is the session's working directory with path separators
 // replaced by `-` and a leading+trailing `--`, e.g.
@@ -43,7 +51,7 @@
 //
 // # Record shape
 //
-// The first line of every session.jsonl.zstd is a HEADER with a distinct
+// The first line of every session log (either basename) is a HEADER with a distinct
 // shape (no seq/time/data envelope):
 //
 //	{"type":"session","version":0,"id":"session-<uuid>","createdAt":<unix-ms>,

@@ -17,6 +17,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/components"
 	"github.com/marmutapp/superbased-observer/internal/feasibility/nodefeas"
+	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
 	"github.com/marmutapp/superbased-observer/internal/termcore"
 
 	"github.com/coder/websocket"
@@ -854,6 +855,33 @@ type terminalLaunchRequest struct {
 	WorkspaceSource string `json:"workspace_source"`
 	WorkspaceRemote string `json:"workspace_remote"`
 	WorkspaceBranch string `json:"workspace_branch"`
+	// Backend is the isolation row the New Terminal picker chose for this
+	// launch (sandbox plan v2 section 9, rulings P-062 and P-067): absent,
+	// "" or "auto" lets selection pick exactly as before (it never takes a
+	// beta row); a row id is re-validated server-side by membership against
+	// the daemon's own probed backends (offered, enabled and available),
+	// never trusted verbatim, and is then the launch's explicit choice, so a
+	// chosen beta row runs. Ignored when Sandbox is false.
+	Backend string `json:"backend"`
+	// SignInSeed is the dialog's answer to copying the tool's sign-in into
+	// the box (lane BOXSIGNIN): absent not answered, true copy it, false
+	// start without it. SignInAsk says the dialog shows the consent step:
+	// a launch that can copy the sign-in, with no answer and no remembered
+	// consent, then answers 409 sign_in_consent with the question instead
+	// of starting. An older client sends neither and starts as before (no
+	// sign-in is copied). Ignored when Sandbox is false.
+	SignInSeed *bool `json:"sign_in_seed,omitempty"`
+	SignInAsk  bool  `json:"sign_in_ask,omitempty"`
+}
+
+// signInConsentResponse is the 409 body of a launch that needs the user's
+// answer to copying the tool's sign-in (lane BOXSIGNIN): the tool, the file
+// paths (never content) and the consent text.
+type signInConsentResponse struct {
+	Error string   `json:"error"`
+	Tool  string   `json:"tool"`
+	Files []string `json:"files"`
+	Text  string   `json:"text"`
 }
 
 // terminalLaunchResponse mirrors launchResponse plus the tool label so the
@@ -968,9 +996,18 @@ func (s *Server) handleTerminalLaunch(w http.ResponseWriter, r *http.Request) {
 		WorkspaceSource: workspaceSource,
 		WorkspaceRemote: body.WorkspaceRemote,
 		WorkspaceBranch: body.WorkspaceBranch,
+		Backend:         sandboxBackendChoice(body),
+		SignInSeed:      body.SignInSeed,
+		SignInAsk:       body.SignInAsk,
 	})
 	if err != nil {
+		var consent *termcore.SignInConsentError
 		switch {
+		case errors.As(err, &consent):
+			// The inline sign-in step's question (lane BOXSIGNIN).
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(signInConsentResponse{Error: "sign_in_consent", Tool: consent.Tool, Files: consent.Files, Text: consent.Text})
 		case errors.Is(err, ErrLaunchFreshDisabled):
 			http.Error(w, err.Error(), http.StatusForbidden)
 		case errors.Is(err, ErrLaunchToolNotAllowed):
@@ -1033,7 +1070,14 @@ func (s *Server) sandboxRequestOK(w http.ResponseWriter, r *http.Request, body t
 		return false
 	}
 	av := s.opts.SandboxProber.ProbeSandbox(r.Context())
-	if !av.Available {
+	if choice := sandboxBackendChoice(body); choice != "" {
+		// A chosen row is judged on its own row, not on the overall verdict
+		// (which, by ruling P-062, never calls a beta row available for a
+		// launch that names none).
+		if !sandboxChosenBackendOK(w, av.Backends, choice) {
+			return false
+		}
+	} else if !av.Available {
 		http.Error(w, "sandbox unavailable ("+av.Verdict+"): "+av.Reason, statusForSandboxVerdict(av.Verdict))
 		return false
 	}
@@ -1060,6 +1104,45 @@ func (s *Server) sandboxRequestOK(w http.ResponseWriter, r *http.Request, body t
 		return false
 	}
 	return true
+}
+
+// daemonInWSL reports whether this daemon runs inside WSL (a variable so a
+// test can answer either way).
+var daemonInWSL = crossmount.IsWSL
+
+// sandboxBackendChoice is the launch's explicit backend: the trimmed
+// client value, with "" and "auto" (the picker's Automatic entry) meaning
+// none, and nothing at all when the launch is not sandboxed.
+func sandboxBackendChoice(body terminalLaunchRequest) string {
+	b := strings.TrimSpace(body.Backend)
+	if !body.Sandbox || b == "auto" {
+		return ""
+	}
+	return b
+}
+
+// sandboxChosenBackendOK re-validates a picker-chosen backend by membership
+// against the daemon's own probed rows: an id the probe does not list, or a
+// planned row, is a 400 (never offered); a listed row that is not available
+// (not enabled, a failed probe, an org floor) refuses with that row's own
+// verdict, mapped like the overall verdict (fail closed, 501 by default).
+func sandboxChosenBackendOK(w http.ResponseWriter, rows []SandboxBackendAvail, choice string) bool {
+	for _, b := range rows {
+		if b.ID != choice {
+			continue
+		}
+		switch {
+		case b.Maturity == "planned":
+			http.Error(w, "sandbox backend "+choice+" is not offered yet", http.StatusBadRequest)
+			return false
+		case !b.Available:
+			http.Error(w, "sandbox backend "+choice+" unavailable ("+b.Verdict+"): "+b.Reason, statusForSandboxVerdict(b.Verdict))
+			return false
+		}
+		return true
+	}
+	http.Error(w, "unknown sandbox backend "+choice, http.StatusBadRequest)
+	return false
 }
 
 // kickWatchRootsRefresh invokes Options.RefreshWatchRoots when wired.
@@ -1187,7 +1270,7 @@ func (s *Server) annotateToolAvailability(ctx context.Context, rows []Launchable
 // UnlaunchableTool is one advertised product the New Terminal picker cannot
 // start, listed with an honest note instead of omitted (T-494, D-160). Kind
 // is integration.UnlaunchableKind's wire value (browser / hosted / desktop /
-// no_cli); Host names the editor a hosted row runs inside.
+// cli_no_launcher / no_cli); Host names the editor a hosted row runs inside.
 type UnlaunchableTool struct {
 	Tool string `json:"tool"`
 	Kind string `json:"kind"`
@@ -1271,6 +1354,12 @@ func (s *Server) handleTerminalSessions(w http.ResponseWriter, r *http.Request) 
 		"launchable_tool_info":  s.annotateToolAvailability(r.Context(), launchableToolInfo(cfg)),
 		"allowed_project_roots": allowedRoots,
 		"shell_enabled":         shellEnabled,
+		// Whether a Windows path typed as a custom project root is
+		// translated to its /mnt/<drive> form: only a daemon inside WSL does
+		// that (crossmount.TranslateForeignPath), so the dialog shows the
+		// hint only then (Windows 11 Pro live run, B4: a native Windows
+		// daemon showed it with no WSL installed).
+		"windows_paths_to_wsl": daemonInWSL(),
 		// The GUI launch surface (T2), strictly ADDITIVE: the picker's
 		// "IDE / desktop app" group and the live detached-app list. A GUI run
 		// owns no PTY, so it can never appear in "sessions" — the two lists
@@ -1713,6 +1802,27 @@ type wsControl struct {
 	// (policystop.go). Omitted when there is nothing to show — a bare exit
 	// still renders exactly as before this arc.
 	PolicyStop *PolicyStop `json:"policy_stop,omitempty"`
+	// EndReason rides the {"t":"exit",...} frame: why the run ended
+	// (terminal_run.end_reason's vocabulary, internal/termrun/endreason.go),
+	// so the terminal names it (Windows 11 Pro run 4, N3).
+	EndReason string `json:"end_reason,omitempty"`
+}
+
+// launchEndReasoner is the optional LaunchManager seam that names why a
+// run ended (the terminals component's adapter implements it; the
+// vocabulary is internal/termrun's, which this package does not import so
+// the terminals component stays separable).
+type launchEndReasoner interface {
+	EndReasonForExit(handle string, code int) string
+}
+
+// launchEndReason is the reason a run's exit frame names ("" when the
+// launch manager cannot say).
+func (s *Server) launchEndReason(handle string, code int) string {
+	if r, ok := s.opts.LaunchManager.(launchEndReasoner); ok {
+		return r.EndReasonForExit(handle, code)
+	}
+	return ""
 }
 
 // ptyGeometry is the PTY dimension snapshot the on-open (and control-transition)
@@ -1909,6 +2019,39 @@ func repaintNudgeRows(before ptyGeometry, rows, cols uint16, alreadyNudged bool)
 // unsubscribes and the writer lease is released; the child process keeps running
 // (an always-on pump drains its PTY into a replay ring), so a tab-close/refresh
 // survives and a reconnecting client replays recent output then tails live.
+// runSandboxedReader is the optional LaunchManager method the Jump-in gate
+// reads: whether a handle is a live run and whether it runs in a sandbox.
+type runSandboxedReader interface {
+	RunSandboxed(handle string) (sandboxed, isRun bool)
+}
+
+// terminalJoinRefused asks TerminalFeatureGate about joining handle. The
+// reason is cut to the websocket close frame's limit.
+func (s *Server) terminalJoinRefused(handle string) (string, bool) {
+	if s.opts.TerminalFeatureGate == nil {
+		return "", false
+	}
+	rs, ok := s.opts.LaunchManager.(runSandboxedReader)
+	if !ok {
+		return "", false
+	}
+	sandboxed, isRun := rs.RunSandboxed(handle)
+	if !isRun {
+		return "", false
+	}
+	allowed, reason := s.opts.TerminalFeatureGate(sandboxed)
+	if allowed {
+		return "", false
+	}
+	if reason == "" {
+		reason = "terminal refused by organization policy"
+	}
+	if len(reason) > 120 {
+		reason = strings.ToValidUTF8(reason[:120], "")
+	}
+	return reason, true
+}
+
 func (s *Server) handleLaunchWS(w http.ResponseWriter, r *http.Request) {
 	if s.opts.LaunchManager == nil {
 		http.NotFound(w, r)
@@ -1928,6 +2071,16 @@ func (s *Server) handleLaunchWS(w http.ResponseWriter, r *http.Request) {
 	}
 	c.SetReadLimit(1 << 20) // allow large pastes; terminal input is otherwise tiny
 	defer func() { _ = c.CloseNow() }()
+
+	// Jump-in (and a tab reconnecting to its terminal) is judged by the same
+	// org terminals decision as a launch, with the run's own sandbox answer
+	// (OSH-R-003): a terminal the org has disabled, or an unsandboxed one
+	// under sandbox_required, is not joined. A setup PTY is no run and is
+	// never asked (installing is not launching).
+	if reason, refused := s.terminalJoinRefused(handle); refused {
+		_ = c.Close(websocket.StatusPolicyViolation, reason)
+		return
+	}
 
 	// Listener provenance (§4.4), resolved at the boundary — NOT from any client
 	// field. A remote-exposed request subscribes through SubscribeRemote, which
@@ -2306,7 +2459,7 @@ func (s *Server) bridgeTerminalWS(parent context.Context, c *websocket.Conn, sub
 		}
 		<-readerDone // let the reader flush the final bytes first
 		_, code := sub.Exited()
-		frame := wsControl{T: "exit", Code: code}
+		frame := wsControl{T: "exit", Code: code, EndReason: s.launchEndReason(handle, code)}
 		// Resolve the policy-stop explanation ONCE, off a short bounded
 		// timeout independent of ctx (which this same goroutine cancels right
 		// below) — a slow/unavailable lookup must never delay the exit frame

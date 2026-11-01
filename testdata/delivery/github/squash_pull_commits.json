@@ -1,0 +1,30 @@
+[
+ {
+  "sha": "5d73f1eb5102372770f1a25fc2c4cfc6216f9864",
+  "parents": [
+   {
+    "sha": "da6e8b65fa1444c4df0b1b0efb6cc8e0ac4a0fbc"
+   }
+  ],
+  "commit": {
+   "message": "Make error overlay editor actions easier to discover",
+   "committer": {
+    "date": "2026-10-14T22:18:51Z"
+   }
+  }
+ },
+ {
+  "sha": "b917a818dbc744e97dca72e7ae395c2080c410ef",
+  "parents": [
+   {
+    "sha": "5d73f1eb5102372770f1a25fc2c4cfc6216f9864"
+   }
+  ],
+  "commit": {
+   "message": "Exclude editor actions from error source snapshots",
+   "committer": {
+    "date": "2026-10-14T22:44:46Z"
+   }
+  }
+ }
+]

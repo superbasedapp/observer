@@ -64,3 +64,32 @@ export function policyStopMessage(info: PolicyStopInfo): string {
 export function isLiveStatus(s: Status | undefined): boolean {
   return s !== "exited" && s !== "error";
 }
+
+// AgentExit is the slice of one agent-status stream row (GET
+// /ws/terminal/status, components/useTerminalStatuses) the dock folds in.
+export type AgentExit = { status: string; confidence: string };
+
+// foldAgentExits makes a dock tile follow its run's end at once (R-183):
+// the daemon's status stream reports a run "exited" (trusted, from the
+// process itself) as soon as the child ends, while the tile's own socket
+// may still read live (a tool that exits within a second of launch kept
+// its tile LIVE for about a minute until clicked). For each dock token whose
+// stream row is a trusted exit, a live transport status becomes "exited";
+// "exited" and "error" are kept. Returns prev itself when nothing changes,
+// so a state setter can call it on every update without a render loop.
+export function foldAgentExits(
+  prev: Record<string, Status>,
+  tokens: readonly string[],
+  agent: Record<string, AgentExit | undefined>,
+): Record<string, Status> {
+  let next = prev;
+  for (const token of tokens) {
+    const a = agent[token];
+    if (!a || a.status !== "exited" || a.confidence !== "trusted") continue;
+    const cur = prev[token];
+    if (cur === "exited" || cur === "error") continue;
+    if (next === prev) next = { ...prev };
+    next[token] = "exited";
+  }
+  return next;
+}

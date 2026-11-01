@@ -476,6 +476,34 @@ func TestWireEncodingGolden(t *testing.T) {
 				Transport:          "stdio", ObservedAt: 1790000100, FirstSeen: 1789740000, LastSeen: 1790000100,
 			}},
 		},
+		// The security pillar wire (security plan 7.4, lane SEC-E2): a managed
+		// node's posture row and one full finding row (raw fields present,
+		// because a managed enrolment ships full content). The plain
+		// push_envelope fixture above stays byte-identical: an individual node
+		// at the default share level sends none of these keys.
+		"push_envelope_security_managed": PushEnvelope{
+			AgentVersion: "1.37.0",
+			CursorFrom:   90501,
+			CursorTo:     90510,
+			SecurityPosture: []SecurityPostureRow{{
+				OrgID: "org-acme", UserEmail: "dev@acme.example", Day: "2026-10-21", ShareLevel: "findings",
+				Findings:     []SecurityPostureCount{{Category: "secret", Severity: "high", Status: "open", Count: 1}},
+				Projects:     1,
+				Detectors:    []string{"security", "security.secrets"},
+				OnlineChecks: "off", ScanFreshness: "under_1h",
+				CommitGate: []SecurityGateCount{{Rule: "S-791", Decision: "ask", Events: 2}},
+				FloorKeys:  []SecurityFloorKeyState{{Key: "require.commit_gate", State: "applied"}},
+			}},
+			SecurityFindings: []SecurityFindingRow{{
+				OrgID: "org-acme", UserEmail: "dev@acme.example",
+				FindingRef: "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+				RuleID:     "S-721.aws", Category: "secret", Severity: "high", Confidence: "high", Scope: "pre_write",
+				ProjectIdentityHash: "sha256:2b1c", EvidenceHash: "9a8b7c6d5e4f3a2b",
+				Baseline: "new", Attribution: "ai", SessionID: "sess-abc123", Tool: "claude-code",
+				Status: "open", FirstSeen: "2026-10-21T09:00:00Z", LastSeen: "2026-10-21T10:00:00Z",
+				RelPath: "src/config.go", StartLine: 12, EndLine: 12, EvidenceRedacted: "aws_key = [aws_access_key]",
+			}},
+		},
 		"push_envelope_with_update_posture": PushEnvelope{
 			AgentVersion: "1.30.0",
 			CursorFrom:   90477,
@@ -771,5 +799,35 @@ func TestAPITurnRequestClassWireCompatBothDirections(t *testing.T) {
 	}
 	if err := json.Unmarshal(classed, &older); err != nil || older.SessionID != "s1" {
 		t.Fatalf("an older decoder rejected the classed row: %+v, %v", older, err)
+	}
+}
+
+// TestSecurityWireCompatBothDirections pins the two-way compatibility of the
+// security pillar wire (security plan 7.4, CLAUDE.md "Compat invariant"): an
+// older agent's envelope decodes with no security rows, an envelope with
+// nothing to ship carries none of the three keys (an older server sees the
+// exact pre-SEC-E2 shape), and an unknown future field on a row does not
+// break today's decoder.
+func TestSecurityWireCompatBothDirections(t *testing.T) {
+	var env PushEnvelope
+	if err := json.Unmarshal([]byte(`{"agent_version":"1.36.0","cursor_from":1,"cursor_to":2}`), &env); err != nil {
+		t.Fatalf("unmarshal older-agent envelope: %v", err)
+	}
+	if env.SecurityPosture != nil || env.SecurityFindings != nil || env.AIChangeRecords != nil {
+		t.Fatalf("older-agent envelope decoded security rows: %+v", env)
+	}
+	empty, err := json.Marshal(PushEnvelope{AgentVersion: "1.37.0", CursorFrom: 1, CursorTo: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{`"security_posture"`, `"security_findings"`, `"ai_change_records"`} {
+		if bytes.Contains(empty, []byte(key)) {
+			t.Errorf("an envelope with no security rows carries %s; the key must be omitempty", key)
+		}
+	}
+	var got PushEnvelope
+	future := `{"security_findings":[{"finding_ref":"ab","rule_id":"R","category":"secret","severity":"high","status":"open","last_seen":"2026-10-21T10:00:00Z","future_field":1}]}`
+	if err := json.Unmarshal([]byte(future), &got); err != nil || len(got.SecurityFindings) != 1 {
+		t.Fatalf("newer-agent envelope: %v %+v", err, got.SecurityFindings)
 	}
 }

@@ -1,0 +1,1 @@
+{"version":1,"active_provider":"nous","providers":{"nous":{"access_token":"fixture-nous-token","refresh_token":"fixture-refresh-never-used","expires_at":"2025-10-09T09:30:00+00:00","portal_base_url":"https://evil.example.test"}}}

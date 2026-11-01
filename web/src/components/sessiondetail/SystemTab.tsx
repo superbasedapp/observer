@@ -14,17 +14,31 @@ import { SubAgentsSection } from "@/components/sessiondetail/SubAgentsSection";
 //
 // onFocusMessage crosses tabs: a process row links to the message that spawned
 // it, which now lives on the Messages tab. The shell's handler switches tabs
-// before focusing, so the link still lands.
+// before focusing, so the link still lands. onOpenTimeline switches to the
+// Messages tab itself (the session timeline). selectedProc / onSelectProc carry
+// the picked process the shell keeps in `?proc=`.
 export function SystemTab({
   sessionId,
   onFocusMessage,
+  selectedProc,
+  onSelectProc,
+  onOpenTimeline,
 }: {
   sessionId: string | null;
   onFocusMessage?: (messageId: string) => void;
+  selectedProc?: string | null;
+  onSelectProc?: (key: string | null) => void;
+  onOpenTimeline?: () => void;
 }) {
   return (
     <div className="space-y-4">
-      <ProcessesSection sessionId={sessionId} onFocusMessage={onFocusMessage} />
+      <ProcessesSection
+        sessionId={sessionId}
+        onFocusMessage={onFocusMessage}
+        selectedProc={selectedProc}
+        onSelectProc={onSelectProc}
+        onOpenTimeline={onOpenTimeline}
+      />
       <SubAgentsSection sessionId={sessionId} />
     </div>
   );

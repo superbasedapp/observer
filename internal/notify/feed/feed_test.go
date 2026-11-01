@@ -20,8 +20,8 @@ func TestEveryKindHasARule(t *testing.T) {
 		}
 		seen[r.Kind] = true
 	}
-	if len(seen) != 14 {
-		t.Fatalf("rules cover %d kinds, want 14", len(seen))
+	if len(seen) != 15 {
+		t.Fatalf("rules cover %d kinds, want 15", len(seen))
 	}
 }
 
@@ -146,6 +146,56 @@ func TestBuildPerKind(t *testing.T) {
 		{
 			name:     "a short lag is not a stall",
 			in:       feed.Input{Ingest: &feed.IngestFacts{BehindFiles: 1, OldestBehindSeconds: 30}},
+			wantNone: true,
+		},
+		{
+			name: "a coaching message from an admin",
+			in: feed.Input{OrgMessages: []feed.OrgMessageThread{{
+				ThreadID: "th-1", Subject: "Model choice", Kind: "coaching", NewestID: 12, NewestAuthor: "Asha Kim", NewestAt: now, Unread: 1,
+			}}},
+			wantID: "org_message:th-1:12", wantSev: feed.SeverityInfo, wantText: "Asha Kim (admin): Model choice", wantLink: "/messages?thread=th-1",
+		},
+		{
+			name: "an alert is critical",
+			in: feed.Input{OrgMessages: []feed.OrgMessageThread{{
+				ThreadID: "th-2", Subject: "Stop the migration", Kind: "alert", NewestID: 13, NewestAuthor: "Asha Kim", NewestAt: now, Unread: 1, NeedsAck: 1,
+			}}},
+			wantID: "org_message:th-2:13", wantSev: feed.SeverityCritical, wantText: "Asha Kim (admin): Stop the migration", wantLink: "/messages?thread=th-2",
+		},
+		{
+			name: "a note waiting for an acknowledgement is a warning",
+			in: feed.Input{OrgMessages: []feed.OrgMessageThread{{
+				ThreadID: "th-3", Subject: "Policy change", Kind: "note", NewestID: 14, NewestAuthor: "Ravi Rao", NewestAt: now, NeedsAck: 1,
+			}}},
+			wantID: "org_message:th-3:14", wantSev: feed.SeverityWarn, wantText: "Ravi Rao (admin): Policy change",
+		},
+		{
+			name: "alerts only mutes a note in the bell",
+			in: feed.Input{OrgMessagesAlertsOnly: true, OrgMessages: []feed.OrgMessageThread{{
+				ThreadID: "th-4", Subject: "FYI", Kind: "note", NewestID: 15, NewestAuthor: "Asha Kim", NewestAt: now, Unread: 1,
+			}}},
+			wantNone: true,
+		},
+		{
+			name: "alerts only keeps an alert",
+			in: feed.Input{OrgMessagesAlertsOnly: true, OrgMessages: []feed.OrgMessageThread{{
+				ThreadID: "th-5", Subject: "Urgent", Kind: "alert", NewestID: 16, NewestAuthor: "Asha Kim", NewestAt: now, Unread: 1,
+			}}},
+			wantID: "org_message:th-5:16", wantSev: feed.SeverityCritical, wantText: "Urgent",
+		},
+		{
+			name:   "a refused reply",
+			in:     feed.Input{OrgMessagesUnsent: []feed.OrgMessageUnsent{{ID: "c-1", ThreadID: "th-1", Failed: true, LastError: "this conversation was closed by your admin", At: now}}},
+			wantID: "org_message_unsent:c-1", wantSev: feed.SeverityWarn, wantText: "Your reply has not reached your admins", wantLink: "/messages?thread=th-1",
+		},
+		{
+			name:   "a new conversation still queued",
+			in:     feed.Input{OrgMessagesUnsent: []feed.OrgMessageUnsent{{ID: "c-2", Subject: "Budget", Attempts: 3, LastError: "your organization could not be reached", At: now}}},
+			wantID: "org_message_unsent:c-2", wantSev: feed.SeverityWarn, wantText: "Your message has not reached your admins", wantLink: "/messages",
+		},
+		{
+			name:     "a queued post that has not been tried is silent",
+			in:       feed.Input{OrgMessagesUnsent: []feed.OrgMessageUnsent{{ID: "c-3", ThreadID: "th-1"}}},
 			wantNone: true,
 		},
 	}

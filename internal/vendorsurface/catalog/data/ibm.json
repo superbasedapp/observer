@@ -1,0 +1,390 @@
+{
+ "group": "ibm",
+ "research_file": "docs/plans/native-console-wave-2026-10-21-phase0.md",
+ "checked_on": "2026-10-23",
+ "surfaces": [
+  {
+   "id": "ibm.bob.admin_policy",
+   "vendor_group": "ibm",
+   "vendor": "ibm",
+   "plane": "ibm.bob",
+   "reach": "file_projection",
+   "transport": "local_file",
+   "auth": {
+    "kind": "local_file",
+    "doc": "root-owned /etc/bob/policy.json, HKLM\\Software\\Policies\\IBM\\Bob (GPO / Intune ADMX), macOS com.ibm.bob managed preferences"
+   },
+   "paging": {
+    "style": "unspecified",
+    "doc": "n/a"
+   },
+   "rate": {
+    "documented": false,
+    "doc": "undocumented"
+   },
+   "tier": {
+    "doc": "Bob IDE and Bob Shell"
+   },
+   "freshness_doc": "watched (file watcher and the native policy-watcher)",
+   "lookback_doc": "n/a",
+   "per_user_doc": "per device",
+   "mechanism_doc": "one flat policy object; names DisabledAutoApprovalGroups, EnableTelemetry, ExcludePayloadFromTelemetry, GatewayUrl, EnforcedHooks (JSON string), RequiredExtensions, UpdateMode, OtelConfiguration (JSON string of OTEL_* variables; switches the external OTLP trace export on and wins over the environment). Bob Shell 2.0.6 reads the same three sources (bundle).",
+   "read_write_doc": "W (file / registry / MDM)",
+   "class_doc": "Policy",
+   "grain_doc": "Snapshot",
+   "build": "buildable",
+   "build_doc": "Generator built: observer org emit-managed-settings --provider ibm-bob (AP-135) emits OtelConfiguration as policy.json, .reg and .mobileconfig; doctor probe ibm-bob-teams",
+   "sensitivity": "metadata",
+   "secret_class": "never_returns_secret",
+   "supplies": [
+    {
+     "class": "Policy",
+     "grain": "snapshot",
+     "unit": "unspecified",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    }
+   ],
+   "controls": [
+    {
+     "class": "ManagedSettings",
+     "facet": "F",
+     "caps": {
+      "read": false,
+      "write": true,
+      "readback": false,
+      "effect_evidence": false,
+      "idempotency": false,
+      "local_file": true,
+      "repository": false
+     },
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "ApprovalPolicy",
+     "facet": "F",
+     "caps": {
+      "read": false,
+      "write": true,
+      "readback": false,
+      "effect_evidence": false,
+      "idempotency": false,
+      "local_file": true,
+      "repository": false
+     },
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "FeatureToggle",
+     "facet": "F",
+     "caps": {
+      "read": false,
+      "write": true,
+      "readback": false,
+      "effect_evidence": false,
+      "idempotency": false,
+      "local_file": true,
+      "repository": false
+     },
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "NetworkPolicy",
+     "facet": "F",
+     "caps": {
+      "read": false,
+      "write": true,
+      "readback": false,
+      "effect_evidence": false,
+      "idempotency": false,
+      "local_file": true,
+      "repository": false
+     },
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    }
+   ],
+   "sources": [
+    {
+     "url": "https://bob.ibm.com/docs/ide/security/group-policies",
+     "checked_on": "2026-10-23"
+    },
+    {
+     "url": "https://bob.ibm.com/blog/august-2026-release-2/",
+     "checked_on": "2026-10-23"
+    },
+    {
+     "repo_path": "docs/plans/native-console-wave-2026-10-21-phase0.md",
+     "checked_on": "2026-10-23"
+    }
+   ],
+   "notes": "AP-135 Rail B. OtelConfiguration and the Shell's policy sources are bundle-grounded (bobshell 2.0.6); IBM documents the IDE policies only. EnforcedHooks is deliberately not generated (Bob runs policy hooks in addition to the user hooks Observer registers). Code-complete; not verified on a managed install.",
+   "derivation": {
+    "reach_rule": "phase0",
+    "build_rule": "ap135",
+    "source_rule": "literal_url",
+    "auth_rule": "plane: managed file"
+   },
+   "status": "synthetic, awaiting live validation"
+  },
+  {
+   "id": "ibm.bob.otlp_traces",
+   "vendor_group": "ibm",
+   "vendor": "ibm",
+   "plane": "ibm.bob",
+   "reach": "push_otlp",
+   "transport": "otlp",
+   "auth": {
+    "kind": "unclassified",
+    "doc": "OTEL_EXPORTER_OTLP_HEADERS (customer collector; Observer's node receiver is loopback)"
+   },
+   "paging": {
+    "style": "unspecified",
+    "doc": "n/a"
+   },
+   "rate": {
+    "documented": false,
+    "doc": "undocumented"
+   },
+   "tier": {
+    "doc": "Bob Shell"
+   },
+   "freshness_doc": "real time",
+   "lookback_doc": "collector's",
+   "per_user_doc": "per conversation (gen_ai.conversation.id)",
+   "mechanism_doc": "Bob Shell's otel-external trace exporter to OTEL_EXPORTER_OTLP_ENDPOINT (http/json default, http/protobuf, grpc) when the env or the OtelConfiguration policy sets an endpoint; gen_ai.usage.input_tokens, output_tokens, cache_read.input_tokens, cache_creation.input_tokens, reasoning.output_tokens, gen_ai.usage.cost (Bobcoin); prompts, responses and tool output redacted unless OTEL_INCLUDE_* = 1",
+   "read_write_doc": "push",
+   "class_doc": "Telemetry, Usage, Content (opt-in)",
+   "grain_doc": "Event",
+   "build": "buildable",
+   "build_doc": "Node side: served by AP-131's node OTLP ingest (mapping row), redirected by the AP-135 policy generator",
+   "sensitivity": "content",
+   "secret_class": "unclassified",
+   "supplies": [
+    {
+     "class": "Telemetry",
+     "grain": "event",
+     "unit": "unspecified",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "Usage",
+     "grain": "per_call",
+     "unit": "tokens",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "Content",
+     "grain": "event",
+     "unit": "text",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    }
+   ],
+   "controls": [],
+   "sources": [
+    {
+     "url": "https://bob.ibm.com/docs/shell/configuration/configuring",
+     "checked_on": "2026-10-23"
+    }
+   ],
+   "notes": "The only Bob token source (bob.db keeps none). Bundle-grounded, not in IBM's docs; not live-verified.",
+   "derivation": {
+    "reach_rule": "phase0",
+    "build_rule": "ap135",
+    "source_rule": "repo_path",
+    "auth_rule": "plane: otlp collector"
+   },
+   "status": "synthetic, awaiting live validation"
+  },
+  {
+   "id": "ibm.bob.bobalytics_export",
+   "vendor_group": "ibm",
+   "vendor": "ibm",
+   "plane": "ibm.bob",
+   "reach": "manual_upload",
+   "transport": "manual_file",
+   "auth": {
+    "kind": "manual_upload",
+    "doc": "Enterprise admin exports a CSV ZIP from Admin > Bobalytics"
+   },
+   "paging": {
+    "style": "unspecified",
+    "doc": "n/a"
+   },
+   "rate": {
+    "documented": false,
+    "doc": "undocumented"
+   },
+   "tier": {
+    "doc": "Enterprise"
+   },
+   "freshness_doc": "undocumented",
+   "lookback_doc": "undocumented",
+   "per_user_doc": "per org, team and user",
+   "mechanism_doc": "Bobalytics: adoption, Bob factor and Bobcoin spend by org, team and user, exported as CSV tables in a ZIP; no API",
+   "read_write_doc": "UI + CSV",
+   "class_doc": "Adoption, Cost (Bobcoins)",
+   "grain_doc": "UserDay",
+   "build": "catalog_only",
+   "build_doc": "CatalogOnly: an importer is deferred until a customer asks (Phase 0)",
+   "sensitivity": "metadata",
+   "secret_class": "never_returns_secret",
+   "supplies": [
+    {
+     "class": "Adoption",
+     "grain": "user_day",
+     "unit": "count",
+     "accuracy": "aggregate",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "catalog_only",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "Cost",
+     "grain": "user_day",
+     "unit": "credits",
+     "accuracy": "aggregate",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "catalog_only",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    }
+   ],
+   "controls": [],
+   "sources": [
+    {
+     "url": "https://bob.ibm.com/docs/ide/features/bobalytics",
+     "checked_on": "2026-10-23"
+    },
+    {
+     "url": "https://bob.ibm.com/docs/ide/enterprise/getting-started/teams",
+     "checked_on": "2026-10-23"
+    }
+   ],
+   "notes": "Bobcoins are a billing unit, never dollars.",
+   "derivation": {
+    "reach_rule": "phase0",
+    "build_rule": "ap135",
+    "source_rule": "literal_url",
+    "auth_rule": "plane: manual export"
+   },
+   "status": "synthetic, awaiting live validation"
+  },
+  {
+   "id": "ibm.bob.activity_log",
+   "vendor_group": "ibm",
+   "vendor": "ibm",
+   "plane": "ibm.bob",
+   "reach": "manual_only",
+   "transport": "ui",
+   "auth": {
+    "kind": "console_session",
+    "doc": "Enterprise admin"
+   },
+   "paging": {
+    "style": "unspecified",
+    "doc": "n/a"
+   },
+   "rate": {
+    "documented": false,
+    "doc": "undocumented"
+   },
+   "tier": {
+    "doc": "Enterprise"
+   },
+   "freshness_doc": "undocumented",
+   "lookback_doc": "undocumented",
+   "per_user_doc": "per admin or auth event",
+   "mechanism_doc": "auth and admin events as CADF JSON in the admin console; forwardable to Splunk HEC through IBM support",
+   "read_write_doc": "UI",
+   "class_doc": "Audit",
+   "grain_doc": "Event",
+   "build": "catalog_only",
+   "build_doc": "CatalogOnly: no API",
+   "sensitivity": "pii",
+   "secret_class": "never_returns_secret",
+   "supplies": [
+    {
+     "class": "Audit",
+     "grain": "event",
+     "unit": "count",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "catalog_only",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    }
+   ],
+   "controls": [],
+   "sources": [
+    {
+     "url": "https://bob.ibm.com/docs/ide/enterprise/getting-started/activity-log",
+     "checked_on": "2026-10-23"
+    }
+   ],
+   "notes": "",
+   "derivation": {
+    "reach_rule": "phase0",
+    "build_rule": "ap135",
+    "source_rule": "literal_url",
+    "auth_rule": "plane: console"
+   },
+   "status": "synthetic, awaiting live validation"
+  }
+ ]
+}

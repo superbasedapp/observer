@@ -91,3 +91,47 @@ func TestReportJSONKeys(t *testing.T) {
 		last = i
 	}
 }
+
+// TestCommandDialectOnWindows is WINNODE item 2 at the dry run: on a Windows
+// working directory an unstated shell is also read as PowerShell (the reading
+// a hook gives a generic shell tool there), so the reason keeps the path's
+// backslashes; --shell names one reading; a POSIX directory keeps one reading.
+func TestCommandDialectOnWindows(t *testing.T) {
+	win := Base(`C:\Users\developer\proj`, `C:\Users\developer\proj`, time.Date(2026, 10, 28, 0, 0, 0, 0, time.UTC))
+	cases := []struct {
+		name          string
+		ev            policy.Event
+		dialect, alt  policy.Dialect
+		reasonContain string
+	}{
+		{"unstated on windows reads powershell too", Command(win, `Remove-Item -Recurse -Force C:\Users\developer`), "", policy.DialectPowerShell, `C:\Users\developer is the home directory`},
+		{"--shell powershell", CommandIn(win, `Remove-Item -Recurse -Force C:\Users\developer`, policy.DialectPowerShell), policy.DialectPowerShell, "", `C:\Users\developer is the home directory`},
+		{"--shell cmd", CommandIn(win, `rd /s /q C:\Users\x`, policy.DialectCmd), policy.DialectCmd, "", `C:\Users\x resolves outside the project root`},
+		{"posix directory keeps one reading", Command(base(), "rm -rf ./build"), "", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.ev.Dialect != tc.dialect || tc.ev.AltDialect != tc.alt {
+				t.Fatalf("dialect = %q alt = %q, want %q / %q", tc.ev.Dialect, tc.ev.AltDialect, tc.dialect, tc.alt)
+			}
+			if tc.reasonContain == "" {
+				return
+			}
+			res, err := Run(config.Default().Guard, `C:\Users\developer`, nil, tc.ev)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.EnforceVerdict.RuleID != "R-101" || !strings.Contains(res.EnforceVerdict.Reason, tc.reasonContain) {
+				t.Fatalf("enforce verdict = %s %s (%s), want R-101 naming %q", res.EnforceVerdict.Decision, res.EnforceVerdict.RuleID, res.EnforceVerdict.Reason, tc.reasonContain)
+			}
+		})
+	}
+	for name, want := range map[string]policy.Dialect{"": "", "posix": policy.DialectPosix, "powershell": policy.DialectPowerShell, "cmd": policy.DialectCmd} {
+		if got, ok := ShellDialect(name); !ok || got != want {
+			t.Errorf("ShellDialect(%q) = %q, %v", name, got, ok)
+		}
+	}
+	if _, ok := ShellDialect("fish"); ok {
+		t.Error("ShellDialect(fish) accepted")
+	}
+}

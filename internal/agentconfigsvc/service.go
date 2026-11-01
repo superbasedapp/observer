@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -18,6 +17,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/agentconfig"
 	"github.com/marmutapp/superbased-observer/internal/agentconfig/vendorschema"
 	"github.com/marmutapp/superbased-observer/internal/integration"
+	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
 	"github.com/marmutapp/superbased-observer/internal/scrub"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -35,7 +35,10 @@ type Options struct {
 	Home string
 	// GOOS defaults to runtime.GOOS.
 	GOOS string
-	// Getenv defaults to os.Getenv.
+	// Getenv reads the relocation variables of the files the service reads
+	// and writes. nil is the one pinned-home rule (crossmount.HomeEnv,
+	// R-188 F1): os.Getenv only when Home is not pinned and the process home
+	// is not isolated, and no variable otherwise.
 	Getenv func(string) string
 	// SystemRoot re-roots managed / system paths (tests).
 	SystemRoot string
@@ -68,7 +71,7 @@ type Options struct {
 	Committed func(projectRoot, rel string) bool
 	// BackupKeep is the backup ring size per file (default 5).
 	BackupKeep int
-	// MaxFileBytes caps a read (default 2 MiB).
+	// MaxFileBytes caps a read (default DefaultMaxFileBytes).
 	MaxFileBytes int64
 	Now          func() time.Time
 }
@@ -83,15 +86,14 @@ type Service struct {
 
 // New builds a Service.
 func New(o Options) *Service {
+	pinnedHome := o.Home
 	if o.Home == "" {
 		o.Home, _ = os.UserHomeDir()
 	}
 	if o.GOOS == "" {
 		o.GOOS = runtime.GOOS
 	}
-	if o.Getenv == nil {
-		o.Getenv = os.Getenv
-	}
+	o.Getenv = crossmount.HomeEnv(pinnedHome, o.Getenv)
 	if o.Detect == nil {
 		o.Detect = DefaultDetect
 	}
@@ -108,7 +110,7 @@ func New(o Options) *Service {
 		o.BackupKeep = 5
 	}
 	if o.MaxFileBytes <= 0 {
-		o.MaxFileBytes = 2 << 20
+		o.MaxFileBytes = DefaultMaxFileBytes
 	}
 	if o.Committed == nil {
 		o.Committed = GitCommitted
@@ -153,8 +155,66 @@ var (
 	ErrReadBackFailed = errors.New("agentconfigsvc: read-back verification failed; the previous file was restored")
 )
 
+// env is the ONE path environment every read and write of the service
+// resolves a file row through (FU-140): the editor view, raw / preview /
+// save, the effective layers, the integrated-capture refusal, the managed
+// inventory and the org apply all name the same file. Relocate is on, so a
+// variable that moves a tool's file (CLAUDE_CONFIG_DIR, CODEX_HOME and the
+// rest of agentconfig's relocation table) moves it here exactly as it moves
+// it for the tool. Getenv is the pinned-home lookup New installed
+// (crossmount.HomeEnv): an isolated or pinned home reads no variable. A
+// relative value resolves to PathRelocationUnresolved, which every caller
+// treats as "no file", never as the default location (R-188 F6).
 func (s *Service) env(project string) agentconfig.PathEnv {
-	return agentconfig.PathEnv{GOOS: s.o.GOOS, Home: s.o.Home, Project: project, Getenv: s.o.Getenv, SystemRoot: s.o.SystemRoot}
+	return agentconfig.PathEnv{
+		GOOS: s.o.GOOS, Home: s.o.Home, Project: project, Getenv: s.o.Getenv, SystemRoot: s.o.SystemRoot,
+		Relocate: true,
+	}
+}
+
+// relocationNote says, in the file's own words, how a relocation variable
+// decided the path: the variable that moved it, the one whose relative value
+// leaves no file to name, or the set ones that were refused. Variable names
+// only, never a value. "" when no variable is involved.
+func relocationNote(row agentconfig.FileRow, rp agentconfig.ResolvedPath) string {
+	switch {
+	case rp.Status == agentconfig.PathRelocationUnresolved:
+		return fmt.Sprintf("%s holds a relative path, which %s reads against its own working directory, so Observer cannot name this file and writes nothing (not the default location either).", rp.RelocatedBy, row.Tool)
+	case rp.RelocatedBy != "":
+		return fmt.Sprintf("Moved by %s: %s reads this file here, not at its default location.", rp.RelocatedBy, row.Tool)
+	}
+	if refused := refusedRelocations(rp.RelocationIgnored); len(refused) > 0 {
+		return "Default location: a set relocation variable was refused (" + strings.Join(refused, ", ") + ")."
+	}
+	return ""
+}
+
+// refusedRelocations drops the "<ENV>:does_not_move" entries: a variable the
+// catalogue declares not to move this file (DIRAC_DIR for the Hooks folder,
+// the Kimchi harness variables) was never a candidate, so it is not refused.
+func refusedRelocations(ignored []string) []string {
+	var out []string
+	for _, e := range ignored {
+		if strings.HasSuffix(e, ":"+string(agentconfig.RelocIgnoreDoesNotMove)) {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// RelocationNotes maps each settings file id of a tool to its relocation
+// note (relocationNote), for the files a relocation variable decided; a file
+// no variable touched is absent. Variable names only, never a value.
+func (s *Service) RelocationNotes(tool, project string) map[string]string {
+	out := map[string]string{}
+	env := s.env(project)
+	for _, f := range settingsFiles(tool) {
+		if n := relocationNote(f, agentconfig.ResolvePath(f, env)); n != "" {
+			out[f.ID] = n
+		}
+	}
+	return out
 }
 
 func (s *Service) access(ctx context.Context) agentconfig.Access {
@@ -210,6 +270,7 @@ func fileRow(id string) (agentconfig.FileRow, bool) {
 // snapshot reads one file row (never a PrivNever file).
 func (s *Service) snapshot(f agentconfig.FileRow, env agentconfig.PathEnv) agentconfig.FileSnapshot {
 	snap := agentconfig.FileSnapshot{Row: f, Resolved: agentconfig.ResolvePath(f, env)}
+	snap.Reason = relocationNote(f, snap.Resolved)
 	if f.WriteNeeds == agentconfig.PrivNever {
 		snap.State, snap.Reason = agentconfig.FileNeverRead, "Never read by Observer (the catalogue marks this file off-limits)."
 		snap.Resolved.Path = ""
@@ -217,6 +278,10 @@ func (s *Service) snapshot(f agentconfig.FileRow, env agentconfig.PathEnv) agent
 	}
 	if snap.Resolved.Status != agentconfig.PathResolved {
 		snap.State = agentconfig.FileUnresolved
+		return snap
+	}
+	if isProjectScope(f.Scope) && projectLinkEscapes(snap.Resolved.Path, env.Project) {
+		snap.State, snap.Reason = agentconfig.FileUnreadable, errProjectLinkEscapes.Error()
 		return snap
 	}
 	b, present, err := s.readFile(snap.Resolved.Path)
@@ -231,27 +296,13 @@ func (s *Service) snapshot(f agentconfig.FileRow, env agentconfig.PathEnv) agent
 	return snap
 }
 
-// readFile reads a regular file under the size cap.
+// readFile reads a regular file under the size cap (ReadRegularFile; a
+// missing file is not present, never an error).
 func (s *Service) readFile(path string) ([]byte, bool, error) {
-	fi, err := os.Stat(path)
+	b, err := ReadRegularFile(path, s.o.MaxFileBytes)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, false, nil
 	}
-	if err != nil {
-		return nil, false, err
-	}
-	if !fi.Mode().IsRegular() {
-		return nil, false, fmt.Errorf("%s is not a regular file", path)
-	}
-	if fi.Size() > s.o.MaxFileBytes {
-		return nil, false, fmt.Errorf("%s is larger than %d bytes", path, s.o.MaxFileBytes)
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, false, err
-	}
-	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, s.o.MaxFileBytes+1))
 	if err != nil {
 		return nil, false, err
 	}
@@ -360,7 +411,10 @@ func (s *Service) Tools(_ context.Context) []ToolSummary {
 func (s *Service) Installed(tool string) bool {
 	env := s.env("")
 	for _, f := range agentconfig.Files() {
-		if f.Tool != tool || f.Scope != agentconfig.ScopeUser {
+		// A borrowed directory (IBM Bob reading ~/.claude/skills, any tool
+		// reading ~/.agents/skills) exists because ANOTHER tool, or the
+		// operator, made it: never evidence that this tool is installed.
+		if f.Tool != tool || f.Scope != agentconfig.ScopeUser || f.Borrowed {
 			continue
 		}
 		rp := agentconfig.ResolvePath(f, env)
@@ -446,25 +500,42 @@ func (s *Service) resolveTarget(t Target) (agentconfig.FileRow, string, error) {
 		if t.Path != "" && filepath.Clean(t.Path) != filepath.Clean(rp.Path) {
 			return row, "", ErrBadTarget
 		}
+		if isProjectScope(row.Scope) {
+			if err := projectLinkCheck(rp.Path, t.Project); err != nil {
+				return row, "", fmt.Errorf("%w: %s is %w", ErrNotEditable, row.ID, err)
+			}
+		}
 		return row, rp.Path, nil
 	case agentconfig.PathGlob:
 		if t.Path == "" {
 			return row, "", fmt.Errorf("%w: a path is required for %s", ErrBadTarget, row.ID)
 		}
 		p, err := s.matchGlobTarget(row, t.Path, t.Project)
+		if err == nil && isProjectScope(row.Scope) {
+			if cerr := projectLinkCheck(p, t.Project); cerr != nil {
+				return row, "", fmt.Errorf("%w: %s is %w", ErrNotEditable, row.ID, cerr)
+			}
+		}
 		return row, p, err
+	case agentconfig.PathRelocationUnresolved:
+		return row, "", fmt.Errorf("%w: %s: %s", ErrNotEditable, row.ID, relocationNote(row, rp))
 	}
 	return row, "", fmt.Errorf("%w: %s has no concrete file here (%s)", ErrNotEditable, row.ID, rp.Status)
 }
 
 // matchGlobTarget checks a concrete path against a glob row, anchored at
-// home (user scope) or the project (project scope), with no ".." escape.
+// home (user scope) or the project (project scope), with no ".." escape. A
+// user row a relocation variable moves is anchored at the directory the
+// variable names (FU-142).
 func (s *Service) matchGlobTarget(row agentconfig.FileRow, path, project string) (string, error) {
 	raw := row.Paths.Linux
 	anchor, pat := "", ""
 	switch {
 	case strings.HasPrefix(raw, "~/"):
 		anchor, pat = s.o.Home, strings.TrimPrefix(raw, "~/")
+		if a, p, ok := s.relocatedGlobAnchor(row, project); ok {
+			anchor, pat = a, p
+		}
 	case strings.HasPrefix(raw, "<project>/"):
 		if project == "" {
 			return "", fmt.Errorf("%w: select a project", ErrBadTarget)

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/components"
@@ -68,14 +70,23 @@ func requireCompiled(t *testing.T, ids ...string) {
 }
 
 // compiledOut reports whether an omit tag removed component id from this
-// test binary (its omit file called components.MarkOmitted). Tests use it to
-// assert the build's "not in this build" answer instead of the full
+// test binary (its omit file called components.MarkOmitted), itself or with
+// its module root: a child (security.githooks) of an omitted root
+// (security) is gone with it, its verbs under the root's compiled-out
+// stand-in, though only the root's omit file marks anything. Tests use it
+// to assert the build's "not in this build" answer instead of the full
 // behaviour (D-535).
 func compiledOut(id string) bool {
-	for _, o := range components.Omitted() {
-		if o == id {
+	omitted := components.Omitted()
+	for cur := id; cur != ""; {
+		if slices.Contains(omitted, cur) {
 			return true
 		}
+		i := strings.LastIndexByte(cur, '.')
+		if i < 0 {
+			break
+		}
+		cur = cur[:i]
 	}
 	return false
 }
@@ -139,3 +150,51 @@ func TestComponentRequirementsNeverSkipAFullBuild(t *testing.T) {
 		}
 	}
 }
+
+// selectIfInactive adds ids to cfg's [components] block when an unconfigured
+// node of this build leaves them inactive (a published edition starts from
+// its own default set, which may not hold the module a test exercises), so
+// the test still exercises the active module in every edition; in a build
+// where they are active by default (the full build) cfg is left unchanged.
+// An id this build does not offer cannot be selected and fails the test:
+// such a test needs the component's omit tag instead.
+func selectIfInactive(t *testing.T, cfg *config.Config, ids ...string) {
+	t.Helper()
+	offered := components.Compiled(components.BinaryNode)
+	for _, id := range ids {
+		if defaultActive(id) {
+			continue
+		}
+		if !slices.Contains(offered, id) {
+			t.Fatalf("component %s is not offered by this build (distro %q): the test needs its omit tag", id, components.BuildDistro())
+		}
+		if !slices.Contains(cfg.Components.Add, id) {
+			cfg.Components.Add = append(cfg.Components.Add, id)
+		}
+	}
+}
+
+// selectionTOMLIfInactive is selectIfInactive for a test that writes its
+// config file: the [components] lines that select ids where this edition
+// leaves them inactive by default, or "" (the full build's file unchanged).
+func selectionTOMLIfInactive(t *testing.T, ids ...string) string {
+	t.Helper()
+	var cfg config.Config
+	selectIfInactive(t, &cfg, ids...)
+	if len(cfg.Components.Add) == 0 {
+		return ""
+	}
+	quoted := make([]string, 0, len(cfg.Components.Add))
+	for _, id := range cfg.Components.Add {
+		quoted = append(quoted, `"`+id+`"`)
+	}
+	return "\n[components]\nadd = [" + strings.Join(quoted, ", ") + "]\n"
+}
+
+// securityInertByDefault reports a published edition whose unconfigured
+// node leaves the security module inactive: the managed edition, inert until
+// the organization's policy allows it (security pillar plan section 6.5).
+// A test of what an install with no [components] block sees asserts that
+// inert answer there; everywhere else (the full and developer builds) the
+// module is active with no block, as such a test assumes.
+func securityInertByDefault() bool { return !defaultActive("security") }

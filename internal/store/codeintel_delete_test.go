@@ -4,6 +4,7 @@ package store
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 )
 
@@ -118,16 +119,22 @@ func TestCodeIntelDeleteProjectsUnder(t *testing.T) {
 			t.Fatalf("seed %s: %v", project, err)
 		}
 	}
-	for _, p := range []string{"/p", "/p/a", "/p/b/c", "/other", "/pxtra"} {
+	// Project keys are native paths (index.IndexProject keys a project by
+	// filepath.Abs), so the fixture spells them with the OS separator. On
+	// Windows the boundary is a backslash, and "/p/a" is not a key the
+	// indexer ever writes there.
+	k := filepath.FromSlash
+	root, a, bc, other, pxtra := k("/p"), k("/p/a"), k("/p/b/c"), k("/other"), k("/pxtra")
+	for _, p := range []string{root, a, bc, other, pxtra} {
 		seedFile(p)
 	}
 
-	deleted, err := s.CodeIntelDeleteProjectsUnder(ctx, "/p")
+	deleted, err := s.CodeIntelDeleteProjectsUnder(ctx, root)
 	if err != nil {
 		t.Fatalf("CodeIntelDeleteProjectsUnder: %v", err)
 	}
 
-	wantDeleted := map[string]bool{"/p": true, "/p/a": true, "/p/b/c": true}
+	wantDeleted := map[string]bool{root: true, a: true, bc: true}
 	if len(deleted) != len(wantDeleted) {
 		t.Fatalf("deleted %v, want the 3 keys %v", deleted, wantDeleted)
 	}
@@ -145,10 +152,10 @@ func TestCodeIntelDeleteProjectsUnder(t *testing.T) {
 	for _, p := range remaining {
 		got[p] = true
 	}
-	if !got["/other"] || !got["/pxtra"] {
+	if !got[other] || !got[pxtra] {
 		t.Errorf("recursive delete removed a sibling: remaining=%v", remaining)
 	}
-	if got["/p"] || got["/p/a"] || got["/p/b/c"] {
+	if got[root] || got[a] || got[bc] {
 		t.Errorf("recursive delete left a target behind: remaining=%v", remaining)
 	}
 }

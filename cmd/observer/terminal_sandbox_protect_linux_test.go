@@ -1,4 +1,4 @@
-//go:build linux && !sbo_omit_terminals_sandbox && !sbo_omit_terminals
+//go:build linux && !sbo_omit_terminals_sandbox && !sbo_omit_isolation && !sbo_omit_terminals
 
 package main
 
@@ -249,9 +249,14 @@ func TestPlaceholderCreateAndRemove(t *testing.T) {
 // protected paths that do not exist at launch, run through the real Go
 // launch path in this test binary (never the daemon): with every protected
 // path absent, nothing inside the sandbox can create, replace or remove any
-// of them; the placeholders read as "no config"; the writable state stays
-// writable; and after the session every protected host path is absent
-// again.
+// of them on the host; the placeholders read as "no config"; the writable
+// state stays writable; and after the session every protected host path is
+// absent again.
+//
+// Since lane sbx-p2 (the capture relay) the observer directory is a tmpfs
+// inside the box: a write under it lands in that tmpfs and never reaches
+// the host, and the host's observer.db is absent in the box (the P2
+// acceptance "observer.db is absent inside the box").
 func TestBwrapIntegrationProtectsMissingPaths(t *testing.T) {
 	bwrapUsableForTest(t)
 	if _, err := exec.LookPath("bash"); err != nil {
@@ -287,6 +292,10 @@ func TestBwrapIntegrationProtectsMissingPaths(t *testing.T) {
 					t.Fatalf("precondition: %s exists (%v)", p, err)
 				}
 			}
+			// The host's node database, which must not be visible in the box.
+			if err := os.WriteFile(filepath.Join(obs, "observer.db"), []byte("HOSTDB"), 0o600); err != nil {
+				t.Fatal(err)
+			}
 
 			script := fmt.Sprintf(`
 O=%[1]q; W=%[2]q; S=%[3]q
@@ -310,7 +319,8 @@ try mvguard     "mv $O/guard-policy.toml $O/guard-policy.moved"
 try rmgit       "rmdir $W/.git"
 [ -f $O/guard-policy.toml ] && [ ! -s $O/guard-policy.toml ] && echo "EMPTY guard"
 [ "$(cat $S)" = "{}" ] && echo "EMPTYOBJ settings"
-touch $O/observer.db-probe && echo "RW observer"
+touch $O/observer.db-probe && echo "BOXONLY observer"
+[ -e $O/observer.db ] || echo "NODB"
 touch $W/edited.txt && echo "RW workspace"
 touch $HOME/.claude/projects.json && echo "RW toolstate"
 `, obs, ws, filepath.Join(home, ".claude", "settings.json"))
@@ -323,15 +333,15 @@ touch $HOME/.claude/projects.json && echo "RW toolstate"
 			for sc.Scan() {
 				lines[strings.TrimSpace(sc.Text())] = true
 			}
-			for _, name := range []string{
-				"guard", "governance", "features", "checksums", "config", "projpolicy", "shims",
-				"browserhost", "policyres", "settings", "gitconfig", "gitinit", "secret", "locToken", "rmguard", "mvguard", "rmgit",
-			} {
+			// Outside the observer dir every protected path is refused in
+			// the box itself; under it, the box's own tmpfs takes the write
+			// and the host-side checks below prove nothing reached the host.
+			for _, name := range []string{"settings", "gitconfig", "gitinit", "rmgit"} {
 				if !lines["BLOCKED "+name] {
 					t.Errorf("%s was not blocked inside the sandbox:\n%s", name, out)
 				}
 			}
-			for _, l := range []string{"EMPTY guard", "EMPTYOBJ settings", "RW observer", "RW workspace", "RW toolstate"} {
+			for _, l := range []string{"EMPTYOBJ settings", "BOXONLY observer", "NODB", "RW workspace", "RW toolstate"} {
 				if !lines[l] {
 					t.Errorf("missing %q:\n%s", l, out)
 				}
@@ -344,10 +354,16 @@ touch $HOME/.claude/projects.json && echo "RW toolstate"
 					t.Errorf("host path %s exists after the session (%v)", p, err)
 				}
 			}
-			for _, p := range []string{filepath.Join(obs, "observer.db-probe"), filepath.Join(ws, "edited.txt"), filepath.Join(home, ".claude", "projects.json")} {
+			for _, p := range []string{filepath.Join(ws, "edited.txt"), filepath.Join(home, ".claude", "projects.json")} {
 				if _, err := os.Stat(p); err != nil {
 					t.Errorf("writable-state write %s did not reach the host: %v", p, err)
 				}
+			}
+			if _, err := os.Lstat(filepath.Join(obs, "observer.db-probe")); !os.IsNotExist(err) {
+				t.Errorf("a write under the observer dir reached the host (%v)", err)
+			}
+			if b, err := os.ReadFile(filepath.Join(obs, "observer.db")); err != nil || string(b) != "HOSTDB" {
+				t.Errorf("the host observer.db changed: %q %v", b, err)
 			}
 		})
 	}
@@ -579,7 +595,10 @@ func TestGuardPolicyPathsKeepTheirShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	trusted := filepath.Join(rt.observerDir, "trusted-projects")
+	// Under a writable bind (the workspace), so the missing dir gets a
+	// placeholder; under the observer dir it would need none (that dir is a
+	// tmpfs in the box since lane sbx-p2).
+	trusted := filepath.Join(workspace, "trusted-projects")
 	full := config.Default()
 	full.Guard.Rules.UserPolicy = ""
 	full.Guard.Rules.TrustedProjectDir = trusted

@@ -14,7 +14,18 @@ const (
 	WriterSetup Writer = "setup"
 	// WriterLauncher is a tool launcher (`observer crush`, ...).
 	WriterLauncher Writer = "launcher"
+	// WriterManaged is the managed daemon's route maintenance (lane P1): on a
+	// managed node the organization keeps AI tools routed through the
+	// Observer proxy, so the daemon writes and repairs the route. Like
+	// enrolment it is organization-owned: Leave removes it, and so does the
+	// organization turning route maintenance off (Decide with OwnedBy).
+	WriterManaged Writer = "managed"
 )
+
+// OrgOwned reports whether w is a writer that acted for the organization
+// (enrolment, managed maintenance), whose routes Leave removes. Every other
+// writer is the developer's own choice.
+func OrgOwned(w Writer) bool { return w == WriterEnrolment || w == WriterManaged }
 
 // FileVersion is the state file's schema version.
 const FileVersion = 1
@@ -35,6 +46,43 @@ type Record struct {
 	PriorProvider string `json:"prior_provider,omitempty"`
 	// WrittenAt is when the record was made (RFC 3339, UTC).
 	WrittenAt string `json:"written_at"`
+	// RepairedAt is set (RFC 3339, UTC) when the managed daemon put this
+	// route back after it had been removed: a record was already here and
+	// the route was gone when the daemon looked. The managed-integrity probe
+	// reports it as route_repaired for a day. A later write by any writer
+	// replaces the record and so clears it.
+	RepairedAt string `json:"repaired_at,omitempty"`
+	// PriorBaseURL is the provider base URL the write replaced, when the
+	// route rewrote one (a lane route for a third-party provider, Qwen
+	// Code's default host), so removing the route puts that exact value
+	// back. "" when the write only added a key.
+	PriorBaseURL string `json:"prior_base_url,omitempty"`
+	// RouteKey is the config path the route lives at, when it is not the
+	// tool's fixed route key (a lane route on the provider entry the tool
+	// actually uses), as path segments. Empty = the tool's fixed key.
+	RouteKey []string `json:"route_key,omitempty"`
+	// Lane / LaneRoot are the proxy `/up/<id>/` lane a lane route addresses
+	// and the upstream host root that lane forwards to (the provider the
+	// tool talked to before the route). A node-local route lane is
+	// re-installed into the proxy from these at every start.
+	Lane     string `json:"lane,omitempty"`
+	LaneRoot string `json:"lane_root,omitempty"`
+}
+
+// sameRecord compares two records field by field (RouteKey is a slice).
+func sameRecord(a, b Record) bool {
+	if len(a.RouteKey) != len(b.RouteKey) {
+		return false
+	}
+	for i := range a.RouteKey {
+		if a.RouteKey[i] != b.RouteKey[i] {
+			return false
+		}
+	}
+	a.RouteKey, b.RouteKey = nil, nil
+	return a.Tool == b.Tool && a.ConfigPath == b.ConfigPath && a.Value == b.Value && a.Writer == b.Writer &&
+		a.PriorProvider == b.PriorProvider && a.WrittenAt == b.WrittenAt && a.RepairedAt == b.RepairedAt &&
+		a.PriorBaseURL == b.PriorBaseURL && a.Lane == b.Lane && a.LaneRoot == b.LaneRoot
 }
 
 // File is the provenance state file.
@@ -83,9 +131,10 @@ const (
 //
 //  1. Nothing happened (OutcomeNone): no change.
 //  2. The writer set the route: the record is the writer's, with this value.
-//  3. The route was already this value and enrolment is the writer: no
-//     change. Enrolment never claims a route it found in place, so a route
-//     you or `observer init` set before enrolling is kept on Leave.
+//  3. The route was already this value and an organization-owned writer
+//     (enrolment, managed maintenance) is the writer: no change. Neither
+//     claims a route it found in place, so a route you or `observer init`
+//     set before is kept on Leave.
 //  4. The route was already this value and another writer confirmed it: the
 //     record becomes that writer's. Someone chose this route on purpose
 //     after enrolment wrote it, so Leave keeps it.
@@ -93,16 +142,19 @@ func (f *File) Note(rec Record, outcome Outcome) bool {
 	switch {
 	case outcome == OutcomeNone:
 		return false
-	case outcome == OutcomeConfirmed && rec.Writer == WriterEnrolment:
+	case outcome == OutcomeConfirmed && OrgOwned(rec.Writer):
 		return false
 	}
 	if cur := f.Find(rec.Tool, rec.ConfigPath); cur != nil {
 		if outcome == OutcomeConfirmed {
-			// A confirmation does not know the provider the original write
-			// replaced; keep the one already recorded.
+			// A confirmation does not know what the original write replaced
+			// or where it wrote; keep what is already recorded.
 			rec.PriorProvider = cur.PriorProvider
+			rec.PriorBaseURL = cur.PriorBaseURL
+			rec.RouteKey = cur.RouteKey
+			rec.Lane, rec.LaneRoot = cur.Lane, cur.LaneRoot
 		}
-		if *cur == rec {
+		if sameRecord(*cur, rec) {
 			return false
 		}
 		*cur = rec
@@ -166,6 +218,19 @@ type DecideInput struct {
 	// shape (integration.RouteSetting), so this package never branches on a
 	// tool (T-495, CLAUDE.md rule 3). "" reads as "the Observer proxy route".
 	Setting string
+	// OwnedBy decides which writers' routes this pass may remove. Nil means
+	// OrgOwned (leaving the organization removes enrolment's and managed
+	// maintenance's routes); the organization turning route maintenance off
+	// passes only WriterManaged.
+	OwnedBy func(Writer) bool
+}
+
+// owned applies in.OwnedBy (default OrgOwned).
+func (in DecideInput) owned(w Writer) bool {
+	if in.OwnedBy != nil {
+		return in.OwnedBy(w)
+	}
+	return OrgOwned(w)
 }
 
 type decideRule struct {
@@ -178,7 +243,7 @@ type decideRule struct {
 var decideRules = []decideRule{
 	{func(in DecideInput) bool { return !in.Present }, ActionNone, ReasonNotSet},
 	{func(in DecideInput) bool { return in.Record == nil }, ActionKeep, ReasonNoRecord},
-	{func(in DecideInput) bool { return in.Record.Writer != WriterEnrolment }, ActionKeep, ReasonOtherWriter},
+	{func(in DecideInput) bool { return !in.owned(in.Record.Writer) }, ActionKeep, ReasonOtherWriter},
 	{func(in DecideInput) bool { return in.Current != in.Record.Value }, ActionKeep, ReasonChangedAfterEnrol},
 	{func(in DecideInput) bool { return !in.Removable }, ActionKeep, ReasonCannotRemoveForTool},
 	{func(DecideInput) bool { return true }, ActionRemove, ReasonWrittenByEnrolment},
@@ -224,6 +289,7 @@ var writerPhrases = map[Writer]string{
 	WriterInit:     "`observer init` set it",
 	WriterSetup:    "it was set from Settings > Setup",
 	WriterLauncher: "a launcher set it",
+	WriterManaged:  "your organization keeps it routed (it stays until the organization turns that off)",
 }
 
 // what names the setting a removal takes out: the boundary-resolved name,
@@ -239,6 +305,9 @@ func message(d Decision, setting string) string {
 	label := ToolLabel(d.Tool)
 	switch d.Reason {
 	case ReasonWrittenByEnrolment:
+		if d.Writer == WriterManaged {
+			return "Removes " + what(setting) + " from " + d.ConfigPath + " (written because your organization keeps AI tools routed through the Observer proxy)."
+		}
 		return "Removes " + what(setting) + " from " + d.ConfigPath + " (written when this machine enrolled)."
 	case ReasonNoRecord:
 		return "Your " + label + " proxy setting will be kept because you set it yourself."

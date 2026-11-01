@@ -1,0 +1,12 @@
+rules:
+  - id: python.jwt-verification-off
+    languages: [python]
+    severity: ERROR
+    message: A JWT is decoded with its signature check turned off, so any forged token is accepted.
+    metadata:
+      category: code_vuln
+      cwe: CWE-347
+    pattern-either:
+      - pattern: 'jwt.decode(..., options={..., "verify_signature": False, ...}, ...)'
+      - pattern: jwt.decode(..., verify=False, ...)
+      - pattern: jwt.decode(..., algorithms=[..., "none", ...], ...)

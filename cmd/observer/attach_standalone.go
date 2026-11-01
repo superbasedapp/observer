@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/attachsock"
@@ -63,6 +64,9 @@ type terminalStack struct {
 	// as the interface so the surfaces hand the dashboard a value, never a
 	// non-nil interface over a nil pointer.
 	sandboxProber dashapi.SandboxProber
+	// repoTrust is the repository trust row's dependencies for dashboard
+	// launches (launch_trust.go); nil while security.trust is inactive.
+	repoTrust func() *repoTrustDeps
 	// attachAudit records the metadata-only terminal_attach spawn-audit row (F4,
 	// session-attach design §3.5). Nil when no DB is wired (auditing disabled).
 	// Built over the SAME SpawnAuditKind vocabulary the dashboard resume handler
@@ -170,6 +174,7 @@ func resolveTerminalSandbox(cfg config.Config, binPath string, logger *slog.Logg
 }
 
 func buildTerminalStack(ctx context.Context, cfg config.Config, database *sql.DB, logger *slog.Logger, nf *nodeFeaturesHandle) (*terminalStack, error) {
+	installEvidenceSealer(ctx, cfg, database, logger) // isolation.seal (evidence_seal.go); off: nothing
 	// Leave the stack unbuilt on an OS with no in-process PTY backend (a
 	// native-Windows daemon). A nil stack is the honest "disabled" state: the
 	// dashboard "Launch here" button is hidden and the attach socket is not
@@ -213,6 +218,8 @@ func buildTerminalStack(ctx context.Context, cfg config.Config, database *sql.DB
 	// by an ExitStatus reconcile (wired below), so the exit is recorded (and
 	// NotifyExit fired) exactly once regardless of ordering.
 	var svc *termsvc.Service
+	// svcRef publishes svc to goroutines that start before it is built.
+	var svcRef atomic.Pointer[termsvc.Service]
 
 	// The untrusted OSC hint tap (F3): one bounded scanner per PTY handle,
 	// turning OSC 133/633/title/BEL hints into TrustHint status events + durable
@@ -306,6 +313,25 @@ func buildTerminalStack(ctx context.Context, cfg config.Config, database *sql.DB
 	// the daemon's life; moving workspaces_dir at runtime is the one knob that
 	// still needs a restart (the holder logs a warning when it sees that).
 	sandboxSeam, sandboxWorkspacesDir, sandboxProber := resolveTerminalSandbox(cfg, binPath, logger)
+	// The capture relay's daemon endpoint (sandbox plan section 5.2, lane
+	// sbx-p2): sandboxed hooks reach the daemon through it. Inert unless
+	// the Sandboxes and VMs module is active (sandbox_relay.go).
+	startSandboxRelay(ctx, cfg, binPath, logger, sandboxRelayDeps{
+		SessionOwner: store.New(database).ProjectRootForSession,
+		ManagedRoot:  sandboxWorkspacesDir,
+		LowerCapture: func(ctx context.Context, terminalRunID string, h store.TerminalRunCaptureHealth) error {
+			_, err := store.New(database).LowerTerminalRunCapture(ctx, terminalRunID, h, resealRunEvidence)
+			return err
+		},
+		// A drifted run ends under require_full_capture (A10); a sandboxed
+		// CLI launch is ended through its end request after the same stamp.
+		EndRun:         terminalRunEnder(&svcRef, mgr, stampTerminalEnd(database), logger),
+		StampEndReason: stampTerminalEnd(database),
+		// A sandboxed CLI launch killed with its helper ends its row (D7).
+		EndGoneRun: func(ctx context.Context, runID, reason string) (bool, error) {
+			return store.New(database).EndTerminalRunGone(ctx, runID, reason, time.Now())
+		},
+	})
 
 	// T-488/T-489: the [terminal] launch policy and SSH profiles have ONE
 	// owner that follows config.toml, so a dashboard save (or a hand edit)
@@ -317,6 +343,9 @@ func buildTerminalStack(ctx context.Context, cfg config.Config, database *sql.DB
 	svc = termsvc.New(termsvc.Options{
 		Policy:       terminalLaunchPolicy(cfg.Terminal),
 		PolicySource: termCfg.Policy,
+		// The org's terminals decision for every PTY entry, attach
+		// included (OSH-R-003), read from the daemon's live handle.
+		TerminalGate: daemonTerminalGate,
 		Recorder:     termRunRecorder{st: store.New(database)},
 		Launcher:     launcher,
 		Feed:         feed,
@@ -351,6 +380,9 @@ func buildTerminalStack(ctx context.Context, cfg config.Config, database *sql.DB
 			logger:     logger,
 		},
 	})
+	// The relay's run ender reads the service through this, from its own
+	// goroutine (terminalRunEnder).
+	svcRef.Store(svc)
 	// Wire the OOB run->session correlation seam (P2-1): when the launcher
 	// wrapper announces the child's agent session id on the trusted OOB channel,
 	// drainOOB establishes the link through the service (bySession) so a live
@@ -524,6 +556,7 @@ func buildTerminalStack(ctx context.Context, cfg config.Config, database *sql.DB
 		resumeAuthority:  resumeAuthority,
 		reclaimOnInput:   cfg.Terminal.Attach.ReclaimOnInput,
 		guard:            procGuard,
+		repoTrust:        dashboardRepoTrust(cfg, database),
 		nf:               nf,
 		toolInstalls:     installLedger,
 		close: func() {
@@ -575,6 +608,15 @@ func buildTerminalStack(ctx context.Context, cfg config.Config, database *sql.DB
 			// no `ssh -N` child outlives the daemon that opened it (there is no
 			// reaper that would ever clean one up otherwise).
 			instances.Close()
+			// Mark the live re-adoptable container runs BEFORE the PTYs
+			// close, so their helpers keep the container through the
+			// hangup and the next start offers them (R-033).
+			markSandboxRunsForDaemonExit()
+			// Every run still live ends because the daemon stops: its end
+			// record and log line say so (Windows 11 Pro run 4, N3).
+			if s := svcRef.Load(); s != nil {
+				s.MarkAllEnding(termrun.EndDaemonShutdown)
+			}
 			mgr.Shutdown()
 		},
 	}, nil
@@ -662,8 +704,9 @@ func resumableSessionSet(runs []store.TerminalRunSummary) map[string][]string {
 			continue
 		}
 		switch r.EndReason {
-		case store.EndReasonResumed, store.EndReasonChildExit:
-			continue // superseded, or a clean child exit — not resumable-by-restart
+		case store.EndReasonResumed, store.EndReasonChildExit, store.EndReasonOrgFloorHooksDrifted,
+			store.EndReasonConsoleClosed, store.EndReasonDashboardStop, store.EndReasonStoppedOutside, store.EndReasonProcessGone:
+			continue // superseded, an exit, a stop, or ended by the org's floor: not resumable-by-restart
 		}
 		// Accumulate EVERY eligible orphan for the session (newest first, since
 		// the input is newest-first), so a successful resume can supersede all of
@@ -683,9 +726,11 @@ func (s *terminalStack) launchManager() *launchManagerAdapter {
 	return &launchManagerAdapter{
 		svc:           s.svc,
 		mgr:           s.mgr,
+		budgetState:   loadConfigAndDBNoCreate,
 		attachAudit:   s.attachAudit,
 		instances:     s.instances,
 		guard:         s.guard,
+		repoTrust:     s.repoTrust,
 		sandboxProber: s.sandboxProber,
 		nf:            s.nf,
 		toolGate:      daemonToolGate,
@@ -752,7 +797,9 @@ func buildTerminalSurfaces(ctx context.Context, cfg config.Config, database *sql
 		return surf, nil
 	}
 	surf.close = stack.close
-	surf.mgr = stack.mgr
+	// The manager plus the service's live sandboxed-run count, which the
+	// update drain reads to defer while sandboxed runs are live (I10).
+	surf.mgr = sandboxCountingManager{terminalManager: stack.mgr, svc: stack.svc}
 	// B9: expose the sandbox prober (nil when the feature is off) so the
 	// dashboard's /api/terminal/sandbox + fail-closed launch validation see it.
 	// Independent of the launch-manager gate below: the endpoint is always
@@ -795,4 +842,51 @@ func wirePostInstallHookRegistration(l *toolInstallLedger, cfg config.Config, lo
 			logger.Warn("guided install: hook registration", "tool", tool, "detail", s)
 		}
 	})
+}
+
+// terminalRunEnder ends a live daemon-launched terminal run by its stored
+// run id: the run's end reason is recorded first (stamp; the exit that
+// follows keeps it), the notice is shown as the terminal's last line, and
+// the run's PTY is closed through the manager's one teardown (the sandbox
+// relay's require_full_capture step, plan 13.12 A10). svc is read at call
+// time (the service is built after the relay starts); false when there is
+// no such live run here. A reason that cannot be recorded is logged and the
+// run is still ended (the floor requires it).
+func terminalRunEnder(svc *atomic.Pointer[termsvc.Service], mgr *termsession.Manager, stamp func(ctx context.Context, runID, reason string) error, logger *slog.Logger) func(terminalRunID, endReason, notice string) bool {
+	return func(terminalRunID, endReason, notice string) bool {
+		s := svc.Load()
+		if s == nil {
+			return false
+		}
+		handle, ok := s.HandleForRun(terminalRunID)
+		if !ok {
+			return false
+		}
+		if stamp != nil && endReason != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), terminalEndStampTimeout)
+			err := stamp(ctx, terminalRunID, endReason)
+			cancel()
+			if err != nil && logger != nil {
+				logger.Warn("terminal: record why the run is ended", "run", terminalRunID, "end_reason", endReason, "err", err)
+			}
+		}
+		if notice != "" {
+			mgr.Notice(handle, notice)
+		}
+		s.MarkEnding(handle, endReason)
+		mgr.Close(handle)
+		return true
+	}
+}
+
+// terminalEndStampTimeout bounds the end-reason write before a run is ended.
+const terminalEndStampTimeout = 5 * time.Second
+
+// stampTerminalEnd records why a live run is ended on its stored row
+// (store.StampTerminalRunEndReason), for the run enders.
+func stampTerminalEnd(database *sql.DB) func(ctx context.Context, runID, reason string) error {
+	return func(ctx context.Context, runID, reason string) error {
+		_, err := store.New(database).StampTerminalRunEndReason(ctx, runID, reason)
+		return err
+	}
 }

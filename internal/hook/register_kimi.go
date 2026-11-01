@@ -39,16 +39,13 @@ const kimiHookTimeoutSeconds = 30
 // Registered bindings; TestRegisteredBindingsMatchRegisteredEvents).
 var kimiHookEvents = []string{"UserPromptSubmit", "PreToolUse"}
 
-// kimiCodeConfigPath is the config.toml the vendor reads: an absolute
-// $KIMI_CODE_HOME wins (the vendor's own storage-root override), else
-// ~/.kimi-code.
-func (r *Registry) kimiCodeConfigPath() string {
-	if r.opts.Getenv != nil {
-		if h := strings.TrimSpace(r.opts.Getenv("KIMI_CODE_HOME")); h != "" && filepath.IsAbs(h) {
-			return filepath.Join(h, "config.toml")
-		}
-	}
-	return filepath.Join(r.opts.HomeDir, ".kimi-code", "config.toml")
+// kimiCodeConfigPath is the config.toml the vendor reads: the
+// kimi-code/user-config artifact, so $KIMI_CODE_HOME (the vendor's own
+// storage-root override) moves it, the same rule the route writer follows.
+// A relative value is an error: Kimi Code would read it against its own
+// working directory.
+func (r *Registry) kimiCodeConfigPath() (string, error) {
+	return r.artifactPath("kimi-code/user-config")
 }
 
 // kimiHookTableIsObservers reports whether a [[hooks]] table is Observer's.
@@ -79,7 +76,11 @@ func (r *Registry) kimiWantedTables() (tables []map[string]any, events []string)
 // config.toml (creating the file when Kimi Code has none yet).
 func (r *Registry) registerKimiCode() RegistrationResult {
 	res := RegistrationResult{Tool: "kimi-code", DryRun: r.opts.DryRun}
-	path := r.kimiCodeConfigPath()
+	path, err := r.kimiCodeConfigPath()
+	if err != nil {
+		res.Error = fmt.Errorf("hook.registerKimiCode: %w", err)
+		return res
+	}
 	res.ConfigPath = path
 	unlock, err := r.lockSettings(path)
 	if err != nil {
@@ -91,6 +92,10 @@ func (r *Registry) registerKimiCode() RegistrationResult {
 	orig, err := readSettingsFile(pinned.target)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		res.Error = fmt.Errorf("hook.registerKimiCode: read: %w", err)
+		return res
+	}
+	// FU-192: an entry in Observer's shape running another binary is kept.
+	if r.refusesForeignBinary(&res, "hook.registerKimiCode", path, identityContent, shapedHooksInText(orig, "kimi-code")) {
 		return res
 	}
 	want, events := r.kimiWantedTables()
@@ -129,7 +134,11 @@ func (r *Registry) registerKimiCode() RegistrationResult {
 // holding nothing (Observer created it) is removed.
 func (r *Registry) unregisterKimiCode() UnregistrationResult {
 	res := UnregistrationResult{Tool: "kimi-code", DryRun: r.opts.DryRun}
-	path := r.kimiCodeConfigPath()
+	path, err := r.kimiCodeConfigPath()
+	if err != nil {
+		res.Error = fmt.Errorf("hook.unregisterKimiCode: %w", err)
+		return res
+	}
 	res.ConfigPath = path
 	unlock, err := r.lockSettings(path)
 	if err != nil {

@@ -44,7 +44,7 @@ func fileExists(path string) bool {
 	if strings.TrimSpace(path) == "" {
 		return false
 	}
-	_, err := os.Stat(path)
+	_, err := os.Stat(path) //nolint:gosec // G703: a metadata read of a path from Observer's own config
 	return err == nil
 }
 

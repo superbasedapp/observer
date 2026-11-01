@@ -218,3 +218,41 @@ func Rules() []string {
 	}
 	return out
 }
+
+// PathNameLiveCheck names the live check the bare command form waits on
+// (surface-gap DEC-12): a GUI-launched host on a managed Mac (VS Code, Claude
+// Desktop started from the Dock) must still resolve the bare name on its own
+// PATH. Until it passes, callers apply PathName only on an explicit opt-in.
+const PathNameLiveCheck = "the FU-24 GUI-host PATH check (a GUI-launched VS Code or Claude Desktop on a managed Mac resolves the bare observer)"
+
+// PathName returns d with the bare command name "observer" when the name a
+// shell would run (the first PATH candidate that exists) resolves to the
+// same file d.Command does, and reports whether it did (surface-gap FU-24).
+// An org-managed fleet uses it for the MCP entry, so one managed allowlist
+// entry (Claude Code allowedMcpServers serverCommand ["observer", "serve"])
+// matches every node whatever its install path. Windows keeps the path: a
+// child process there is not always started through a PATH search that
+// adds .exe, and nothing on that side is live-verified.
+func PathName(in Input, d Decision) (Decision, bool) {
+	if in.GOOS == "windows" || in.Resolve == nil {
+		return d, false
+	}
+	target, ok := in.Resolve(d.Command)
+	if !ok {
+		return d, false
+	}
+	for _, c := range in.PathCandidates {
+		r, ok := in.Resolve(c)
+		if !ok {
+			continue
+		}
+		if comparable(in.GOOS, r) != comparable(in.GOOS, target) {
+			return d, false
+		}
+		d.Command = "observer"
+		d.Rule += "+path-name"
+		d.Reason = "org-managed node: the bare observer on PATH runs this install, so every node registers the same command"
+		return d, true
+	}
+	return d, false
+}

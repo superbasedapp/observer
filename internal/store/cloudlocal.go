@@ -1408,18 +1408,30 @@ func (s *Store) UpsertCloudResult(ctx context.Context, r CloudResult) (string, e
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// A row with this id already stored is a RE-PULL of the same result (the
+	// results cursor was reset at sign-in, or a retry): update it in place and
+	// leave the supersede chain alone. Chaining here would mark the session's
+	// newer result superseded by this older one and leave no current result.
+	var existing int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(1) FROM cloud_results WHERE id = ?`, r.ID).Scan(&existing); err != nil {
+		return "", fmt.Errorf("store.UpsertCloudResult: %w", err)
+	}
+
 	// Find the current newest (non-superseded) result for this session so we
 	// can chain it. Excludes the row we're about to insert.
 	var priorID string
-	err = tx.QueryRowContext(ctx, `
-		SELECT id FROM cloud_results
-		 WHERE session_id = ? AND superseded_by IS NULL AND id <> ?`,
-		r.SessionID, r.ID).Scan(&priorID)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		priorID = ""
-	case err != nil:
-		return "", fmt.Errorf("store.UpsertCloudResult: %w", err)
+	if existing == 0 {
+		err = tx.QueryRowContext(ctx, `
+			SELECT id FROM cloud_results
+			 WHERE session_id = ? AND superseded_by IS NULL AND id <> ?`,
+			r.SessionID, r.ID).Scan(&priorID)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			priorID = ""
+		case err != nil:
+			return "", fmt.Errorf("store.UpsertCloudResult: %w", err)
+		}
 	}
 
 	_, err = tx.ExecContext(ctx, `
@@ -1452,6 +1464,18 @@ func (s *Store) UpsertCloudResult(ctx context.Context, r CloudResult) (string, e
 		return "", fmt.Errorf("store.UpsertCloudResult: %w", err)
 	}
 	return r.ID, nil
+}
+
+// HasCloudResult reports whether a result with this id is already stored, so a
+// re-pull (a reset results cursor) can skip one-time side effects such as the
+// taxonomy tag merge the user may since have undone.
+func (s *Store) HasCloudResult(ctx context.Context, id string) (bool, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(1) FROM cloud_results WHERE id = ?`, id).Scan(&n); err != nil {
+		return false, fmt.Errorf("store.HasCloudResult: %w", err)
+	}
+	return n > 0, nil
 }
 
 // SetCloudResultOverride records (or replaces) a user edit over a result field.
@@ -1842,7 +1866,17 @@ type CloudEvidenceRequest struct {
 	// session in time order — the error-class population. It is CONTENT, so it
 	// is set only alongside IncludeTexts.
 	Failures func(message string)
+	// PromptHeads, when non-nil, receives the OPENING (cloudPromptHeadBytes) of
+	// EVERY user_prompt row of the session, sub-agent rows included, in time
+	// order (T-966). The caller only matches it against the harness-message
+	// table to correct the activity mix; it never leaves the process, the same
+	// posture as the Commands stream.
+	PromptHeads func(head string)
 }
+
+// cloudPromptHeadBytes bounds how much of a user_prompt row PromptHeads reads:
+// the harness table matches the opening element name only.
+const cloudPromptHeadBytes = 64
 
 // CloudEvidenceBundle is everything one envelope build reads, from ONE snapshot.
 type CloudEvidenceBundle struct {
@@ -1925,6 +1959,11 @@ func (s *Store) LoadCloudEvidenceBundle(ctx context.Context, sessionID string, r
 			return CloudEvidenceBundle{}, false, err
 		}
 	}
+	if req.PromptHeads != nil {
+		if err := streamCloudPromptHeads(ctx, conn, sessionID, req.PromptHeads); err != nil {
+			return CloudEvidenceBundle{}, false, err
+		}
+	}
 	out.Facts = facts
 
 	if hook := cloudEvidenceMidReadHook; hook != nil {
@@ -1992,6 +2031,33 @@ func streamCloudRunCommands(ctx context.Context, db cloudReader, sessionID strin
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("store.LoadCloudEvidenceBundle: outcome stream: %w", err)
+	}
+	return nil
+}
+
+// streamCloudPromptHeads hands the opening of EVERY user_prompt row of the
+// session to sink, in time order (T-966). Like the outcome stream it includes
+// sub-agent rows (the activity mix counts the whole session) and reads a
+// bounded head only, because the consumer matches the leading element name.
+func streamCloudPromptHeads(ctx context.Context, db cloudReader, sessionID string, sink func(head string)) error {
+	rows, err := db.QueryContext(ctx, `
+		SELECT substr(ltrim(COALESCE(target, '')), 1, ?)
+		  FROM actions
+		 WHERE session_id = ? AND COALESCE(action_type, '') = 'user_prompt'
+		 ORDER BY timestamp ASC, id ASC`, cloudPromptHeadBytes, sessionID)
+	if err != nil {
+		return fmt.Errorf("store.LoadCloudEvidenceBundle: prompt heads: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var head string
+		if err := rows.Scan(&head); err != nil {
+			return fmt.Errorf("store.LoadCloudEvidenceBundle: scan prompt head: %w", err)
+		}
+		sink(head)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("store.LoadCloudEvidenceBundle: prompt heads: %w", err)
 	}
 	return nil
 }
@@ -2657,6 +2723,34 @@ func (s *Store) LoadCloudResultCursor(ctx context.Context, host string) (string,
 		return "", fmt.Errorf("store.LoadCloudResultCursor: %w", err)
 	}
 	return v, nil
+}
+
+// ClearCloudResultCursor deletes the results-pull cursor for one cloud host
+// (an empty host selects the bare legacy key). The hosted cursor is a
+// per-ACCOUNT sequence ("v2:<n>"), so a cursor minted under one account (or
+// against a since-rebuilt server) skips that many results of the next one;
+// sign-in, sign-out and account deletion therefore start the host's pull from
+// the beginning again. Clearing an absent cursor is not an error, and a re-pull
+// is idempotent (UpsertCloudResult updates an already-stored result in place).
+func (s *Store) ClearCloudResultCursor(ctx context.Context, host string) error {
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM schema_meta WHERE key = ?`, cloudResultCursorKeyFor(host)); err != nil {
+		return fmt.Errorf("store.ClearCloudResultCursor: %w", err)
+	}
+	return nil
+}
+
+// ClearAllCloudResultCursors deletes every cloud host's results-pull cursor
+// (the bare legacy key included): the full local wipe `observer cloud logout
+// --all-hosts` and `delete-account --local-only` perform.
+func (s *Store) ClearAllCloudResultCursors(ctx context.Context) error {
+	prefix := cloudResultCursorKey + ":"
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM schema_meta WHERE key = ? OR substr(key, 1, ?) = ?`,
+		cloudResultCursorKey, len(prefix), prefix); err != nil {
+		return fmt.Errorf("store.ClearAllCloudResultCursors: %w", err)
+	}
+	return nil
 }
 
 // HasCloudResultCursor reports whether a results-pull cursor exists for ANY

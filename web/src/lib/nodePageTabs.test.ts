@@ -13,6 +13,7 @@ import {
   COMPRESSION_TABS,
   COST_TABS,
   TERMINALS_TABS,
+  TOOLS_TABS,
   terminalsHashTab,
   SECURITY_TABS,
   defaultTab,
@@ -23,6 +24,7 @@ import {
 const PAGES: Record<string, PageTabs<string>> = {
   security: SECURITY_TABS,
   cost: COST_TABS,
+  tools: TOOLS_TABS,
   compression: COMPRESSION_TABS,
   cache: CACHE_TABS,
   routing: ROUTING_TABS,

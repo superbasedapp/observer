@@ -54,6 +54,29 @@ func TestTagsAndIDs(t *testing.T) {
 	}
 }
 
+// TestDistrosListsEveryStampedDistro: the distros verb names every prebuilt
+// distro whose build passes a tag set, so scripts/omit-tag-check.sh checks a
+// new distro without a hand edit (TESTCI L3); full, the plain build, is not
+// listed.
+func TestDistrosListsEveryStampedDistro(t *testing.T) {
+	var out, errb bytes.Buffer
+	if rc := run([]string{"distros"}, &out, &errb); rc != 0 {
+		t.Fatalf("distros: rc=%d %s", rc, errb.String())
+	}
+	var want []string
+	for _, d := range components.Distros() {
+		if len(components.DistroTags(d)) != 0 {
+			want = append(want, string(d))
+		}
+	}
+	if got := strings.Fields(out.String()); strings.Join(got, ",") != strings.Join(want, ",") || len(got) == 0 {
+		t.Fatalf("distros = %q, want %q", got, want)
+	}
+	if strings.Contains(out.String(), string(components.DistroFull)) {
+		t.Fatalf("full has no tag set and must not be listed: %q", out.String())
+	}
+}
+
 // TestImageTags (lane MP-ORG): the full image passes no tags; the core image
 // passes the image marker and the omit tag of every L1-target module its
 // column lists as out, including the six that compile out today.

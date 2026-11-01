@@ -1,0 +1,1 @@
+{"rollingFiveHourLimit":{"limit":135,"requests":27,"renewsAt":"2025-10-09T12:00:00Z"},"weeklyTokenLimit":{"nextRegenAt":"2025-10-10T05:19:30.000Z","percentRemaining":98.0,"maxCredits":"$36.00","remainingCredits":"$35.30","nextRegenCredits":"$0.72"},"search":{"hourly":{"limit":250,"requests":2,"renewsAt":"2025-10-09T09:30:01.494Z"}}}

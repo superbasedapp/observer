@@ -17,8 +17,10 @@ import (
 //     lengths chosen to mirror real-world disambiguation ("-fo" for
 //     -Force because "-f" is ambiguous with -Filter; "-r" for
 //     -Recurse because no other Remove-Item parameter starts with r).
-//   - PowerShell here-strings (@'...'@) are not captured as payload
-//     blocks; their lines tokenize as ordinary words.
+//   - PowerShell here-strings (@'...'@, @"..."@) lex as ONE quoted word
+//     (psyntax.go); they are not captured as payload blocks, so a
+//     here-string later run with Invoke-Expression through a variable is
+//     not analysed.
 //   - `powershell -Command` re-joins the remaining argv with single
 //     spaces before re-lexing; original intra-argument quoting is not
 //     reconstructed.

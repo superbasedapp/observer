@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseStatusPorcelainV2(t *testing.T) {
@@ -329,6 +330,36 @@ func TestIsNoCommitsError_ExitCodeShape(t *testing.T) {
 	}
 }
 
+// TestRunReadOnlyTimeout_ReportsTimeout pins the 2026-10-15 fix: a git
+// invocation our own per-call limit kills is a *GitError with TimedOut set
+// and an Error() that says so, never a bare "exit status -1"; and a
+// cancellation of the CALLER's context is not reported as a timeout.
+func TestRunReadOnlyTimeout_ReportsTimeout(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	t.Parallel()
+	dir := t.TempDir()
+	_, _, err := RunReadOnlyTimeout(context.Background(), dir, 1024, time.Nanosecond, "rev-parse", "--show-prefix")
+	f, ok := InspectError(err)
+	if !ok || !f.TimedOut {
+		t.Fatalf("err = %v, Inspect = %+v ok=%v, want a timed-out GitError", err, f, ok)
+	}
+	if !strings.Contains(err.Error(), "timed out after") {
+		t.Fatalf("Error() = %q, want it to name the timeout", err.Error())
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _, err = RunReadOnlyTimeout(ctx, dir, 1024, time.Minute, "rev-parse", "--show-prefix")
+	if f, ok := InspectError(err); ok && f.TimedOut {
+		t.Fatalf("a cancelled caller context was reported as a timeout: %v", err)
+	}
+	if _, ok := InspectError(errors.New("plain")); ok {
+		t.Fatal("InspectError accepted a non-git error")
+	}
+}
+
 // TestIsNoCommitsError_UnbornRepo pins IsNoCommitsError's real-git
 // behaviour end-to-end across the 2026-09-22 review arc (finding #6,
 // then S8's rework): a freshly initialized repository with zero commits
@@ -549,5 +580,57 @@ func TestIsNotRepoError_RealGit(t *testing.T) {
 	}
 	if IsNotRepoError(err) {
 		t.Errorf("IsNotRepoError(%v) = true, want false for an unborn repository", err)
+	}
+}
+
+// TestRunReadOnlyNeverRunsSignatureProgram is RB1 sweep finding P3: a
+// repository's own log.showSignature=true made `git show` and `git log`
+// run its gpg.program on a signed commit through the read-only envelope.
+func TestRunReadOnlyNeverRunsSignatureProgram(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	if os.PathSeparator != '/' {
+		t.Skip("the stand-in signature program is a shell script")
+	}
+	ctx := context.Background()
+	dir := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "ran")
+	prog := filepath.Join(t.TempDir(), "fake-gpg.sh")
+	if err := os.WriteFile(prog, []byte("#!/bin/sh\ntouch '"+marker+"'\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	git := func(stdin string, args ...string) string {
+		t.Helper()
+		cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(cmd.Environ(),
+			"GIT_AUTHOR_NAME=Tester", "GIT_AUTHOR_EMAIL=t@example.com",
+			"GIT_COMMITTER_NAME=Tester", "GIT_COMMITTER_EMAIL=t@example.com",
+			"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+		cmd.Stdin = strings.NewReader(stdin)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git("", "init", "-q")
+	git("", "commit", "-q", "--allow-empty", "-m", "base")
+	tree := git("", "rev-parse", "HEAD^{tree}")
+	obj := "tree " + tree + "\n" +
+		"author Tester <t@example.com> 1700000000 +0000\n" +
+		"committer Tester <t@example.com> 1700000000 +0000\n" +
+		"gpgsig -----BEGIN PGP SIGNATURE-----\n \n iQEz\n -----END PGP SIGNATURE-----\n" +
+		"\nsigned\n"
+	sha := git(obj, "hash-object", "-t", "commit", "-w", "--stdin")
+	git("", "config", "log.showSignature", "true")
+	git("", "config", "gpg.program", prog)
+	for _, args := range [][]string{{"show", "--format=", sha}, {"log", "-n", "1", sha}} {
+		if _, _, err := RunReadOnlyTimeout(ctx, dir, 0, 0, args...); err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+		if _, err := os.Stat(marker); err == nil {
+			t.Fatalf("git %v through the read-only envelope ran the repository's gpg.program", args)
+		}
 	}
 }

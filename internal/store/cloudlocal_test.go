@@ -598,6 +598,89 @@ func TestCloudResultUpsertAndOverrides(t *testing.T) {
 	}
 }
 
+// TestCloudResultRepullKeepsSupersedeChain pins the re-pull rule T-962 relies
+// on: a reset results cursor pulls already-stored results again, in server
+// order, and that must update each row in place. Re-chaining an older result
+// would mark the newer one superseded and leave the session with no current
+// result.
+func TestCloudResultRepullKeepsSupersedeChain(t *testing.T) {
+	s, _ := cloudTestStore(t)
+	ctx := context.Background()
+	pull := func(id, title string) {
+		t.Helper()
+		if _, err := s.UpsertCloudResult(ctx, CloudResult{
+			ID: id, SessionID: "sess-r", SchemaVersion: "v",
+			ResultJSON: `{"title":"` + title + `"}`,
+		}); err != nil {
+			t.Fatalf("upsert %s: %v", id, err)
+		}
+	}
+	pull("res_a", "first")
+	pull("res_b", "second")
+	if has, err := s.HasCloudResult(ctx, "res_a"); err != nil || !has {
+		t.Fatalf("HasCloudResult(res_a) = %v, %v; want true", has, err)
+	}
+	if has, err := s.HasCloudResult(ctx, "res_missing"); err != nil || has {
+		t.Fatalf("HasCloudResult(res_missing) = %v, %v; want false", has, err)
+	}
+	// The cursor was reset: the same two results arrive again, oldest first.
+	pull("res_a", "first")
+	pull("res_b", "second")
+
+	got, _, ok, err := s.GetCloudSessionResult(ctx, "sess-r")
+	if err != nil || !ok {
+		t.Fatalf("get: ok=%v err=%v", ok, err)
+	}
+	if got.ID != "res_b" || got.SupersededBy != nil {
+		t.Fatalf("current result = %q (superseded_by %v), want res_b current", got.ID, got.SupersededBy)
+	}
+	a, _, _, _ := s.getCloudResultByID(ctx, "res_a")
+	if a.SupersededBy == nil || *a.SupersededBy != "res_b" {
+		t.Fatalf("res_a.superseded_by = %v, want res_b", a.SupersededBy)
+	}
+}
+
+// TestClearCloudResultCursors pins the T-962 reset seams: one host's clear
+// leaves every other host alone, the full clear removes every host's cursor and
+// the legacy bare key, and an unrelated schema_meta key that merely shares the
+// prefix's letters survives.
+func TestClearCloudResultCursors(t *testing.T) {
+	s, _ := cloudTestStore(t)
+	ctx := context.Background()
+	for host, cur := range map[string]string{"cloud.superbased.app": "v2:13", "staging.example.test": "v2:6", "": "v1:legacy"} {
+		if err := s.SaveCloudResultCursor(ctx, host, cur); err != nil {
+			t.Fatalf("save %q: %v", host, err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO schema_meta(key, value) VALUES('cloud_results_cursorX', 'keep')`); err != nil {
+		t.Fatalf("seed unrelated key: %v", err)
+	}
+
+	if err := s.ClearCloudResultCursor(ctx, "CLOUD.superbased.app"); err != nil {
+		t.Fatalf("clear one: %v", err)
+	}
+	if v, _ := s.LoadCloudResultCursor(ctx, "cloud.superbased.app"); v != "" {
+		t.Fatalf("cleared host cursor = %q", v)
+	}
+	if v, _ := s.LoadCloudResultCursor(ctx, "staging.example.test"); v != "v2:6" {
+		t.Fatalf("other host cursor = %q, want v2:6", v)
+	}
+	if err := s.ClearCloudResultCursor(ctx, "never-seen.example.test"); err != nil {
+		t.Fatalf("clearing an absent cursor must not fail: %v", err)
+	}
+
+	if err := s.ClearAllCloudResultCursors(ctx); err != nil {
+		t.Fatalf("clear all: %v", err)
+	}
+	if has, err := s.HasCloudResultCursor(ctx); err != nil || has {
+		t.Fatalf("HasCloudResultCursor after clear all = %v, %v; want false", has, err)
+	}
+	if v, err := s.readMeta(ctx, "cloud_results_cursorX"); err != nil || v != "keep" {
+		t.Fatalf("unrelated key = %q, %v; want kept", v, err)
+	}
+}
+
 // getCloudResultByID is a test-only read of a single result row by id (the
 // production read is session-scoped). Defined here to keep the seam's public
 // surface exactly what the CLI needs.

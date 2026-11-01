@@ -37,7 +37,8 @@ const (
 	// api_conversation_history.json`. Distinct from ToolClineCLI
 	// (the npm-distributed `cline` 3.x CLI), which is a different
 	// product from the same authors with its own SQLite-backed
-	// persistence at `~/.cline/data/`.
+	// persistence at `~/.cline/data/`. Distinct from ToolDirac (the Dirac
+	// CLI fork, ~/.dirac op-log store).
 	ToolCline   = "cline"
 	ToolRooCode = "roo-code"
 	// ToolZooCode is ZooCode (`ZooCodeOrganization.zoo-code`), the
@@ -166,7 +167,8 @@ const (
 	// dedicated team-comm action types may come in v2. NEVER reads
 	// `settings/providers.json` (carries WorkOS OAuth tokens + per-provider
 	// API keys), `cache/user_input_history.jsonl` (cross-session prompts),
-	// or `secrets.json`.
+	// or `secrets.json`. Distinct from ToolDirac (the Dirac CLI fork,
+	// ~/.dirac op-log store).
 	ToolClineCLI = "cline-cli"
 	// ToolQwenCode is Alibaba's Qwen Code CLI (npm `@qwen-code/qwen-code`,
 	// binary `qwen`, a diverged Gemini-CLI fork). Sessions persist as
@@ -421,7 +423,7 @@ const (
 	// web` — a local GUI at http://127.0.0.1:3080, no separate
 	// terminal/TUI mode). Its own event-sourced parser (not a §2.1 retag):
 	// sessions live at ~/.dsh/sessions/<cwd-slug>/session-<uuid>/
-	// session.jsonl.zstd, identical path on WSL and native Windows, and
+	// session[.v<N>].jsonl.zstd, identical path on WSL and native Windows, and
 	// the file is REWRITTEN WHOLE on every flush (full recompress, not an
 	// append) — internal/adapter/deepseek re-decodes the entire file each
 	// poll rather than streaming from a byte offset. Envelope shape
@@ -628,6 +630,192 @@ const (
 	// store — only `threads/threads.db` (+ its `-wal` / `-shm` siblings).
 	// See internal/adapter/zed and docs/zed-adapter.md.
 	ToolZed = "zed"
+	// ToolAutohand is the Autohand Code CLI (`autohand-cli` on npm, also
+	// shipped as a native build; binaries `autohand` / `autohand-code` / `agent`
+	// / `ah`). Data home ~/.autohand (%USERPROFILE%\.autohand on Windows, the
+	// same relative layout on every OS; AUTOHAND_HOME overrides it). Sessions
+	// are one directory each, ~/.autohand/sessions/<uuid>-<epoch-ms>/, holding an
+	// append-only conversation.jsonl (role user|assistant|tool lines, no
+	// per-message model or usage) and a mutable metadata.json whose `usage` block
+	// carries SESSION-CUMULATIVE tokens (promptTokens GROSS of cache reads and
+	// writes; tokenUsageStatus "unavailable" means a lower bound). The directory
+	// name is the canonical session id and the `autohand resume` argument.
+	// Account "settings sync" mirrors these directories between devices, so the
+	// adapter skips a copy sitting under a home of the other OS family than the
+	// session's projectPath. NEVER read: config.json (provider API keys, auth
+	// token, company secret), traces/** (cloud auth + control tokens, a derived
+	// cross-harness index), typed-message-history.json, projects/**, memory/**.
+	// No sibling tool shares the stem. See internal/adapter/autohand and
+	// docs/autohand-adapter.md.
+	ToolAutohand = "autohand"
+	// ToolIBMBob is IBM Bob's terminal agent, "Bob Shell" (npm package
+	// `bobshell`, binary `bob`, Node >= 22; installed by bobshell.sh /
+	// bobshell.ps1, which run a global npm install). It is NOT a fork of
+	// a shipped harness: its own WAL SQLite task store at
+	// ~/.bob/db/bob.db on every OS (Windows %USERPROFILE%\.bob\db\bob.db,
+	// not %APPDATA%; a dev build writes ~/.bob/dev-db/bob.db, not
+	// watched). tasks.id (32 hex) is the session id `bob --resume <id>`
+	// accepts; messages.data JSON holds user / assistant (toolCalls) /
+	// tool (toolUsage.signature result) / system rows with epoch-ms
+	// _meta.timestamp. Roo-Code-lineage tool names (apply_diff,
+	// search_and_replace, update_todo_list, switch_mode) plus IBM ones
+	// (office_*, search_ibm_docs, use_skill, spawn_subagent). Tokens: the
+	// vendor persists only per-call spend {cost, contextTokens}
+	// (contextTokens = input+output UNSPLIT; cost in Bobcoins, not USD)
+	// after stripping the split, so the adapter emits no token rows.
+	// spawn_subagent children are separate tasks rows (parent_id) linked
+	// by SessionLineage. Off-limits: ~/.bob/settings/auth-secrets.json.
+	// See internal/adapter/ibmbob and docs/ibmbob-adapter.md.
+	ToolIBMBob = "ibm-bob"
+	// ToolCortexCode is Snowflake Cortex Code, the standalone `cortex` CLI
+	// (a Node single-executable: ~/.local/share/cortex/<ver>/cortex behind
+	// the ~/.local/bin/cortex symlink on Linux/WSL,
+	// %LOCALAPPDATA%\cortex\<ver>\cortex.exe behind the
+	// %LOCALAPPDATA%\cortex\bin\cortex.cmd shim on Windows). Inference goes
+	// to the Snowflake account's Cortex REST threads API, not a model
+	// vendor. Store, identical on every OS, under $CORTEX_HOME, else
+	// $SNOWFLAKE_HOME/cortex, else ~/.snowflake/cortex:
+	// conversations/<uuid>.history.jsonl (append-only Anthropic-block
+	// message log; user records are re-appended as growing snapshots) and
+	// conversations/<uuid>.json (metadata rewritten whole: cwd, git branch,
+	// SESSION-CUMULATIVE per-model token_usage whose inputTokens is GROSS of
+	// BOTH cacheRead and cacheWrite). The uuid is the `cortex --resume` id.
+	// Never read: ~/.snowflake/connections.toml / config.toml,
+	// cortex/cache/credential_cache, cortex/connection_cache.json,
+	// cortex/history, settings/permissions files. Cortex RUNS Claude Code's
+	// ~/.claude/settings.json hooks with a Claude-shaped payload whose
+	// transcript_path is the cortex .json (see docs/cortexcode-adapter.md
+	// "Known gaps"). Distinct from the JetBrains ACP pointer investigated
+	// alongside ToolPoolside, which persisted no capturable store. See
+	// internal/adapter/cortexcode.
+	ToolCortexCode = "cortex-code"
+	// ToolCodeBuddy is Tencent CodeBuddy Code, Tencent Cloud's terminal
+	// coding agent (npm @tencent-ai/codebuddy-code; binaries `codebuddy`,
+	// `cbc`, `codebuddy-code`, all one Node entry point). Data home
+	// ~/.codebuddy on every OS (%USERPROFILE%\.codebuddy on Windows),
+	// relocatable with CODEBUDDY_CONFIG_DIR. One JSONL transcript per
+	// session at ~/.codebuddy/projects/<slug>/<session-id>.jsonl: the
+	// LAYOUT is Claude-Code-like but every line is a serialized
+	// @openai/agents-core AgentInputItem (message / function_call /
+	// function_call_result / reasoning) plus session-meta,
+	// file-history-snapshot and summary records; epoch-ms timestamps; the
+	// file stem is the session id `codebuddy --resume=<id>` accepts. Usage
+	// rides providerData.usage (agents-core Usage, input GROSS of cache
+	// reads, netted by the adapter) — UNVERIFIED, no logged-in capture
+	// yet. Sub-agent transcripts under <session-id>/subagents/ are not
+	// claimed. Never reads history.jsonl, settings.json, ~/.codebuddy.json,
+	// mcp.json / .mcp.json, models.json or local_storage/. Unrelated to
+	// the CodeBuddy IDE plugins (no adapter). See internal/adapter/codebuddy.
+	ToolCodeBuddy = "codebuddy"
+	// ToolDeepAgentsCode is LangChain's Deep Agents Code CLI ("dcode", PyPI
+	// deepagents-code; binaries `dcode` and `deepagents-code`, a uv tool).
+	// Capture is a SQLite read of the LangGraph checkpointer at
+	// <home>/.deepagents/.state/sessions.db (identical layout on Linux, macOS
+	// and Windows; $DEEPAGENTS_HOME overrides the home): the conversation is
+	// the `messages` channel writes (msgpack, LangGraph JsonPlus; AIMessage
+	// carries usage_metadata and response_metadata.cost), the session id is the
+	// UUIDv7 thread_id that `dcode -r <id>` resumes. usage_metadata
+	// input_tokens is GROSS (cache reads and writes included) and output_tokens
+	// includes reasoning, so the adapter nets both; the OpenRouter-reported
+	// dollar cost rides as EstimatedCostUSD. Out-of-graph thread-naming spend is
+	// the cumulative dcode_btw_costs row. NEVER read: .state/auth.json,
+	// .state/chatgpt-auth.json, config.toml, any .mcp.json / hooks.json, the
+	// checkpoint blobs, and every non-`messages` channel (notably the
+	// multi-megabyte _quickjs_snapshot_payload). Distinct from the DeepSeek
+	// Harness (ToolDeepSeek, "dsh", ~/.dsh) despite the similar name. See
+	// internal/adapter/deepagents.
+	ToolDeepAgentsCode = "deepagents-code"
+	// ToolDimCode is DimCode (binaries `dim` and `dimcode`, npm `dimcode`; a
+	// terminal AI coding agent on the Vercel AI SDK). One WAL SQLite store per
+	// home serves every surface (TUI, `dim exec`, web, ACP): the DimCode home
+	// is ~/.dimcode (override $DIMCODE_HOME) and the store is
+	// <home>/v2/dimcode.sqlite on Linux, macOS AND Windows
+	// (%USERPROFILE%\.dimcode\v2\dimcode.sqlite) - the same layout on every OS.
+	// Session ids are `sess_<epoch-ms>_<12 base36>`, globally unique and what
+	// `dim --session <id>` / `dim exec resume <id>` accept, so they are used
+	// verbatim. Tokens exist only as per-RUN totals (usage_run_stats, one row
+	// per user prompt) plus standalone ledger calls (session-title generation);
+	// promptTokens is GROSS (cache read/write are subsets), netted at emit.
+	// Reasoning is inside completionTokens. providers / providers.json,
+	// auth.json, permissions.json, mcp.json, hooks.json and the blob/checkpoint
+	// tables are never read. Not a Cline fork and unrelated to Dirac, Autohand
+	// and Forge. See internal/adapter/dimcode and docs/dimcode-adapter.md.
+	ToolDimCode = "dimcode"
+	// ToolDirac is the Dirac CLI (`dirac`, npm `dirac-cli`, Apache-2.0),
+	// a fork of Cline. Distinct from ToolCline (the Cline VS Code
+	// extension, api_conversation_history.json arrays in VS Code
+	// globalStorage) and ToolClineCLI (Cline 3.x CLI, ~/.cline/data
+	// SQLite). Home is $DIRAC_DIR or ~/.dirac on EVERY OS (not %APPDATA%);
+	// each task is <home>/data/tasks/<taskId>/ with an append-only
+	// OPERATION LOG api_conversation_history.jsonl (append_message /
+	// append_user_content / reset; renamed to .archive.<n> at 8 MiB),
+	// ui_messages.jsonl (whose api_status records carry the per-request
+	// token split) and task_metadata.json; the cwd lives only in
+	// <home>/data/state/taskHistory.json. Session id = the task dir name
+	// (a Unix-ms id, what `dirac --taskId <id>` resumes). Input tokens are
+	// NET; metrics.cached is cache reads + writes summed, so the split
+	// comes from ui_messages. Never read: data/secrets.json (provider keys,
+	// ChatGPT OAuth tokens), data/globalState.json, data/logs/. See
+	// internal/adapter/dirac and docs/dirac-adapter.md.
+	ToolDirac = "dirac"
+	// ToolKimchi is Kimchi, Cast AI's coding-agent CLI
+	// (github.com/getkimchi/kimchi, npm identity `@kimchi-dev/cli`, binary
+	// `kimchi` — a Bun-compiled single executable at ~/.local/bin/kimchi on
+	// Linux/macOS and %LOCALAPPDATA%\Kimchi\bin\kimchi.exe on Windows). A
+	// pi-mono derivative (package.json `piConfig`, session format v3) but NOT
+	// a retag of ToolPi: own data home, tool surface, sub-agent files and a
+	// `reasoning` usage key, so internal/adapter/kimchi has its own parser
+	// (the ToolPrimeAgent precedent). Transcripts are append-only JSONL at
+	// <home>/.config/kimchi/harness/sessions/--<cwd-slug>--/<ISO-ts>_<uuid>.jsonl
+	// on EVERY OS (Windows uses C:\Users\<u>\.config, not %APPDATA%;
+	// $KIMCHI_CODING_AGENT_DIR relocates `harness`). Session id = the
+	// filename UUIDv7 (`kimchi --session <id>` / `--resume <id>`). One
+	// assistant record = one model call; usage input is NET of cacheRead,
+	// output INCLUDES reasoning (split at the boundary). A `parentSession`
+	// header + `custom kimchi:subagent-session` entry marks a sub-agent file
+	// (SessionLineage). NEVER read: ~/.config/kimchi/config.json (apiKey),
+	// harness/auth.json, harness/models.json (apiKey beside baseUrl),
+	// org-policy.json. Distinct from ToolKimiCode (Moonshot's kimi CLI).
+	ToolKimchi = "kimchi"
+	// ToolStakpak is the Stakpak agent CLI (binary `stakpak`, stakpak.dev;
+	// installed with `curl -sSL https://stakpak.dev/install.sh | sh`;
+	// grounded on 0.3.88). With no Stakpak API key on the active profile it
+	// keeps every session in one WAL SQLite store, ~/.stakpak/data/local.db
+	// on Linux/macOS AND Windows (%USERPROFILE%\.stakpak\data\local.db):
+	// sessions(id UUID, cwd raw OS path) + checkpoints(parent_id chain,
+	// state = the whole cumulative OpenAI-chat message list). A keyed
+	// (Stakpak-account) profile keeps transcripts server-side and is not
+	// capturable. Capture is a checkpoints.rowid watermark; each checkpoint
+	// contributes messages[len(parent):] stamped with its created_at. Tokens
+	// are per-call usage{prompt,completion,total} on the step's assistant
+	// message, no cache split and NO model anywhere in the store (cost is not
+	// estimated). Off-limits: ~/.stakpak/config.toml (api_key), auth.toml,
+	// <project>/.stakpak/session/** (file backups). Distinct from every
+	// other agent; `stakpak acp` (editor server) shares the same store. See
+	// internal/adapter/stakpak.
+	ToolStakpak = "stakpak"
+	// ToolVTCode is VT Code (`vtcode`, github.com/vinhnx/VTCode), vinhnx's
+	// Rust terminal coding agent (static binary, installed to
+	// ~/.local/bin/vtcode / %USERPROFILE%\.local\bin\vtcode.exe by the
+	// vendor's install.sh / install.ps1). Two stores per session: the
+	// per-WORKSPACE source of truth
+	// <workspace>/.vtcode/sessions/<id>/events.jsonl (exec-events
+	// ThreadEvent stream, schema_version 0.18.0) + manifest.json, with
+	// per-request telemetry in <workspace>/.vtcode/logs/trajectory*.jsonl;
+	// and a per-USER archive JSON rewritten at session end —
+	// ~/.local/state/vtcode/sessions/<id>.json (Linux, XDG state) /
+	// %APPDATA%\vinhnx\vtcode\state\sessions\<id>.json (Windows; macOS
+	// ungrounded). The archive's metadata.workspace_path is the discovery
+	// seam for workspace stores. Session id = the session dir name =
+	// thread_id = what `vtcode --resume <id>` accepts. Tokens: one usage
+	// object per TURN (sum of the turn's requests), input_tokens GROSS of
+	// cached_input_tokens (netted at the adapter); the served model comes
+	// from the trajectory (archive metadata.model is the session-START model,
+	// stale after /model). Never reads the config dir (auth/, config.toml),
+	// any vtcode.toml, the `vtcode secret` keyring/file store, or
+	// .vtcode/{checkpoints,context,history,tasks,terminals}. Not related to
+	// any other adapter. See internal/adapter/vtcode.
+	ToolVTCode = "vtcode"
 )
 
 // Normalized action types. See spec §5. Adapters map their tool-specific
@@ -1097,9 +1285,12 @@ type Session struct {
 	// attribution (migration 107): WHICH kind of client produced the
 	// session (SurfaceCLI / SurfaceIDE / SurfaceDesktop / SurfaceSDK /
 	// SurfaceWeb) and the concrete host token ("vscode", "cursor",
-	// "jetbrains", "claude-desktop", ...). NODE-LOCAL — never on the
-	// org-push wire. Written ONLY through Store.SetSessionSurface (not
-	// UpsertSession), FIRST-WINS-UNLESS-EMPTY per column: the first
+	// "jetbrains", "claude-desktop", ...). Both ship on the org-push wire
+	// as metadata (server migration 139, orgcontract.SessionRow); the host
+	// crosses through the closed allowlist in store/orgpush.go and an
+	// unlisted token ships as "other". Written ONLY through
+	// Store.SetSessionSurface (not UpsertSession),
+	// FIRST-WINS-UNLESS-EMPTY per column: the first
 	// grounded stamp sticks and a later parse can only fill a column
 	// that is still empty. Empty = the adapter found no grounded
 	// discriminator on disk (never fabricated).
@@ -1273,6 +1464,12 @@ type ActionMetadata struct {
 	// so retries stay countable without inflating the message count. Zero
 	// when the reply was written once.
 	RetryReplays int `json:"retry_replays,omitempty"`
+	// SandboxClaimedCwd is the project directory a sandbox run's own
+	// transcript claimed when it was outside the run's workspace (lane
+	// SBX-P3C audit finding 3): the action is bound to the run's workspace
+	// and the box's claim is kept only here, node-local. Empty for every
+	// other action.
+	SandboxClaimedCwd string `json:"sandbox_claimed_cwd,omitempty"`
 }
 
 // IsZero reports whether the struct has no non-zero fields. Used by
@@ -1321,7 +1518,8 @@ func (m ActionMetadata) identityFieldsZero() bool {
 	return m.ParentSessionID == "" && m.ParentAgentID == "" && m.AgentID == "" &&
 		!m.IsSubagent && m.TeamName == "" && m.StopReason == "" &&
 		m.RequestURL == "" && m.IDSource == "" && m.Granularity == "" &&
-		m.PromptTokensEst == 0 && m.ResponseTokensEst == 0 && m.CaptureSource == ""
+		m.PromptTokensEst == 0 && m.ResponseTokensEst == 0 && m.CaptureSource == "" &&
+		m.SandboxClaimedCwd == ""
 }
 
 // Action is one normalized tool call within a session. The
@@ -1687,7 +1885,20 @@ type TokenEvent struct {
 const (
 	GenBasisNative     = "native"
 	GenBasisTranscript = "transcript"
+	// GenBasisOTel: the duration came from the tool's own OpenTelemetry
+	// export of the same call, stamped onto the transcript's row after the
+	// fact by the OTLP ingest (store.StampTranscriptGenTiming, AP-131
+	// follow-up), never by an adapter.
+	GenBasisOTel = "otel"
 )
+
+// GenTimingVOTel is the gen_timing_v an OTel-export stamp carries: the
+// floor. Under the one stamp rule (fill a NULL, or replace a STRICTLY older
+// version) an export stamp therefore only ever fills a row with no timing,
+// and any adapter-captured timing (every adapter's version is >= 1) replaces
+// it on the row's next insert or stamp. Native transcript timing wins in
+// both arrival orders.
+const GenTimingVOTel = 0
 
 // APITurn is one request/response pair observed by the proxy. Accurate token
 // counts come from the provider's response body; session/project linkage is
@@ -2180,9 +2391,11 @@ const (
 )
 
 // SessionSurface is the per-session capture-surface attribution an
-// adapter resolved from a grounded on-disk discriminator. NODE-LOCAL
-// (migration 107): `sessions.surface` / `sessions.surface_host` never
-// enter the org-push wire (pinned by tests/invariant/privacy_test.go).
+// adapter resolved from a grounded on-disk discriminator (migration 107).
+// `sessions.surface` / `sessions.surface_host` ship on the org-push wire
+// as metadata (server migration 139, orgcontract.SessionRow): the kind is
+// closed (KnownSurface) and the host crosses through the closed allowlist
+// in store/orgpush.go, where an unlisted token ships as "other".
 // Written through the single store seam Store.SetSessionSurface with
 // FIRST-WINS-UNLESS-EMPTY semantics, per column: the first grounded
 // stamp sticks, a later parse can only FILL a still-empty column, and a

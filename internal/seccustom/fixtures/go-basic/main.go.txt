@@ -1,0 +1,17 @@
+// Package main is the security.scan.custom self-test fixture for gosec
+// (JSP-12): one planted finding per rule family the gosec template expects.
+package main
+
+import (
+	"crypto/md5"
+	"fmt"
+	"os"
+)
+
+const password = "self-test-fixture-not-a-secret" // G101
+
+func main() {
+	name := os.Args[1]
+	b, _ := os.ReadFile(name)            // G304, G703 (taint from os.Args)
+	fmt.Println(md5.Sum(b), password)    // G401
+}

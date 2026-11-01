@@ -1,0 +1,14 @@
+rules:
+  - id: go.weak-cipher
+    languages: [go]
+    severity: WARNING
+    message: A broken or weak cipher (DES, 3DES, RC4 or Blowfish) is used; use AES-GCM or ChaCha20-Poly1305.
+    metadata:
+      category: code_vuln
+      cwe: CWE-327
+    pattern-either:
+      - pattern: des.NewCipher(...)
+      - pattern: des.NewTripleDESCipher(...)
+      - pattern: rc4.NewCipher(...)
+      - pattern: blowfish.NewCipher(...)
+      - pattern: blowfish.NewSaltedCipher(...)

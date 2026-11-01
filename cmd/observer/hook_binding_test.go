@@ -67,9 +67,10 @@ func TestEveryWiredBindingHasAReceiver(t *testing.T) {
 // default it replaces, gate binding or not.
 func TestBindingFallbackRepliesLikeHandleApprove(t *testing.T) {
 	for _, tc := range []struct{ tool, event string }{
-		{"kiro-cli", "preToolUse"},
-		{"kiro-cli", "agentSpawn"},
-		{"copilot-cli", "preToolUse"},
+		// kiro-cli (gfiD) and copilot-cli (userPromptSubmitted, guard-fix lane
+		// B) have receivers since 2026-10-15; kiro-crew is still vendor-only.
+		{"kiro-crew", "PreToolUse"},
+		{"kiro-crew", "SessionStart"},
 	} {
 		if _, ok := hookReceivers[tc.tool]; ok {
 			t.Fatalf("%s has a receiver; pick a fallback tool", tc.tool)

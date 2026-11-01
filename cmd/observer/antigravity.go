@@ -178,11 +178,12 @@ func agyAPIKeyMode(home string) bool {
 // routeAgyAPIKeyMode sets GOOGLE_GEMINI_BASE_URL to the proxy when agy is
 // in API-key mode and the caller did not set it, and says which mode it
 // saw (audit P2). In Google sign-in mode there is nothing to route: the
-// prompt rules then warn before the model call (PreInvocation hook) and
+// prompt rules then warn or stop the turn before the main model call
+// (PreInvocation hook; agy's title request is sent before any hook) and
 // flag after send. Reports whether it set the variable.
 func routeAgyAPIKeyMode(env []string, home, proxyURL string, setenv func(k, v string) error, stderr io.Writer) bool {
 	if !agyAPIKeyMode(home) {
-		fmt.Fprintln(stderr, "observer antigravity-cli: Google sign-in mode: not proxy-routable; prompt rules warn before the model call and flag after send.")
+		fmt.Fprintln(stderr, "observer antigravity-cli: Google sign-in mode: not proxy-routable; prompt rules warn or stop the turn before the main model call (the title request is sent first) and flag after send.")
 		return false
 	}
 	if cur := envValue(env, "GOOGLE_GEMINI_BASE_URL"); cur != "" {
@@ -194,7 +195,7 @@ func routeAgyAPIKeyMode(env []string, home, proxyURL string, setenv func(k, v st
 		fmt.Fprintf(stderr, "observer antigravity-cli: API-key mode: could not set GOOGLE_GEMINI_BASE_URL: %v\n", err)
 		return false
 	}
-	fmt.Fprintf(stderr, "observer antigravity-cli: API-key mode: routing via %s\n", target)
+	fmt.Fprintf(stderr, "observer antigravity-cli: API-key mode: routing via %s\n", redactRouteURL(target))
 	return true
 }
 

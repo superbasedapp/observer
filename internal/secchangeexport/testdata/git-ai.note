@@ -1,0 +1,40 @@
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "base_commit_sha": "6dcb09b5b57875f334f61aebed695e2e4193db5e",
+  "prompts": {},
+  "sessions": {
+    "s_cd171f41ce3bc4": {
+      "agent_id": {
+        "tool": "claude-code",
+        "id": "sess-2",
+        "model": "claude-opus-4-8"
+      },
+      "custom_attributes": {
+        "attestation": "self_attested",
+        "export_spec": "authorship/3.0.0",
+        "export_status": "experimental",
+        "exported_by": "superbased-observer",
+        "prompt_ids": "101,102",
+        "record_digest": "15bc5a0c83f98509a1801ef504547481f5075819287793e82e1832b3551527e5",
+        "spec_read": "2026-10-24"
+      }
+    },
+    "s_fb751958101fce": {
+      "agent_id": {
+        "tool": "claude-code",
+        "id": "sess-1",
+        "model": "claude-opus-4-8"
+      },
+      "custom_attributes": {
+        "attestation": "self_attested",
+        "export_spec": "authorship/3.0.0",
+        "export_status": "experimental",
+        "exported_by": "superbased-observer",
+        "prompt_ids": "101,102",
+        "record_digest": "15bc5a0c83f98509a1801ef504547481f5075819287793e82e1832b3551527e5",
+        "spec_read": "2026-10-24"
+      }
+    }
+  }
+}

@@ -71,6 +71,7 @@ var pushCycleRails = map[string]bool{
 	orgcontract.RailDisplay:      true,
 	orgcontract.RailGrants:       true,
 	orgcontract.RailAgentConfig:  true,
+	orgcontract.RailMessages:     true,
 }
 
 // railFetch is one row of the dispatch table: the rail keys it answers for
@@ -147,6 +148,19 @@ var railFetchers = []railFetch{
 		fetch: func(c *Client, ctx context.Context) {
 			if changed, err := c.refreshAgentConfigPolicy(ctx); err == nil && changed {
 				c.logger.Info("org AI tool policy changed - applying (policy-version probe)")
+			}
+		},
+	},
+	{
+		// Admin and developer messaging (T-854): a send, reply, close or
+		// settings change moves the org's message version, so a new message
+		// reaches an active node in seconds instead of a push interval. The
+		// 404 backoff is re-armed first: the org just said the rail exists.
+		keys: []string{orgcontract.RailMessages},
+		fetch: func(c *Client, ctx context.Context) {
+			c.messages.notFound.Reset()
+			if res, err := c.SyncOrgMessages(ctx); err == nil && res.Received > 0 {
+				c.logger.Info("org messages received (policy-version probe)", "count", res.Received)
 			}
 		},
 	},
@@ -334,6 +348,13 @@ func (c *Client) finishProbe(ctx context.Context, ans probeAnswer) {
 		c.fresh.st.HoldSupported = ans.held
 	}
 	c.fresh.mu.Unlock()
+
+	// Any answer from the org (a version map, a 304, even a 404 from an
+	// older server) proves it is reachable again, so a message rail the
+	// outage stalled retries now rather than on the next push cycle.
+	if ans.err == nil {
+		c.retryStalledOrgMessages(ctx)
+	}
 
 	switch {
 	case ans.err != nil:

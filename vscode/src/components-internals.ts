@@ -38,6 +38,9 @@ export const GATED_SURFACES: readonly GatedSurface[] = [
   { contextKey: 'observer.proxyInactive', component: 'capture.proxy' },
   // The cache-expiry status bar polls this route.
   { contextKey: 'observer.cacheStatusInactive', route: '/api/cache/status' },
+  // Code security diagnostics, status bar and "Show code security
+  // findings" (lane sec-c3) belong to the security module.
+  { contextKey: 'observer.securityInactive', component: 'security' },
 ];
 
 /** isComponentInactive: true only when the view lists the id and it is not active. */

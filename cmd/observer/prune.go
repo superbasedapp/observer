@@ -17,6 +17,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
+	"github.com/marmutapp/superbased-observer/internal/diag"
 	"github.com/marmutapp/superbased-observer/internal/retention"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -178,6 +179,16 @@ func newPruneCmd() *cobra.Command {
 				res.DBSizeBytesAfter,
 			)
 			printPruneReclamation(cmd.OutOrStdout(), storBefore, storAfter, walBefore, walAfter, breakdown, vacuum)
+			if hc := res.HoldCap; hc.Shed() {
+				fmt.Fprintf(cmd.OutOrStdout(),
+					"ERROR: retention deleted %d rows the org server never received (actions=%d guard_events=%d): held data (%s) passed held_max_mb (%s). Fix the push (`observer org status`) or raise [observer.retention].held_max_mb.\n",
+					hc.ShedActions+hc.ShedGuardEvents, hc.ShedActions, hc.ShedGuardEvents, fmtMB(hc.HeldBytes), fmtMB(hc.CapBytes))
+			}
+			if n := res.HeldForPush.Total(); n > 0 {
+				fmt.Fprintf(cmd.OutOrStdout(),
+					"WARNING: retention held %d rows awaiting org push (actions=%d sessions=%d guard_events=%d, about %s). They pass their horizon but the org server has not accepted them yet; check `observer org status`.\n",
+					n, res.HeldForPush.Actions, res.HeldForPush.Sessions, res.HeldForPush.GuardEvents, fmtMB(res.HoldCap.HeldBytes))
+			}
 			if res.SizeCapUnmet {
 				fmt.Fprintf(cmd.OutOrStdout(),
 					"WARNING: DB still exceeds max_db_size_mb after shedding aged actions - the bulk is in other tables (token_usage / cache_*). Recent actions were protected. Raise [observer.retention].max_db_size_mb.\n")
@@ -358,7 +369,17 @@ func runRetention(ctx context.Context, cfg config.Config, database *sql.DB) (ret
 	p := retention.New(database).WithSessionsDeletedHook(func(ctx context.Context, tx *sql.Tx) error {
 		return store.ClampSessionPushCursor(ctx, tx)
 	})
+	// T-830 / T-839: on an enrolled node (push running or paused),
+	// retention never deletes actions / sessions / guard_events / account
+	// observations above the push cursor (rows the org has not yet
+	// accepted), up to the [observer.retention].held_max_mb ceiling. A node
+	// that is not enrolled gets nil and keeps its local-only behaviour.
+	hold, err := retentionPushHold(ctx, cfg, database)
+	if err != nil {
+		return retention.Result{}, fmt.Errorf("runRetention: %w", err)
+	}
 	res, err := p.Run(ctx, retention.Options{
+		PushHold:              hold,
 		MaxAgeDays:            cfg.Observer.Retention.MaxAgeDays,
 		MaxDBSizeMB:           cfg.Observer.Retention.MaxDBSizeMB,
 		ObserverLogMaxAgeDays: cfg.Observer.Retention.ObserverLogMaxAgeDays,
@@ -374,6 +395,21 @@ func runRetention(ctx context.Context, cfg config.Config, database *sql.DB) (ret
 	})
 	if err != nil {
 		return res, err
+	}
+	// T-839: a pass that released held rows past the ceiling deleted data
+	// the org never received. Record it so `observer doctor` FAILs; the
+	// callers log it at ERROR (logRetentionHold).
+	if res.HoldCap.Shed() {
+		if serr := store.New(database).RecordRetentionHoldShed(ctx, store.RetentionHoldShed{
+			At:          time.Now().UTC(),
+			Actions:     res.HoldCap.ShedActions,
+			GuardEvents: res.HoldCap.ShedGuardEvents,
+			HeldBytes:   res.HoldCap.HeldBytes,
+			CapBytes:    res.HoldCap.CapBytes,
+			ShedThrough: res.HoldCap.ShedThrough,
+		}); serr != nil {
+			return res, fmt.Errorf("runRetention: record hold shed: %w", serr)
+		}
 	}
 	// Cachetrack §9 sweep — wired here because the retention package
 	// stays sql.DB-only (no internal/store import). cfg.CacheTrack.
@@ -399,10 +435,12 @@ func runRetention(ctx context.Context, cfg config.Config, database *sql.DB) (ret
 	}
 	// Guard §10.3 sweep — same composition rationale. The prefix-prune
 	// writes the chain checkpoint so `guard verify-audit` keeps
-	// anchoring across retention; ≤ 0 short-circuits inside.
+	// anchoring across retention; ≤ 0 short-circuits inside. Under the
+	// org push hold (T-839) GuardKeepFromID keeps every row the org has not
+	// accepted; 0 (not enrolled) is no floor.
 	if cfg.Guard.RetentionDays > 0 {
 		s := store.New(database)
-		n, perr := s.PruneGuardRows(ctx, cfg.Guard.RetentionDays)
+		n, perr := s.PruneGuardRows(ctx, cfg.Guard.RetentionDays, res.GuardKeepFromID)
 		if perr != nil {
 			return res, fmt.Errorf("runRetention: prune guard rows: %w", perr)
 		}
@@ -534,6 +572,131 @@ func runRetention(ctx context.Context, cfg config.Config, database *sql.DB) (ret
 // holds the lease this round — res/err are zero and the caller should
 // simply skip this pass, not treat it as a failure. Any lease mechanism
 // error fails open (ran=true, proceeds normally) per dblease's contract.
+// retentionPushHold resolves the org push floor into the retention package's
+// PushHold: nil when the node is not enrolled, otherwise the per-table push
+// cursors, the guard horizon and the held-data ceiling. It holds whether
+// [org_client].enabled is true or false (a paused node still owes the org
+// its unsent rows, T-839 / D-673). Shared by runRetention and the doctor
+// "retention push hold" check so both read the same floor.
+func retentionPushHold(ctx context.Context, cfg config.Config, database *sql.DB) (*retention.PushHold, error) {
+	f, err := store.New(database).LoadRetentionPushFloor(ctx, cfg.OrgClient.Enabled)
+	if err != nil {
+		return nil, err
+	}
+	if !f.Held {
+		return nil, nil
+	}
+	return &retention.PushHold{
+		ActionsCursor:     f.ActionsCursor,
+		SessionsCursor:    f.SessionsCursor,
+		GuardEventsCursor: f.GuardEventsCursor,
+		GuardMaxAgeDays:   cfg.Guard.RetentionDays,
+		MaxHeldBytes:      heldMaxBytes(cfg),
+	}, nil
+}
+
+// heldMaxBytes is [observer.retention].held_max_mb in bytes; <= 0 is no
+// ceiling.
+func heldMaxBytes(cfg config.Config) int64 {
+	if cfg.Observer.Retention.HeldMaxMB <= 0 {
+		return 0
+	}
+	return int64(cfg.Observer.Retention.HeldMaxMB) * 1024 * 1024
+}
+
+// retentionShedFailWindow is how long `observer doctor` keeps FAILing after a
+// retention pass deleted unsent rows past the held-data ceiling (T-839).
+const retentionShedFailWindow = 7 * 24 * time.Hour
+
+// warnRetentionHeld logs the T-830 "retention held N rows awaiting push" line
+// so a stuck or paused org push is visible in the daemon log instead of the
+// DB silently growing past max_age_days, and the T-839 ERROR when the pass
+// had to delete unsent rows because the held data passed held_max_mb.
+func warnRetentionHeld(logger *slog.Logger, res retention.Result) {
+	if hc := res.HoldCap; hc.Shed() {
+		logger.Error(fmt.Sprintf("retention deleted %d rows the org server never received: held data passed held_max_mb",
+			hc.ShedActions+hc.ShedGuardEvents),
+			"actions", hc.ShedActions, "guard_events", hc.ShedGuardEvents,
+			"held_bytes", hc.HeldBytes, "cap_bytes", hc.CapBytes, "through", hc.ShedThrough,
+			"hint", "the org push is stuck or paused; check `observer org status` and `observer doctor`, or raise [observer.retention].held_max_mb")
+	}
+	if n := res.HeldForPush.Total(); n > 0 {
+		logger.Warn(fmt.Sprintf("retention held %d rows awaiting org push", n),
+			"actions", res.HeldForPush.Actions, "sessions", res.HeldForPush.Sessions,
+			"guard_events", res.HeldForPush.GuardEvents, "held_bytes", res.HoldCap.HeldBytes,
+			"hint", "rows past their horizon stay until the org server accepts them (up to held_max_mb); check `observer org status` / `observer doctor`")
+	}
+}
+
+// retentionPushHoldCheck is the `observer doctor` line for T-830 / T-839:
+// how many rows past their horizon retention is keeping only because the org
+// push has not accepted them, against the held_max_mb ceiling.
+//
+// FAIL when a pass deleted unsent rows past the ceiling within the last
+// retentionShedFailWindow, or when the held data is already past it (the next
+// pass will): that is data the org never receives, not a slow push, so it is
+// a failure and not a warning. WARN when rows are held (a stuck, slow or
+// paused push). OK otherwise, and OK with a "not enrolled" note on a node
+// where local-only retention applies.
+func retentionPushHoldCheck(ctx context.Context, cfg config.Config, database *sql.DB) diag.Check {
+	check := diag.Check{Name: "retention.push_hold", Status: diag.StatusOK}
+	if database == nil {
+		check.Message = "no database"
+		return check
+	}
+	hold, err := retentionPushHold(ctx, cfg, database)
+	if err != nil {
+		check.Status = diag.StatusWarn
+		check.Message = fmt.Sprintf("could not read the org push cursor: %v", err)
+		return check
+	}
+	if hold == nil {
+		check.Message = "not enrolled; local-only retention applies"
+		return check
+	}
+	paused := ""
+	if !cfg.OrgClient.Enabled {
+		paused = " (org push is paused: [org_client].enabled = false)"
+	}
+	if shed, ok, serr := store.New(database).LoadRetentionHoldShed(ctx); serr == nil && ok && time.Since(shed.At) < retentionShedFailWindow {
+		check.Status = diag.StatusFail
+		check.Message = fmt.Sprintf("retention deleted %d unsent rows (actions=%d guard_events=%d) at %s because held data (%s) passed held_max_mb (%s); the org server never received them%s. Fix the push (`observer org status`) or raise [observer.retention].held_max_mb",
+			shed.Actions+shed.GuardEvents, shed.Actions, shed.GuardEvents, shed.At.Format(time.RFC3339),
+			fmtMB(shed.HeldBytes), fmtMB(shed.CapBytes), paused)
+		return check
+	}
+	est, err := retention.EstimateHold(ctx, database, cfg.Observer.Retention.MaxAgeDays, hold)
+	if err != nil {
+		check.Status = diag.StatusWarn
+		check.Message = fmt.Sprintf("could not measure held rows: %v", err)
+		return check
+	}
+	if est.Shed() {
+		check.Status = diag.StatusFail
+		check.Message = fmt.Sprintf("held data (%s) passes held_max_mb (%s): the next retention pass deletes the oldest %d unsent rows%s. Fix the push (`observer org status`) or raise [observer.retention].held_max_mb",
+			fmtMB(est.HeldBytes), fmtMB(est.CapBytes), est.ShedActions+est.ShedGuardEvents, paused)
+		return check
+	}
+	held, err := retention.CountHeldForPush(ctx, database, cfg.Observer.Retention.MaxAgeDays, hold)
+	if err != nil {
+		check.Status = diag.StatusWarn
+		check.Message = fmt.Sprintf("could not count held rows: %v", err)
+		return check
+	}
+	if n := held.Total(); n > 0 {
+		ceiling := "no ceiling"
+		if est.CapBytes > 0 {
+			ceiling = "held_max_mb " + fmtMB(est.CapBytes)
+		}
+		check.Status = diag.StatusWarn
+		check.Message = fmt.Sprintf("retention held %d rows awaiting push (actions=%d sessions=%d guard_events=%d, about %s of %s)%s; they pass their horizon but the org server has not accepted them, check `observer org status`",
+			n, held.Actions, held.Sessions, held.GuardEvents, fmtMB(est.HeldBytes), ceiling, paused)
+		return check
+	}
+	check.Message = "no aged rows waiting on the org push" + paused
+	return check
+}
+
 func runRetentionLeased(ctx context.Context, cfg config.Config, database *sql.DB, logger *slog.Logger) (res retention.Result, ran bool, err error) {
 	release, proceed := acquireMaintenanceLease(cfg, "retention", logger)
 	defer release()
@@ -589,6 +752,7 @@ func retentionTickLoop(ctx context.Context, configPath string) {
 					"incremental_vacuum", res.IncrementalVacuumRun,
 					"duration_ms", res.DurationMs)
 			}
+			warnRetentionHeld(logger, res)
 			if res.SizeCapUnmet {
 				logger.Warn("retention: DB still over max_db_size_mb after shedding aged actions - the bulk is in other tables (token_usage / cache_* / codeintel_* / process_runs). Recent actions were protected by the keep-floor. Raise [observer.retention].max_db_size_mb or add token retention.",
 					"max_db_size_mb", cfg.Observer.Retention.MaxDBSizeMB,
@@ -630,6 +794,7 @@ func retentionTickLoop(ctx context.Context, configPath string) {
 				"incremental_vacuum", res.IncrementalVacuumRun,
 				"db_bytes", res.DBSizeBytesAfter,
 				"duration_ms", res.DurationMs)
+			warnRetentionHeld(logger, res)
 			if res.SizeCapUnmet {
 				logger.Warn("retention tick: DB still over max_db_size_mb after shedding aged actions - the bulk is in other tables. Recent actions were protected by the keep-floor.")
 			}

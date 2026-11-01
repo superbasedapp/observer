@@ -19,6 +19,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/configschema"
+	"github.com/marmutapp/superbased-observer/internal/dashapi"
 	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
 )
@@ -850,6 +851,19 @@ func applySectionUpdate(cfg *config.Config, name string, body []byte, configPath
 			return fmt.Errorf("decode tasks: %w", err)
 		}
 		cfg.Tasks = sec
+	case "messages":
+		// [messages]: where messages from the org's admins surface on this
+		// machine (T-854). Whole-struct replace: every key is the developer's
+		// own choice and no sibling owns any of them. The org has no remote
+		// toggle for this section; this PUT only ever writes THIS node's
+		// file. read_receipts is still written as asked on a managed
+		// enrolment, where the org client sends receipts regardless (the
+		// Settings card says so and shows the switch fixed on).
+		var sec config.MessagesConfig
+		if err := json.Unmarshal(body, &sec); err != nil {
+			return fmt.Errorf("decode messages: %w", err)
+		}
+		cfg.Messages = sec
 	case "observability":
 		// The [observability] subsystem on/off gate (internal/obs): the
 		// OTLP /v1/traces receiver, the obs_* schema, trajectory
@@ -1352,6 +1366,22 @@ func (s *Server) handleAdminRestart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "GET or POST only", http.StatusMethodNotAllowed)
 		return
 	}
+	// Live sandboxed runs are asked about, never ended silently (sandbox plan
+	// v2 section 5.5, restart_liveruns.go). With no seam or no live run the
+	// route below is the one of before. With no seam wired the body is not
+	// read at all, as before (a body that is not JSON restarts as an empty
+	// one did); with one, a body that is not JSON is refused 400.
+	var req restartRequest
+	if s.opts.LiveSandboxRuns != nil {
+		var rerr error
+		if req, rerr = readRestartRequest(r); rerr != nil {
+			writeErrStatus(w, rerr, http.StatusBadRequest)
+			return
+		}
+	}
+	if s.handleRestartLiveRuns(w, r, req) {
+		return
+	}
 	// Restart is driven by the cmd-owned lifecycle hook (graceful shutdown +
 	// self re-exec). Nil means this process mode can't self-restart (e.g. a
 	// native-Windows daemon, or a standalone read-only surface) — report it
@@ -1359,6 +1389,31 @@ func (s *Server) handleAdminRestart(w http.ResponseWriter, r *http.Request) {
 	if s.opts.RestartFunc == nil {
 		http.Error(w, `{"error":"restart from the dashboard isn't available in this process mode - relaunch the daemon manually"}`, http.StatusNotImplemented)
 		return
+	}
+	// The owner chose to end the live sandboxed runs: they end with a
+	// recorded reason before the restart is scheduled, and only after the
+	// restart's own refusal checks pass, so a restart that would refuse (no
+	// re-exec on this OS, a config that would not come back) leaves the runs
+	// live (SBX-UPD audit finding 1).
+	ended := -1
+	if req.LiveRuns == liveRunsEnd && s.opts.LiveSandboxRuns != nil {
+		if s.opts.RestartPreflight != nil {
+			if err := s.opts.RestartPreflight(); err != nil {
+				s.opts.Logger.Warn("admin restart refused before ending the live sandboxed runs", "error", err)
+				status := http.StatusInternalServerError
+				if errors.Is(err, dashapi.ErrRestartUnsupported) {
+					status = http.StatusNotImplemented
+				}
+				writeErrStatus(w, err, status)
+				return
+			}
+		}
+		n, err := s.opts.LiveSandboxRuns.EndRuns(r.Context())
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		ended = n
 	}
 	// The hook preflights the config; a refusal (config wouldn't come back)
 	// means the daemon keeps running and the operator sees why.
@@ -1368,6 +1423,10 @@ func (s *Server) handleAdminRestart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.opts.Logger.Info("admin restart scheduled - graceful shutdown + re-exec")
+	if ended >= 0 {
+		writeJSON(w, map[string]any{"restart_scheduled": true, "delay_ms": 300, "ended_sandboxed_runs": ended})
+		return
+	}
 	writeJSON(w, map[string]any{"restart_scheduled": true, "delay_ms": 300})
 }
 

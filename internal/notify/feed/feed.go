@@ -26,6 +26,7 @@ const (
 	KindOrgAnnouncement Kind = "org_announcement" // a message from the org (or the release rail)
 	KindOrgPolicy       Kind = "org_policy"       // the org changed a policy this machine applies
 	KindIngestStall     Kind = "ingest_stall"     // session files are not being ingested
+	KindOrgMessage      Kind = "org_message"      // an admin wrote to the developer, or a reply did not reach the org
 )
 
 // Severity is the display tier.
@@ -193,6 +194,33 @@ type IngestFacts struct {
 	OldestBehindSeconds int64
 }
 
+// OrgMessageThread is one conversation with the org's admins that holds an
+// unread or unacknowledged admin message (internal/store, node-local).
+type OrgMessageThread struct {
+	ThreadID string
+	Subject  string
+	// Kind is the thread's message kind: note | coaching | alert.
+	Kind string
+	// NewestID / NewestAuthor / NewestAt describe the newest admin message.
+	NewestID     int64
+	NewestAuthor string
+	NewestAt     time.Time
+	Unread       int
+	NeedsAck     int
+}
+
+// OrgMessageUnsent is one reply or new conversation the org refused, or
+// that has not reached it after retries.
+type OrgMessageUnsent struct {
+	ID        string
+	ThreadID  string
+	Subject   string // a new conversation's subject ("" for a reply)
+	Failed    bool   // refused on its merits (not retried until the developer acts)
+	Attempts  int
+	LastError string
+	At        time.Time
+}
+
 // Input is every fact Build reads. Zero values mean "nothing to say".
 type Input struct {
 	Now time.Time
@@ -213,6 +241,14 @@ type Input struct {
 	Announcements  []Announcement
 	PolicyChanges  []PolicyChange
 	Ingest         *IngestFacts
+	// OrgMessages are the conversations with unread admin messages;
+	// OrgMessagesUnsent the developer's posts that did not reach the org.
+	OrgMessages       []OrgMessageThread
+	OrgMessagesUnsent []OrgMessageUnsent
+	// OrgMessagesAlertsOnly is the developer's [messages].alerts_only: the
+	// bell (a push surface) then shows alert conversations only. The
+	// Messages page itself always lists everything.
+	OrgMessagesAlertsOnly bool
 }
 
 // Rule is one row of the table: its kind, the section that owns it ("" =
@@ -240,6 +276,7 @@ var Rules = []Rule{
 	{KindOrgAnnouncement, "", buildAnnouncements},
 	{KindOrgPolicy, "", buildPolicyChanges},
 	{KindIngestStall, "", buildIngestStall},
+	{KindOrgMessage, "messages", buildOrgMessages},
 }
 
 // Build returns the notifications for in, most urgent first (severity, then
@@ -622,6 +659,74 @@ func buildIngestStall(in Input) []Notification {
 		Body:  "Capture is lagging by " + humanSeconds(g.OldestBehindSeconds) + "; recent activity may be missing from the dashboard.",
 		Link:  "/settings?section=health", At: in.Now,
 	}}
+}
+
+// orgMessageSeverity maps a message kind onto the bell tier: an alert is
+// critical, a message waiting for an acknowledgement is a warning, the rest
+// is information. An unknown kind (a newer org) reads as a note.
+func orgMessageSeverity(kind string, needsAck bool) Severity {
+	switch {
+	case kind == "alert":
+		return SeverityCritical
+	case needsAck:
+		return SeverityWarn
+	default:
+		return SeverityInfo
+	}
+}
+
+// orgMessageLink is the deep link into one conversation.
+func orgMessageLink(threadID string) string { return "/messages?thread=" + threadID }
+
+func buildOrgMessages(in Input) []Notification {
+	out := []Notification{}
+	for _, m := range in.OrgMessages {
+		if in.OrgMessagesAlertsOnly && m.Kind != "alert" {
+			continue
+		}
+		author := orDefault(m.NewestAuthor, "Your admin")
+		title := author + " (admin): " + orDefault(m.Subject, "a message")
+		var parts []string
+		if m.Unread > 1 {
+			parts = append(parts, fmt.Sprintf("%d unread messages.", m.Unread))
+		}
+		if m.NeedsAck > 0 {
+			parts = append(parts, "Your admin asked you to acknowledge this.")
+		}
+		at := m.NewestAt
+		if at.IsZero() {
+			at = in.Now
+		}
+		// The id carries the newest message, so a new message in the same
+		// conversation notifies again while an already-read one stays read.
+		out = append(out, Notification{
+			ID: fmt.Sprintf("org_message:%s:%d", m.ThreadID, m.NewestID), Severity: orgMessageSeverity(m.Kind, m.NeedsAck > 0),
+			Title: truncate(title, 140), Body: strings.Join(parts, " "), Link: orgMessageLink(m.ThreadID), At: at,
+		})
+	}
+	for _, u := range in.OrgMessagesUnsent {
+		if u.LastError == "" {
+			continue
+		}
+		title := "Your reply has not reached your admins"
+		if u.ThreadID == "" {
+			title = "Your message has not reached your admins"
+		}
+		body := truncate(u.LastError, 160) + "."
+		if u.Failed {
+			body += " Retry or discard it from Messages."
+		} else {
+			body += fmt.Sprintf(" %d attempt(s); it is retried automatically.", u.Attempts)
+		}
+		link := "/messages"
+		if u.ThreadID != "" {
+			link = orgMessageLink(u.ThreadID)
+		}
+		out = append(out, Notification{
+			ID: "org_message_unsent:" + u.ID, Severity: SeverityWarn, Title: title, Body: body, Link: link, At: u.At,
+		})
+	}
+	return out
 }
 
 // State is the persisted read / dismiss state of one notification id.

@@ -75,6 +75,14 @@ type EnrolmentOverview struct {
 	CredentialStore string `json:"credential_store,omitempty"`
 	// Tenancy is "managed" or "individual" (empty when not enrolled).
 	Tenancy string `json:"tenancy,omitempty"`
+	// MachineProofWarning is set on a managed enrolment whose daemon signs
+	// no machine proof (WINNODE item 4: "Machine proof unavailable: no
+	// Windows logon session ..."). Absent is the normal case.
+	MachineProofWarning string `json:"machine_proof_warning,omitempty"`
+	// DaemonCredentialWarning is set when a running daemon reported, at its
+	// last push cycle, that it cannot read the organization credential, so
+	// it does not push (WINNODE2 issue 1b). "" otherwise.
+	DaemonCredentialWarning string `json:"daemon_credential_warning,omitempty"`
 	// PushingEnabled is [org_client].enabled in config.toml.
 	PushingEnabled bool `json:"pushing_enabled"`
 	// PushLoopRunning reports whether THIS daemon runs a push loop. False on

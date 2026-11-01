@@ -1,4 +1,4 @@
-//go:build !unix || sbo_omit_terminals
+//go:build (!unix && !windows) || sbo_omit_terminals
 
 package main
 
@@ -15,3 +15,6 @@ func announceDiscoveredOOBSession(string) {}
 
 // oobChannelActive is always false on non-unix platforms (no OOB channel).
 func oobChannelActive() bool { return false }
+
+// oobChannelSpawnedByDaemon is always false here (no OOB channel).
+func oobChannelSpawnedByDaemon() bool { return false }

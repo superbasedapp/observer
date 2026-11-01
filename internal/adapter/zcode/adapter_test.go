@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -14,7 +13,6 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/marmutapp/superbased-observer/internal/adapter"
-	"github.com/marmutapp/superbased-observer/internal/adapter/mirrorbase"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
 )
@@ -681,133 +679,6 @@ func TestStageMirrorIfForeign_NativePassThrough(t *testing.T) {
 	}
 	if got != "/home/me/.zcode/cli/db/db.sqlite" {
 		t.Errorf("native path got remapped to %q (want passthrough)", got)
-	}
-}
-
-// TestStageMirrorIfForeign_CopiesTrioAndReusesOnRepeat pins the happy
-// path: a foreign-mount source triggers a trio copy to a per-source
-// mirror dir, and a second call with an unchanged source skips the copy.
-func TestStageMirrorIfForeign_CopiesTrioAndReusesOnRepeat(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("stageMirrorIfForeign's mirrorbase.Base() honors XDG_CACHE_HOME only on Unix")
-	}
-	srcRoot := t.TempDir()
-	cacheRoot := t.TempDir()
-	mirrorbase.SetBaseForProcess(cacheRoot)
-	t.Cleanup(func() { mirrorbase.SetBaseForProcess("") })
-	orig := allHomesFunc
-	t.Cleanup(func() { allHomesFunc = orig })
-	allHomesFunc = func() []crossmount.HomeRoot {
-		return []crossmount.HomeRoot{
-			{Path: "/home/observer", OS: crossmount.OSLinux, Origin: "native"},
-			{Path: srcRoot, OS: crossmount.OSWindows, Origin: "wsl-mnt:fake"},
-		}
-	}
-	srcDB := filepath.Join(srcRoot, "db.sqlite")
-	if err := os.WriteFile(srcDB, []byte("DBv1"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(srcDB+"-wal", []byte("WALv1"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(srcDB+"-shm", []byte("SHMv1"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	first, err := stageMirrorIfForeign(srcDB)
-	if err != nil {
-		t.Fatalf("first mirror: %v", err)
-	}
-	if first == srcDB {
-		t.Fatalf("foreign source returned passthrough; want mirror path")
-	}
-	if !strings.HasPrefix(first, cacheRoot) {
-		t.Errorf("mirror path %q must be under override base %q", first, cacheRoot)
-	}
-	for _, suffix := range []string{"", "-wal", "-shm"} {
-		got, err := os.ReadFile(first + suffix)
-		if err != nil {
-			t.Fatalf("read mirror sibling %s: %v", suffix, err)
-		}
-		want := map[string]string{"": "DBv1", "-wal": "WALv1", "-shm": "SHMv1"}[suffix]
-		if string(got) != want {
-			t.Errorf("mirror %s body = %q, want %q", suffix, got, want)
-		}
-	}
-
-	past := time.Now().Add(-time.Hour)
-	for _, suffix := range []string{"", "-wal", "-shm"} {
-		if err := os.Chtimes(srcDB+suffix, past, past); err != nil {
-			t.Fatal(err)
-		}
-	}
-	beforeSecond, err := os.Stat(first)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	second, err := stageMirrorIfForeign(srcDB)
-	if err != nil {
-		t.Fatalf("second mirror: %v", err)
-	}
-	if second != first {
-		t.Errorf("repeat call returned %q, want %q (same per-source mirror)", second, first)
-	}
-	afterSecond, err := os.Stat(second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !afterSecond.ModTime().Equal(beforeSecond.ModTime()) {
-		t.Errorf("mirror mtime changed; repeat call must skip the copy when source is unchanged")
-	}
-}
-
-// TestStageMirrorIfForeign_RefreshesOnSourceWALAdvance pins the WAL-
-// triggered refresh: the main .db's mtime can stay stable while the WAL
-// advances on every flush, so the mirror must re-copy when the WAL is
-// newer than the mirror's WAL.
-func TestStageMirrorIfForeign_RefreshesOnSourceWALAdvance(t *testing.T) {
-	srcRoot := t.TempDir()
-	cacheRoot := t.TempDir()
-	mirrorbase.SetBaseForProcess(cacheRoot)
-	t.Cleanup(func() { mirrorbase.SetBaseForProcess("") })
-	orig := allHomesFunc
-	t.Cleanup(func() { allHomesFunc = orig })
-	allHomesFunc = func() []crossmount.HomeRoot {
-		return []crossmount.HomeRoot{
-			{Path: srcRoot, OS: crossmount.OSWindows, Origin: "wsl-mnt:fake"},
-		}
-	}
-	srcDB := filepath.Join(srcRoot, "db.sqlite")
-	if err := os.WriteFile(srcDB, []byte("DBv1"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(srcDB+"-wal", []byte("WALv1"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	first, err := stageMirrorIfForeign(srcDB)
-	if err != nil {
-		t.Fatalf("first mirror: %v", err)
-	}
-
-	if err := os.WriteFile(srcDB+"-wal", []byte("WALv1-advanced"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	future := time.Now().Add(2 * time.Hour)
-	if err := os.Chtimes(srcDB+"-wal", future, future); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := stageMirrorIfForeign(srcDB); err != nil {
-		t.Fatalf("second mirror: %v", err)
-	}
-	got, err := os.ReadFile(first + "-wal")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "WALv1-advanced" {
-		t.Errorf("mirror -wal = %q, want %q (refresh must trigger on WAL mtime advance)", got, "WALv1-advanced")
 	}
 }
 

@@ -188,7 +188,7 @@ func piLauncherRun(t *testing.T, home string, args ...string) (argv []string, du
 		agentRuntimeDir = originalRuntimeDir
 		daemonLoginPathDirs = originalLoginPathDirs
 	})
-	t.Setenv("HOME", home)
+	setTestHome(t, home)
 	dir := t.TempDir()
 	cfgPath := writeCopilotCLITestConfig(t, dir)
 	argvPath := filepath.Join(dir, "argv.out")
@@ -196,13 +196,11 @@ func piLauncherRun(t *testing.T, home string, args ...string) (argv []string, du
 	models := filepath.Join(home, ".pi", "agent", "models.json")
 	stub := filepath.Join(dir, "stub-pi.sh")
 	script := "#!/bin/sh\n" +
-		"touch " + shellQuote(argvPath) + "\n" +
-		"for a in \"$@\"; do printf '%s\\n' \"$a\" >> " + shellQuote(argvPath) + "; done\n" +
-		"[ -f " + shellQuote(models) + " ] && cp " + shellQuote(models) + " " + shellQuote(duringPath) + "\n" +
+		"touch " + shellQuote(stubShPath(argvPath)) + "\n" +
+		"for a in \"$@\"; do printf '%s\\n' \"$a\" >> " + shellQuote(stubShPath(argvPath)) + "; done\n" +
+		"[ -f " + shellQuote(stubShPath(models)) + " ] && cp " + shellQuote(stubShPath(models)) + " " + shellQuote(stubShPath(duringPath)) + "\n" +
 		"exit 0\n"
-	if werr := os.WriteFile(stub, []byte(script), 0o755); werr != nil {
-		t.Fatal(werr)
-	}
+	stub = writeShellStub(t, stub, script)
 	output := new(bytes.Buffer)
 	root := &cobra.Command{Use: "observer", SilenceUsage: true}
 	root.AddCommand(newPiCmd())

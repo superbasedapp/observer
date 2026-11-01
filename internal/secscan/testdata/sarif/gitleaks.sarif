@@ -1,0 +1,4 @@
+{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"gitleaks","version":"8.21.0","rules":[{"id":"aws-access-token","shortDescription":{"text":"AWS"}}]}},
+ "results":[{"ruleId":"aws-access-token","message":{"text":"aws-access-token has detected secret for file config.env AKIAABCDEFGHIJKLMNOP"},
+  "locations":[{"physicalLocation":{"artifactLocation":{"uri":"config.env"},"region":{"startLine":3,"snippet":{"text":"AKIAABCDEFGHIJKLMNOP"}}}}],
+  "partialFingerprints":{"commitSha":"","file":"config.env","line":"3"}}]}]}

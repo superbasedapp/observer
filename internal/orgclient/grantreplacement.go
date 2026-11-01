@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/govern"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -154,6 +155,23 @@ func (c *Client) AcceptGrantReplacement(ctx context.Context, r orgcontract.Grant
 	if r.KeyPinSHA256 != "" && r.KeyPinSHA256 != pinnedKeyHash {
 		c.logger.Warn("grant replacement REFUSED: declared key pin does not match the recorded pin - keeping last-good grant",
 			"declared_key_sha256", r.KeyPinSHA256, "pinned_key_sha256", pinnedKeyHash)
+		return false, nil
+	}
+
+	// Tenancy boundary (OSH-R-013, operator ruling P-204), asked only once
+	// the message is proven to be signed by THIS enrolment's own org under
+	// the key pinned for it. A managed-class grant must never cross orgs
+	// (refused above by org id, server and key pin, and stated here as a
+	// fact of the one seam); a verified managed-consent replacement from the
+	// enrolment's own org is that org switching its members to enterprise,
+	// which is the authority, not a crossing (OrgSwitched).
+	if !govern.ConsentWithinTenancy(r.ConsentMode, r.Authority, govern.TenancyFacts{
+		Tenancy:     enr.Tenancy,
+		OtherOrg:    r.OrgID != enr.OrgID,
+		OrgSwitched: r.OrgID == enr.OrgID,
+	}) {
+		c.logger.Warn("grant replacement REFUSED: managed-class consent from an organization this node is not enrolled in - keeping last-good grant",
+			"consent_mode", r.ConsentMode, "replacement_org_id", r.OrgID, "enrolment_org_id", enr.OrgID)
 		return false, nil
 	}
 

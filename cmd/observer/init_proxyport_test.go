@@ -43,11 +43,7 @@ func TestInitRouteUsesConfigProxyPort(t *testing.T) {
 	requireActiveAdapters(t, "claude-code")
 	requireComponents(t, "integration.proxy-route")
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-	t.Setenv("XDG_CONFIG_HOME", "")
-	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
-	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
+	pinToolHomesAt(t, home)
 	t.Setenv(crossmount.EnvDisableForeignHomes, "1")
 	cfg := filepath.Join(home, ".observer", "config.toml")
 	if err := os.MkdirAll(filepath.Dir(cfg), 0o755); err != nil {

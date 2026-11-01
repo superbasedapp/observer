@@ -30,21 +30,46 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/keystore"
 	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
 )
+
+// observerBinEnv names an already-built observer binary to use instead of
+// building one. Unset, the suite builds ./cmd/observer once per test binary.
+const observerBinEnv = "SBO_E2E_OBSERVER_BIN"
 
 var (
 	buildOnce sync.Once
 	buildErr  error
 	binPath   string
+	binNote   string // set when SBO_E2E_OBSERVER_BIN supplied the binary
 )
 
-// binaryPath builds the real observer CLI once per test-binary run,
+// binaryPath builds the real observer CLI once per test-binary run (or
+// reuses the binary named by SBO_E2E_OBSERVER_BIN when that is set),
 // into a private os.MkdirTemp location outside the repo (mirrors
 // tests/e2e/oneshot's binaryPath).
 func binaryPath(t *testing.T) string {
 	t.Helper()
+	if testing.Short() {
+		// Full tier only: every caller spawns the real binary.
+		t.Skip("spawns the built observer binary (full tier)")
+	}
 	buildOnce.Do(func() {
+		if prebuilt := os.Getenv(observerBinEnv); prebuilt != "" {
+			// A job that already built observer passes its path, so the
+			// suites share one build instead of each running go build.
+			fi, err := os.Stat(prebuilt)
+			if err != nil {
+				buildErr = fmt.Errorf("%s=%q: %w", observerBinEnv, prebuilt, err)
+				return
+			}
+			// Freshness is the caller's job; say which binary ran so a
+			// stale one is visible in the log.
+			binNote = fmt.Sprintf("using prebuilt %s=%s (modified %s)", observerBinEnv, prebuilt, fi.ModTime().Format(time.RFC3339))
+			binPath = prebuilt
+			return
+		}
 		dir, err := os.MkdirTemp("", "statusline-e2e-bin-*")
 		if err != nil {
 			buildErr = fmt.Errorf("mkdir temp build dir: %w", err)
@@ -71,6 +96,9 @@ func binaryPath(t *testing.T) string {
 	})
 	if buildErr != nil {
 		t.Fatalf("build observer binary: %v", buildErr)
+	}
+	if binNote != "" {
+		t.Log(binNote)
 	}
 	return binPath
 }
@@ -114,6 +142,9 @@ func buildScratchEnv(home, tmpdir string) []string {
 		"TMPDIR=" + tmpdir,
 		"PATH=" + os.Getenv("PATH"),
 		crossmount.EnvDisableForeignHomes + "=1",
+		// The built binary uses the in-memory keyring, never the
+		// developer's OS keychain (WINFIX2 audit finding 10).
+		keystore.EnvTestKeystore + "=" + keystore.TestKeystoreMemory,
 	}
 }
 

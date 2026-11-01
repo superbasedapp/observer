@@ -74,15 +74,18 @@ type artifactProbes struct {
 }
 
 // productionArtifactProbes binds the probes to this machine. Call it only
-// from a command's RunE (it reads the ambient home, WSL state and env).
+// from a command's RunE (it reads the ambient home, WSL state and env). The
+// relocation variables that move a plugin-shim host's directory are read
+// under the pinned-home rule (crossmount.HomeEnvAt, FU-129): an isolated
+// process home reads none, so the probe reports the shims under that home.
 func productionArtifactProbes(cfg config.Config) artifactProbes {
 	home, _ := os.UserHomeDir()
 	winHomes, _ := detectWindowsBrowserHomes()
 	return artifactProbes{
 		Home: home, WindowsHomes: winHomes, ObserverDir: browserObserverDir(cfg),
 		GOOS: runtime.GOOS, WSL: crossmount.IsWSL(), UID: os.Getuid(), BinaryVersion: version,
-		Now: time.Now, Getenv: os.Getenv, BridgePath: antigravityBridgeLocator,
-		PathExists: func(p string) bool { _, err := os.Stat(p); return err == nil },
+		Now: time.Now, Getenv: crossmount.HomeEnvAt(home, nil), BridgePath: antigravityBridgeLocator,
+		PathExists: func(p string) bool { _, err := os.Stat(p); return err == nil }, //nolint:gosec // G703: a metadata read of the user's own local path; no privilege boundary is crossed
 	}
 }
 

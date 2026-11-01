@@ -64,7 +64,9 @@ func unescapeReply(b []byte) string {
 // the rule and links the node request form prefilled with the rule and the
 // session.
 func TestToolGateDenyOffersRequestAccess(t *testing.T) {
-	wantLink := requestBase + "/requests?rule=R-101&session=s1"
+	// WINNODE2 16d: the in-band reply names the dashboard page, never the
+	// localhost URL (an agent treated it as a service to call).
+	wantLink := "Ask your admin: Observer dashboard, Requests page"
 	covered := map[string]bool{}
 	for _, r := range toolGateDialectRows() {
 		// A dialect whose table row is an ask fixture (Vibe, Junie) is
@@ -88,7 +90,7 @@ func TestToolGateDenyOffersRequestAccess(t *testing.T) {
 			if out.Len() == 0 {
 				reply = errb.String()
 			}
-			for _, w := range []string{"observer: R-101 blocked", "your organization locks this rule.", "Request access: " + wantLink} {
+			for _, w := range []string{"observer: R-101 blocked", "your organization locks this rule.", wantLink} {
 				if !strings.Contains(reply, w) {
 					t.Errorf("reply %q missing %q", reply, w)
 				}
@@ -108,10 +110,30 @@ func TestToolGateDenyOffersRequestAccess(t *testing.T) {
 	}
 	em := guard.HumanizeEmission(guard.Emission{Permission: "deny", Enforced: true, Reason: ruleReason}, av, "s1")
 	if b, ok := toolGateBlockFor(ToolGateDialectKiro, "preToolUse", em); !ok || !b.stderrReason || b.exitCode != 2 ||
-		!strings.Contains(em.Reason, "Request access: "+wantLink) {
+		!strings.Contains(em.Reason, wantLink) || strings.Contains(em.Reason, "http") {
 		t.Errorf("kiro block %+v ok=%v reason %q", b, ok, em.Reason)
 	}
 	covered[ToolGateDialectKiro] = true
+	// The Cline file-hook gate (cline-pretool) is no longer registered
+	// (guard-fix lane B: the gate is the plugin's beforeTool), so nothing
+	// judges through it; its block shape still carries the request line.
+	if b, ok := toolGateBlockFor(ToolGateDialectCline, "PreToolUse", em); !ok ||
+		!strings.Contains(string(b.stdout), "Requests page") || !strings.Contains(string(b.stdout), `"cancel":true`) {
+		t.Errorf("cline file-hook block %+v ok=%v", b, ok)
+	}
+	covered[ToolGateDialectCline] = true
+	// The 2026-10-21 wave: the stdout dialects carry the request line in
+	// their reply, Kimchi's bash pre-gate on stderr with exit 2.
+	for _, d := range []string{ToolGateDialectClaudeWire, ToolGateDialectVTCode, ToolGateDialectDirac, ToolGateDialectAutohand} {
+		if b, ok := toolGateBlockFor(d, "PreToolUse", em); !ok || !strings.Contains(string(b.stdout), "Requests page") {
+			t.Errorf("%s block %+v ok=%v", d, b, ok)
+		}
+		covered[d] = true
+	}
+	if b, ok := toolGateBlockFor(ToolGateDialectKimchiBash, "tool_call", em); !ok || !b.stderrReason || b.exitCode != 2 {
+		t.Errorf("kimchi bash block %+v ok=%v", b, ok)
+	}
+	covered[ToolGateDialectKimchiBash] = true
 	for _, d := range ToolGateDialects() {
 		if !covered[d] {
 			t.Errorf("dialect %s has no deny fixture: the request line is unpinned there", d)
@@ -128,7 +150,7 @@ func TestPluginGateDenyOffersRequestAccess(t *testing.T) {
 		policy.Capabilities{PreExecution: true, CanBlock: true}, true,
 		&lockedEvaluator{targetEvaluator{denyOn: "mcp__evil"}}, nil, &out, &bytes.Buffer{})
 	reply := unescapeReply(out.Bytes())
-	if !blocked || !strings.Contains(reply, "Request access: "+requestBase+"/requests?rule=R-101&session=s1") {
+	if !blocked || !strings.Contains(reply, "Observer dashboard, Requests page") || strings.Contains(reply, "http") {
 		t.Fatalf("blocked=%v reply %q", blocked, reply)
 	}
 }
@@ -145,7 +167,7 @@ func TestPromptHouseMessage_OrgLockedOffersRequestAccess(t *testing.T) {
 		Detectors: "github_pat", OrgLocked: true, RequestBase: requestBase,
 	}.WithAction(guard.PromptSeamCaps{Warn: true, Reenter: true, Block: true}, "hook")
 	got := promptHouseMessage(pv, "s9")
-	link := "Request access: " + requestBase + "/requests?rule=R-172&session=s9"
+	link := "Observer dashboard, Requests page"
 	i := strings.Index(got, link)
 	if i < 0 || i+len(link) > guard.RequestAccessMaxBytes {
 		t.Fatalf("message %q: the request link must sit inside the first %d bytes", got, guard.RequestAccessMaxBytes)
@@ -157,7 +179,7 @@ func TestPromptHouseMessage_OrgLockedOffersRequestAccess(t *testing.T) {
 	// TestProxyPromptHouseMessage_OrgLockedOffersRequestAccess.)
 	// An unlocked block keeps its own text and offers no request.
 	pv.OrgLocked = false
-	if strings.Contains(promptHouseMessage(pv, "s9"), "Request access") {
+	if strings.Contains(promptHouseMessage(pv, "s9"), "Requests page") {
 		t.Fatal("an unlocked prompt block must not offer a request")
 	}
 }

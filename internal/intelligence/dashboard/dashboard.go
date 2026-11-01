@@ -21,6 +21,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/cursorusage"
 	"github.com/marmutapp/superbased-observer/internal/dashapi"
 	"github.com/marmutapp/superbased-observer/internal/diag"
+	"github.com/marmutapp/superbased-observer/internal/firstrunstate"
 	"github.com/marmutapp/superbased-observer/internal/hooklifecycle"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/advisor"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
@@ -62,6 +63,13 @@ type Server struct {
 	// (internal/notify/feedstate), created once per server.
 	notifyStateOnce sync.Once
 	notifyState     *feedstate.Store
+
+	// firstRun is the first-run view's seen state seam
+	// (internal/firstrunstate, T-922), created once per server.
+	firstRunOnce sync.Once
+	firstRun     *firstrunstate.Store
+	// installSignals caches Options.InstallSignalTools (setup_installsignal.go).
+	installSignals installSignalCache
 
 	// routeSections is the route -> Section registry the last
 	// registerRoutes call built (the same map governanceGuard enforces).
@@ -442,6 +450,7 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 		secActions     = SectionActions
 		secProjects    = SectionProjects
 		secSecurity    = SectionSecurity
+		secCodeSec     = SectionCodeSecurity
 		secSearch      = SectionSearch
 		secCost        = SectionCost
 		secPlans       = SectionPlans
@@ -461,6 +470,7 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 		secRemote      = SectionRemote
 		secSettings    = SectionSettings
 		secRequests    = SectionRequests
+		secMessages    = SectionMessages
 	)
 
 	const V = CapabilityView
@@ -565,6 +575,11 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	// /api/terminal/ catch-all below, so mux precedence routes it here (not to
 	// handleTerminalStatus).
 	reg("/api/terminal/launch/preflight", L, secTerminals, s.handleTerminalPreflight)
+	// New Terminal "project policy" line (security plan 7.11, lane
+	// sec-p2b). LOCAL: it takes a local directory path and says whether the
+	// org's project rules apply there, which a paired remote principal has
+	// no business probing. Reads the match record and mapping only.
+	reg("/api/terminal/project-policy", L, secTerminals, s.handleTerminalProjectPolicy)
 	// New Terminal model picker (B5). VIEW — unlike preflight (which runs a
 	// local $SHELL PATH capture and reveals binary/home-dir layout), this
 	// reads only token_usage history + the capability registry's Known
@@ -622,6 +637,10 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	// above, this writes [terminal.sandbox], including authority-expanding
 	// remote-clone / extra-rw-bind escape hatches.
 	reg("/api/terminal/sandbox/config", L, secTerminals.WithTab("settings"), s.handleTerminalSandboxConfig)
+	// The first-start install's version picker (lane LEFT-SBX). LOCAL: it
+	// makes the daemon read a vendor registry, which a remote principal
+	// must never drive.
+	reg("/api/terminal/sandbox/install-versions", L, secTerminals.WithTab("settings"), s.handleTerminalSandboxInstallVersions)
 	// Guided one-click install (tool-binary-resolution arc). LOCAL + confirm-
 	// token-gated, EXACTLY like the Tailscale setup handlers: it spawns a
 	// grounded, compile-time-constant install command in a visible local-only
@@ -692,6 +711,19 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	// bell is the owner's own inbox and its state write is a node mutation.
 	reg("/api/notifications", L, secNone, s.handleNotifications)
 	reg("/api/notifications/state", L, secNone, s.handleNotificationState)
+	// The first-run capture view (T-922, firstrun.go): detected AI tools and
+	// the watcher's history-capture progress. Local: it names this machine's
+	// session folders and project roots, and its seen write is a node
+	// mutation. Never hidden as a route (it is the welcome on a fresh node).
+	reg("/api/firstrun", L, secNone, s.handleFirstRun)
+	reg("/api/firstrun/seen", L, secNone, s.handleFirstRunSeen)
+	// Admin and developer messaging (T-854, messages.go): the Messages
+	// page's own section, which sits on the unhideable floor (D-695), so an
+	// org message is never hidden from the developer it was sent to. Local:
+	// the inbox is the owner's own, and its writes reach the org (a reply, a
+	// receipt).
+	reg("/api/messages", L, secMessages, s.handleMessages)
+	reg("/api/messages/", L, secMessages, s.handleMessagesSub)
 	// What this dashboard renders for a cost figure: dollars (default) or,
 	// when the org a node is enrolled with chose it, token usage. Read by the
 	// app shell once at boot. The org's own setting, already verified and
@@ -762,6 +794,71 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	// or build a draft from local guard data (prefill, preview), all Local.
 	reg("/api/requests", L, secRequests, s.handleRequests)
 	reg("/api/requests/", L, secRequests, s.handleRequestsSub)
+	// Code security (the security pillar, component `security`; security
+	// pillar plan section 4.10): its own page beside Guard's, and the same
+	// managed-node visibility section as its page. A route one tab reads
+	// exclusively carries that tab (Findings, Exceptions, Baselines), so
+	// hiding the tab blocks its API as Guard's tabs do (lane gov-tabs). The
+	// findings list stays page-level: the page export reads it too
+	// (web/src/lib/exportTarget.ts).
+	reg("/api/security/status", V, secCodeSec, s.handleSecurityStatus)
+	reg("/api/security/findings", V, secCodeSec, s.handleSecurityFindings)
+	// The affected-worker notice (security plan 7.12, lane SEC-E3): never
+	// hidden, so a page the org hides cannot hide what it is told.
+	reg("/api/security/org-notice", V, secNone, s.handleSecurityOrgNotice)
+	// The Findings tab's Explain (security.feedback, lane sec-h): a judge
+	// call that may leave the machine, so owner-local with the confirm
+	// token; it changes nothing on the finding.
+	reg("/api/security/findings/{id}/explain", L, secCodeSec.WithTab("findings"), s.handleSecurityExplain)
+	// Local finding exceptions and baselines (lane sec-c3): they lift a
+	// finding, so owner-local, with the confirm token on every write. The
+	// exceptions list stays page-level: its read feeds the Findings tab's
+	// pickers and the Findings tab writes an exception too.
+	reg("/api/security/exceptions", L, secCodeSec, s.handleSecurityExceptions)
+	reg("/api/security/exceptions/revoke", L, secCodeSec.WithTab("exceptions"), s.handleSecurityExceptionRevoke)
+	reg("/api/security/baseline", L, secCodeSec.WithTab("baselines"), s.handleSecurityBaseline)
+	// The VS Code extension's diagnostics feed: it resolves a directory
+	// the caller names, so owner-local like /api/security/trust.
+	reg("/api/security/editor", L, secCodeSec, s.handleSecurityEditor)
+	// The on-demand history scan: runs git and writes findings.
+	reg("/api/security/scan-history", L, secCodeSec.WithTab("findings"), s.handleSecurityScanHistory)
+	// The opt-in local git hooks (security.githooks): writes into a
+	// repository on the developer's consent.
+	reg("/api/security/githooks", L, secCodeSec.WithTab("baselines"), s.handleSecurityGithooks)
+	// The AI change records (security.provenance, lane sec-f2a): the key,
+	// the records and the per-repository writer consent, a person's call.
+	reg("/api/security/provenance", L, secCodeSec.WithTab("baselines"), s.handleSecurityProvenance)
+	// Dependency scanners (security.scan.scalibr and security.scan.osv,
+	// Phase D2): the Scanners card; reads the database epochs file only.
+	reg("/api/security/scanners", V, secCodeSec.WithTab("findings"), s.handleSecurityScanners)
+	// The one-time accept of the scanners' OSV database download (operator
+	// ruling PT-19 (2)): owner-local, consent is never a remote viewer's
+	// action; the POST needs the confirm token its GET mints.
+	reg("/api/security/scanners/db", L, secCodeSec.WithTab("findings"), s.handleSecurityScannersDB)
+	// The code rules' card and guided install (security.scan.opengrep,
+	// lane SEC-G2): owner-local, the size consent is never a remote
+	// viewer's action; the POST needs the confirm token its GET mints.
+	reg("/api/security/code/install", L, secCodeSec.WithTab("findings"), s.handleSecurityOpengrep)
+	reg("/api/security/iac/install", L, secCodeSec.WithTab("findings"), s.handleSecurityIaCInstall)
+	// The SARIF upload (security.scan.sarif-import, lane SEC-P4):
+	// owner-local, a file the developer picked; the POST needs the confirm
+	// token its GET mints and is capped at the CLI's own file cap.
+	reg("/api/security/import-sarif", L, secCodeSec.WithTab("findings"), s.handleSecurityImportSARIF)
+	// Repository trust (component security.trust): the New Terminal
+	// dialog's trust chip for a chosen directory. Local-only: it reads a
+	// directory the caller names. Page-level, and its READ is shared with
+	// the Terminals page (sharedReadSections in governance.go): the chip
+	// stays while either page is shown; the accept stays Code security's.
+	reg("/api/security/trust", L, secCodeSec, s.handleSecurityTrust)
+	// Custom scanners (component security.scan.custom): owner-local, since a
+	// scanner runs a program on this machine; writes need the confirm
+	// token the GET mints.
+	reg("/api/security/scanners/custom", L, secCodeSec.WithTab("findings"), s.handleSecurityCustom)
+	reg("/api/security/scanners/custom/", L, secCodeSec.WithTab("findings"), s.handleSecurityCustomSub)
+	// Package checks (component security.deps): the Code security page's
+	// card, and the dashboard accept of the online checks' disclosure.
+	// Local-only: consent is never a remote viewer's action.
+	reg("/api/security/deps", L, secCodeSec.WithTab("findings"), s.handleSecurityDeps)
 	reg("/api/guard/summary", V, secSecurity, s.handleGuardSummary)
 	reg("/api/guard/events", V, secSecurity, s.handleGuardEvents)
 	reg("/api/guard/conformance", V, secSecurity.WithTab("coverage"), s.handleGuardConformance)
@@ -900,6 +997,23 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	reg("/api/project/{id}/cost", V, secProjects, s.handleProjectCost)
 	reg("/api/project/{id}/skills", V, secProjects, s.handleProjectSkills)
 	reg("/api/project/{id}/prompts/{action_id}/grade", V, secProjects, s.handleProjectGrade)
+	// "Rescan now" (2026-10-15): runs git on this machine, so Local with
+	// the confirm token, like the other on-demand local actions.
+	reg("/api/project/{id}/commit-scan", L, secProjects, s.handleProjectCommitScan)
+	// Delivery, commit to PR to merge (D-689, delivery.go): the tab read is
+	// View like the ledger; "Check now" and the mirror settings write reach
+	// the network or the disk, so Local with the confirm token. The code
+	// host and mirror routes live under the Projects section too (the
+	// Settings card is a second door onto the same feature), so an org that
+	// hides Projects hides all of it.
+	reg("/api/project/{id}/delivery", V, secProjects, s.handleProjectDelivery)
+	reg("/api/project/{id}/delivery/check", L, secProjects, s.handleProjectDeliveryCheck)
+	reg("/api/project/{id}/delivery/settings", L, secProjects, s.handleProjectDeliverySettings)
+	reg("/api/delivery/links", L, secProjects, s.handleDeliveryLinks)
+	reg("/api/delivery/links/{id}", L, secProjects, s.handleDeliveryLink)
+	reg("/api/delivery/links/{id}/test", L, secProjects, s.handleDeliveryLinkTest)
+	reg("/api/delivery/mirrors", V, secProjects, s.handleDeliveryMirrors)
+	reg("/api/delivery/mirrors/{id}", L, secProjects, s.handleDeliveryMirror)
 	// Agent-guidance inventory (internal/guidance). The inventory + roll-up
 	// are metadata reads over already-persisted rows, classed like
 	// /api/projects itself. The /file endpoint returns a project file's
@@ -3519,6 +3633,14 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 	if strings.HasSuffix(id, "/commits") {
 		id = strings.TrimSuffix(id, "/commits")
 		s.handleSessionCommits(w, r, id)
+		return
+	}
+	// Sub-route: /api/session/<id>/delivery -> where each of those commits
+	// went (pushed, in a PR, landed on the default branch; delivery.go). A
+	// read over node-local delivery rows, classed exactly like /commits.
+	if strings.HasSuffix(id, "/delivery") {
+		id = strings.TrimSuffix(id, "/delivery")
+		s.handleSessionDelivery(w, r, id)
 		return
 	}
 	// Sub-route: /api/session/<id>/processes → the Process Observability
@@ -6732,7 +6854,7 @@ func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 			out[i].LastCommitAt = e.LastCommitAt.UTC().Format(time.RFC3339Nano)
 		}
 		if e.CommitsScanned {
-			out[i].Capture = &dashapi.APIProjectCaptureInfo{Commits: e.CommitCapture, HumanLOC: e.HumanLOC}
+			out[i].Capture = &dashapi.APIProjectCaptureInfo{Commits: e.CommitCapture, HumanLOC: e.HumanLOC, CommitsKind: e.CommitCaptureKind}
 		}
 	}
 

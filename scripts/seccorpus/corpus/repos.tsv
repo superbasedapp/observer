@@ -1,0 +1,67 @@
+# The precision corpus (JSP-8 step 1): the 50 JSP-7 repositories at the
+# commits JSP-7 cloned (_spikes/jsp-7/results/repos-cloned.tsv) plus this
+# repository at lane SEC-G3's base. URL<TAB>full commit id.
+https://github.com/Aider-AI/aider	5dc9490bb35f9729ef2c95d00a19ccd30c26339c
+https://github.com/BurntSushi/ripgrep	3fce3b5bb0236da2df6d99672afb8a719642eca7
+https://github.com/Kilo-Org/kilocode	5cc65d1212b00609f9bba7bd25780aa5e64f516d
+https://github.com/QwenLM/qwen-code	e7fa410a1d12f8446c40e1a679baf7c53de6fb15
+https://github.com/RooCodeInc/Roo-Code	b867ec9145750d0ae1ff7f02d35406e9bf2a0b16
+https://github.com/anthropics/anthropic-sdk-python	bcd55fe1d3f0f1240765f8cef04295b67337f55a
+https://github.com/anthropics/claude-code	a6e289a2e772a17b3614a9ef43303003de5cd887
+https://github.com/anthropics/claude-code-action	db77d4d3c98f3f6380e7cd45ffba2342a3dbde3c
+https://github.com/astral-sh/ruff	3e3f22dcc47a534d5bb6668817464b02c6e6e133
+https://github.com/astral-sh/uv	8d1626698d1ad5eafd7d4427a4d893fc7c0d3960
+https://github.com/block/goose	9920efa16d078777a4d9715b2f00d8800a4da188
+https://github.com/charmbracelet/crush	8fa35a0f10e675aae222fe8626d2d13c2dcb49f5
+https://github.com/cline/cline	ca7402c5abced42da9c7c50500b7a9bae82cb6fa
+https://github.com/continuedev/continue	5522c6f44ca0ac3528b37244818fbfa39b5af470
+https://github.com/denoland/deno	a18ce33715e30cd2b0d99c7e322ef11a65490e4d
+https://github.com/django/django	9b83f7513c06aef91a20669450809ddd944e0792
+https://github.com/excalidraw/excalidraw	d3a9c2a195182bf65b526ccb7a19de96f4bdfdb3
+https://github.com/expressjs/express	0dee2c52c7c873498f8ed7d8ee4ddd0a04d3ada8
+https://github.com/facebook/react	a679270829ac5786fe7cd3b65acd289d5338dbc7
+https://github.com/fastapi/fastapi	03002a00b48335fdd8159edb7920157b508d8c15
+https://github.com/getsentry/sentry-python	0f7acd5e8968b6b8b92154669112c647ec88abe3
+https://github.com/github/github-mcp-server	e3809fe91c7546633241006bf0b91f23b2595e28
+https://github.com/google-gemini/gemini-cli	76e4d7c046c7dab5727787da378b9c06bf0948cf
+https://github.com/grafana/k6	a435c42fe5d24acaf33f9c192e032b9b6f0b0775
+https://github.com/hashicorp/terraform	8a97fe6c624fa129d5d8246a063c528482fe436c
+https://github.com/junegunn/fzf	55c122f1a0e1340546c8709682bea5561fe0e8fd
+https://github.com/langchain-ai/langchain	afafd55d34cb11b794781fd0f7bef9127c633f84
+https://github.com/laravel/framework	d794ce96ed2f08906e88619de1ae4b22746f2a0e
+https://github.com/microsoft/playwright	27219bd2cc94e1ebceec58f188760a6bf458c192
+https://github.com/microsoft/vscode	8c00dcbe4de257039c8c507753e6813cd31c584b
+https://github.com/microsoft/vscode-copilot-chat	5863f5a7088958050792b5dccbe8b46c6e13eccc
+https://github.com/modelcontextprotocol/servers	51b6382a3e827aceb6bce430b1208d69b93d95ea
+https://github.com/modelcontextprotocol/typescript-sdk	9bc40e903fde15534ec06ff4c1347d47000dbe16
+https://github.com/nodejs/undici	9f06d6bc64736ce3475eed4589c41cadc8a73953
+https://github.com/openai/codex	014489466a1739c2c563cdfe57880c2c7c8680e3
+https://github.com/openai/openai-agents-python	64cd5dfc5a1579870dcbed0ea42b27aa84033fee
+https://github.com/pallets/flask	d086db856be187255b8ec61ef409357393020f32
+https://github.com/prometheus/prometheus	df0d3cc5bde0a153586897fa443e72b5b79c9064
+https://github.com/psf/requests	611c6162cbc4ac2020a2f91c7cfa4f3abf9bbb60
+https://github.com/pydantic/pydantic-ai	19b1eafbbef19c8891666576c438ae9e0d90ef16
+https://github.com/rails/rails	8ff98114566311ab204df79bf85e935912310910
+https://github.com/shadcn-ui/ui	ba1503c64472b82256d9de95e2e62c5901a38e8b
+https://github.com/spring-projects/spring-petclinic	500158f732419217507c7656904b8e6aa1bcc0d6
+https://github.com/sst/opencode	d30e990c69efd8a954413a724b35c5a27462f320
+https://github.com/sveltejs/svelte	40bb08482f4857d91221638dec544a532bc35389
+https://github.com/tailwindlabs/tailwindcss	8cc0551b1217d36dc565840b90920964d37cb46c
+https://github.com/tokio-rs/tokio	ce685ee6916549ed7e52dbfd5430858bbdc734d3
+https://github.com/vercel/ai	a1db2092f9cbdf20b35c7d374c79a0aeceefef2a
+https://github.com/vuejs/core	08f5abf9bc89594f94ac22882bcbc2ed55b1c9df
+https://github.com/zed-industries/zed	c4a82ab1ab958aa43b0c0b15c0bad4fb77a7ca7f
+https://github.com/marmutapp/superbased-observer-private	1909234af291a2130cacfbb46b9c3819d991efba
+# Lane SEC-G5: ten public Java and C# web applications at their HEAD on
+# 2026-10-23 (git ls-remote), so the Java and C# rules get a denominator.
+# None is a deliberately vulnerable training app.
+https://github.com/macrozheng/mall	dcaa93b3150352e5044708d7211b5bed0af4509f
+https://github.com/elunez/eladmin	55fbf705956949697dbd68bf9003776609d3d029
+https://github.com/halo-dev/halo	35d441a1907ebe99e725b154e7a89c6312de44b4
+https://github.com/linlinjava/litemall	a1ef964a718b7277925b19ea26afe78ea3a1d325
+https://github.com/apache/shenyu	34f2ed036747936a5e28aea2c94cd9b3cddcce47
+https://github.com/dotnet/eShop	913acea66708a59595351174cee9b29f37179d29
+https://github.com/jasontaylordev/CleanArchitecture	968abf7dc4884d14d558e04828dff6d3324b1775
+https://github.com/bitwarden/server	6fd6ce88d176372ee1404ba6fbda5de3be299394
+https://github.com/jellyfin/jellyfin	c7ce6a1b56ee7dcc1896250df0f2f9deaa828a81
+https://github.com/nopSolutions/nopCommerce	f9e883bc9586b9a2138f8580fc1cbbdc6ec561c6

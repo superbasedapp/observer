@@ -1,0 +1,24 @@
+rules:
+  - id: java.tls-verify-off
+    languages: [java]
+    severity: ERROR
+    message: TLS certificate or host name verification is turned off (a trust-all manager or an accept-all host name verifier), so anyone on the network path can read or change the traffic.
+    metadata:
+      category: code_vuln
+      cwe: CWE-295
+    pattern-either:
+      - pattern: |
+          public void checkServerTrusted(...) {}
+      - pattern: |
+          public void checkServerTrusted(...) throws $E {}
+      - pattern: |
+          public boolean verify(String $H, SSLSession $S) { return true; }
+      - pattern: NoopHostnameVerifier.INSTANCE
+      - pattern: new NoopHostnameVerifier()
+      - pattern: SSLConnectionSocketFactory.ALLOW_ALL_HOSTNAME_VERIFIER
+      - pattern: new TrustAllStrategy()
+      - pattern: TrustAllStrategy.INSTANCE
+      - pattern: $X.setHostnameVerifier(($H, $S) -> true)
+      - pattern: $X.hostnameVerifier(($H, $S) -> true)
+      - pattern: $X.loadTrustMaterial($KS, ($C, $A) -> true)
+      - pattern: InsecureTrustManagerFactory.INSTANCE

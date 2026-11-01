@@ -82,6 +82,10 @@ func (r *Registry) registerFactoryDroidAt(t droidHookTarget) RegistrationResult 
 		res.Error = fmt.Errorf("%s: %w", t.errPrefix, err)
 		return res
 	}
+	// FU-192: an entry in Observer's shape running another binary is kept.
+	if r.refusesForeignBinaryInFile(&res, t.errPrefix, path, "droid", identityContent) {
+		return res
+	}
 
 	for _, event := range droidEvents() {
 		if r.skipEvent("droid", event) {
@@ -93,16 +97,31 @@ func (r *Registry) registerFactoryDroidAt(t droidHookTarget) RegistrationResult 
 			res.Error = fmt.Errorf("%s: %w", t.errPrefix, err)
 			return res
 		}
-		idx := -1
-		for i, g := range groups {
-			for _, h := range droidGroupCommands(g) {
-				if h.Type == "command" && isObserverAnyHookEntry(h.Command, "droid") {
-					idx = i
-				}
-			}
+		idx := droidObserverGroupIndex(groups)
+		if idx >= 0 && groupShapeDrift(groups[idx], claudeShapedGroups(droidOurs)) {
+			// T-847: a narrowed matcher or an extra field on Observer's
+			// entry is never "already set" (hook_shape.go).
+			shapeRewrite(&res, event, cmd, cmd)
+			groups = append(groups[:idx:idx], groups[idx+1:]...)
+			idx = -1
 		}
 		if idx >= 0 {
-			if hs := droidGroupCommands(groups[idx]); len(hs) == 1 && hs[0].Command == cmd {
+			hs := droidGroupCommands(groups[idx])
+			// T-725, as the Claude Code writer: an Observer entry that is not
+			// byte-equal but still EQUIVALENT (another install path of the
+			// observer binary, or a --config naming the default file) stays
+			// as written under KeepEquivalentHooks, and counts as set. The
+			// doctor / `observer guard prompt status` probe registers in this
+			// mode, so before this an equivalent UserPromptSubmit entry that
+			// `observer start` does not refresh (a binding still owed its
+			// live test) read as NOT REGISTERED. A lifted entry was not
+			// firing, so it is never kept.
+			if len(hs) == 1 && hs[0].Command != cmd && !lifted[event] &&
+				r.keepOrRewrite(&res, event, hs[0].Command, cmd) {
+				res.AlreadySet = append(res.AlreadySet, event)
+				continue
+			}
+			if len(hs) == 1 && hs[0].Command == cmd {
 				// A current entry lifted out of the legacy wrapper was NOT
 				// firing (droid ignores the wrapper): it is added by this
 				// write, never "already set" (currency, as M2-07).
@@ -115,7 +134,7 @@ func (r *Registry) registerFactoryDroidAt(t droidHookTarget) RegistrationResult 
 			}
 			groups = append(groups[:idx], groups[idx+1:]...)
 		}
-		if !r.opts.Force {
+		if r.refuses(res.ConfigPath, identityContent) {
 			for _, g := range groups {
 				for _, h := range droidGroupCommands(g) {
 					if h.Type == "command" && !isObserverAnyHookEntry(h.Command, "droid") {
@@ -153,11 +172,28 @@ func (r *Registry) registerFactoryDroidAt(t droidHookTarget) RegistrationResult 
 		res.Error = err
 		return res
 	}
-	if err := r.recordChecksum(path); err != nil {
+	if err := r.recordChecksum(res.Tool, path); err != nil {
 		res.Error = err
 		return res
 	}
 	return res
+}
+
+// droidOurs recognises an Observer droid hook command.
+func droidOurs(cmd string) bool { return isObserverAnyHookEntry(cmd, "droid") }
+
+// droidObserverGroupIndex returns the index of the LAST matcher group that
+// holds an Observer droid hook entry, -1 when none does.
+func droidObserverGroupIndex(groups []json.RawMessage) int {
+	idx := -1
+	for i, g := range groups {
+		for _, h := range droidGroupCommands(g) {
+			if h.Type == "command" && isObserverAnyHookEntry(h.Command, "droid") {
+				idx = i
+			}
+		}
+	}
+	return idx
 }
 
 // unregisterFactoryDroid removes ONLY the observer-owned groups
@@ -292,22 +328,61 @@ type codexHooksConfig struct {
 // (the trust hash algorithm is opaque and not exposed via any
 // `codex` subcommand). The CLI prints a hint after registration.
 func (r *Registry) registerCodex() RegistrationResult {
-	// codexCmdQuoteIfNeeded picks the right quoter based on path
-	// shape: POSIX single-quote for Linux/macOS paths (codex spawns
-	// hooks via /bin/sh there), cmd.exe double-quote for Windows
-	// paths (codex 0.133+ on Windows spawns via cmd.exe — single
-	// quotes are interpreted literally and the command fails). The
-	// v1.6.25 single-quote fix here was correct for Claude Code (Git
-	// Bash always) but wrong for Codex on Windows; operator report
-	// 2026-05-23 surfaced the regression. See codexCmdQuoteIfNeeded
-	// docstring for the full rationale + trade-off discussion.
+	// codexHookQuoteIfNeeded picks the quoter by path shape: POSIX
+	// single quotes for a Linux/macOS path (codex spawns hooks via
+	// /bin/sh there), a PowerShell literal for a Windows path, and the
+	// call operator in front of a quoted Windows binary (codexHookExe).
+	// Codex on Windows runs every hook command as `powershell.exe
+	// -NoProfile -Command "<command>"` (FU-162, Windows rig run A8);
+	// the earlier cmd.exe double quotes (operator report 2026-05-23,
+	// codex 0.133) made a quoted binary a PowerShell string expression.
+	// A path that needs no quoting is written as before, which both
+	// shells run.
+	dir, err := r.codexHomeDir()
+	if err != nil {
+		return RegistrationResult{Tool: "codex", DryRun: r.opts.DryRun, Error: err}
+	}
 	return r.registerCodexAt(codexHookTarget{
 		tool:      "codex",
-		dir:       filepath.Join(r.opts.HomeDir, ".codex"),
-		quote:     codexCmdQuoteIfNeeded,
+		dir:       dir,
+		quote:     codexHookQuoteIfNeeded,
+		quoteExe:  codexHookExe,
 		errPrefix: "hook.registerCodex",
 		matchMine: isObserverCodexEntryNative,
+		trustKey:  nativeCodexTrustKey,
 	})
+}
+
+// nativeCodexTrustKey: a Codex on the daemon's own OS keys trust with the
+// hooks.json path it loaded, which is the path Observer wrote.
+func nativeCodexTrustKey(hooksPath string) (string, bool) { return hooksPath, true }
+
+// codexHookQuoteIfNeeded quotes one argument of a native Codex hook command
+// for the shell Codex runs it through: a Windows-shaped path becomes a
+// PowerShell single-quoted literal when it holds a character PowerShell
+// reads (a space, $, a backtick, ;, &, quotes and the rest of
+// psQuoteIfNeeded's set), because Codex on Windows starts every hook as
+// `powershell.exe -NoProfile -Command "<command>"` (FU-162); any other path
+// is POSIX-quoted for /bin/sh (shellQuoteIfNeeded). Path shape, not
+// runtime.GOOS, so both spellings are pinned on any test host.
+func codexHookQuoteIfNeeded(s string) string {
+	if isWindowsPath(s) {
+		return psQuoteIfNeeded(s)
+	}
+	return shellQuoteIfNeeded(s)
+}
+
+// codexHookExe is the first word of a native Codex hook command: the
+// quoted binary, behind PowerShell's call operator when it is a quoted
+// Windows path (PowerShell reads a command that starts with a quoted string
+// as a string expression, not a program to run). An unquoted path stays
+// bare, so the command is byte-identical to the earlier writer's.
+func codexHookExe(s string) string {
+	q := codexHookQuoteIfNeeded(s)
+	if isWindowsPath(s) && strings.HasPrefix(q, "'") {
+		return "& " + q
+	}
+	return q
 }
 
 // codexHookTarget parameterizes registerCodexAt for its two
@@ -330,6 +405,10 @@ type codexHookTarget struct {
 	// quote quotes the binary path and the --config argument for the
 	// shell codex spawns hooks through on that target.
 	quote func(string) string
+	// quoteExe, when set, renders the binary as the command's first word
+	// (the native target puts PowerShell's call operator before a quoted
+	// Windows binary); nil uses quote.
+	quoteExe func(string) string
 	// errPrefix names the calling registrar in wrapped errors so a
 	// failure still points at the target the operator asked for.
 	errPrefix string
@@ -356,6 +435,15 @@ type codexHookTarget struct {
 	// target must now treat an existing bridge entry as a foreign
 	// conflict requiring --force, never the reverse.
 	matchMine func(string) bool
+	// trustKey spells hooks.json's path the way the Codex that loads it
+	// keys [hooks.state] trust (the native path, or C:\... for the
+	// Windows Codex a WSL daemon reaches through /mnt/c). ok=false means
+	// the spelling is unknown and no trust is recorded.
+	trustKey func(hooksPath string) (string, bool)
+	// commandFor, when set, may replace the command written for one event
+	// (the codex-windows fail-closed hook bridge, AW-37); nil writes the
+	// default command for every event.
+	commandFor func(event, cmd string) string
 }
 
 // registerCodexAt is the shared codex hooks.json writer behind
@@ -387,12 +475,31 @@ func (r *Registry) registerCodexAt(t codexHookTarget) RegistrationResult {
 		return res
 	}
 
+	// T-847: the typed decode cannot see a field Observer never writes on
+	// its own entry; read the raw shape once (hook_shape.go).
+	hooksRaw := fileHooksRaw(hooksPath)
+	// FU-192: an entry in Observer's shape running another binary is kept.
+	if r.refusesForeignBinary(&res, t.errPrefix, hooksPath, identityContent, shapedHooksInText(hooksRaw, "codex")) {
+		return res
+	}
+	shapeDrift := shapeDriftEvents(hooksRaw, claudeShapedGroups(t.matchMine))
+
 	for _, event := range codexEvents {
-		cmd := t.wrapper + t.quote(r.opts.BinaryPath) + " hook codex " + event + r.configFlagSuffixWith(t.quote)
+		exe := t.quote
+		if t.quoteExe != nil {
+			exe = t.quoteExe
+		}
+		cmd := t.wrapper + exe(r.opts.BinaryPath) + " hook codex " + event + r.configFlagSuffixWith(t.quote)
+		if t.commandFor != nil {
+			cmd = t.commandFor(event, cmd)
+		}
 		groups := cfg.Hooks[event]
 		idx := findCodexGroupWithObserver(groups, t.matchMine)
+		if idx >= 0 && shapeDrift[event] {
+			shapeRewrite(&res, event, cmd, cmd)
+		}
 		if idx >= 0 {
-			if observerCodexCmdMatches(groups[idx], cmd) {
+			if observerCodexCmdMatches(groups[idx], cmd) && !shapeDrift[event] {
 				res.AlreadySet = append(res.AlreadySet, event)
 				continue
 			}
@@ -401,7 +508,11 @@ func (r *Registry) registerCodexAt(t codexHookTarget) RegistrationResult {
 			// stale group; the fresh append below restores.
 			groups = append(groups[:idx], groups[idx+1:]...)
 		}
-		if !r.opts.Force && hasConflictingCodexHook(groups, t.matchMine) {
+		if r.refuses(res.ConfigPath, identityContent) && hasConflictingCodexHook(groups, t.matchMine) {
+			if onlyCodexBridgeConflicts(groups, t.matchMine) {
+				res.Error = codexBridgeConflictError(t.errPrefix, event)
+				return res
+			}
 			res.Error = hookConflictError(t.errPrefix, event)
 			return res
 		}
@@ -422,7 +533,7 @@ func (r *Registry) registerCodexAt(t codexHookTarget) RegistrationResult {
 		res.Error = err
 		return res
 	}
-	if err := r.recordChecksum(hooksPath); err != nil {
+	if err := r.recordChecksum(res.Tool, hooksPath); err != nil {
 		res.Error = err
 		return res
 	}
@@ -430,17 +541,24 @@ func (r *Registry) registerCodexAt(t codexHookTarget) RegistrationResult {
 		res.Error = err
 		return res
 	}
+	r.recordCodexTrust(&res, t)
 	return res
 }
 
 func (r *Registry) unregisterCodex() UnregistrationResult {
-	return r.unregisterCodexAt("codex", filepath.Join(r.opts.HomeDir, ".codex"), "hook.unregisterCodex")
+	dir, err := r.codexHomeDir()
+	if err != nil {
+		return UnregistrationResult{Tool: "codex", DryRun: r.opts.DryRun, Error: err}
+	}
+	return r.unregisterCodexAt("codex", dir, "hook.unregisterCodex", nativeCodexTrustKey)
 }
 
 // unregisterCodexAt is the shared codex hooks.json cleaner behind
 // unregisterCodex and unregisterCodexWindows. dir is the .codex
-// directory; errPrefix names the calling registrar in wrapped errors.
-func (r *Registry) unregisterCodexAt(tool, dir, errPrefix string) UnregistrationResult {
+// directory; errPrefix names the calling registrar in wrapped errors;
+// trustKey is the target's codexHookTarget.trustKey, used to remove the
+// trust records Observer wrote for the entries it removes.
+func (r *Registry) unregisterCodexAt(tool, dir, errPrefix string, trustKey func(string) (string, bool)) UnregistrationResult {
 	res := UnregistrationResult{Tool: tool, DryRun: r.opts.DryRun}
 	hooksPath := filepath.Join(dir, codexHooksFile)
 	res.ConfigPath = hooksPath
@@ -474,7 +592,11 @@ func (r *Registry) unregisterCodexAt(tool, dir, errPrefix string) Unregistration
 	}
 
 	for event, groups := range cfg.Hooks {
-		newGroups, removed, kept := filterCodexGroups(groups)
+		foreign := false
+		newGroups, removed, kept := filterCodexGroups(groups, r.removableEntry("codex", isObserverCodexEntry, &foreign))
+		if foreign {
+			noteKeptForeign(&res, event)
+		}
 		if removed > 0 {
 			res.HooksRemoved = append(res.HooksRemoved, event)
 		}
@@ -523,6 +645,7 @@ func (r *Registry) unregisterCodexAt(tool, dir, errPrefix string) Unregistration
 	}
 	// Note: we DO NOT flip [features].hooks = false on uninstall —
 	// the user may have other hooks registered through that flag.
+	r.removeCodexTrust(&res, dir, raw, trustKey)
 	return res
 }
 
@@ -621,8 +744,16 @@ func writeCodexHooks(dir string, pinned pinnedTarget, cfg codexHooksConfig) erro
 // codexHookTarget.matchMine's doc comment for the incident this
 // predicate split fixes.
 func isObserverCodexEntry(cmd string) bool {
-	return strings.Contains(cmd, " hook codex ")
+	return strings.Contains(cmd, " hook codex ") || isHookBridgeEntry(cmd, "codex")
 }
+
+// IsObserverCodexHookCommand reports whether a Codex hooks.json command is
+// Observer's, in every shape Observer writes: the native and wsl.exe-bridge
+// `observer hook codex <event>` and the fail-closed `observer hook-bridge
+// ... --tool codex` entry (AW-37). The dashboard's Codex trust status and
+// the doctor's trust row use it, so they see the same entries the
+// registrar owns.
+func IsObserverCodexHookCommand(cmd string) bool { return isObserverCodexEntry(cmd) }
 
 // isObserverCodexEntryNative is the STRICT, native-only half of
 // codex's predicate pair (B4 fix): it recognises the same
@@ -699,19 +830,59 @@ func hasConflictingCodexHook(groups []codexHookGroup, matchMine func(string) boo
 	return false
 }
 
+// onlyCodexBridgeConflicts reports whether every command matchMine does
+// not own is Observer's own wsl.exe bridge entry (the codex-windows shape
+// a WSL daemon writes). The native target still refuses those (B4: a
+// native register must never silently replace the bridge, and adding
+// beside it would capture every event twice); this only picks the
+// refusal's wording (live proof 2026-10-21, where the generic
+// "non-observer hook" read as if a foreign tool owned them).
+func onlyCodexBridgeConflicts(groups []codexHookGroup, matchMine func(string) bool) bool {
+	found := false
+	for _, g := range groups {
+		for _, h := range g.Hooks {
+			if h.Type != "command" || matchMine(h.Command) {
+				continue
+			}
+			if !isObserverCodexEntry(h.Command) || isObserverCodexEntryNative(h.Command) {
+				return false
+			}
+			found = true
+		}
+	}
+	return found
+}
+
+// codexBridgeConflictCommand is the removal a native `observer init
+// --codex` names when Observer's WSL bridge entries hold the file: only
+// Observer's hook entries go (MCP and the proxy route stay), and --force
+// because the native install never recorded the checksum the WSL daemon
+// did.
+const codexBridgeConflictCommand = "observer uninstall --codex --skip-mcp --skip-proxy-route --force"
+
+// codexBridgeConflictError is the refusal when the only entries in the way
+// are Observer's own WSL bridge hooks.
+func codexBridgeConflictError(prefix, event string) error {
+	return safeErrorf("%s: event %s has Observer hooks that run through WSL (wsl.exe bridge, written by an Observer daemon in WSL); remove them first with `%s` (removes only Observer's hook entries) and re-run, or keep the WSL daemon, which already captures this Codex",
+		prefix, event, codexBridgeConflictCommand)
+}
+
 // filterCodexGroups returns groups with all observer-owned entries
 // (recognised via isObserverCodexEntry) stripped, plus counts
 // (removed, kept) for the result struct. Content-heuristic so
 // cross-binary stale entries are also cleaned up on uninstall —
 // mirrors the register-side findCodexGroupWithObserver /
 // hasConflictingCodexHook usage.
-func filterCodexGroups(groups []codexHookGroup) ([]codexHookGroup, int, int) {
+//
+// mine is the uninstall's recogniser (isObserverCodexEntry under the FU-203
+// judgement, removableEntry).
+func filterCodexGroups(groups []codexHookGroup, mine func(string) bool) ([]codexHookGroup, int, int) {
 	var out []codexHookGroup
 	var removed, kept int
 	for _, g := range groups {
 		var keepHooks []claudeHookCommand
 		for _, h := range g.Hooks {
-			if h.Type == "command" && isObserverCodexEntry(h.Command) {
+			if h.Type == "command" && mine(h.Command) {
 				removed++
 				continue
 			}

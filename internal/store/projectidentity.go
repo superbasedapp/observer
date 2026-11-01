@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/marmutapp/superbased-observer/internal/freshness"
 )
 
 // projectidentity.go is the ONE OWNER of the migration-102 columns
@@ -204,4 +206,198 @@ func (s *Store) RecordRootCommitCheck(ctx context.Context, rootPath, sha string)
 		return fmt.Errorf("store.RecordRootCommitCheck: %w", err)
 	}
 	return nil
+}
+
+// ProjectRootRow is one projects row and how many sessions it holds.
+type ProjectRootRow struct {
+	ID       int64
+	RootPath string
+	Name     string
+	Sessions int64
+}
+
+// ListProjectRoots returns every projects row with its session count, in
+// id order (the `observer backfill --worktree-roots` candidate scan).
+func (s *Store) ListProjectRoots(ctx context.Context) ([]ProjectRootRow, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT p.id, p.root_path, COALESCE(p.name, ''),
+		        (SELECT COUNT(*) FROM sessions s WHERE s.project_id = p.id)
+		   FROM projects p ORDER BY p.id`)
+	if err != nil {
+		return nil, fmt.Errorf("store.ListProjectRoots: %w", err)
+	}
+	defer rows.Close()
+	var out []ProjectRootRow
+	for rows.Next() {
+		var r ProjectRootRow
+		if err := rows.Scan(&r.ID, &r.RootPath, &r.Name, &r.Sessions); err != nil {
+			return nil, fmt.Errorf("store.ListProjectRoots: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store.ListProjectRoots: %w", err)
+	}
+	return out, nil
+}
+
+// ProjectMove counts what MoveProjectRows moved (or PlanProjectMove would
+// move). Sessions, Actions and APITurns repeat their Tables rows.
+type ProjectMove struct {
+	Sessions int64 `json:"sessions"`
+	Actions  int64 `json:"actions"`
+	APITurns int64 `json:"api_turns"`
+	// Tables is every project-keyed table the move covers, in move order
+	// (lane shr-worktree2, PT-39).
+	Tables []TableMove `json:"tables"`
+}
+
+// TableMove is what a move did (or would do) to one table.
+type TableMove struct {
+	Table string `json:"table"`
+	// Moved is how many rows end on the target project.
+	Moved int64 `json:"moved"`
+	// KeptOnOld is how many rows stay on the old project: for a table
+	// with a project-scoped unique key, the older row of each clashing
+	// pair (the newer one always ends on the target).
+	KeptOnOld int64 `json:"kept_on_old,omitempty"`
+	// Swapped is how many clashes the old project's row won: it moved,
+	// and the target's older row went to the old project.
+	Swapped int64 `json:"swapped,omitempty"`
+}
+
+// projectRowMover moves one table's rows of project fromID onto toID
+// inside tx; toID 0 only counts what would move. Each row of
+// projectRowMovers calls the seam of the package that owns the table.
+type projectRowMover struct {
+	table string
+	move  ProjectTableMoveFunc
+}
+
+// ProjectTableMoveFunc moves one table's rows of project fromID onto toID
+// inside tx (toID 0: count only). A caller passes one to MoveProjectRows
+// for a table whose owning package this one cannot import.
+type ProjectTableMoveFunc func(ctx context.Context, tx *sql.Tx, fromID, toID int64) (TableMove, error)
+
+// ProjectTableMover names a caller-supplied mover's table.
+type ProjectTableMover struct {
+	Table string
+	Move  ProjectTableMoveFunc
+}
+
+// plainProjectMover moves every row of a table with no project-scoped
+// unique key; countQ and moveQ are the table's two fixed statements.
+func plainProjectMover(table, countQ, moveQ string) projectRowMover {
+	return projectRowMover{table: table, move: func(ctx context.Context, tx *sql.Tx, fromID, toID int64) (TableMove, error) {
+		m := TableMove{Table: table}
+		if toID == 0 {
+			if err := tx.QueryRowContext(ctx, countQ, fromID).Scan(&m.Moved); err != nil {
+				return m, fmt.Errorf("%s: count: %w", table, err)
+			}
+			return m, nil
+		}
+		res, err := tx.ExecContext(ctx, moveQ, toID, fromID)
+		if err != nil {
+			return m, fmt.Errorf("%s: %w", table, err)
+		}
+		m.Moved, _ = res.RowsAffected()
+		return m, nil
+	}}
+}
+
+// projectRowMovers is every project-keyed table the worktree-roots
+// backfill moves, in move order. sessions, actions, api_turns and
+// failure_context are this package's; file_changes is loc.go's,
+// project_commits commits.go's (its files follow by commit id) and
+// file_state internal/freshness's. compaction_events is moved by the
+// mover its owner internal/intelligence/compaction gives the caller (that
+// package's tests import this one). Tables not listed (project_patterns,
+// project_commit_scan, the codeintel and guard tables) stay on the old
+// row: they are per-root caches or keyed state the next scan rebuilds.
+var projectRowMovers = []projectRowMover{
+	plainProjectMover("sessions",
+		`SELECT COUNT(*) FROM sessions WHERE project_id = ?`,
+		`UPDATE sessions SET project_id = ? WHERE project_id = ?`),
+	plainProjectMover("actions",
+		`SELECT COUNT(*) FROM actions WHERE project_id = ?`,
+		`UPDATE actions SET project_id = ? WHERE project_id = ?`),
+	plainProjectMover("api_turns",
+		`SELECT COUNT(*) FROM api_turns WHERE project_id = ?`,
+		`UPDATE api_turns SET project_id = ? WHERE project_id = ?`),
+	plainProjectMover("failure_context",
+		`SELECT COUNT(*) FROM failure_context WHERE project_id = ?`,
+		`UPDATE failure_context SET project_id = ? WHERE project_id = ?`),
+	{table: "file_state", move: func(ctx context.Context, tx *sql.Tx, fromID, toID int64) (TableMove, error) {
+		fm, err := freshness.MoveProjectFileState(ctx, tx, fromID, toID)
+		return TableMove{Table: "file_state", Moved: fm.Moved, KeptOnOld: fm.KeptOnOld, Swapped: fm.Swapped}, err
+	}},
+	{table: "file_changes", move: func(ctx context.Context, tx *sql.Tx, fromID, toID int64) (TableMove, error) {
+		n, err := moveFileChangesTx(ctx, tx, fromID, toID)
+		return TableMove{Table: "file_changes", Moved: n}, err
+	}},
+	{table: "project_commits", move: moveProjectCommitsTx},
+}
+
+// MoveProjectRows moves every row of project fromID in the tables of
+// projectRowMovers, then of each extra mover, onto project toID in one
+// transaction and sets the old
+// row's name to mark, so it reads as moved. The old projects row is kept,
+// never deleted, and so is every row a unique-key clash leaves on it. The
+// sessions trigger of agent migration 140 queues each moved session (and
+// its token rows) for the org push's re-send lane.
+func (s *Store) MoveProjectRows(ctx context.Context, fromID, toID int64, mark string, extra ...ProjectTableMover) (ProjectMove, error) {
+	if toID == 0 {
+		return ProjectMove{}, fmt.Errorf("store.MoveProjectRows: no target project")
+	}
+	return s.moveProjectRows(ctx, fromID, toID, mark, true, extra)
+}
+
+// PlanProjectMove reports what MoveProjectRows would move and changes
+// nothing: with toID 0 (a target row that does not exist yet) it counts
+// fromID's rows; otherwise it runs the move in a transaction it rolls back,
+// so the counts, clashes included, are exactly the apply's.
+func (s *Store) PlanProjectMove(ctx context.Context, fromID, toID int64, extra ...ProjectTableMover) (ProjectMove, error) {
+	return s.moveProjectRows(ctx, fromID, toID, "", false, extra)
+}
+
+func (s *Store) moveProjectRows(ctx context.Context, fromID, toID int64, mark string, apply bool, extra []ProjectTableMover) (ProjectMove, error) {
+	var m ProjectMove
+	if fromID == toID {
+		return m, fmt.Errorf("store.MoveProjectRows: source and target are the same project %d", fromID)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return m, fmt.Errorf("store.MoveProjectRows: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	movers := append([]projectRowMover(nil), projectRowMovers...)
+	for _, e := range extra {
+		movers = append(movers, projectRowMover{table: e.Table, move: e.Move})
+	}
+	for _, mv := range movers {
+		tm, err := mv.move(ctx, tx, fromID, toID)
+		if err != nil {
+			return ProjectMove{}, fmt.Errorf("store.MoveProjectRows: %w", err)
+		}
+		tm.Table = mv.table
+		m.Tables = append(m.Tables, tm)
+		switch tm.Table {
+		case "sessions":
+			m.Sessions = tm.Moved
+		case "actions":
+			m.Actions = tm.Moved
+		case "api_turns":
+			m.APITurns = tm.Moved
+		}
+	}
+	if !apply {
+		return m, nil
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE projects SET name = ? WHERE id = ?`, mark, fromID); err != nil {
+		return ProjectMove{}, fmt.Errorf("store.MoveProjectRows: mark: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return ProjectMove{}, fmt.Errorf("store.MoveProjectRows: %w", err)
+	}
+	return m, nil
 }

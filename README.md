@@ -48,6 +48,8 @@ npx @superbased/observer
 No install, no config, no network. It reads the session logs your coding agents already keep on
 disk, prints a 30-day cost table by tool and model, and deletes its temporary database on exit.
 
+On Windows PowerShell, type `npx.cmd` and `npm.cmd` instead of `npx` and `npm` (or use Command Prompt): PowerShell's default execution policy blocks the `npx.ps1` and `npm.ps1` scripts.
+
 ## Why SuperBased
 
 **One local binary that tracks Claude Code token usage, Codex cost and Cursor spend side by side,
@@ -56,10 +58,10 @@ and helps you control them.**
 - **Provider-exact cost, not estimates.** An optional local proxy records the tokens your provider
   returned: net input, 5-minute vs 1-hour cache writes, reasoning tokens and long-context repricing.
   Log-only trackers have to estimate those.
-- **Every coding agent in one place.** 40 adapters normalize Claude Code, Codex, Cursor, GitHub
+- **Every coding agent in one place.** 50 adapters normalize Claude Code, Codex, Cursor, GitHub
   Copilot, Gemini CLI, Cline, Aider, Kiro, Devin, OpenCode, Junie and more into one local database.
-- **Local-first, no account.** No telemetry and no sign-in. The watcher, dashboard, MCP server and CLI
-  make no outbound calls on your behalf; everything lives in one SQLite file under `~/.observer/`.
+- **Local-first, no account.** No sign-in. Everything lives in one SQLite file under `~/.observer/`,
+  and your session content is never uploaded without your explicit consent.
 - **Know the next bill before it lands.** Prompt-cache tracking with expiry warnings, a low / typical
   / high cost band for your next message, and a 5-hour and weekly limit gauge for proxied sessions.
 - **Guardrails on your own agents.** The guard checks each agent action against built-in rules
@@ -78,7 +80,7 @@ and helps you control them.**
 | | SuperBased | ccusage | CodeBurn | Langfuse | Helicone | LiteLLM |
 |---|---|---|---|---|---|---|
 | Built for | Coding-agent cost & control | CC/Codex cost meter | Local CC spend + budget toolkit | LLM-app observability | LLM-app observability + gateway | AI gateway |
-| Coding tools covered | **40 adapters** | Claude Code, Codex, + companion pkgs | 31-36 per their own docs | Instrument-per-app | Instrument-per-app | Anything routed through it |
+| Coding tools covered | **50 adapters** | Claude Code, Codex, + companion pkgs | 31-36 per their own docs | Instrument-per-app | Instrument-per-app | Anything routed through it |
 | Provider-reported (not estimated) tokens | ✓ via local proxy | Partial (from logs) | Partial (from logs) | ✓ (SDK) | ✓ (proxy) | ✓ (proxy) |
 | Cache 5-min vs 1-hour write split | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ |
 | Reasoning + long-context surcharge accounting | ✓ | Partial | Partial | Partial | Partial | Partial |
@@ -105,6 +107,11 @@ Silicon) and Windows x64. The installer (Windows: `install.ps1`) also offers sma
 (`minimal`, `developer`, `managed`), checks each archive against `SHA256SUMS` and its Ed25519
 signature, never runs sudo, and supports offline installs with `--from-dir`. Run
 `sh install.sh --help` for every option.
+On Windows PowerShell, type `npx.cmd` and `npm.cmd` instead of `npx` and `npm` (or use Command Prompt): PowerShell's default execution policy blocks the `npx.ps1` and `npm.ps1` scripts.
+
+**macOS needs version 13 Ventura or later.** Observer is built with Go 1.27, which no longer runs
+on macOS 12 Monterey. On macOS 12, stay on v1.36.0 or upgrade macOS first. v1.36.0 was meant to
+carry an advance notice of this and did not. Linux and Windows are not affected.
 
 ## Get started
 
@@ -156,8 +163,10 @@ observer scan     # backfill history from the session logs already on disk
 Supported agents include Claude Code, Codex, Cursor, Copilot and Copilot CLI, Gemini CLI, Cline and
 Cline CLI, Antigravity, OpenCode, OpenClaw, Pi, Hermes, Kilo Code, Qwen Code, Kiro CLI, Kiro Crew,
 Crush, Kimi Code, Grok, Devin, Aider, Qoder, goose, droid, Open Interpreter, Command Code, Junie,
-Poolside, Zed, Mistral Code, Muse, Prime Agent, DeepSeek, zcode, Freebuff, Cowork and Grok Bot, plus
-ChatGPT, Claude, Gemini, Copilot and Perplexity on the web through an optional browser extension.
+Poolside, Zed, Mistral Code, Muse, Prime Agent, DeepSeek, zcode, Freebuff, Cowork, Grok Bot, Autohand
+Code, IBM Bob, Cortex Code, CodeBuddy Code, Deep Agents Code, DimCode, Dirac, Kimchi, Stakpak and
+VT Code, plus ChatGPT, Claude, Gemini, Copilot and Perplexity on the web through an optional browser
+extension.
 Per-tool setup: [superbased.app/docs/track](https://superbased.app/docs/track/overview).
 
 ## Inside a session
@@ -177,10 +186,14 @@ Click any session to open its detail view. Four of its tabs:
 
 ## Privacy
 
-SuperBased sends no telemetry and needs no account. It stores paths, commands and short excerpts,
-scrubs secrets before anything is written, and binds the proxy and dashboard to `127.0.0.1` by
-default. The proxy forwards your own requests, unchanged, to the provider you already use. Remove
-everything with `observer uninstall --all --purge`. Details: [PRIVACY.md](PRIVACY.md).
+SuperBased needs no account. Today the default install sends us no usage statistics, analytics or
+crash reports, and it never uploads your session content without your explicit consent. It stores
+paths, commands and short excerpts, scrubs secrets before anything is written, and binds the proxy
+and dashboard to `127.0.0.1` by default. The proxy forwards your own requests, unchanged, to the
+provider you already use. By default it also makes a few small requests of its own that carry none
+of your data, such as a daily download of the public model price table from superbased.app (turn it
+off with `[pricing.feed] enabled = false`). Remove everything with `observer uninstall --all --purge`.
+Details: [PRIVACY.md](PRIVACY.md).
 
 ## Documentation
 
@@ -210,7 +223,7 @@ See [SuperBased for organizations](https://superbased.app/enterprise) or write t
 Questions go to [Discussions](https://github.com/superbasedapp/observer/discussions), bugs and
 adapter requests to [Issues](https://github.com/superbasedapp/observer/issues), and security reports
 through [SECURITY.md](SECURITY.md). Pull requests are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md)
-(building needs Go 1.26+, no CGO). If SuperBased saves you a surprise bill, a star helps others find it.
+(building needs Go 1.27+, no CGO). If SuperBased saves you a surprise bill, a star helps others find it.
 
 ## License
 

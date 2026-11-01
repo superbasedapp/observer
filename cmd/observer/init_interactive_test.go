@@ -58,6 +58,10 @@ func TestRunInteractiveInit_OneConsentPerWrite(t *testing.T) {
 	if !strings.Contains(text, "~1,800 tokens") && !strings.Contains(text, "1,800 tokens") {
 		t.Errorf("MCP honesty note missing:\n%s", text)
 	}
+	// CC-11: the route consent names what the route switches off.
+	if !strings.Contains(text, "Remote Control") {
+		t.Errorf("route consent does not say Claude Code turns Remote Control off:\n%s", text)
+	}
 
 	settings, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
 	if err != nil {
@@ -401,4 +405,33 @@ func sandboxWinHomes(t *testing.T, sandbox string, n int) []string {
 		out = append(out, dir)
 	}
 	return out
+}
+
+// TestRunInteractiveInit_InstallSignalExtensionOnly (WINNODE merge follow-up
+// F2): Claude Code installed only as the VS Code extension (no ~/.claude
+// yet) shows in the zero-flag checklist, as it does for wireAIClients, and
+// still gets one consent per write: declining everything writes nothing.
+func TestRunInteractiveInit_InstallSignalExtensionOnly(t *testing.T) {
+	requireComponents(t, "integration.hooks", "integration.mcp-server", "integration.proxy-route")
+	requireActiveAdapters(t, "claude-code")
+	requireAdapter(t, "claude-code")
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".vscode", "extensions", "anthropic.claude-code-2.1.312-win32-x64"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	in := strings.NewReader(strings.Repeat("n\n", 15))
+	err := runInteractiveInit(&out, in, interactiveInitOptions{
+		BinaryPath: filepath.Join(home, "observer"),
+		HomeDir:    home,
+	})
+	if err != nil {
+		t.Fatalf("runInteractiveInit: %v\noutput:\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "detected: claude-code") {
+		t.Fatalf("an extension-only Claude Code is missing from the checklist:\n%s", out.String())
+	}
+	if _, err := os.Stat(filepath.Join(home, ".claude", "settings.json")); !os.IsNotExist(err) {
+		t.Errorf("every consent declined but settings.json exists (err=%v)", err)
+	}
 }

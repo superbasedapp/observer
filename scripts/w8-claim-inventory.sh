@@ -13,10 +13,11 @@
 # pass) once W8's copy flip ships atomically with the R7 exposure release.
 # Re-run any time those pages change so no claim is missed at flip time.
 #
-# enterprise.html:175 ("Nothing phones home") is about the self-hosted ORG
-# server, not the personal cloud-egress product, and the plan says it STAYS
-# TRUE. It is therefore scanned separately, reported in an ADVISORY section,
-# and never affects the exit code.
+# enterprise.html is scanned separately, reported in an ADVISORY section,
+# and never affects the exit code. Its former "Nothing phones home" pill
+# (self-hosted ORG server) was removed on 2026-10-21 (operator ruling
+# "Remove it everywhere"): the org server fetches the public price table
+# from superbased.app by default, so the claim no longer held.
 #
 # NOTE (pipefail/SIGPIPE gotcha — see project memory
 # feedback_pipefail_sigpipe_shell_gates): never do `producer | grep -q`.
@@ -50,6 +51,7 @@ declare -a CLAIM_PATTERNS=(
   "bytes phoned home|bytes phoned home"
   "leaves your machine|leaves your machine"
   "no telemetry|no telemetry"
+  "telemetry-free|telemetry.free"                   # 2026-10-21 ruling: "Telemetry-free" pills and prose
   "no watcher network calls|no watcher network calls"
   "no network calls|no network calls"                 # broader inflection: faq.html "no network calls in the watcher"
   "no analytics ping|no analytics ping"
@@ -69,9 +71,8 @@ GATE_FILES=(
   "features.html"
 )
 
-# enterprise.html:175 "Nothing phones home" is about the self-hosted org
-# server and STAYS TRUE (plan, W8 section). Scanned for visibility only;
-# never contributes to the exit code.
+# enterprise.html is scanned for visibility only; it never contributes to
+# the exit code (see the header note on the removed org-server pill).
 ADVISORY_FILES=(
   "enterprise.html"
 )

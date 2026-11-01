@@ -19,6 +19,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/adapter"
 	"github.com/marmutapp/superbased-observer/internal/cachetrack"
+	"github.com/marmutapp/superbased-observer/internal/captureprogress"
 	"github.com/marmutapp/superbased-observer/internal/compression/indexing"
 	"github.com/marmutapp/superbased-observer/internal/freshness"
 	"github.com/marmutapp/superbased-observer/internal/models"
@@ -41,9 +42,13 @@ type Watcher struct {
 	// inserted rows (SetIngestNotifier). Atomic so the daemon may install it
 	// while the watcher runs.
 	ingestNotify atomic.Pointer[func(tokens, actions int)]
-	store        *store.Store
-	registry     *adapter.Registry
-	logger       Logger
+	// progress, when set, is told what the initial scan and every
+	// hot-added root walk find and read (SetCaptureProgress, T-922). Atomic
+	// for the same reason as ingestNotify. nil records nothing.
+	progress atomic.Pointer[captureprogress.Tracker]
+	store    *store.Store
+	registry *adapter.Registry
+	logger   Logger
 	// nativePredicate maps an adapter name to its native-tool predicate
 	// used for setting actions.is_native_tool.
 	nativePredicate map[string]func(rawToolName string) bool
@@ -142,6 +147,11 @@ type Watcher struct {
 	// the invalidation rules.
 	budgetCaptureMu   sync.Mutex
 	budgetCaptureSeen map[string]budgetCaptureSeenEntry
+	// unchangedMu/unchangedSeen memoize, per self-contained watermark store
+	// (adapter.FileCursorSemantics.SelfContained), the file snapshot taken
+	// before the last successful normal parse; see skipUnchangedStore.
+	unchangedMu   sync.Mutex
+	unchangedSeen map[string]budgetFileSnapshot
 }
 
 // rootCacheEntry is one memoized (adapter → deduped roots) mapping,
@@ -428,11 +438,12 @@ func (w *Watcher) applyDetectedRoots(ctx context.Context) []rootBinding {
 // deduped roots, and a root already in byRoot is never re-added.
 func (w *Watcher) hotAddRoots(ctx context.Context) int {
 	added := w.applyDetectedRoots(ctx)
+	prog := w.progress.Load()
 	for _, b := range added {
 		if ctx.Err() != nil {
 			break
 		}
-		res := w.walkRoot(ctx, b.adapter, b.root, false)
+		res := w.walkRoot(ctx, b.adapter, b.root, false, prog)
 		if res.FilesProcessed > 0 || res.Errors > 0 {
 			w.logger.Info("watcher: walked hot-added root",
 				"adapter", b.adapter.Name(), "root", b.root,
@@ -505,6 +516,17 @@ func (w *Watcher) SetIngestNotifier(fn func(tokens, actions int)) {
 	w.ingestNotify.Store(&fn)
 }
 
+// SetCaptureProgress installs the history-capture progress model the
+// dashboard's first-run view reads (T-922, internal/captureprogress): the
+// initial background scan Watch starts and every hot-added root walk report
+// the files they find, read and fail to read. Explicit Scan / Rescan /
+// RefreshRoots full scans and the poll scans are not reported (they re-walk
+// what the initial scan already counted). Install it before Watch so the
+// initial scan is counted from its first file. nil disables.
+func (w *Watcher) SetCaptureProgress(t *captureprogress.Tracker) {
+	w.progress.Store(t)
+}
+
 // SetRootCommitResolver wires the lazy root-commit exec (Project Identity
 // Resolver v2, docs/plans/project-identity-resolver-v2-plan-2026-09-06.md
 // §3.1) through to the watcher's store. The daemon passes
@@ -555,7 +577,7 @@ func (w *Watcher) SurfaceSeams() (
 // session file from its saved offset. Returns the total number of newly
 // inserted actions + a count of errors (non-fatal).
 func (w *Watcher) Scan(ctx context.Context) (ScanResult, error) {
-	return w.scan(ctx, false)
+	return w.scan(ctx, false, nil)
 }
 
 // Rescan is Scan with the saved cursor ignored — every JSONL is parsed
@@ -570,7 +592,7 @@ func (w *Watcher) Scan(ctx context.Context) (ScanResult, error) {
 // via a separate path) get ingested while assistant turns + tool
 // calls go missing.
 func (w *Watcher) Rescan(ctx context.Context) (ScanResult, error) {
-	return w.scan(ctx, true)
+	return w.scan(ctx, true, nil)
 }
 
 // ScanFile processes one recognized transcript through the normal ingestion
@@ -614,8 +636,17 @@ func (w *Watcher) ScanFile(ctx context.Context, path string, forceFromZero bool)
 // send looked empty to the non-blocking rotation, so a lane with a ready
 // file could be skipped for a whole round; under a loaded scheduler the
 // fairness guarantee depended on goroutine timing.
-func (w *Watcher) scan(ctx context.Context, forceFromZero bool) (ScanResult, error) {
+//
+// prog, when non-nil, is told about every lane, every file found and every
+// file read (the initial scan's history-capture progress, T-922); nil
+// records nothing. A nil *Tracker accepts Record, so the calls below need
+// no guard.
+func (w *Watcher) scan(ctx context.Context, forceFromZero bool, prog *captureprogress.Tracker) (ScanResult, error) {
 	var res ScanResult
+	prog.Record(captureprogress.Event{Kind: captureprogress.ScanStarted})
+	defer func() {
+		prog.Record(captureprogress.Event{Kind: captureprogress.ScanFinished, Cancelled: ctx.Err() != nil})
+	}()
 	detected := w.registry.Detected(w.allow)
 	if len(detected) == 0 {
 		w.logger.Info("watcher.Scan: no adapters detected - nothing to do")
@@ -635,24 +666,46 @@ func (w *Watcher) scan(ctx context.Context, forceFromZero bool) (ScanResult, err
 	for _, a := range detected {
 		files := make(chan string, 1)
 		lanes = append(lanes, scanLane{adapter: a, files: files})
+		prog.Record(captureprogress.Event{Kind: captureprogress.WalkStarted, Tool: a.Name()})
+		// The walker's output. Without a progress model it is the lane's
+		// one-slot channel itself (the walk runs one file ahead of the
+		// reader, as it always did). With one (the initial scan, T-922), a
+		// relay sits between them that queues every path the walk finds, so
+		// the walk runs to its end at directory speed and the found count
+		// becomes the real total the first-run view divides by, while the
+		// lane's readiness and order are unchanged (the relay keeps the
+		// one-slot channel full while it holds paths). The queue holds paths
+		// only, one string per session file.
+		var out chan<- string = files
+		if prog != nil {
+			in := make(chan string)
+			out = in
+			walkers.Add(1)
+			go func() {
+				defer walkers.Done()
+				relayPaths(walkCtx, in, files)
+			}()
+		}
 		walkers.Add(1)
-		go func(a adapter.Adapter) {
+		go func(a adapter.Adapter, out chan<- string) {
 			defer walkers.Done()
-			defer close(files)
+			defer close(out)
+			defer prog.Record(captureprogress.Event{Kind: captureprogress.WalkFinished, Tool: a.Name()})
 			for _, root := range w.watchRoots(a) {
 				if walkCtx.Err() != nil {
 					return
 				}
 				w.walkRootFiles(walkCtx, a, root, func(path string) bool {
+					prog.Record(captureprogress.Event{Kind: captureprogress.FileFound, Tool: a.Name()})
 					select {
-					case files <- path:
+					case out <- path:
 						return true
 					case <-walkCtx.Done():
 						return false
 					}
 				})
 			}
-		}(a)
+		}(a, out)
 	}
 	// Round-robin over the lanes that HAVE a file ready (P3-40): the lane
 	// after the one just served is offered first, but a lane whose walker is
@@ -699,10 +752,38 @@ func (w *Watcher) scan(ctx context.Context, forceFromZero bool) (ScanResult, err
 			}
 			continue
 		}
-		w.scanOneFile(ctx, lanes[idx].adapter, path, forceFromZero, &res)
+		w.scanOneFile(ctx, lanes[idx].adapter, path, forceFromZero, &res, prog)
 		next = (idx + 1) % len(lanes)
 	}
 	return res, nil
+}
+
+// relayPaths forwards every path from in to out in order, queueing as many
+// as in delivers so the sender never waits for the reader. It closes out
+// once in is closed and the queue is drained, or when ctx ends.
+func relayPaths(ctx context.Context, in <-chan string, out chan<- string) {
+	defer close(out)
+	var queue []string
+	for in != nil || len(queue) > 0 {
+		var send chan<- string
+		var next string
+		if len(queue) > 0 {
+			send, next = out, queue[0]
+		}
+		select {
+		case p, ok := <-in:
+			if !ok {
+				in = nil
+				continue
+			}
+			queue = append(queue, p)
+		case send <- next:
+			queue[0] = ""
+			queue = queue[1:]
+		case <-ctx.Done():
+			return
+		}
+	}
 }
 
 // gatedScan runs one background full scan unless another is already
@@ -715,7 +796,13 @@ func (w *Watcher) gatedScan(ctx context.Context, trigger string) {
 	}
 	defer w.scanGate.Unlock()
 	started := time.Now()
-	res, err := w.scan(ctx, false)
+	// Only the initial scan is the history-capture work the first-run view
+	// reports; the later poll scans re-walk what it already counted.
+	var prog *captureprogress.Tracker
+	if trigger == "initial" {
+		prog = w.progress.Load()
+	}
+	res, err := w.scan(ctx, false, prog)
 	if err != nil && ctx.Err() == nil {
 		w.logger.Warn("watcher: full scan failed", "trigger", trigger, "err", err)
 		return
@@ -747,15 +834,17 @@ func (w *Watcher) fileBusy(path string) bool {
 
 // scanOneFile is the per-file step shared by every walk: process the file
 // and count the outcome. A failure is logged and counted, never fatal to
-// the walk.
-func (w *Watcher) scanOneFile(ctx context.Context, a adapter.Adapter, path string, forceFromZero bool, res *ScanResult) {
+// the walk. prog (nil: none) is told the outcome.
+func (w *Watcher) scanOneFile(ctx context.Context, a adapter.Adapter, path string, forceFromZero bool, res *ScanResult, prog *captureprogress.Tracker) {
 	if err := w.processFile(ctx, a, path, forceFromZero); err != nil {
 		res.Errors++
+		prog.Record(captureprogress.Event{Kind: captureprogress.FileFailed, Tool: a.Name(), Err: err.Error()})
 		w.logger.Warn("watcher.Scan: process failed",
 			"adapter", a.Name(), "path", path, "err", err)
 		return
 	}
 	res.FilesProcessed++
+	prog.Record(captureprogress.Event{Kind: captureprogress.FileProcessed, Tool: a.Name()})
 }
 
 // walkRoot walks ONE (adapter, root) pair and processes every session
@@ -763,11 +852,15 @@ func (w *Watcher) scanOneFile(ctx context.Context, a adapter.Adapter, path strin
 // over just the roots that appeared); the full scan uses the same
 // walkRootFiles filter and the same scanOneFile step, so a file picked up
 // by either path takes the identical processFile route, cursor semantics
-// included.
-func (w *Watcher) walkRoot(ctx context.Context, a adapter.Adapter, root string, forceFromZero bool) ScanResult {
+// included. prog (nil: none) is told about the walk, the same way the
+// initial scan reports each lane.
+func (w *Watcher) walkRoot(ctx context.Context, a adapter.Adapter, root string, forceFromZero bool, prog *captureprogress.Tracker) ScanResult {
 	var res ScanResult
+	prog.Record(captureprogress.Event{Kind: captureprogress.WalkStarted, Tool: a.Name()})
+	defer prog.Record(captureprogress.Event{Kind: captureprogress.WalkFinished, Tool: a.Name()})
 	w.walkRootFiles(ctx, a, root, func(path string) bool {
-		w.scanOneFile(ctx, a, path, forceFromZero, &res)
+		prog.Record(captureprogress.Event{Kind: captureprogress.FileFound, Tool: a.Name()})
+		w.scanOneFile(ctx, a, path, forceFromZero, &res, prog)
 		return true
 	})
 	return res
@@ -1131,6 +1224,14 @@ func (w *Watcher) processFileFrom(ctx context.Context, a adapter.Adapter, path s
 		return out, nil
 	}
 
+	// A self-contained watermark store whose size and modification time are
+	// unchanged since the last successful parse has nothing new: skip the
+	// whole-file read (see skipUnchangedStore).
+	pre, unchanged := w.skipUnchangedStore(a, path, forceFromZero, strict)
+	if unchanged {
+		return out, nil
+	}
+
 	off := resumeAt
 	if !forceFromZero {
 		var getErr error
@@ -1206,7 +1307,55 @@ func (w *Watcher) processFileFrom(ctx context.Context, a adapter.Adapter, path s
 	if setErr := w.persistProcessCursor(ctx, a, path, off, res); setErr != nil {
 		return out, setErr
 	}
+	w.rememberUnchangedStore(a, path, pre, res)
 	return out, nil
+}
+
+// unchangedSeenMax bounds the memo; a reset only costs one re-parse per file.
+const unchangedSeenMax = 4096
+
+// skipUnchangedStore reports whether a NORMAL pass may skip path because it is
+// a self-contained watermark store (adapter.FileCursorSemantics.SelfContained)
+// whose snapshot (size, modification time, SQLite sidecars) equals the one
+// taken before its last successful parse. pre is the snapshot to remember if
+// this pass parses successfully; it is taken BEFORE the parse, so a write that
+// lands mid-parse changes the next snapshot and forces another pass. Forced
+// rescans and the strict budget path never skip.
+func (w *Watcher) skipUnchangedStore(a adapter.Adapter, path string, forceFromZero, strict bool) (pre *budgetFileSnapshot, skip bool) {
+	if forceFromZero || strict {
+		return nil, false
+	}
+	sem := fileCursorSemantics(a, path)
+	if sem.Kind != adapter.CursorWatermark || !sem.SelfContained {
+		return nil, false
+	}
+	snap, err := strictBudgetFileSnapshot(a, path)
+	if err != nil {
+		return nil, false
+	}
+	key := budgetCaptureSeenKey(a, path)
+	w.unchangedMu.Lock()
+	prev, ok := w.unchangedSeen[key]
+	w.unchangedMu.Unlock()
+	if ok && strictBudgetFileChange(prev, snap) == "" {
+		return nil, true
+	}
+	return &snap, false
+}
+
+// rememberUnchangedStore records the pre-parse snapshot after a successful
+// parse that asked for no retry, so the next unchanged pass can skip.
+func (w *Watcher) rememberUnchangedStore(a adapter.Adapter, path string, pre *budgetFileSnapshot, res adapter.ParseResult) {
+	if pre == nil || res.RetrySuggested {
+		return
+	}
+	key := budgetCaptureSeenKey(a, path)
+	w.unchangedMu.Lock()
+	defer w.unchangedMu.Unlock()
+	if w.unchangedSeen == nil || len(w.unchangedSeen) >= unchangedSeenMax {
+		w.unchangedSeen = map[string]budgetFileSnapshot{}
+	}
+	w.unchangedSeen[key] = *pre
 }
 
 // skipProcessFile applies the pre-parse safety gates shared by ordinary and
@@ -1423,6 +1572,7 @@ func (w *Watcher) ingestProcessResult(ctx context.Context, a adapter.Adapter, re
 		SessionSurfaces:     res.SessionSurfaces,
 		SessionToolVersions: res.SessionToolVersions,
 		OutcomeUpdates:      res.OutcomeUpdates,
+		ToolAccounts:        res.ToolAccounts,
 	})
 	if err == nil && (ir.TokensInserted > 0 || ir.ActionsInserted > 0) {
 		if fn := w.ingestNotify.Load(); fn != nil {
@@ -1657,6 +1807,13 @@ func (w *Watcher) adapterFor(path string) adapter.Adapter {
 	byRoot := map[string]adapter.Adapter{}
 	for _, a := range w.registry.Detected(w.allow) {
 		for _, root := range w.watchRoots(a) {
+			byRoot[root] = a
+		}
+	}
+	// A sandbox run's live projection roots (G27) get the poll safety net
+	// too (lane SBX-P3C audit finding 7): they are only in the live map.
+	for root, a := range w.snapshotByRoot() {
+		if _, ok := a.(*projectionAdapter); ok {
 			byRoot[root] = a
 		}
 	}

@@ -5,9 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
+	"github.com/marmutapp/superbased-observer/internal/agentconfig"
+	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
+	"github.com/marmutapp/superbased-observer/internal/winrelay"
 )
 
 // isWSL is the WSL-detection seam. It is a package var (not a direct
@@ -85,6 +89,32 @@ var windowsUserName = crossmount.WindowsUserName
 // codexBaseURL shape, host-swapped).
 func windowsBaseURL(port int) string {
 	return fmt.Sprintf("http://localhost:%d", port)
+}
+
+// relayRouteOn reports whether the Windows Claude Code route targets the
+// fail-open relay (finding CC-9, decision D12; internal/winrelay) instead of
+// the WSL proxy. It is off while the relay's live-check gate waits (LC6 and
+// LC14, DEC-12): every caller (`observer init`, the dashboard, route
+// maintenance) then writes the WSL proxy target exactly as before. A
+// package var only so this package's tests can run the switched-on branch;
+// switching it on in production is the commit that clears winrelay's gate.
+var relayRouteOn = func() bool { return !winrelay.Gate().Waiting() }
+
+// windowsClaudeRouteURL is the base URL the Windows-side Claude Code route
+// points at. With the relay switched on it is the relay's loopback URL on the
+// Windows host (winrelay.RouteURL), which forwards to the WSL proxy while WSL
+// and the daemon are up and straight to the provider, as a recorded bypass,
+// while they are down, so a down WSL no longer breaks Windows sessions. A
+// proxy configured on the relay's own port keeps the WSL proxy target (the
+// two would collide; winrelay.ValidatePorts). Codex keeps the WSL proxy
+// target either way: the relay has no codex lane (winrelay.Lanes).
+func windowsClaudeRouteURL(proxyPort int) string {
+	if relayRouteOn() && winrelay.ValidatePorts(winrelay.DefaultPort, proxyPort) == nil {
+		if u, ok := winrelay.RouteURL(winrelay.DefaultPort, "claude-code"); ok {
+			return u
+		}
+	}
+	return windowsBaseURL(proxyPort)
 }
 
 // windowsHomesFor returns EVERY Windows-side home directory that holds subdir
@@ -276,7 +306,7 @@ func (r *Registrar) RegisterClaudeCodeWindows() RegistrationResult {
 			Error:  errors.New("proxyroute.RegisterClaudeCodeWindows: no Windows-side .claude/ detected (set WindowsClaudeHome or run in WSL where crossmount sees /mnt/c/Users/<u>/.claude/)"),
 		}
 	}
-	return r.registerClaudeCodeAt(dir, windowsBaseURL(r.opts.ProxyPort), "claude-code-windows")
+	return r.registerClaudeCodeAt(dir, windowsClaudeRouteURL(r.opts.ProxyPort), "claude-code-windows")
 }
 
 // RegisterCodexWindows writes the custom model provider + base_url into a
@@ -372,6 +402,201 @@ func (r *Registrar) WindowsRouteCandidates() map[string][]string {
 	add("codex-windows", ".codex", r.opts.WindowsCodexHome)
 	if len(out) == 0 {
 		return nil
+	}
+	return out
+}
+
+// Windows to WSL route twins (surface-gap Wave 7, CX-5 / D7, DEC-10).
+//
+// The mirror of the two writers above: a Windows-native daemon routing a
+// Claude Code or Codex that runs INSIDE a WSL distro (CX-5: the Windows
+// Codex app or VS Code extension with chatgpt.runCodexInWindowsSubsystemForLinux
+// runs its agent there). The tool's config is the distro's own ~/.claude or
+// ~/.codex, reached from Windows as \\wsl.localhost\<distro>\home\<user>.
+//
+// The URL is http://localhost:<port>. That reaches the Windows host's
+// loopback listener from inside the distro ONLY under WSL2 mirrored
+// networking; under the default NAT mode a distro's localhost is its own
+// namespace and the route goes nowhere. Which mode a host runs, and whether
+// the route then carries traffic, is exactly what live check WSL-4 verifies,
+// so both twins are built and switched off (wslRouteLiveGates, DEC-12):
+// RegisterClaudeCodeWSL / RegisterCodexWSL write nothing and say so, and
+// WSLRouteTargets never offers them, until the row is deleted.
+
+// wslRouteLiveGates maps each route twin to the live check it waits on. The
+// wording is the one every gate uses (integration.LiveGate.Text).
+var wslRouteLiveGates = map[string]string{
+	"claude-code-wsl": "WSL-4",
+	"codex-wsl":       "WSL-4",
+}
+
+// WSLRouteLiveGate reports whether a Windows to WSL route twin is switched
+// off behind a live check, and which one.
+func WSLRouteLiveGate(target string) (liveCheck string, gated bool) {
+	id, ok := wslRouteLiveGates[target]
+	return id, ok
+}
+
+// wslRouteArtifacts names the catalogued file each route twin writes; its
+// directory under the distro home comes from the catalogue, never a
+// hard-coded vendor segment.
+var wslRouteArtifacts = map[string]string{
+	"claude-code-wsl": "claude-code/user-settings",
+	"codex-wsl":       "codex/user-config",
+}
+
+// wslRouteSubdir is the config directory a route twin writes under the
+// distro's Linux home ("" when the catalogue has none, which resolves to
+// nothing detected).
+func wslRouteSubdir(tool string) string {
+	rel, ok := agentconfig.HomeRelativeDir(wslRouteArtifacts[tool], "linux")
+	if !ok {
+		return ""
+	}
+	return filepath.FromSlash(rel)
+}
+
+// wslRouteGateNote is the shared gate wording (integration.LiveGate.Text).
+func wslRouteGateNote(liveCheck string) string {
+	return integration.LiveGate(liveCheck).Text()
+}
+
+// isWindowsHost is the host-OS seam of the route twins (a package var like
+// isWSL): only a Windows-native daemon reaches a distro over
+// \\wsl.localhost.
+var isWindowsHost = func() bool { return runtime.GOOS == "windows" }
+
+// wslHomeOwned is the WSL-home ownership seam (crossmount's rule: the only
+// user directory in its distro).
+var wslHomeOwned = crossmount.WSLHomeOwnedByCurrentUser
+
+// resolveWSLHomeFor resolves the one WSL home carrying subdir that this
+// registrar may write, under the sandbox gate: an explicit WSLUserHome wins
+// (and must stay inside a pinned home); otherwise the WSL homes crossmount
+// sees (origin wslhost:) that carry subdir, of which exactly one proven the
+// operator's is used. refuse lists the candidates when several carry subdir
+// or none is proven, so the caller names the override instead of guessing.
+func (r *Registrar) resolveWSLHomeFor(subdir string) (dir string, refuse []string) {
+	override := r.opts.WSLUserHome
+	if crossmount.AutoDetectSuppressed(r.homeOverride, override) {
+		return "", nil
+	}
+	if override != "" {
+		return filepath.Join(override, subdir), nil
+	}
+	var found, owned []string
+	for _, h := range allHomes() {
+		if !crossmount.IsWSLHostHome(h) {
+			continue
+		}
+		dir := filepath.Join(h.Path, subdir)
+		if !dirIsPresent(dir) {
+			continue
+		}
+		found = append(found, dir)
+		if wslHomeOwned(h.Path) {
+			owned = append(owned, dir)
+		}
+	}
+	if len(owned) == 1 && len(found) == 1 {
+		return owned[0], nil
+	}
+	return "", found
+}
+
+// wslRouteGated is the result a gated twin returns: a benign skip that names
+// the live check.
+func (r *Registrar) wslRouteGated(tool, liveCheck string) RegistrationResult {
+	return RegistrationResult{
+		Tool:          tool,
+		DryRun:        r.opts.DryRun,
+		ConfigMissing: true,
+		SkipReason:    wslRouteGateNote(liveCheck) + "; nothing written",
+	}
+}
+
+// RegisterClaudeCodeWSL writes env.ANTHROPIC_BASE_URL into a WSL distro's
+// .claude/settings.json pointing the Claude Code inside it at this Windows
+// daemon's proxy. Switched off behind live check WSL-4 (see above).
+func (r *Registrar) RegisterClaudeCodeWSL() RegistrationResult {
+	if id, gated := WSLRouteLiveGate("claude-code-wsl"); gated {
+		return r.wslRouteGated("claude-code-wsl", id)
+	}
+	return r.registerClaudeCodeWSL()
+}
+
+// RegisterCodexWSL writes the openai-observer provider into a WSL distro's
+// .codex/config.toml (CX-5). Switched off behind live check WSL-4.
+func (r *Registrar) RegisterCodexWSL() RegistrationResult {
+	if id, gated := WSLRouteLiveGate("codex-wsl"); gated {
+		return r.wslRouteGated("codex-wsl", id)
+	}
+	return r.registerCodexWSL()
+}
+
+// registerClaudeCodeWSL is RegisterClaudeCodeWSL below the gate.
+func (r *Registrar) registerClaudeCodeWSL() RegistrationResult {
+	dir, res, ok := r.wslRouteDir("claude-code-wsl", wslRouteSubdir("claude-code-wsl"), "proxyroute.RegisterClaudeCodeWSL")
+	if !ok {
+		return res
+	}
+	return r.registerClaudeCodeAt(dir, windowsBaseURL(r.opts.ProxyPort), "claude-code-wsl")
+}
+
+// registerCodexWSL is RegisterCodexWSL below the gate.
+func (r *Registrar) registerCodexWSL() RegistrationResult {
+	dir, res, ok := r.wslRouteDir("codex-wsl", wslRouteSubdir("codex-wsl"), "proxyroute.RegisterCodexWSL")
+	if !ok {
+		return res
+	}
+	return r.registerCodexAt(dir, windowsBaseURL(r.opts.ProxyPort)+"/v1", "codex-wsl")
+}
+
+// wslRouteDir resolves a route twin's directory, or the result to return
+// instead: a benign skip off Windows or under a sandbox pin, a refusal that
+// names the candidates, or "not detected".
+func (r *Registrar) wslRouteDir(tool, subdir, fn string) (string, RegistrationResult, bool) {
+	if subdir == "" {
+		return "", RegistrationResult{Tool: tool, DryRun: r.opts.DryRun, Error: fmt.Errorf("%s: the catalogue names no user config directory for this tool", fn)}, false
+	}
+	if !isWindowsHost() {
+		return "", RegistrationResult{Tool: tool, DryRun: r.opts.DryRun, ConfigMissing: true}, false
+	}
+	if crossmount.AutoDetectSuppressed(r.homeOverride, r.opts.WSLUserHome) {
+		return "", r.sandboxRouteSkip(tool, subdir, "WSLUserHome", r.opts.WSLUserHome), false
+	}
+	dir, refuse := r.resolveWSLHomeFor(subdir)
+	if len(refuse) > 0 {
+		return "", RegistrationResult{
+			Tool: tool, DryRun: r.opts.DryRun,
+			Error: fmt.Errorf("%s: WSL %s/ homes were found (%s) but not exactly one is proven the operator's (the only user in its distro); set WSLUserHome to choose", fn, subdir, strings.Join(refuse, ", ")),
+		}, false
+	}
+	if dir == "" {
+		return "", RegistrationResult{
+			Tool: tool, DryRun: r.opts.DryRun,
+			Error: fmt.Errorf("%s: no WSL-side %s/ detected (set WSLUserHome to \\\\wsl.localhost\\<distro>\\home\\<user>)", fn, subdir),
+		}, false
+	}
+	return dir, RegistrationResult{}, true
+}
+
+// WSLRouteGatedTargets returns the route twins whose WSL home is detected on
+// this Windows host but which are switched off behind a live check, with
+// that check, in a stable order. The doctor reports each.
+func (r *Registrar) WSLRouteGatedTargets() [][2]string {
+	if !isWindowsHost() {
+		return nil
+	}
+	var out [][2]string
+	for _, tool := range []string{"claude-code-wsl", "codex-wsl"} {
+		id, gated := WSLRouteLiveGate(tool)
+		if !gated {
+			continue
+		}
+		if dir, refuse := r.resolveWSLHomeFor(wslRouteSubdir(tool)); dir != "" || len(refuse) > 0 {
+			out = append(out, [2]string{tool, id})
+		}
 	}
 	return out
 }

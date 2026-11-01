@@ -100,12 +100,16 @@ type Store struct {
 	// until SetPaddlePriceMap wires the deploy config, so every activation
 	// fail-closes as unknown-price until real pri_* ids are provisioned.
 	paddlePrices map[string]PaddlePlan
+	// spendCeilings maps a budget pool to its USD ceilings (T-946). Every
+	// Store starts with DefaultSpendCeilings, so a process that never calls
+	// SetSpendCeilings still bounds the Free pool.
+	spendCeilings map[string]SpendCeiling
 }
 
 // New returns a Store over pool bound to the default sbci_app role, with the
 // default (process-random) evidence encryptor.
 func New(pool *pgxpool.Pool) *Store {
-	return &Store{pool: pool, enc: newDefaultEncryptor(), appRole: RoleApp}
+	return &Store{pool: pool, enc: newDefaultEncryptor(), appRole: RoleApp, spendCeilings: DefaultSpendCeilings()}
 }
 
 // NewForRole returns a Store whose transactions assume role (E2 / W6rs). role

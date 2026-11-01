@@ -57,6 +57,13 @@
   installer names its pid and the safe restart order and never stops it,
   because the daemon IS the proxy (docs/daemon-restart-runbook.md).
 
+  The Windows sandbox files (lane SBX-P3B): an archive whose edition compiles
+  the Windows sandbox driver carries mxc\ (mxc_ffi.dll, wxc-exec.exe and
+  mxc-manifest.json). They are copied into mxc\ beside observer.exe only when
+  the archive carries them, each file checked first against the archive's
+  own mxc-manifest.json (its name, size and sha256; the archive itself was
+  checked above), and a failure part way puts the previous set back whole.
+
   No telemetry. The only hosts contacted are api.github.com (to resolve
   "latest") and github.com (the release assets), or your -BaseUrl. It takes
   no token or credential.
@@ -325,10 +332,107 @@ function Install-Over([string]$src, [string]$target) {
 }
 
 # Remove-StaleAside <dir>: delete binaries an earlier upgrade moved aside,
-# skipping any a process still runs.
+# skipping any a process still runs (the sandbox files in mxc\ too).
 function Remove-StaleAside([string]$dir) {
-  foreach ($f in @(Get-ChildItem -LiteralPath $dir -Filter "*.exe.old-*" -File -ErrorAction SilentlyContinue)) {
+  $stale = @(Get-ChildItem -LiteralPath $dir -Filter "*.exe.old-*" -File -ErrorAction SilentlyContinue)
+  $mxcPath = Join-Path $dir $MxcDir
+  if (Test-Path -LiteralPath $mxcPath -PathType Container) {
+    $stale += @(Get-ChildItem -LiteralPath $mxcPath -Filter "*.old-*" -File -ErrorAction SilentlyContinue)
+  }
+  foreach ($f in $stale) {
     try { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop } catch { }
+  }
+}
+
+# The Windows sandbox driver's bundled files (terminals.sandbox.mxc; sandbox
+# plan v2 sections 11.3 and 12.3, ledger SBX-SUP-1). The names equal
+# internal/sandboxmxc's FileFFI, FileExec and BundleDir and the manifest that
+# scripts/mxc-files.sh writes (TestInstallScriptsKnowTheMXCFiles).
+$MxcDir = "mxc"
+$MxcFiles = @("mxc_ffi.dll", "wxc-exec.exe")
+$MxcManifest = "mxc-manifest.json"
+$MxcManifestKind = "observer.mxc-files.v1"
+
+# Test-MxcSet <dir>: check an extracted mxc\ against its own manifest before
+# anything is copied: exactly the known files (no other file, no directory, no
+# link), each one's size and sha256 equal to the manifest's. The manifest
+# rides inside the archive whose sha256 and vendor signature were checked, so
+# it is as trusted as observer.exe. Returns the manifest.
+function Test-MxcSet([string]$src) {
+  $mpath = Join-Path $src $MxcManifest
+  if (-not (Test-Path -LiteralPath $mpath -PathType Leaf)) { Fail "the archive's $MxcDir\ has no $MxcManifest, so its sandbox files cannot be checked. Refusing to install." }
+  try { $m = Get-Content -Raw -LiteralPath $mpath | ConvertFrom-Json } catch { Fail "the archive's $MxcDir\$MxcManifest is not valid JSON. Refusing to install." }
+  if ([string]$m.kind -ne $MxcManifestKind) { Fail "the archive's $MxcDir\$MxcManifest is not a $MxcManifestKind manifest. Refusing to install." }
+  $listed = @($m.files | ForEach-Object { [string]$_.name })
+  if ($listed.Count -ne $MxcFiles.Count) { Fail "the archive's $MxcDir\$MxcManifest lists $($listed.Count) files, not the $($MxcFiles.Count) known sandbox files. Refusing to install." }
+  foreach ($n in $MxcFiles) {
+    if ($listed -notcontains $n) { Fail "the archive's $MxcDir\$MxcManifest does not list $n. Refusing to install." }
+  }
+  foreach ($item in @(Get-ChildItem -LiteralPath $src -Force)) {
+    if ($item.Name -ne $MxcManifest -and $MxcFiles -notcontains $item.Name) { Fail "the archive's $MxcDir\ carries an unexpected entry $($item.Name). Refusing to install." }
+  }
+  foreach ($f in $m.files) {
+    $p = Join-Path $src ([string]$f.name)
+    $item = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue
+    if (-not $item -or $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { Fail "the archive's $MxcDir\$($f.name) is missing or not a regular file. Refusing to install." }
+    if ($item.Length -ne [int64]$f.size) { Fail "$MxcDir\$($f.name): size $($item.Length) does not match its manifest ($($f.size)). Refusing to install." }
+    $h = (Get-FileHash -Algorithm SHA256 -LiteralPath $p).Hash.ToLowerInvariant()
+    if ($h -ne ([string]$f.sha256).ToLowerInvariant()) { Fail "$MxcDir\$($f.name): sha256 $h does not match its manifest. Refusing to install." }
+  }
+  return $m
+}
+
+# Install-MxcSet <src> <dest>: replace the sandbox files in <dest> with the
+# checked set in <src>, one file at a time: the old file is renamed aside
+# (a running wxc-exec.exe can be renamed, never overwritten), the new one is
+# copied in and its sha256 read back. Any failure removes what was copied and
+# renames every old file back, so the previous set stays whole. It returns the
+# steps it took and keeps the asides: Complete-MxcSet removes them once the
+# binary swap succeeded (one still in use is removed by the next install), and
+# Undo-MxcSet puts them back if the binary swap failed, so a new set is never
+# left beside the old binary (audit SBX-P3B F6).
+function Install-MxcSet([string]$src, [string]$dest, $manifest) {
+  New-Item -ItemType Directory -Force -Path $dest | Out-Null
+  $stamp = Get-Date -Format "yyyyMMddHHmmssfff"
+  $want = @{}
+  foreach ($f in $manifest.files) { $want[[string]$f.name] = ([string]$f.sha256).ToLowerInvariant() }
+  $done = @()
+  try {
+    foreach ($n in @($MxcFiles + $MxcManifest)) {
+      $target = Join-Path $dest $n
+      $aside = $null
+      if (Test-Path -LiteralPath $target) {
+        $aside = "$target.old-$stamp"
+        Move-Item -LiteralPath $target -Destination $aside
+      }
+      $done += ,@{ target = $target; aside = $aside }
+      Copy-Item -LiteralPath (Join-Path $src $n) -Destination $target
+      if ($want.ContainsKey($n) -and (Get-FileHash -Algorithm SHA256 -LiteralPath $target).Hash.ToLowerInvariant() -ne $want[$n]) {
+        throw "$n did not read back with its manifest's sha256"
+      }
+    }
+  } catch {
+    $why = $_.Exception.Message
+    Undo-MxcSet $done
+    throw "replacing the sandbox files in $dest failed ($why); the previous files were put back"
+  }
+  return ,$done
+}
+
+# Undo-MxcSet <steps>: remove what Install-MxcSet copied and rename every old
+# file back, last step first.
+function Undo-MxcSet($steps) {
+  for ($i = $steps.Count - 1; $i -ge 0; $i--) {
+    $d = $steps[$i]
+    Remove-Item -LiteralPath $d.target -Force -ErrorAction SilentlyContinue
+    if ($d.aside) { Move-Item -LiteralPath $d.aside -Destination $d.target -Force -ErrorAction SilentlyContinue }
+  }
+}
+
+# Complete-MxcSet <steps>: remove the old files Install-MxcSet set aside.
+function Complete-MxcSet($steps) {
+  foreach ($d in $steps) {
+    if ($d.aside) { try { Remove-Item -LiteralPath $d.aside -Force -ErrorAction Stop } catch { } }
   }
 }
 
@@ -378,6 +482,16 @@ function Invoke-Uninstall {
   $alias = Join-Path $dir "superbased.exe"
   if (Test-Path -LiteralPath $alias) { Remove-Item -LiteralPath $alias -Force }
   Remove-StaleAside $dir
+  # The sandbox files this installer copied (only the known names; the
+  # directory goes only when nothing else is left in it).
+  $mxcPath = Join-Path $dir $MxcDir
+  if (Test-Path -LiteralPath $mxcPath -PathType Container) {
+    foreach ($n in @($MxcFiles + $MxcManifest)) {
+      $p = Join-Path $mxcPath $n
+      if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }
+    }
+    if (@(Get-ChildItem -LiteralPath $mxcPath -Force).Count -eq 0) { Remove-Item -LiteralPath $mxcPath -Force }
+  }
   if (Test-OnUserPath $dir) {
     $kept = @((Get-UserPath).Split(";") | Where-Object { $_ -and ($_.TrimEnd("\") -ine $dir.TrimEnd("\")) })
     [Environment]::SetEnvironmentVariable("Path", ($kept -join ";"), "User")
@@ -421,7 +535,7 @@ function Get-InstallKind([string]$path) {
 
 function Get-UpgradeCommand([string]$kind, [string]$path) {
   switch ($kind) {
-    "npm" { return "npm install -g @superbased/observer@latest" }
+    "npm" { return "npm.cmd install -g @superbased/observer@latest" }
     "pip" {
       if ($path -match '\\pipx\\') { return "pipx upgrade superbased-observer" }
       $py = Join-Path (Split-Path -Parent $path) "python.exe"
@@ -628,6 +742,14 @@ function Invoke-Install {
     Expand-Archive -LiteralPath $zip -DestinationPath $x
     $newExe = Join-Path $x "observer.exe"
     if (-not (Test-Path -LiteralPath $newExe -PathType Leaf)) { Fail "$asset has no observer.exe" }
+    # The sandbox files ride only in the archives whose edition compiles the
+    # Windows sandbox driver; checked before anything is written.
+    $newMxc = Join-Path $x $MxcDir
+    $mxcSet = $null
+    if (Test-Path -LiteralPath $newMxc -PathType Container) {
+      $mxcSet = Test-MxcSet $newMxc
+      Say "  sandbox   $MxcDir\ ok (MXC $($mxcSet.version), every file matches its manifest)"
+    }
     # No 2>&1 here: Windows PowerShell 5.1 turns a native program's stderr
     # into terminating errors under ErrorActionPreference Stop.
     $verOut = @(& $newExe --version)
@@ -648,13 +770,27 @@ function Invoke-Install {
     $previous = $null
     if (Test-Path -LiteralPath $exe -PathType Leaf) { $previous = Get-InstalledVersion $exe }
     $running = @(Get-RunningFrom @($exe, $alias))
+    $mxcSteps = $null
+    if ($mxcSet) {
+      try {
+        $mxcSteps = Install-MxcSet $newMxc (Join-Path $dir $MxcDir) $mxcSet
+      } catch {
+        Fail "$($_.Exception.Message). Nothing was installed; stop any sandboxed terminal that uses it and run the installer again."
+      }
+    }
+    $exeSwapped = $false
     foreach ($target in @($exe, $alias)) {
       try {
         Install-Over $newExe $target
+        if ($target -eq $exe) { $exeSwapped = $true }
       } catch {
+        # observer.exe is still the old binary: put the old sandbox files
+        # back beside it.
+        if ($mxcSteps -and -not $exeSwapped) { Undo-MxcSet $mxcSteps; $mxcSteps = $null }
         Fail "could not write $target ($($_.Exception.Message)). If observer is running, stop it first (turn the proxy route off before stopping the daemon)."
       }
     }
+    if ($mxcSteps) { Complete-MxcSet $mxcSteps }
     Say ""
     if ($previous) {
       Say "Upgraded ${exe}: $($previous -replace '^observer version ', '') -> $($reported -replace '^observer version ', '')."

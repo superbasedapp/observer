@@ -8,7 +8,11 @@
 // site that starts a goroutine, binds a listener, makes an outbound call or
 // writes a file on behalf of an optional component asks the same question,
 // Snapshot.Active(id), so the L2 "installed but inert" guarantee has one
-// seam (plan section 4).
+// seam (plan section 4). An optional module (security, terminals.sandbox)
+// asks Snapshot.ModuleActive(id) instead, which treats an id the catalog does
+// not know as off ("fail invisible"); module.go says when to use which, and
+// registers the resolver config.Load uses to skip validating a section whose
+// component is not active.
 //
 // The zero [components] block is today's behaviour: every compiled
 // component is active and each feature's own config switch still decides

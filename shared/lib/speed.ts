@@ -11,7 +11,7 @@
 // first token included. Never a decode speed.
 
 // TpsBasis names where a row's duration came from, strongest first.
-export type TpsBasis = "measured" | "native" | "transcript";
+export type TpsBasis = "measured" | "native" | "otel" | "transcript";
 
 // TpsSuppressed names why a row that generated tokens shows no rate.
 export type TpsSuppressed = "not_measured" | "too_few_tokens" | "too_short" | "implausible";
@@ -47,6 +47,7 @@ export function fmtTps(tps: number): string {
 const BASIS: Record<TpsBasis, { short: string; long: string }> = {
   measured: { short: "measured", long: "request duration measured by the capture (proxy or OTel)" },
   native: { short: "native", long: "per-call duration recorded by the tool itself" },
+  otel: { short: "otel", long: "per-call duration from the tool's own OpenTelemetry export, stamped onto the transcript's row" },
   transcript: { short: "transcript", long: "request span derived from the transcript (input written to last output block) - a lower bound on throughput: it can include client time before the request was sent" },
 };
 

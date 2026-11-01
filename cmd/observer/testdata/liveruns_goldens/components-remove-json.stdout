@@ -1,0 +1,52 @@
+{
+  "preview": {
+    "current": {
+      "Distro": "",
+      "Add": [
+        "terminals.sandbox"
+      ],
+      "Remove": [
+        "terminals.sandbox.apple-container",
+        "terminals.sandbox.e2b",
+        "terminals.sandbox.landlock",
+        "terminals.sandbox.modal",
+        "terminals.sandbox.mxc",
+        "terminals.sandbox.oci",
+        "terminals.sandbox.seatbelt",
+        "terminals.sandbox.vercel",
+        "terminals.sandbox.vm"
+      ]
+    },
+    "proposed": {
+      "Distro": "",
+      "Add": [],
+      "Remove": [
+        "terminals.sandbox",
+        "terminals.sandbox.apple-container",
+        "terminals.sandbox.e2b",
+        "terminals.sandbox.landlock",
+        "terminals.sandbox.modal",
+        "terminals.sandbox.mxc",
+        "terminals.sandbox.oci",
+        "terminals.sandbox.seatbelt",
+        "terminals.sandbox.vercel",
+        "terminals.sandbox.vm"
+      ]
+    },
+    "activated": [],
+    "deactivated": [
+      "terminals.sandbox"
+    ],
+    "cascade": [],
+    "teardown": [],
+    "refused": [],
+    "issues": [],
+    "restart_required": true,
+    "fingerprint": "b60e4765ff695df90be93adf",
+    "no_change": false,
+    "managed_refused": []
+  },
+  "wrote": true,
+  "teardown": [],
+  "teardown_skipped": false
+}

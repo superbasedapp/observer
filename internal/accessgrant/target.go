@@ -26,7 +26,7 @@ type TargetQuery struct {
 }
 
 // targetTypes are the request types whose grants name a Target.
-var targetTypes = map[string]bool{TypeToolAllow: true, TypeModelAccess: true, TypeFeatureEnable: true, TypePageAccess: true, TypeConfigEdit: true, TypeComponentEnable: true}
+var targetTypes = map[string]bool{TypeToolAllow: true, TypeModelAccess: true, TypeFeatureEnable: true, TypePageAccess: true, TypeConfigEdit: true, TypeComponentEnable: true, TypeFindingException: true}
 
 // IsTargetType reports whether a grant of this type names a Target.
 func IsTargetType(t string) bool { return targetTypes[t] }
@@ -123,6 +123,10 @@ type TargetFacts struct {
 	// server's catalog (internal/components), the one a node.components
 	// policy governs.
 	NodeComponent bool
+	// FindingRef: the target is the wire handle of a code security finding
+	// the org holds for the grantee (org_sec_findings.finding_ref), lane
+	// SEC-E3.
+	FindingRef bool
 }
 
 // targetRule is one row of the per-type target check (decideTarget).
@@ -179,6 +183,19 @@ var targetRules = map[string][]targetRule{
 		{
 			field:   "max_uses",
 			message: "an AI tool setting edit is time-bound only; leave uses at 0 and choose how long it lasts",
+			refuse:  func(p Proposal, _ TargetFacts) bool { return p.MaxUses != 0 },
+		},
+	},
+	// Lane SEC-E3: a finding exception names one finding the org holds.
+	TypeFindingException: {
+		{
+			field:   "target",
+			message: "a finding exception names one code finding your organization holds for this member (its finding reference); it is never rule-wide",
+			refuse:  func(_ Proposal, f TargetFacts) bool { return !f.FindingRef },
+		},
+		{
+			field:   "max_uses",
+			message: "a finding exception is time-bound only; leave uses at 0 and choose how long it lasts",
 			refuse:  func(p Proposal, _ TargetFacts) bool { return p.MaxUses != 0 },
 		},
 	},

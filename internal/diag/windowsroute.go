@@ -3,7 +3,9 @@ package diag
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,7 +18,9 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
 	"github.com/marmutapp/superbased-observer/internal/proxyroute"
+	"github.com/marmutapp/superbased-observer/internal/regularfile"
 	"github.com/marmutapp/superbased-observer/internal/remedy"
+	"github.com/marmutapp/superbased-observer/internal/winrelay"
 )
 
 // Cross-OS proxy-route doctor check (Phase 7).
@@ -64,7 +68,7 @@ func checkWindowsProxyRoutes(ctx context.Context, cfg config.Config) (Check, boo
 // is the crossmount ownership seam: it reports whether a Windows USER home
 // belongs to the current Windows user, so ambiguous / unverified cross-OS homes
 // can be surfaced with the recovery flag (F2c).
-func windowsProxyRoutesCheck(ctx context.Context, cfg config.Config, isWSL bool, homes []crossmount.HomeRoot, owned func(string) bool, probe windowsCurlProbe) (Check, bool) {
+func windowsProxyRoutesCheck(ctx context.Context, _ config.Config, isWSL bool, homes []crossmount.HomeRoot, owned func(string) bool, probe windowsCurlProbe) (Check, bool) {
 	if !isWSL {
 		return Check{}, false // not a WSL guest — nothing cross-OS to route
 	}
@@ -73,11 +77,6 @@ func windowsProxyRoutesCheck(ctx context.Context, cfg config.Config, isWSL bool,
 	if len(detected) == 0 && len(ownershipWarns) == 0 {
 		// No Windows-side .claude/.codex/.cursor to route or disambiguate.
 		return Check{}, false
-	}
-
-	port := cfg.Proxy.Port
-	if port <= 0 {
-		port = 8820
 	}
 
 	status := StatusOK
@@ -110,23 +109,37 @@ func windowsProxyRoutesCheck(ctx context.Context, cfg config.Config, isWSL bool,
 		rems = append(rems, w.fix)
 	}
 
-	// Best-effort reachability: does the Windows side actually reach the WSL
-	// proxy over localhost forwarding? Only meaningful once at least one
-	// route is written. Never downgrades to StatusFail.
-	if anyWritten {
-		target := fmt.Sprintf("http://localhost:%d/", port)
-		code, err := probe(ctx, target)
+	// Reachability of each written route's own target (CC-9): does the
+	// Windows side reach what the route points at (the WSL proxy over
+	// localhost forwarding, or the relay once it is switched on)? A target
+	// curl.exe could not connect to is a WARN: every Windows session using
+	// that route gets ConnectionRefused. A probe that could not run stays
+	// "unverifiable" and never fails.
+	unverifiable := false
+	for _, origin := range writtenRouteOrigins(detected) {
+		code, err := probe(ctx, origin)
 		switch {
 		case err == nil && code >= 100:
-			details = append(details, fmt.Sprintf("reachable from Windows: curl.exe %s → HTTP %d", target, code))
+			details = append(details, fmt.Sprintf("reachable from Windows: curl.exe %s → HTTP %d", origin, code))
+		case errors.Is(err, errRouteTargetRefused):
+			status = StatusWarn
+			details = append(details, fmt.Sprintf(
+				"route target %s REFUSED the connection from Windows: Windows sessions whose settings route points there get ConnectionRefused (WSL or the daemon is down, or forwarding is off; the fail-open relay is %s)",
+				origin, winrelay.Gate().Text()))
+		case errors.Is(err, errRouteTargetTimedOut):
+			status = StatusWarn
+			details = append(details, fmt.Sprintf(
+				"route target %s TIMED OUT from Windows (no answer within the probe's 2 s): Windows sessions whose settings route points there hang or time out (WSL starting or suspended, the proxy overloaded, or a firewall dropping the connection; the fail-open relay is %s)",
+				origin, winrelay.Gate().Text()))
 		default:
-			// curl.exe missing, timed out, or connection refused — we cannot
-			// distinguish "proxy down" from "curl.exe absent" from inside WSL,
-			// so stay honest and don't fail.
-			details = append(details, "reachability unverifiable from WSL - if Windows tools can't connect, check .wslconfig (mirrored networking / localhostForwarding=false)")
+			unverifiable = true
 		}
 	}
-
+	if unverifiable {
+		// curl.exe missing, or it failed for a reason other than a refused
+		// or timed-out connection: stay honest and don't fail.
+		details = append(details, "reachability unverifiable from WSL - if Windows tools can't connect, check .wslconfig (mirrored networking / localhostForwarding=false)")
+	}
 	msg := fmt.Sprintf("%d Windows-side route target(s) detected", len(detected))
 	switch {
 	case len(detected) == 0:
@@ -274,10 +287,44 @@ func detectWindowsRouteTools(homes []crossmount.HomeRoot) []windowsRouteTool {
 	return out
 }
 
+// writtenRouteOrigins returns the distinct origins ("http://host:port/") the
+// written routes point at, in detection order. Probing the origin root never
+// reaches a provider: the proxy answers it itself, and the relay refuses a
+// path outside its route prefix (404) without forwarding or recording.
+func writtenRouteOrigins(detected []windowsRouteTool) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, d := range detected {
+		if !d.written {
+			continue
+		}
+		u, err := url.Parse(d.baseURL)
+		if err != nil || u.Host == "" {
+			continue
+		}
+		origin := u.Scheme + "://" + u.Host + "/"
+		if !seen[origin] {
+			seen[origin] = true
+			out = append(out, origin)
+		}
+	}
+	return out
+}
+
+// The probe's answers when curl.exe ran and the target did not answer: it
+// refused the connection (exit 7), or the request timed out (exit 28).
+var (
+	errRouteTargetRefused  = errors.New("route target refused the connection")
+	errRouteTargetTimedOut = errors.New("route target timed out")
+)
+
+// maxRouteSettingsBytes caps a route settings read.
+const maxRouteSettingsBytes = 4 << 20
+
 // claudeWindowsRouteState reports the env.ANTHROPIC_BASE_URL written into a
 // Windows-side settings.json and whether it points at an observer proxy.
 func claudeWindowsRouteState(path string) (string, bool) {
-	raw, err := os.ReadFile(path)
+	raw, err := regularfile.Read(path, maxRouteSettingsBytes)
 	if err != nil {
 		return "", false
 	}
@@ -301,7 +348,7 @@ func claudeWindowsRouteState(path string) (string, bool) {
 // into a Windows-side config.toml and whether it points at an observer
 // proxy with the top-level model_provider switched to it.
 func codexWindowsRouteState(path string) (string, bool) {
-	raw, err := os.ReadFile(path)
+	raw, err := regularfile.Read(path, maxRouteSettingsBytes)
 	if err != nil {
 		return "", false
 	}
@@ -315,6 +362,10 @@ func codexWindowsRouteState(path string) (string, bool) {
 	mp, _ := root["model_provider"].(string)
 	return url, proxyroute.IsObserverBaseURL(url) && mp == proxyroute.ProviderName
 }
+
+// curlTargetExit maps curl's exit codes that describe the target, not a
+// broken probe: 7 could not connect, 28 timed out.
+var curlTargetExit = map[int]error{7: errRouteTargetRefused, 28: errRouteTargetTimedOut}
 
 // probeWindowsCurl is the production windowsCurlProbe: it invokes the
 // Windows-side curl.exe (reachable from WSL at the fixed System32 path) to
@@ -330,6 +381,12 @@ func probeWindowsCurl(ctx context.Context, target string) (int, error) {
 	defer cancel()
 	out, err := exec.CommandContext(ctx, curlPath,
 		"--max-time", "2", "-s", "-o", "NUL", "-w", "%{http_code}", target).Output()
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		if target, ok := curlTargetExit[exitErr.ExitCode()]; ok {
+			return 0, target
+		}
+	}
 	if err != nil {
 		return 0, err
 	}

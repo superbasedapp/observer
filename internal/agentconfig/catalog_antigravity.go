@@ -43,12 +43,15 @@ var antigravityCatalog = toolCatalog{
 			ID: "antigravity/user-editor-settings", Tool: "antigravity", Shape: "antigravity/editor-settings", Kind: KindSettings, Scope: ScopeUser,
 			Paths: OSPaths{
 				Linux:   "~/.config/Antigravity/User/settings.json",
-				Darwin:  "~/Library/Application Support/Antigravity/User/settings.json",
+				Darwin:  "~/Library/Application Support/Antigravity IDE/User/settings.json",
 				Windows: `%APPDATA%\Antigravity\User\settings.json`,
 			},
 			Format: FormatVSCodeSettings, Precedence: 20, WriteNeeds: PrivUser,
-			Grounding: Grounding{Kind: GroundAdapterDoc, Source: "docs/antigravity_gemini_cli_pipes.md (state.vscdb path; settings.json inferred from the VS Code fork layout)", Date: auditDate},
-			Note:      "INFERRED from the VS Code fork layout beside the grounded state.vscdb; not live-checked for agent keys.",
+			Grounding: mac4Live("Antigravity IDE 2.6.0 (/Applications/Antigravity IDE.app, product nameShort \"Antigravity IDE\") created ~/Library/Application Support/Antigravity IDE/User/; " +
+				"~/Library/Application Support/Antigravity is the separate Antigravity 2 agent app's dir, with no User/ layout"),
+			Note: "The macOS dir is live-grounded by MAC-4 (the IDE's own product name; older IDE builds named it Antigravity, which the adapter's state.vscdb lookup still tries). " +
+				"The Linux and Windows dirs and the settings.json file name are INFERRED from the VS Code fork layout beside the grounded state.vscdb; whether a current " +
+				"IDE build on those OSes also moved to an \"Antigravity IDE\" dir is not checked. Not live-checked for agent keys.",
 		},
 		{
 			ID: "antigravity/user-mcp", Tool: "antigravity", Shape: "antigravity/mcp", Kind: KindMCP, Scope: ScopeUser,

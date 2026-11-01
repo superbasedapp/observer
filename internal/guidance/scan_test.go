@@ -301,8 +301,11 @@ func TestScanUserScopePaths(t *testing.T) {
 			t.Errorf("user-scope AbsPath %q is not under the home root", f.AbsPath)
 		}
 	}
-	if user != 2 {
-		t.Errorf("user-scope files = %d, want 2", user)
+	// 3 entries over the fixture's 2 home files: ~/.claude/CLAUDE.md
+	// (claude-code) and ~/.claude/skills/bar/SKILL.md, which both
+	// claude-code and ibm-bob read (one File per reading tool).
+	if user != 3 {
+		t.Errorf("user-scope files = %d, want 3", user)
 	}
 
 	for _, tc := range []struct {

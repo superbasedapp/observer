@@ -12,6 +12,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/diag"
 	"github.com/marmutapp/superbased-observer/internal/hook"
+	"github.com/marmutapp/superbased-observer/internal/keystore"
 )
 
 // Part B item 3 (docs/plans/prompt-submit-intervention-exploration-2026-09-07.md
@@ -138,6 +139,15 @@ var (
 func probeHookTestBinary(t *testing.T) string {
 	t.Helper()
 	probeHookBinaryOnce.Do(func() {
+		// Every run of the built binary (the hook probes, the relay
+		// executors, the parity goldens) inherits this, so it uses the
+		// in-memory keyring and never the developer's OS keychain
+		// (WINFIX2 audit finding 10). This test process is on the
+		// in-memory keyring already.
+		if err := os.Setenv(keystore.EnvTestKeystore, keystore.TestKeystoreMemory); err != nil {
+			probeHookBinaryErr = err
+			return
+		}
 		dir, err := os.MkdirTemp("", "observer-probe-hook-bin")
 		if err != nil {
 			probeHookBinaryErr = err
@@ -151,6 +161,10 @@ func probeHookTestBinary(t *testing.T) string {
 		if output, err := c.CombinedOutput(); err != nil {
 			probeHookBinaryErr = err
 			t.Logf("go build output: %s", output)
+			// No binary means no path for removeProbeHookBinary to
+			// find, so the empty folder goes now (RB1 found these
+			// left behind after a failed build).
+			_ = os.RemoveAll(dir)
 			return
 		}
 		probeHookBinaryPath = out
@@ -159,6 +173,16 @@ func probeHookTestBinary(t *testing.T) string {
 		t.Skipf("could not build a test observer binary: %v", probeHookBinaryErr)
 	}
 	return probeHookBinaryPath
+}
+
+// removeProbeHookBinary deletes the directory probeHookTestBinary built
+// into, once the whole test process is done with it (TestMain). Without it
+// every run left a ~150 MB observer-probe-hook-bin* folder in the system
+// temp dir (47 of them, 6.4 GB, on the Windows dev box by 2026-10-26).
+func removeProbeHookBinary() {
+	if probeHookBinaryPath != "" {
+		_ = os.RemoveAll(filepath.Dir(probeHookBinaryPath))
+	}
 }
 
 // probeHookSetupHome points os.UserHomeDir() at a fresh, isolated temp
@@ -172,10 +196,7 @@ func probeHookTestBinary(t *testing.T) string {
 // have registered for real already.
 func probeHookSetupHome(t *testing.T) string {
 	t.Helper()
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home) // os.UserHomeDir reads USERPROFILE on Windows
-	return home
+	return pinToolHomes(t)
 }
 
 // probeHookRegister actually registers tool's prompt-submit hook

@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+
+	"github.com/marmutapp/superbased-observer/internal/postureop"
 )
 
 // maxNoticeFieldBytes bounds every free-text notice field. The node renders
@@ -204,7 +206,14 @@ func Compile(in PolicyInput) (PolicySpec, error) {
 //   - when the row carries an Enum, the value must be in it (so a value
 //     config.Validate would reject is refused HERE, not at config.Load,
 //     where it would break every hook invocation on every node — review B4);
-//   - a DirRestrictiveOnly key must carry exactly its Safe value.
+//   - the row's direction is checked by walking the postureop direction
+//     table (postureop.CheckPin): a DirRestrictiveOnly key must carry exactly
+//     its Safe value, a numeric direction refuses a negative value, a list
+//     direction that would allow nothing refuses an empty list, and a
+//     direction that does not apply to the row's kind (or is unknown) is a
+//     hard error. This is the per-key and impossible-combination half; the
+//     result half (does the merged posture loosen this node) is the accept
+//     path's CheckPosture gate, which knows the node's local values.
 func compilePinned(raw map[string]any) (map[string]any, error) {
 	if len(raw) == 0 {
 		return nil, nil
@@ -222,8 +231,14 @@ func compilePinned(raw map[string]any) (map[string]any, error) {
 		if len(row.Enum) > 0 && !valueInSet(norm, row.Enum) {
 			return nil, fmt.Errorf("nodegov.Compile: pinned.%s = %v is not one of %v", key, norm, row.Enum)
 		}
+		if err := postureop.CheckFormat(row.Format, norm); err != nil {
+			return nil, fmt.Errorf("nodegov.Compile: pinned.%s: %w", key, err)
+		}
 		if row.Direction == DirRestrictiveOnly && !valuesEqual(norm, row.Safe) {
 			return nil, fmt.Errorf("nodegov.Compile: pinned.%s may only be set to %v (this key is restrictive-only: the organization may force the safer value, never the riskier one)", key, row.Safe)
+		}
+		if err := postureop.CheckPin(row.Direction, row.Kind, norm, row.Safe); err != nil {
+			return nil, fmt.Errorf("nodegov.Compile: pinned.%s: %w", key, err)
 		}
 		if n, isInt := norm.(int64); isInt && (row.Min != 0 || row.Max != 0) && (n < row.Min || n > row.Max) {
 			return nil, fmt.Errorf("nodegov.Compile: pinned.%s = %d is outside the permitted range %d..%d", key, n, row.Min, row.Max)

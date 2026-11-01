@@ -12,6 +12,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/marmutapp/superbased-observer/internal/agentconfig"
 	"github.com/marmutapp/superbased-observer/internal/proxyroute"
 	"github.com/marmutapp/superbased-observer/internal/remedy"
 )
@@ -161,11 +162,13 @@ func resolveCodexSelection(cfg codexProviderConfig, req codexProviderRequirement
 const codexRequirementsVisibility = "managed requirements visible to this check: the system requirements.toml only; macOS managed preferences (MDM) and ChatGPT-workspace cloud requirements can also force model_provider and are not visible here"
 
 // checkCodexProviderRoute implements codex.proxy_route for the codex home
-// under homeDir, reading the system requirements file at requirementsPath
-// (and the system config.toml beside it).
-func checkCodexProviderRoute(homeDir, requirementsPath string) Check {
-	codexHome := filepath.Join(homeDir, ".codex")
-	cfgPath := filepath.Join(codexHome, "config.toml")
+// under homeDir (moved by CODEX_HOME through the agentconfig rule on
+// codex/user-config, read with getenv; CX-4), reading the system
+// requirements file at requirementsPath (and the system config.toml beside
+// it).
+func checkCodexProviderRoute(homeDir string, getenv func(string) string, requirementsPath string) Check {
+	cfgPath := codexUserConfigPath(homeDir, getenv)
+	codexHome := filepath.Dir(cfgPath)
 
 	var cfg codexProviderConfig
 	if _, err := toml.DecodeFile(cfgPath, &cfg); err != nil {
@@ -235,6 +238,22 @@ func checkCodexProviderRoute(homeDir, requirementsPath string) Check {
 		}
 	}
 	return Check{Name: codexRouteCheckName, Status: status, Message: msg, Details: details, Remediations: rems}
+}
+
+// codexUserConfigArtifact is the agentconfig FileRow of the Codex user
+// config.toml; its relocation rules (CODEX_HOME) say where the Codex home
+// is.
+const codexUserConfigArtifact = "codex/user-config"
+
+// codexUserConfigPath resolves the Codex user config.toml under homeDir
+// with getenv's relocation variables, falling back to the vendor default
+// when the row does not resolve (unreachable while it exists).
+func codexUserConfigPath(homeDir string, getenv func(string) string) string {
+	got, err := agentconfig.ResolveArtifact(codexUserConfigArtifact, agentconfig.PathEnv{GOOS: runtime.GOOS, Home: homeDir, Getenv: getenv})
+	if err != nil || got.Status != agentconfig.PathResolved || got.Path == "" {
+		return filepath.Join(homeDir, ".codex", "config.toml")
+	}
+	return filepath.Clean(got.Path)
 }
 
 // codexInit is the codex route remediation (`observer init --codex`).

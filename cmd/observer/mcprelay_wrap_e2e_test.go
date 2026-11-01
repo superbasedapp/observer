@@ -108,8 +108,9 @@ func newMCPRelayWrapFixture(t *testing.T) mcpRelayWrapFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.childCmd = filepath.Join(t.TempDir(), "gh-mcp-server")
-	if err := os.Symlink(self, f.childCmd); err != nil {
+	// Windows starts only a file with an executable extension.
+	f.childCmd = filepath.Join(t.TempDir(), "gh-mcp-server"+filepath.Ext(self))
+	if err := testSymlink(t, self, f.childCmd); err != nil {
 		t.Fatalf("symlink child: %v", err)
 	}
 	doc := map[string]any{"mcpServers": map[string]any{
@@ -249,8 +250,20 @@ func TestMCPRelay_WrappedEntryMediatesThroughProductionComposition(t *testing.T)
 		return nil
 	}
 	send := func(frame string) {
-		if err := mcprelay.WriteFrame(inW, []byte(frame)); err != nil {
-			t.Fatal(err)
+		t.Helper()
+		// Bounded: a wrapper that stopped before reading stdin (a child it
+		// could not start) made this write block for ever.
+		wrote := make(chan error, 1)
+		go func() { wrote <- mcprelay.WriteFrame(inW, []byte(frame)) }()
+		select {
+		case err := <-wrote:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case err := <-done:
+			t.Fatalf("the wrapper stopped before it read a frame: %v", err)
+		case <-time.After(20 * time.Second):
+			t.Fatal("the wrapper read no frame")
 		}
 	}
 

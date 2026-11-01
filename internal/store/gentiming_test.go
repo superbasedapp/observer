@@ -219,3 +219,144 @@ func TestIngest_GenStampOnly(t *testing.T) {
 		t.Errorf("stamp-only orphan inserted %d rows, want 0", n)
 	}
 }
+
+// TestStampTranscriptGenTiming pins the OTel-export stamp seam (AP-131
+// follow-up): it fills only an untimed transcript row, reports a missing row
+// for the caller to retry, never replaces an adapter's timing, and is itself
+// replaced by an adapter timing that arrives later. One step per rule.
+func TestStampTranscriptGenTiming(t *testing.T) {
+	ctx := context.Background()
+	ts := time.Date(2026, 10, 23, 10, 0, 0, 0, time.UTC)
+	row := func(root, msg string, genMs int64, basis string, v int) models.TokenEvent {
+		e := models.TokenEvent{
+			SourceFile: "/t/s.jsonl", SourceEventID: "tok:" + msg, MessageID: msg, SessionID: "s-otel", ProjectRoot: root,
+			Timestamp: ts, Tool: models.ToolCodeBuddy, Model: "m", OutputTokens: 500,
+			Source: models.TokenSourceJSONL, Reliability: models.ReliabilityApproximate,
+		}
+		if genMs > 0 {
+			e.GenMs, e.GenBasis, e.GenTimingV = genMs, basis, v
+		}
+		return e
+	}
+	stamp := func(msg string, ms int64) TranscriptGenStamp {
+		return TranscriptGenStamp{Tool: models.ToolCodeBuddy, SessionID: "s-otel", Key: TranscriptKeyMessageID, KeyValue: msg, GenMs: ms}
+	}
+	read := func(t *testing.T, db *sql.DB, msg string) (int64, string, int64) {
+		t.Helper()
+		var ms, v sql.NullInt64
+		var basis sql.NullString
+		if err := db.QueryRowContext(ctx, `SELECT gen_ms, gen_basis, gen_timing_v FROM token_usage WHERE message_id = ?`, msg).Scan(&ms, &basis, &v); err != nil {
+			t.Fatalf("read %s: %v", msg, err)
+		}
+		return ms.Int64, basis.String, v.Int64
+	}
+
+	cases := []struct {
+		name      string
+		existing  *models.TokenEvent // nil = no transcript row yet
+		stamp     TranscriptGenStamp
+		want      GenStampOutcome
+		wantMs    int64
+		wantBasis string
+	}{
+		{"untimed row takes the otel stamp", genTestPtr(row("", "m1", 0, "", 0)), stamp("m1", 53), GenStampApplied, 53, models.GenBasisOTel},
+		{"native timing wins over otel", genTestPtr(row("", "m1", 77, models.GenBasisNative, 1)), stamp("m1", 53), GenStampKept, 77, models.GenBasisNative},
+		{"transcript timing wins over otel", genTestPtr(row("", "m1", 900, models.GenBasisTranscript, 2)), stamp("m1", 53), GenStampKept, 900, models.GenBasisTranscript},
+		{"missing row is reported, nothing inserted", nil, stamp("m1", 53), GenStampNoRow, 0, ""},
+		{"another session's row is not touched", genTestPtr(row("", "m1", 0, "", 0)), TranscriptGenStamp{Tool: models.ToolCodeBuddy, SessionID: "other", Key: TranscriptKeyMessageID, KeyValue: "m1", GenMs: 53}, GenStampNoRow, 0, ""},
+		{"another tool's row is not touched", genTestPtr(row("", "m1", 0, "", 0)), TranscriptGenStamp{Tool: models.ToolKimchi, SessionID: "s-otel", Key: TranscriptKeyMessageID, KeyValue: "m1", GenMs: 53}, GenStampNoRow, 0, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			st, db := newTestStore(t)
+			if c.existing != nil {
+				c.existing.ProjectRoot = t.TempDir()
+				if _, err := st.Ingest(ctx, nil, []models.TokenEvent{*c.existing}, IngestOptions{}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := st.StampTranscriptGenTiming(ctx, c.stamp)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != c.want {
+				t.Fatalf("outcome %d, want %d", got, c.want)
+			}
+			if c.existing == nil {
+				var n int
+				if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM token_usage`).Scan(&n); err != nil || n != 0 {
+					t.Fatalf("stamp inserted %d rows (%v), want 0", n, err)
+				}
+				return
+			}
+			ms, basis, _ := read(t, db, "m1")
+			if c.wantMs == 0 {
+				if ms != 0 {
+					t.Errorf("gen_ms = %d, want untouched NULL", ms)
+				}
+				return
+			}
+			if ms != c.wantMs || basis != c.wantBasis {
+				t.Errorf("gen_ms=%d basis=%q, want %d %q", ms, basis, c.wantMs, c.wantBasis)
+			}
+		})
+	}
+
+	t.Run("redelivered stamp is a no-op", func(t *testing.T) {
+		st, db := newTestStore(t)
+		if _, err := st.Ingest(ctx, nil, []models.TokenEvent{row(t.TempDir(), "m1", 0, "", 0)}, IngestOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		for i, want := range []GenStampOutcome{GenStampApplied, GenStampKept} {
+			got, err := st.StampTranscriptGenTiming(ctx, stamp("m1", 53+int64(i)))
+			if err != nil || got != want {
+				t.Fatalf("delivery %d: %d %v, want %d", i, got, err, want)
+			}
+		}
+		if ms, basis, v := read(t, db, "m1"); ms != 53 || basis != models.GenBasisOTel || v != models.GenTimingVOTel {
+			t.Errorf("after redelivery gen_ms=%d basis=%q v=%d, want 53 otel %d", ms, basis, v, models.GenTimingVOTel)
+		}
+	})
+
+	// Native arriving AFTER the otel stamp still wins: both the transcript
+	// re-insert (upsert) and an adapter's stamp-only re-emission replace it.
+	for _, viaStampOnly := range []bool{false, true} {
+		name := "later native insert replaces otel"
+		if viaStampOnly {
+			name = "later native stamp-only replaces otel"
+		}
+		t.Run(name, func(t *testing.T) {
+			st, db := newTestStore(t)
+			root := t.TempDir()
+			if _, err := st.Ingest(ctx, nil, []models.TokenEvent{row(root, "m1", 0, "", 0)}, IngestOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			if got, err := st.StampTranscriptGenTiming(ctx, stamp("m1", 53)); err != nil || got != GenStampApplied {
+				t.Fatalf("stamp: %d %v", got, err)
+			}
+			native := row(root, "m1", 77, models.GenBasisNative, 1)
+			native.GenStampOnly = viaStampOnly
+			if _, err := st.Ingest(ctx, nil, []models.TokenEvent{native}, IngestOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			if ms, basis, v := read(t, db, "m1"); ms != 77 || basis != models.GenBasisNative || v != 1 {
+				t.Errorf("gen_ms=%d basis=%q v=%d, want native 77 v1", ms, basis, v)
+			}
+		})
+	}
+
+	t.Run("unknown key or incomplete stamp is an error", func(t *testing.T) {
+		st, _ := newTestStore(t)
+		for _, bad := range []TranscriptGenStamp{
+			{Tool: models.ToolCodeBuddy, SessionID: "s", Key: "source_file; DROP TABLE token_usage", KeyValue: "m", GenMs: 1},
+			{Tool: models.ToolCodeBuddy, SessionID: "s", Key: TranscriptKeyMessageID, KeyValue: "m", GenMs: 0},
+			{Tool: models.ToolCodeBuddy, SessionID: "", Key: TranscriptKeyMessageID, KeyValue: "m", GenMs: 1},
+		} {
+			if _, err := st.StampTranscriptGenTiming(ctx, bad); err == nil {
+				t.Errorf("stamp %+v accepted", bad)
+			}
+		}
+	})
+}
+
+func genTestPtr[T any](v T) *T { return &v }

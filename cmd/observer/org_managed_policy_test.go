@@ -347,8 +347,12 @@ func TestManagedPolicyFamiliesToWrite(t *testing.T) {
 			name:    "accepted, managed, authority governs a family: writes",
 			outcome: grantOutcome{Accepted: true, Managed: true, Authority: []string{govern.AuthorityDashboardVisibility}},
 			// node.features rides every managed grant that governs anything
-			// (review C156-04): feature locks must not need a hand edit.
-			want: []string{"node.features", "node.governance"},
+			// (review C156-04): feature locks must not need a hand edit. The
+			// two module floor families ride it too (roadmap F0-10), in a
+			// build that links their compilers (the filter below drops an
+			// unlinked one); they are written to the module keys
+			// (org_managed_hold_test.go).
+			want: []string{"node.features", "node.governance", "security.scanning", "terminals.isolation"},
 		},
 		{
 			name: "accepted, managed, mixed authority including a retired token plus a real one",
@@ -356,16 +360,20 @@ func TestManagedPolicyFamiliesToWrite(t *testing.T) {
 				Accepted: true, Managed: true,
 				Authority: []string{govern.AuthorityCaptureRaise, govern.AuthorityEnforceAdmission},
 			},
-			want: []string{"admission.input", "node.features"},
+			want: []string{"admission.input", "node.features", "security.scanning", "terminals.isolation"},
 		},
 		{
 			name:    "accepted, managed, the default managed grant governs node.features via feature.lock",
 			outcome: grantOutcome{Accepted: true, Managed: true, Authority: govern.ManagedEnrolmentAuthoritySet()},
-			want:    []string{"node.features", "node.governance", "tools.mcp_access"},
+			want:    []string{"node.features", "node.governance", "security.scanning", "terminals.isolation", "tools.mcp_access"},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			// A build that omits a linked-only family's compiler (the
+			// sbo_omit_org_agentaccess image for tools.mcp_access) does not
+			// offer it.
+			tc.want = linkedManagedFamilies(tc.want)
 			if got := managedPolicyFamiliesToWrite(tc.outcome); !equalStrSlices(got, tc.want) {
 				t.Fatalf("managedPolicyFamiliesToWrite(%+v) = %v, want %v", tc.outcome, got, tc.want)
 			}

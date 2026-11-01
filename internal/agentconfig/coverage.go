@@ -28,9 +28,11 @@ const (
 )
 
 // pendingTools are registry tools with neither a generated nor a
-// doc-authored catalogue yet (tool -> reason). Empty since phase P2: a new
-// registry row without a catalogue must be listed here with its reason
-// (TestEveryToolHasRowsOrHonestZero).
+// doc-authored catalogue yet (tool -> reason). Empty since the surface-gap
+// lane w4-catalog authored the 2026-10-21 wave: a new registry row without a
+// catalogue must be listed here with its reason
+// (TestEveryToolHasRowsOrHonestZero), naming the settings file a later lane
+// would author (never a secret-bearing one).
 var pendingTools = map[string]string{}
 
 // noSurfaceTools have nothing local to edit (audit section 1).

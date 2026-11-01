@@ -69,8 +69,9 @@ func TestAutoRegisterInstalledTool(t *testing.T) {
 	requireActiveAdapters(t, "droid")
 	crossmount.StageForeignLayoutForTest(t, crossmount.ForeignLayoutForTest{Root: t.TempDir()})
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	// Every profile root and tool home stays in the throwaway home
+	// (surface-gap S-10, FU-4).
+	pinToolHomesAt(t, home)
 
 	var stdout, stderr bytes.Buffer
 	autoRegisterInstalledTool(&stdout, &stderr, "", true, "droid")

@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { SANDBOX_SETTINGS_CARD } from "@/lib/components.gen";
 import { useLocation, useNavigate } from "react-router-dom";
 import { LayoutGrid, SlidersHorizontal, Swords, type LucideIcon } from "lucide-react";
 import { useUrlTab } from "@/lib/useUrlTab";
@@ -12,26 +13,20 @@ import {
 import {
   ChartShell,
   EmptyState,
-  ErrorState,
   InlineLoading,
   PageHeader,
   Pill,
-  ComboChip,
-  type ComboOption,
-  SinglePicker,
   SuccessCheck,
   TabPanel,
   TabStrip,
   panelDomId,
   tabDomId,
   type TabDef,
-  ConfirmButton,
   Table,
   Tooltip,
 } from "@/components/primitives";
 import type { ColumnDef } from "@tanstack/react-table";
 import { DataTable } from "@/components/DataTable";
-import { Summary } from "@/components/Summary";
 import { navIcon } from "@/lib/nav";
 import { useApi } from "@/lib/useApi";
 import { fetchJSON } from "@/lib/api";
@@ -40,7 +35,6 @@ import { fmtClock, fmtRelative, fmtShortId } from "@/lib/format";
 import type {
   ProjectRow,
   ProjectsResponse,
-  SandboxAvailability,
 } from "@/lib/types";
 import { markRestartPending } from "@/lib/restartPending";
 import { unwatchedAllowedToolsMsg } from "@/lib/toolInstall";
@@ -52,6 +46,8 @@ import {
 import { WorkspaceGrid } from "@/components/workspace/WorkspaceGrid";
 import { ArenaTab } from "@/components/arena/ArenaTab";
 import { RemoteSystemsCard } from "@/components/RemoteSystemsCard";
+import { FolderRootPicker, FolderSuggestions, rootsWithAdded, sortSuggestions } from "@/components/FolderSelection";
+import { useHostOS } from "@/lib/keyPlatform";
 
 async function postConfirmJSON<T>(
   path: string,
@@ -127,16 +123,6 @@ type RunRow = {
   command_count: number;
 };
 
-// shortenPath renders an absolute root as ".../parent/leaf" for compact display
-// (the full path rides along as a title tooltip). Mirrors the NewTerminalDialog
-// project-picker convention so the two surfaces read the same.
-function shortenPath(p: string): string {
-  if (!p) return "-";
-  const parts = p.split("/").filter(Boolean);
-  if (parts.length <= 2) return p;
-  return ".../" + parts.slice(-2).join("/");
-}
-
 // rootSeenHint renders a compact "N sessions · last seen …" suffix for a
 // suggested project root. Purely cosmetic — the value is a hint, never a gate.
 function rootSeenHint(p: ProjectRow): string {
@@ -174,51 +160,6 @@ const TERMINALS_TAB_DEFS: TabDef<TerminalsTab>[] = TERMINALS_TABS.ids.map((id) =
   label: TERMINALS_TABS.labels[id],
   icon: TERMINALS_TAB_ICONS[id],
 }));
-
-// Sandbox home / network modes: the mode name on the first line (what the
-// config stores), the long explanation as the row's second line instead of
-// one native <option> that overflowed narrow screens.
-const SANDBOX_HOME_OPTIONS: ComboOption[] = [
-  {
-    value: "tmpfs",
-    label: <span><span className="font-mono">tmpfs</span> <span className="text-fg-3">(recommended)</span></span>,
-    detail: "Hide the real home.",
-    searchable: "tmpfs hide the real home recommended",
-  },
-  {
-    value: "readonly",
-    label: <span className="font-mono">readonly</span>,
-    detail: "Expose the real home read-only.",
-    searchable: "readonly expose the real home read-only",
-  },
-];
-
-const SANDBOX_EGRESS_OPTIONS: ComboOption[] = [
-  {
-    value: "internet",
-    label: <span><span className="font-mono">internet</span> <span className="text-fg-3">(recommended)</span></span>,
-    detail: "Own network; model API via the proxy, internet via the egress gateway.",
-    searchable: "internet own network model api proxy egress gateway recommended",
-  },
-  {
-    value: "proxy_only",
-    label: <span className="font-mono">proxy_only</span>,
-    detail: "Own network; only the model API proxy.",
-    searchable: "proxy_only own network only the model api proxy",
-  },
-  {
-    value: "none",
-    label: <span className="font-mono">none</span>,
-    detail: "Own network; nothing reachable.",
-    searchable: "none own network nothing reachable",
-  },
-  {
-    value: "host",
-    label: <span className="font-mono">host</span>,
-    detail: "Share the host network (the dashboard stays reachable from inside).",
-    searchable: "host share the host network dashboard reachable",
-  },
-];
 
 const TERMINALS_TAB_SUBS: Record<TerminalsTab, string> = {
   workspace: "Your terminal workspace - run and arrange multiple live terminals on one grid.",
@@ -335,16 +276,13 @@ export function TerminalsPage() {
     };
   }, []);
 
-  // Suggestions = observed project roots, POSIX-absolute ones first (a foreign/
-  // Windows root will be rejected server-side, so it's de-prioritized cosmetically
-  // but still offered). Already-added roots stay in the list, shown as added.
-  const rootSuggestions = useMemo(() => {
-    return [...projects].sort((a, b) => {
-      const af = a.root_path.startsWith("/") ? 0 : 1;
-      const bf = b.root_path.startsWith("/") ? 0 : 1;
-      return af - bf;
-    });
-  }, [projects]);
+  // Suggestions = observed project roots, the node's native ones first (a
+  // root this node's OS does not use will be rejected server-side, so it is
+  // de-prioritized cosmetically but still offered). The OS is the daemon's
+  // own (/api/status.host_os), never a guess (RERUN2 D5c). Already-added
+  // roots stay in the list, shown as added.
+  const hostOS = useHostOS();
+  const rootSuggestions = useMemo(() => sortSuggestions(projects, hostOS), [projects, hostOS]);
 
   const statusList = useMemo(() => Object.values(statuses), [statuses]);
   const liveStatuses = statusList.filter((s) => s.status !== "exited");
@@ -360,7 +298,7 @@ export function TerminalsPage() {
     const r = raw.trim();
     if (!r) return;
     setSaved(false);
-    setRoots((cur) => (cur.includes(r) ? cur : [...cur, r]));
+    setRoots((cur) => rootsWithAdded(cur, r));
   }
 
   function addRoot() {
@@ -713,18 +651,14 @@ export function TerminalsPage() {
               <div className="flex items-center gap-2 pt-1">
                 {/* D-571: pick an observed project (or type another absolute
                     path); "add" puts the pick on the list. */}
-                <SinglePicker
-                  className="flex-1"
-                  options={rootSuggestions
-                    .filter((proj) => !roots.includes(proj.root_path))
-                    .map((proj) => ({ id: proj.root_path, label: shortenPath(proj.root_path), sublabel: rootSeenHint(proj) }))}
+                <FolderRootPicker
+                  suggestions={rootSuggestions}
+                  roots={roots}
                   value={newRoot}
                   disabled={!p?.config_writable}
                   onChange={setNewRoot}
-                  allowFree
-                  freeLabel="Use path"
-                  placeholder="Pick a project, or type /absolute/path"
-                  ariaLabel="Project root to allow"
+                  hostOS={hostOS}
+                  seenHint={rootSeenHint}
                 />
                 <button
                   type="button"
@@ -737,64 +671,18 @@ export function TerminalsPage() {
               </div>
             </div>
 
-            {/* Add-able suggestions from observed projects (GET /api/projects).
-                These are pure SUGGESTIONS — the operator allow-lists a root by
-                adding it and saving; the server re-validates every entry on save
-                and rejects stale/foreign/symlink-mismatched ones with a reason
-                (surfaced inline near Save below). */}
-            {rootSuggestions.length > 0 && (
-              <div className="mt-3 rounded-2 border border-line-2 bg-bg-3 p-2">
-                <div className="mb-1.5 text-[11px] text-fg-3">
-                  Suggested from observed projects - add one to allow-list it. Roots are validated on save; a
-                  foreign (Windows/UNC), stale, or symlink-mismatched root is rejected there, not here.
-                </div>
-                <div className="max-h-[220px] space-y-1 overflow-auto">
-                  {rootSuggestions.map((proj) => {
-                    const added = roots.includes(proj.root_path);
-                    const foreign = !proj.root_path.startsWith("/");
-                    return (
-                      <div key={proj.root_path} className="flex items-center gap-2">
-                        <code
-                          title={proj.root_path}
-                          className={`min-w-0 flex-1 truncate rounded-2 border border-line-2 bg-bg-0 px-2 py-1 font-mono text-[11px] ${
-                            foreign ? "text-fg-3" : "text-fg-2"
-                          }`}
-                        >
-                          {shortenPath(proj.root_path)}
-                        </code>
-                        <span className="hidden whitespace-nowrap text-[10px] text-fg-3 sm:inline">
-                          {rootSeenHint(proj)}
-                        </span>
-                        {/* The wrapper carries the tooltip so it still shows
-                            while the button is disabled ("added"). */}
-                        <Tooltip
-                          content={
-                            foreign
-                              ? `${proj.root_path} - looks like a foreign path; it will likely be rejected on save`
-                              : proj.root_path
-                          }
-                        >
-                          <span className="inline-flex shrink-0">
-                            <button
-                              type="button"
-                              disabled={!p?.config_writable || added}
-                              onClick={() => addRootValue(proj.root_path)}
-                              className={`shrink-0 rounded-2 border px-2 py-1 text-caption disabled:opacity-40 ${
-                                added
-                                  ? "border-line-2 bg-bg-2 text-fg-3"
-                                  : "border-accent/50 bg-accent/15 text-accent hover:bg-accent/25"
-                              }`}
-                            >
-                              {added ? "added" : "add"}
-                            </button>
-                          </span>
-                        </Tooltip>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
+            {/* Add-able suggestions from observed projects (GET /api/projects):
+                pure SUGGESTIONS, each added only by its own click
+                (components/FolderSelection.tsx, OS-aware from the node's
+                reported OS). The server re-validates every entry on save. */}
+            <FolderSuggestions
+              suggestions={rootSuggestions}
+              roots={roots}
+              hostOS={hostOS}
+              writable={!!p?.config_writable}
+              onAdd={addRootValue}
+              seenHint={rootSeenHint}
+            />
           </div>
 
           {err && (
@@ -823,7 +711,13 @@ export function TerminalsPage() {
           New Terminal System picker links to (/terminals#remote-systems). */}
       <RemoteSystemsCard />
 
-      <SandboxSettingsCard />
+      {/* The Sandboxes and VMs module's Card, a compgen feature row: null in a
+          build without the module, so the page renders no sandbox element. */}
+      {SANDBOX_SETTINGS_CARD && (
+        <Suspense fallback={null}>
+          <SANDBOX_SETTINGS_CARD />
+        </Suspense>
+      )}
 
       {/* Terminal limits — the two runtime bounds live-applied to the PTY
           manager (POST /api/terminal/limits). Unlike the launch policy above,
@@ -1037,537 +931,3 @@ const LIVE_STATUS_COLUMNS: ColumnDef<AgentStatusInfo, unknown>[] = [
     cell: ({ row }) => `${Math.round(row.original.age_seconds)}s`,
   },
 ];
-
-type TerminalSandboxConfig = {
-  enabled: boolean;
-  backend: string;
-  home_mode: "tmpfs" | "readonly";
-  default_on: boolean;
-  allow_remote_clone: boolean;
-  remote_allowed_hosts: string[];
-  allow_worktree_source: boolean;
-  workspaces_dir: string;
-  workspace_retention_days: number;
-  mask_paths: string[];
-  extra_ro_binds: string[];
-  extra_rw_binds: string[];
-  prep_timeout_seconds: number;
-  // SR27-SBX-1 network tier + executed-state protection. Optional so an
-  // older daemon (which omits them) still round-trips; the server keeps a
-  // saved value when a save omits the field.
-  egress?: SandboxEgress;
-  allow_tool_config_writes?: boolean;
-  // Private-destination allow-list for the internet tier's egress gateway
-  // (SR27-SBX-2). Optional for the same round-trip reason.
-  egress_allow_cidrs?: string[];
-};
-
-type SandboxEgress = "internet" | "proxy_only" | "none" | "host";
-
-type TerminalSandboxConfigResponse = {
-  // The etag of the config.toml this card was read from; the save sends it
-  // back as base_etag (T-639).
-  config_etag?: string;
-  confirm_token: ConfirmToken;
-  config_writable: boolean;
-  restart_required_on_save: boolean;
-  sandbox: TerminalSandboxConfig;
-};
-
-type ConfirmToken = string;
-
-function splitConfigList(value: string): string[] {
-  // Preserve a trailing empty row while the operator types; the server trims
-  // and de-duplicates on save. Filtering here would eat each newly-entered
-  // newline and make multi-line editing impossible in a controlled textarea.
-  return value.replace(/\r/g, "").split("\n");
-}
-
-// sandboxConfigEqual compares a draft against the last-loaded server config.
-// The block is a flat record of scalars plus four string lists, so a
-// field-order-independent JSON compare over a normalized shape is enough -
-// and it is what lets the card show an "Unsaved changes" marker.
-//
-// Why that marker is load-bearing here rather than a nicety: this card has
-// TWO checkbox-shaped things on it, and only one of them saves. Toggling
-// "Enable sandbox support" edits a local draft and nothing else; the write
-// happens on the separate "Save sandbox configuration" button further down,
-// past a collapsed <details> block. An operator who flipped the switch and
-// walked away had, from the UI's point of view, done nothing at all - which
-// is exactly how "I enabled the sandbox and it is still greyed out" happens.
-function sandboxConfigEqual(
-  a: TerminalSandboxConfig | null,
-  b: TerminalSandboxConfig | null | undefined,
-): boolean {
-  if (!a || !b) return a === b;
-  const norm = (c: TerminalSandboxConfig) => ({
-    ...c,
-    // The list editors keep a trailing empty row while the operator types
-    // (splitConfigList); the server trims on save. Ignore that difference so
-    // an untouched textarea never reads as "unsaved".
-    remote_allowed_hosts: c.remote_allowed_hosts.filter((s) => s.trim() !== ""),
-    mask_paths: c.mask_paths.filter((s) => s.trim() !== ""),
-    extra_ro_binds: c.extra_ro_binds.filter((s) => s.trim() !== ""),
-    extra_rw_binds: c.extra_rw_binds.filter((s) => s.trim() !== ""),
-    egress_allow_cidrs: (c.egress_allow_cidrs ?? []).filter((s) => s.trim() !== ""),
-  });
-  return JSON.stringify(norm(a)) === JSON.stringify(norm(b));
-}
-
-// LOCAL_ONLY_HINT recognizes the CapabilityLocal refusal
-// (internal/intelligence/dashboard/remote.go: "forbidden: route is reachable
-// only from the local dashboard", audited as local_route_refused). The
-// sandbox config route is owner-loopback-only, so a dashboard served over the
-// tailnet 403s on the GET - and the card, which keyed its whole body off
-// `draft`, used to sit on "Loading sandbox configuration…" forever with every
-// control disabled and nothing saying why.
-const LOCAL_ONLY_HINT = /local dashboard|local_route_refused/i;
-
-function isLocalRouteRefusal(err: Error | null): boolean {
-  if (!err) return false;
-  return LOCAL_ONLY_HINT.test(err.message) || / 403 /.test(err.message);
-}
-
-// localDashboardURL is the loopback address of THIS daemon's dashboard. The
-// remote view is the same daemon on the same port, reached over the tailnet,
-// so the port in the current location is the right one to hand back.
-function localDashboardURL(): string {
-  const port =
-    typeof window !== "undefined" && window.location.port
-      ? window.location.port
-      : "8081";
-  return `http://127.0.0.1:${port}`;
-}
-
-// SandboxSettingsCard is the missing dashboard editor for the complete
-// [terminal.sandbox] block. The live probe is intentionally shown alongside
-// the saved config, so the UI never implies that a newly-enabled sandbox is
-// already protecting launches: the master switch binds on the next launch
-// (the daemon re-resolves the seam when config.toml changes), while moving
-// the workspaces directory still needs a restart.
-function SandboxSettingsCard() {
-  const settings = useApi<TerminalSandboxConfigResponse>(
-    "/api/terminal/sandbox/config",
-  );
-  const probe = useApi<SandboxAvailability>("/api/terminal/sandbox");
-  const [draft, setDraft] = useState<TerminalSandboxConfig | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
-
-  useEffect(() => {
-    if (settings.data?.sandbox) setDraft(settings.data.sandbox);
-  }, [settings.data]);
-
-  const localOnly = isLocalRouteRefusal(settings.error);
-  const dirty = !!draft && !sandboxConfigEqual(draft, settings.data?.sandbox);
-  const expandsAuthority =
-    !!draft &&
-    (draft.allow_remote_clone ||
-      draft.extra_rw_binds.some((p) => p.trim() !== "") ||
-      (draft.egress_allow_cidrs ?? []).some((p) => p.trim() !== ""));
-
-  function update<K extends keyof TerminalSandboxConfig>(
-    key: K,
-    value: TerminalSandboxConfig[K],
-  ) {
-    setSaved(false);
-    setDraft((cur) => (cur ? { ...cur, [key]: value } : cur));
-  }
-
-  async function saveSandbox() {
-    if (!draft || !settings.data?.confirm_token) {
-      setErr("Sandbox settings are not ready - reload the page.");
-      return;
-    }
-    // An authority-expanding config is confirmed in place by the Save
-    // ConfirmButton (requireConfirm={expandsAuthority}), never window.confirm.
-    setBusy(true);
-    setErr(null);
-    setSaved(false);
-    try {
-      const res = await fetchJSON<{ restart_required: boolean }>(
-        "/api/terminal/sandbox/config",
-        { base_etag: settings.data.config_etag ?? "" },
-        {
-          method: "PUT",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Observer-Confirm": settings.data.confirm_token,
-          },
-          body: JSON.stringify(draft),
-        },
-      );
-      if (res.restart_required) markRestartPending("terminal-sandbox");
-      setSaved(true);
-      settings.reload();
-      // Re-probe: the daemon re-resolves its sandbox seam when config.toml
-      // changes, so the live verdict moves on THIS save, not on a restart.
-      // Without this the card would keep showing the pre-save verdict until
-      // the page was reloaded, which is how "I enabled it and nothing
-      // happened" reads from the operator's side.
-      probe.reload();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const writable = !!settings.data?.config_writable;
-  const live = probe.data;
-
-  return (
-    <ChartShell
-      title="Sandbox isolation"
-      sub="Run supported agents inside bubblewrap with an isolated home and an explicit workspace. The enable switch binds on the next launch; moving the workspaces directory needs a daemon restart."
-      right={
-        <div className="flex items-center gap-2">
-          {dirty && <Pill variant="warn">unsaved changes</Pill>}
-          <Pill variant={live?.available ? "success" : "neutral"}>
-            {live?.available ? "available now" : "not active"}
-          </Pill>
-        </div>
-      }
-    >
-      <div className="space-y-4 p-1 text-[12px]">
-        {localOnly && (
-          <div className="rounded-2 border border-warn/40 bg-warn/10 px-3 py-2 text-warn">
-            This editor is local-only. Open the dashboard at{" "}
-            <code className="text-fg-1">{localDashboardURL()}</code> to change it.
-            <span className="ml-1 text-fg-3">
-              The sandbox settings route is owner-loopback-only, so it is refused
-              over a remote or tailnet view. The live probe below still reports
-              honestly.
-            </span>
-          </div>
-        )}
-        {!writable && settings.data && (
-          <div className="rounded-2 border border-line-2 bg-bg-2 px-3 py-2 text-fg-3">
-            This dashboard has no writable config path. Edit{" "}
-            <code className="text-fg-2">[terminal.sandbox]</code> in config.toml instead.
-          </div>
-        )}
-
-        <div
-          className={`rounded-2 border px-3 py-2 ${
-            live?.available
-              ? "border-ok/40 bg-ok/10 text-ok"
-              : "border-line-2 bg-bg-2 text-fg-3"
-          }`}
-        >
-          <span className="font-medium">Running daemon: </span>
-          {live?.available
-            ? `${live.backend ?? "bwrap"} ${live.backend_version ?? ""} available; home is ${live.home_mode ?? "isolated"}; network is ${live.egress ?? "internet"}.`
-            : live?.reason ?? "Sandbox probe has not returned yet."}
-          {/* Three different "not available" stories, three different next
-              steps. A saved enable switch rebinds the daemon's sandbox seam
-              on the next launch, so the old blanket "restart the daemon"
-              line was wrong for the most common case. */}
-          {live && !live.available && dirty && draft?.enabled && (
-            <span className="ml-1 text-warn">
-              Save below to apply the enable switch; it takes effect on the next
-              launch.
-            </span>
-          )}
-          {live?.verdict === "runtime_init_failed" && (
-            <span className="ml-1 text-warn">
-              The sandbox is enabled but the daemon could not start it - fix the
-              setting named above and save again.
-            </span>
-          )}
-        </div>
-
-        {!draft ? (
-          // Never an eternal "Loading": a refused local-only route and a
-          // genuinely failed load are different facts, and neither is
-          // "still fetching".
-          localOnly ? null : settings.error ? (
-            <ErrorState
-              className="py-4"
-              title="Could not load the sandbox configuration"
-              error={settings.error}
-              onRetry={settings.reload}
-            />
-          ) : (
-            <InlineLoading label="Loading sandbox configuration" />
-          )
-        ) : (
-          <>
-            <div className="grid gap-3 md:grid-cols-2">
-              <label className="flex items-start gap-2 rounded-2 border border-line-2 bg-bg-3 p-3">
-                <input
-                  type="checkbox"
-                  className="mt-0.5"
-                  checked={draft.enabled}
-                  disabled={!writable}
-                  onChange={(e) => update("enabled", e.target.checked)}
-                />
-                <span>
-                  <span className="font-medium text-fg-1">Enable sandbox support</span>
-                  <span className="block text-[11px] text-fg-3">
-                    Master switch. Supported launches may use the boundary after restart.
-                  </span>
-                </span>
-              </label>
-              <label className="flex items-start gap-2 rounded-2 border border-line-2 bg-bg-3 p-3">
-                <input
-                  type="checkbox"
-                  className="mt-0.5"
-                  checked={draft.default_on}
-                  disabled={!writable}
-                  onChange={(e) => update("default_on", e.target.checked)}
-                />
-                <span>
-                  <span className="font-medium text-fg-1">Default sandbox on</span>
-                  <span className="block text-[11px] text-fg-3">
-                    Pre-check “Run in sandbox” for each new-terminal launch; it remains overridable.
-                  </span>
-                </span>
-              </label>
-            </div>
-
-            <div className="grid gap-3 md:grid-cols-2">
-              <div className="space-y-1">
-                <span id="sandbox-home-label" className="block font-medium text-fg-1">Home isolation</span>
-                <ComboChip
-                  label="Home isolation"
-                  labelledBy="sandbox-home-label"
-                  hideTriggerLabel
-                  fullWidth
-                  value={draft.home_mode}
-                  disabled={!writable}
-                  onChange={(v) => update("home_mode", v as "tmpfs" | "readonly")}
-                  options={SANDBOX_HOME_OPTIONS}
-                  buttonValueRender={(o) => <span className="font-mono">{o?.value ?? draft.home_mode}</span>}
-                />
-              </div>
-              <label className="space-y-1">
-                <span className="font-medium text-fg-1">Backend</span>
-                <input
-                  value={draft.backend}
-                  readOnly
-                  className="w-full rounded-2 border border-line-2 bg-bg-2 px-2 py-1 font-mono text-fg-3"
-                />
-                <span className="block text-[11px] text-fg-3">bwrap is the only v1 backend.</span>
-              </label>
-            </div>
-
-            <div className="grid gap-3 md:grid-cols-2">
-              <div className="space-y-1">
-                <span id="sandbox-network-label" className="block font-medium text-fg-1">Network</span>
-                <ComboChip
-                  label="Network"
-                  labelledBy="sandbox-network-label"
-                  hideTriggerLabel
-                  fullWidth
-                  value={draft.egress ?? "internet"}
-                  disabled={!writable}
-                  onChange={(v) => update("egress", v as SandboxEgress)}
-                  options={SANDBOX_EGRESS_OPTIONS}
-                  buttonValueRender={(o) => <span className="font-mono">{o?.value ?? draft.egress ?? "internet"}</span>}
-                />
-                <span className="block text-[11px] text-fg-3">
-                  Every mode except host keeps a sandboxed agent away from this dashboard and other local services. The internet mode also refuses private addresses (your LAN, the Windows host on WSL2, Docker containers) unless you list them below.
-                </span>
-              </div>
-              <label className="flex items-start gap-2 rounded-2 border border-warn/30 bg-warn/5 p-3">
-                <input
-                  type="checkbox"
-                  className="mt-0.5"
-                  checked={draft.allow_tool_config_writes ?? false}
-                  disabled={!writable}
-                  onChange={(e) => update("allow_tool_config_writes", e.target.checked)}
-                />
-                <span>
-                  <span className="font-medium text-fg-1">Allow tool config writes</span>
-                  <span className="block text-[11px] text-fg-3">
-                    Off: the daemon config, guard policy, tool hook and MCP config, and the workspace git config and hooks are read-only inside the sandbox, so an agent cannot plant a command a later unsandboxed session runs.
-                  </span>
-                </span>
-              </label>
-            </div>
-
-            <SandboxListField
-              label="Allowed private networks (internet mode)"
-              hint="Authority-expanding: CIDRs inside 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 or fc00::/7 the egress gateway may reach, one per line (for example a registry at 10.20.0.0/16). Loopback, link-local and this machine's own addresses can never be listed."
-              value={draft.egress_allow_cidrs ?? []}
-              disabled={!writable}
-              warn
-              onChange={(v) => update("egress_allow_cidrs", v)}
-            />
-
-            <div className="grid gap-3 md:grid-cols-2">
-              <label className="flex items-start gap-2 rounded-2 border border-warn/30 bg-warn/5 p-3">
-                <input
-                  type="checkbox"
-                  className="mt-0.5"
-                  checked={draft.allow_remote_clone}
-                  disabled={!writable}
-                  onChange={(e) => update("allow_remote_clone", e.target.checked)}
-                />
-                <span>
-                  <span className="font-medium text-fg-1">Allow remote clone</span>
-                  <span className="block text-[11px] text-fg-3">
-                    The daemon may run git clone over the network with your ambient credentials.
-                  </span>
-                </span>
-              </label>
-              <label className="flex items-start gap-2 rounded-2 border border-warn/30 bg-warn/5 p-3">
-                <input
-                  type="checkbox"
-                  className="mt-0.5"
-                  checked={draft.allow_worktree_source}
-                  disabled={!writable}
-                  onChange={(e) => update("allow_worktree_source", e.target.checked)}
-                />
-                <span>
-                  <span className="font-medium text-fg-1">Allow git worktree source</span>
-                  <span className="block text-[11px] text-fg-3">
-                    Requires the main repo&apos;s .git directory read-write inside the boundary.
-                  </span>
-                </span>
-              </label>
-            </div>
-
-            <SandboxListField
-              label="Remote allowed hosts"
-              hint="One hostname per line. Empty means any host once remote clone is enabled."
-              value={draft.remote_allowed_hosts}
-              disabled={!writable}
-              onChange={(v) => update("remote_allowed_hosts", v)}
-            />
-
-            <details className="rounded-2 border border-line-2 bg-bg-3 p-3">
-              <Summary className="font-medium text-fg-1">
-                Workspace lifecycle and advanced binds
-              </Summary>
-              <div className="mt-3 space-y-3">
-                <label className="block space-y-1">
-                  <span className="font-medium text-fg-2">Workspaces directory</span>
-                  <input
-                    value={draft.workspaces_dir}
-                    disabled={!writable}
-                    placeholder="default: &lt;observer dir&gt;/workspaces"
-                    onChange={(e) => update("workspaces_dir", e.target.value)}
-                    className="w-full rounded-2 border border-line-2 bg-bg-0 px-2 py-1 font-mono text-[11px] text-fg-1 disabled:opacity-50"
-                  />
-                  <span className="block text-[11px] text-fg-3">Must be an absolute path when set.</span>
-                </label>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="space-y-1">
-                    <span className="font-medium text-fg-2">Retention days</span>
-                    <input
-                      type="number"
-                      min={0}
-                      step={1}
-                      value={draft.workspace_retention_days}
-                      disabled={!writable}
-                      onChange={(e) => update("workspace_retention_days", Number(e.target.value))}
-                      className="w-full rounded-2 border border-line-2 bg-bg-0 px-2 py-1 text-fg-1 disabled:opacity-50"
-                    />
-                    <span className="block text-[11px] text-fg-3">0 keeps prepared workspaces forever.</span>
-                  </label>
-                  <label className="space-y-1">
-                    <span className="font-medium text-fg-2">Preparation timeout (seconds)</span>
-                    <input
-                      type="number"
-                      min={0}
-                      step={1}
-                      value={draft.prep_timeout_seconds}
-                      disabled={!writable}
-                      onChange={(e) => update("prep_timeout_seconds", Number(e.target.value))}
-                      className="w-full rounded-2 border border-line-2 bg-bg-0 px-2 py-1 text-fg-1 disabled:opacity-50"
-                    />
-                  </label>
-                </div>
-                <SandboxListField
-                  label="Mask paths"
-                  hint="Absolute host paths to hide with tmpfs, one per line."
-                  value={draft.mask_paths}
-                  disabled={!writable}
-                  onChange={(v) => update("mask_paths", v)}
-                />
-                <SandboxListField
-                  label="Extra read-only binds"
-                  hint="Absolute paths exposed read-only inside the sandbox."
-                  value={draft.extra_ro_binds}
-                  disabled={!writable}
-                  onChange={(v) => update("extra_ro_binds", v)}
-                />
-                <SandboxListField
-                  label="Extra read-write binds"
-                  hint="Authority-expanding: these host paths become writable inside the sandbox."
-                  value={draft.extra_rw_binds}
-                  disabled={!writable}
-                  warn
-                  onChange={(v) => update("extra_rw_binds", v)}
-                />
-              </div>
-            </details>
-
-            {err && (
-              <div className="rounded-2 border border-danger/40 bg-danger/10 px-3 py-2 text-danger">
-                {err}
-              </div>
-            )}
-            <div className="flex flex-wrap items-center gap-3 pt-1">
-              <ConfirmButton
-                variant="soft"
-                armedVariant="danger"
-                disabled={busy || !writable}
-                requireConfirm={expandsAuthority}
-                onConfirm={() => void saveSandbox()}
-                confirmLabel="Save anyway?"
-                armedNote="This configuration expands authority: remote clone lets the daemon make a network git request with your ambient credentials, and read-write binds expose host paths inside the sandbox."
-              >
-                {busy ? "saving…" : "Save sandbox configuration"}
-              </ConfirmButton>
-              {dirty && (
-                <span className="text-[11px] text-warn">
-                  Unsaved changes - nothing above is in effect until you save.
-                </span>
-              )}
-              {saved && !dirty && <SuccessCheck label="Saved" className="!text-[11px]" />}
-              <span className="text-[11px] text-fg-3">
-                A saved enable switch binds on the next launch; a changed workspaces
-                directory needs a daemon restart. Active terminals are never
-                retroactively sandboxed.
-              </span>
-            </div>
-          </>
-        )}
-      </div>
-    </ChartShell>
-  );
-}
-
-function SandboxListField({
-  label,
-  hint,
-  value,
-  disabled,
-  warn = false,
-  onChange,
-}: {
-  label: string;
-  hint: string;
-  value: string[];
-  disabled: boolean;
-  warn?: boolean;
-  onChange: (value: string[]) => void;
-}) {
-  return (
-    <label className="block space-y-1">
-      <span className={`font-medium ${warn ? "text-warn" : "text-fg-2"}`}>{label}</span>
-      <textarea
-        rows={Math.max(2, Math.min(5, value.length + 1))}
-        value={value.join("\n")}
-        disabled={disabled}
-        onChange={(e) => onChange(splitConfigList(e.target.value))}
-        className="w-full rounded-2 border border-line-2 bg-bg-0 px-2 py-1 font-mono text-[11px] text-fg-1 disabled:opacity-50"
-      />
-      <span className="block text-[11px] text-fg-3">{hint}</span>
-    </label>
-  );
-}

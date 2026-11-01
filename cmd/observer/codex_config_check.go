@@ -29,6 +29,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/marmutapp/superbased-observer/internal/proxyauth"
 	"github.com/marmutapp/superbased-observer/internal/proxyroute"
 )
 
@@ -479,7 +480,15 @@ func urlRoutesToProxy(got, proxyURL string) bool {
 	if !isLoopbackHost(gotU.Hostname()) || gotU.Port() != proxyU.Port() {
 		return false
 	}
-	p := strings.TrimRight(gotU.EscapedPath(), "/")
+	path := gotU.EscapedPath()
+	// The proxy client token form (OSH-R-009) is the same route: the proxy
+	// strips a /t/<token> prefix before routing (and refuses a wrong token,
+	// so accepting any well-formed one never proves a route that bypasses
+	// the proxy).
+	if tok, rest, found := proxyauth.SplitPath(path); found && proxyauth.ValidToken(tok) {
+		path = rest
+	}
+	p := strings.TrimRight(path, "/")
 	return p == "" || p == "/v1"
 }
 

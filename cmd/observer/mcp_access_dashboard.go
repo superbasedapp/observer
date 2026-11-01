@@ -15,6 +15,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/mcprelay/localpdp"
 	"github.com/marmutapp/superbased-observer/internal/mcprelay/record"
+	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/policystate"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -164,7 +165,8 @@ func buildMCPAccessView(ctx context.Context, cfg config.Config, database *sql.DB
 	v := mcpAccessView{Available: true, DaemonRelay: daemonRelay, CoverageRows: []mcpAccessCoverageRow{}, VServers: []mcpAccessVServer{}}
 	enr, eerr := st.LoadEnrolment(ctx)
 	if eerr == nil && enr != nil {
-		v.Enrolled, v.Managed = true, enr.IsManaged()
+		managed, _ := orgclient.NodeManagedFor(ctx, st, enr) // P-204: switched nodes too
+		v.Enrolled, v.Managed = true, managed
 	}
 	logger := slog.New(slog.DiscardHandler)
 	// A handle built for this read (never the daemon's live one:

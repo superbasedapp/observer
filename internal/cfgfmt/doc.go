@@ -19,7 +19,11 @@
 //   - Single-key edits: Set and Delete change only the bytes of the edited
 //     entry. Comments, key order, blank lines and formatting elsewhere in
 //     the file are kept. A new key is appended at the end of its parent
-//     table / object / mapping.
+//     table / object / mapping. In TOML, deleting the last child of an
+//     implicit table (one with no [header] of its own, only the
+//     super-table of [a.b.c] headers or dotted keys) also removes that
+//     table, because TOML cannot spell it empty; an explicit [header]
+//     is kept.
 //   - Self-verified: after every edit the engine re-decodes the result and
 //     compares it with the expected tree (the old tree with exactly that
 //     one change). A surgical edit that does not produce exactly the

@@ -5,9 +5,11 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -26,8 +28,52 @@ import (
 // answer. It replaces a fixed sleep: the two positive-signal cases usually
 // resolve in well under a second (PushIntervalSeconds=1), while the two
 // negative-result cases (never-enrolled; config URL with no persisted row)
-// only get a confident "nothing happened" by waiting out the full budget.
+// only get a confident "nothing happened" by waiting out a budget.
 const orgEmptyURLPollTimeout = 30 * time.Second
+
+// orgEmptyURLQuietWindow is the budget for a case that expects NO signal.
+// It starts only once the daemon is up (its proxy port accepts a
+// connection, which happens after the org client is constructed), and at
+// PushIntervalSeconds=1 it spans five push ticks, so a client that would
+// dial has dialled by then. It replaces waiting out the full 30s ceiling,
+// which made the config-URL-without-row case cost 30s in every tier.
+const orgEmptyURLQuietWindow = 5 * time.Second
+
+// waitForTCPListener reports whether something accepted on 127.0.0.1:port
+// before timeout. It is the quiet window's readiness anchor: the caller
+// fails the test when a build that has the proxy never listens, instead of
+// starting the window early (TESTSLOW 4); a build without the proxy falls
+// through to the signal wait.
+func waitForTCPListener(port int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			return true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
+}
+
+// TestWaitForTCPListenerReportsTimeout: the anchor says whether the port
+// opened, so a proxy that never listens is a failure, not an early start.
+func TestWaitForTCPListenerReportsTimeout(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	if !waitForTCPListener(port, 2*time.Second) {
+		t.Fatal("an open listener was reported as never listening")
+	}
+	_ = ln.Close()
+	if waitForTCPListener(port, 300*time.Millisecond) {
+		t.Fatal("a closed port was reported as listening")
+	}
+}
 
 // waitForOrgClientSignal polls getOutput and hits until either the
 // "org push disabled" startup notice appears in the captured output or the
@@ -73,8 +119,18 @@ type orgEmptyURLResult struct {
 // hit the server; waitForOrgClientSignal below polls for that hit (or the
 // disabled-notice) instead of sleeping a fixed duration, so this settles as
 // soon as the real signal appears rather than on a guessed clock time.
-func runOrgEmptyURLTestNode(t *testing.T, useConfigURL, seedRow bool) orgEmptyURLResult {
+//
+// expectSignal says whether the case resolves on a signal (the disabled
+// notice or a hit). A case that expects none waits for the daemon to be up
+// and then orgEmptyURLQuietWindow, instead of the full 30s ceiling.
+func runOrgEmptyURLTestNode(t *testing.T, useConfigURL, seedRow, expectSignal bool) orgEmptyURLResult {
 	t.Helper()
+	if testing.Short() {
+		// Full tier only: this drives a real `observer start`. The short
+		// tier keeps the predicate itself covered by the pure truth table
+		// TestOrgClientShouldStart.
+		t.Skip("drives a real observer start (full tier); TestOrgClientShouldStart covers the predicate")
+	}
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
 	t.Setenv("USERPROFILE", dir)
@@ -181,7 +237,19 @@ func runOrgEmptyURLTestNode(t *testing.T, useConfigURL, seedRow bool) orgEmptyUR
 	done := make(chan error, 1)
 	go func() { done <- startCmd.ExecuteContext(ctx) }()
 
-	waitForOrgClientSignal(out.String, &hits, orgEmptyURLPollTimeout)
+	if expectSignal {
+		waitForOrgClientSignal(out.String, &hits, orgEmptyURLPollTimeout)
+	} else {
+		if !waitForTCPListener(port, orgEmptyURLPollTimeout) && defaultActive("capture.proxy") {
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(10 * time.Second):
+			}
+			t.Fatalf("the daemon's proxy never listened on 127.0.0.1:%d within %s, so the quiet window has no anchor:\n%s", port, orgEmptyURLPollTimeout, out.String())
+		}
+		waitForOrgClientSignal(out.String, &hits, orgEmptyURLQuietWindow)
+	}
 
 	cancel()
 	select {
@@ -211,7 +279,7 @@ func runOrgEmptyURLTestNode(t *testing.T, useConfigURL, seedRow bool) orgEmptyUR
 // (no keychain probe, no HTTP, org_push_log stays empty).
 func TestStartupSkipsOrgClientWhenNeverEnrolled(t *testing.T) {
 	requireComponents(t, "org.client")
-	res := runOrgEmptyURLTestNode(t, false /* useConfigURL */, false /* seedRow */)
+	res := runOrgEmptyURLTestNode(t, false /* useConfigURL */, false /* seedRow */, true /* expectSignal */)
 
 	const wantLine = "org push disabled: [org_client].enabled = true but org_server_url is empty and no enrolment record was found (not enrolled)"
 	if !strings.Contains(res.output, wantLine) {
@@ -240,7 +308,7 @@ func TestStartupSkipsOrgClientWhenNeverEnrolled(t *testing.T) {
 // that row's URL) sees at least one hit within the poll window.
 func TestStartupUsesPersistedEnrolmentWhenConfigURLBlank(t *testing.T) {
 	requireComponents(t, "org.client")
-	res := runOrgEmptyURLTestNode(t, false /* useConfigURL */, true /* seedRow */)
+	res := runOrgEmptyURLTestNode(t, false /* useConfigURL */, true /* seedRow */, true /* expectSignal */)
 
 	if strings.Contains(res.output, "org push disabled") {
 		t.Errorf("output wrongly disabled org push for an enrolled node whose config org_server_url is blank:\n%s", res.output)
@@ -256,7 +324,7 @@ func TestStartupUsesPersistedEnrolmentWhenConfigURLBlank(t *testing.T) {
 // from before this fix — the org client starts and pushes normally.
 func TestStartupRunsNormallyWithConfigURLAndRow(t *testing.T) {
 	requireComponents(t, "org.client")
-	res := runOrgEmptyURLTestNode(t, true /* useConfigURL */, true /* seedRow */)
+	res := runOrgEmptyURLTestNode(t, true /* useConfigURL */, true /* seedRow */, true /* expectSignal */)
 
 	if strings.Contains(res.output, "org push disabled") {
 		t.Errorf("output wrongly disabled org push for a fully-configured enrolled node:\n%s", res.output)
@@ -286,7 +354,7 @@ func TestStartupRunsNormallyWithConfigURLAndRow(t *testing.T) {
 // to. That doc comment's row for this case is stale; see the fix alongside
 // this test.
 func TestStartupConstructsOrgClientWithConfigURLButNoRow(t *testing.T) {
-	res := runOrgEmptyURLTestNode(t, true /* useConfigURL */, false /* seedRow */)
+	res := runOrgEmptyURLTestNode(t, true /* useConfigURL */, false /* seedRow */, false /* expectSignal */)
 
 	if strings.Contains(res.output, "org push disabled") {
 		t.Errorf("output wrongly disabled org push for a config-URL-configured node (orgClientShouldStart must return true here):\n%s", res.output)

@@ -126,9 +126,21 @@ func TestHookBindingChecks_CodexTrust(t *testing.T) {
 	cfgPath, _ := toolGateTestConfig(t, "observe")
 	probeHookRegister(t, home, binary, cfgPath, "codex")
 	o := hookDoctorOptions{Binary: binary, ConfigPath: cfgPath}
+	// Registration records Codex's trust for Observer's own entries (live
+	// check 2026-10-20), so the freshly registered hook reads as trusted.
 	cs := hookBindingChecks(context.Background(), o, "codex", probeGateAll)
 	ck, ok := bindingCheckFor(cs, "codex", "UserPromptSubmit", integration.HookCapPromptGate)
-	if !ok || ck.Status != diag.StatusWarn || !strings.Contains(ck.Message, "trusted=no") {
+	if !ok || ck.Status != diag.StatusOK || !strings.Contains(ck.Message, "trusted=yes") {
+		t.Fatalf("registered codex prompt hook = %+v, want trusted by the registration", ck)
+	}
+	// Without the trust record (an older Observer's registration, or the
+	// user removed it) the hook reads as untrusted, with the remedy.
+	if err := os.WriteFile(filepath.Join(home, ".codex", "config.toml"), []byte("[features]\nhooks = true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cs = hookBindingChecks(context.Background(), o, "codex", probeGateAll)
+	ck, _ = bindingCheckFor(cs, "codex", "UserPromptSubmit", integration.HookCapPromptGate)
+	if ck.Status != diag.StatusWarn || !strings.Contains(ck.Message, "trusted=no") {
 		t.Fatalf("untrusted codex prompt hook = %+v", ck)
 	}
 	if !strings.Contains(strings.Join(ck.Details, " "), "/hooks") {

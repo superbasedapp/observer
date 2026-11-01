@@ -65,6 +65,56 @@ func IsMCPToolName(raw string) bool {
 	return ok
 }
 
+// mcpSinglePrefix is the one-underscore MCP tool-name form crush and Kiro
+// CLI V3 emit (`mcp_<server>_<tool>`). It is deliberately NOT exported: it
+// is a vendor alias canonicalized at the guard boundary, not a namespace
+// the dashboard parses.
+const mcpSinglePrefix = "mcp_"
+
+// MCPNameFromSingleUnderscore canonicalizes the one-underscore MCP tool
+// name `mcp_<server>_<tool>` (crush: "mcp_github_create_pull_request";
+// Kiro CLI V3: "mcp_postgres_query") into the canonical
+// `mcp__<server>__<tool>` form MCPIdentity parses. ok is false for any
+// other name, including one already in the canonical namespace.
+//
+// The split is AMBIGUOUS by construction: both vendors join server and
+// tool with the same single underscore, so a server name that itself
+// contains an underscore cannot be told apart from a tool name that does.
+// The first underscore after the prefix is taken as the split (a server
+// name is usually one word, a tool name often several). A name with no
+// second underscore yields `mcp__<rest>` (server only, no tool), the same
+// degenerate shape MCPIdentity documents.
+func MCPNameFromSingleUnderscore(raw string) (string, bool) {
+	if strings.HasPrefix(raw, MCPPrefix) {
+		return "", false
+	}
+	rest, found := strings.CutPrefix(raw, mcpSinglePrefix)
+	if !found || rest == "" {
+		return "", false
+	}
+	if i := strings.Index(rest, "_"); i > 0 && i+1 < len(rest) {
+		return MCPPrefix + rest[:i] + MCPSeparator + rest[i+1:], true
+	}
+	return MCPPrefix + rest, true
+}
+
+// MCPNameFromExtension canonicalizes Goose's extension tool name
+// `<extension>__<tool>` (every Goose extension is an MCP server; the tool
+// reaches the model as the extension name, two underscores, the tool name)
+// into `mcp__<extension>__<tool>`. ok is false for a name without the
+// separator, one already in the canonical namespace, or one with an empty
+// half.
+func MCPNameFromExtension(raw string) (string, bool) {
+	if strings.HasPrefix(raw, MCPPrefix) {
+		return "", false
+	}
+	i := strings.Index(raw, MCPSeparator)
+	if i <= 0 || i+len(MCPSeparator) >= len(raw) {
+		return "", false
+	}
+	return MCPPrefix + raw, true
+}
+
 // MCPIdentityFromTarget parses an MCP identity out of a normalised
 // action TARGET (or any display-normalised name). It accepts the two
 // forms the corpus actually contains:

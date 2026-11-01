@@ -2,12 +2,9 @@ package zcode
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -80,10 +77,14 @@ func (a *Adapter) IsSessionFile(path string) bool {
 // ParseSessionFile implements adapter.Adapter.
 func (a *Adapter) ParseSessionFile(ctx context.Context, path string, fromOffset int64) (adapter.ParseResult, error) {
 	dbPath := resolveDBPath(path)
-	latest, err := latestWatermark(ctx, dbPath)
+	latest, ready, err := latestWatermark(ctx, dbPath)
 	if err != nil {
 		return adapter.ParseResult{}, fmt.Errorf("zcode.ParseSessionFile: latest watermark: %w", err)
 	}
+	if !ready {
+		return adapter.NotReadyResult(models.ToolZcode, dbPath, fromOffset, notReadyDetail), nil
+	}
+	adapter.ClearNotReady(models.ToolZcode, dbPath)
 	res := adapter.ParseResult{NewOffset: latest}
 	if latest <= fromOffset {
 		return res, nil
@@ -1259,19 +1260,34 @@ type zcodeCacheEntry struct {
 	identity git.Identity
 }
 
-func latestWatermark(ctx context.Context, path string) (int64, error) {
+// coreTables are the tables every reader of this adapter queries. A
+// db.sqlite without all of them (a store zcode is still bootstrapping, or
+// a future storage generation) is not ready: latestWatermark reports it
+// instead of failing with "no such table" on every scan.
+var coreTables = []string{"message", "part", "session"}
+
+// notReadyDetail is the once-per-file warning for a db.sqlite without
+// the core tables.
+const notReadyDetail = "no session/message/part tables yet; skipping until they appear"
+
+func latestWatermark(ctx context.Context, path string) (int64, bool, error) {
 	db, err := openReadOnlyDB(path)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	defer db.Close()
 
+	for _, t := range coreTables {
+		if !tableExists(ctx, db, t) {
+			return 0, false, nil
+		}
+	}
 	// The watermark spans message/part/session (time_updated) AND
 	// model_usage (its own completed_at/started_at, ms on the same clock)
 	// so a late-arriving usage row advances the cursor and isn't stranded
-	// behind the message watermark. model_usage is a core zcode table, but
-	// the subquery is COALESCE/MAX-guarded so an empty or absent table
-	// contributes 0 rather than erroring.
+	// behind the message watermark. A missing model_usage table would be
+	// a "no such table" error in the same statement (COALESCE/MAX only
+	// guard an EMPTY table), so it is read only when present.
 	var latest int64
 	row := db.QueryRowContext(ctx, `
 		SELECT MAX(v) FROM (
@@ -1280,13 +1296,21 @@ func latestWatermark(ctx context.Context, path string) (int64, error) {
 			SELECT COALESCE(MAX(time_updated), 0) AS v FROM part
 			UNION ALL
 			SELECT COALESCE(MAX(time_updated), 0) AS v FROM session
-			UNION ALL
-			SELECT COALESCE(MAX(COALESCE(completed_at, started_at)), 0) AS v FROM model_usage
 		)`)
 	if err := row.Scan(&latest); err != nil {
-		return 0, err
+		return 0, false, err
 	}
-	return latest, nil
+	if tableExists(ctx, db, "model_usage") {
+		var usage int64
+		if err := db.QueryRowContext(ctx,
+			`SELECT COALESCE(MAX(COALESCE(completed_at, started_at)), 0) FROM model_usage`).Scan(&usage); err != nil {
+			return 0, false, err
+		}
+		if usage > latest {
+			latest = usage
+		}
+	}
+	return latest, true, nil
 }
 
 func openReadOnlyDB(path string) (*sql.DB, error) {
@@ -1298,104 +1322,28 @@ func openReadOnlyDB(path string) (*sql.DB, error) {
 	return sql.Open("sqlite", dsn)
 }
 
-// stageMirrorIfForeign returns the source path unchanged when it's
-// native. For foreign-mount sources (e.g. /mnt/c/Users/<u>/.local/share/
-// opencode/opencode.db on a WSL2 Linux host reading the Windows-side
-// OpenCode Desktop store) it stages a local mirror — copying the
-// SQLite trio (.db + -wal + -shm) into a per-source cache dir under
-// mirrorbase.Base() (the single-owner seam over os.UserCacheDir(),
-// overridable per-process for one-shot lifecycles) and returning the
-// path to the mirrored .db.
-//
-// Why the mirror is load-bearing on /mnt/c: modernc.org/sqlite returns
-// SQLITE_IOERR_SHORT_READ (4618) when opening the foreign-mount path
-// while Windows is actively writing the WAL. Verified 2026-05-21 with
-// a live Desktop session reproduced via the adapter's exact DSN —
-// the disk-I/O error blocked ingestion of every Windows Desktop
-// session until this mirror was wired in.
-//
-// Refresh policy: skip the copy when every source file is older than
-// (or matches) the mirror sibling. WAL is the fast-moving signal —
-// its mtime advances faster than the main .db file as Windows
-// appends pages. Same applies for the reverse direction (Windows
-// host reading \\wsl.localhost\<distro>\… would hit the same race
-// on a sufficiently loaded Linux writer).
+// stageMirrorIfForeign returns srcDB unchanged when it is native. A foreign-mount
+// store (a Windows-side store read by a WSL observer over /mnt/c, or
+// the reverse), which modernc.org/sqlite cannot open in place while the
+// vendor process writes its WAL, is read through a filtered local
+// mirror built by mirrorbase.Stage: only the tables in mirrorSpec are
+// kept, so the store's other tables (credentials included) never leave
+// the vendor's file.
 func stageMirrorIfForeign(srcDB string) (string, error) {
 	if !isForeignMountPath(srcDB) {
 		return srcDB, nil
 	}
-	base, err := mirrorbase.Base()
-	if err != nil || base == "" {
-		base = filepath.Join(os.TempDir(), "superbased-observer")
-	}
-	sum := sha256.Sum256([]byte(srcDB))
-	mirrorDir := filepath.Join(base, "zcode-mirror", hex.EncodeToString(sum[:8]))
-	if err := os.MkdirAll(mirrorDir, 0o700); err != nil {
-		return "", fmt.Errorf("mkdir mirror: %w", err)
-	}
-	dstDB := filepath.Join(mirrorDir, "db.sqlite")
-	if mirrorUpToDate(srcDB, dstDB) {
-		return dstDB, nil
-	}
-	// Copy the trio. Main .db is the primary; -wal carries pages the
-	// writer hasn't checkpointed yet; -shm is the shared-memory index
-	// of the WAL (32 KB, regenerable but matching siblings keeps SQLite
-	// from re-deriving it on open). Missing siblings are removed from
-	// the mirror so a stale -wal doesn't shadow a freshly-checkpointed
-	// source.
-	for _, suffix := range []string{"", "-wal", "-shm"} {
-		src := srcDB + suffix
-		dst := dstDB + suffix
-		data, err := os.ReadFile(src)
-		if err != nil {
-			if os.IsNotExist(err) {
-				_ = os.Remove(dst)
-				continue
-			}
-			return "", fmt.Errorf("read %s: %w", src, err)
-		}
-		if err := os.WriteFile(dst, data, 0o600); err != nil { //nolint:gosec // G703: dst is a private staging copy under the adapter's own temp dir
-			return "", fmt.Errorf("write %s: %w", dst, err)
-		}
-	}
-	return dstDB, nil
+	return mirrorbase.Stage(context.Background(), srcDB, mirrorSpec)
 }
 
-// mirrorUpToDate reports whether the mirror trio is at least as fresh
-// as the source trio. Uses (size, mtime) per sibling — the size guard
-// catches an in-flight truncate/realloc that mtime alone misses
-// (occasionally seen on /mnt/c when Windows checkpoints the WAL).
-// Returns false on any stat error so a fresh copy gets attempted.
-func mirrorUpToDate(srcDB, dstDB string) bool {
-	if !filesMatch(srcDB, dstDB) {
-		return false
-	}
-	// WAL is the fast-moving signal — its mtime ticks every flush.
-	if sw, err := os.Stat(srcDB + "-wal"); err == nil {
-		if !filesMatchInfo(sw, dstDB+"-wal") {
-			return false
-		}
-	}
-	return true
-}
-
-func filesMatch(src, dst string) bool {
-	s, err := os.Stat(src)
-	if err != nil {
-		return false
-	}
-	return filesMatchInfo(s, dst)
-}
-
-func filesMatchInfo(srcInfo os.FileInfo, dst string) bool {
-	d, err := os.Stat(dst)
-	if err != nil {
-		return false
-	}
-	if srcInfo.Size() != d.Size() {
-		return false
-	}
-	return !srcInfo.ModTime().After(d.ModTime())
+// mirrorSpec is the allow-list mirror of the zcode store (db.sqlite): every table this
+// package queries and nothing else. A query on a new table must add it
+// here, or the foreign-mount mirror silently lacks it;
+// mirrortest.AssertSpecCoversQueries pins that.
+var mirrorSpec = mirrorbase.Spec{
+	Dir:    "zcode-mirror",
+	File:   "db.sqlite",
+	Tables: []string{"session", "message", "part", "todo", "model_usage"},
 }
 
 // allHomesFunc is the test seam over crossmount.AllHomes — tests

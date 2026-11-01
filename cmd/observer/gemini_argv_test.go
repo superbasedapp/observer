@@ -22,14 +22,12 @@ import (
 func writeArgvRecorderStub(t *testing.T, dir, outPath string) string {
 	t.Helper()
 	script := filepath.Join(dir, "stub-gemini.sh")
+	o := shellQuote(stubShPath(outPath))
 	contents := "#!/bin/sh\n" +
-		"rm -f " + shellQuote(outPath) + "\n" +
-		"for a in \"$@\"; do printf '%s\\n' \"$a\" >> " + shellQuote(outPath) + "; done\n" +
+		"rm -f " + o + "\n" +
+		"for a in \"$@\"; do printf '%s\\n' \"$a\" >> " + o + "; done\n" +
 		"exit 0\n"
-	if err := os.WriteFile(script, []byte(contents), 0o755); err != nil {
-		t.Fatalf("write stub: %v", err)
-	}
-	return script
+	return writeShellStub(t, script, contents)
 }
 
 // shellQuote wraps s in single quotes for safe interpolation into the
@@ -61,7 +59,7 @@ func readRecordedArgv(t *testing.T, path string) []string {
 func writeGeminiTestConfig(t *testing.T, dir string) string {
 	t.Helper()
 	cfgPath := filepath.Join(dir, "config.toml")
-	if err := os.WriteFile(cfgPath, []byte("[observer]\ndb_path = \""+filepath.Join(dir, "observer.db")+"\"\n"), 0o600); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("[observer]\ndb_path = \""+filepath.ToSlash(filepath.Join(dir, "observer.db"))+"\"\n"), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	return cfgPath

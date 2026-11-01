@@ -47,10 +47,11 @@ type ProxyInput struct {
 	// gates no proxy Proxies emits today — see the package doc comment
 	// on why a human_share proxy is out of scope for this version.
 	HumanCapture string
-	// CommitCapture is "ok", "no_git" or "never_scanned"
-	// (docs/plans/.../2026-09-21.md §3.4's capture.commits enum). Any
-	// proxy that reads Commits or Linkage is unavailable unless this
-	// is "ok".
+	// CommitCapture is the capture.commits state (store.CommitScanHealth's
+	// closed vocabulary: ok, catching_up, never_scanned, no_git,
+	// no_folder, root_missing, not_repo, error). Any proxy that reads
+	// Commits or Linkage is unavailable unless this is "ok" or
+	// "catching_up" (commitCaptureUsable).
 	CommitCapture string
 	Commits       []Commit
 	// TasksAvailable is false when the caller's task-lifecycle rollup
@@ -68,8 +69,18 @@ type ProxyInput struct {
 
 const (
 	commitCaptureOK = "ok"
-	taskStatusDone  = "done"
+	// commitCaptureCatchingUp is a project whose full history is still
+	// being read in the background. The walk goes newest first, so the
+	// recent commits every windowed proxy reads are already in.
+	commitCaptureCatchingUp = "catching_up"
+	taskStatusDone          = "done"
 )
+
+// commitCaptureUsable reports whether a capture state means the commit
+// ledger can feed the commit-shaped proxies.
+func commitCaptureUsable(state string) bool {
+	return state == commitCaptureOK || state == commitCaptureCatchingUp
+}
 
 // Proxies derives the fixed set of ROI tiles from in. The returned
 // slice is always in the same order (the order below), regardless of
@@ -127,7 +138,7 @@ func proxyUSDPerReachedAILine(in ProxyInput) Proxy {
 	const key = "usd_per_reached_ai_line"
 	const label = "Spend per AI code line that reached a commit"
 	const formula = "sum(spend attributed to commits) / (AI code lines added+modified, code files only, in files that reached a commit)"
-	if in.CommitCapture != commitCaptureOK {
+	if !commitCaptureUsable(in.CommitCapture) {
 		return unavailable(key, label, UnitUSDPerLine, formula, "commit capture unavailable")
 	}
 	if len(in.Commits) == 0 {
@@ -156,7 +167,7 @@ func proxyAIFilesReachedShare(in ProxyInput) Proxy {
 	const key = "ai_files_reached_share"
 	const label = "AI-touched files that reached a commit"
 	const formula = "distinct AI-touched files that reached a commit / distinct AI-touched files"
-	if in.CommitCapture != commitCaptureOK {
+	if !commitCaptureUsable(in.CommitCapture) {
 		return unavailable(key, label, UnitRatio, formula, "commit capture unavailable")
 	}
 	_, reachedPaths, touchedPaths := reachedFiles(in.Linkage)
@@ -176,7 +187,7 @@ func proxySessionsNoCommitUSD(in ProxyInput) Proxy {
 	const label = "Spend in sessions with no linked commit (yet)"
 	const formula = "sum(session cost) over sessions with no prompt that reached a commit"
 	const caveat = "may be research-only, work in progress, outside the link window, or due to commit capture being unavailable"
-	if in.CommitCapture != commitCaptureOK {
+	if !commitCaptureUsable(in.CommitCapture) {
 		return unavailable(key, label, UnitUSD, formula, "commit capture unavailable")
 	}
 	if len(in.Sessions) == 0 {
@@ -204,7 +215,7 @@ func proxyUSDPerCommit(in ProxyInput) Proxy {
 	const key = "usd_per_commit"
 	const label = "Spend per commit"
 	const formula = "sum(turn cost) / count(commits in the window)"
-	if in.CommitCapture != commitCaptureOK {
+	if !commitCaptureUsable(in.CommitCapture) {
 		return unavailable(key, label, UnitUSDPerCommit, formula, "commit capture unavailable")
 	}
 	n := countCommits(in.Commits)
@@ -251,7 +262,7 @@ func proxyPromptsPerCommit(in ProxyInput) Proxy {
 	const key = "prompts_per_commit"
 	const label = "Prompts per commit"
 	const formula = "count(prompts) / count(commits in the window)"
-	if in.CommitCapture != commitCaptureOK {
+	if !commitCaptureUsable(in.CommitCapture) {
 		return unavailable(key, label, UnitCount, formula, "commit capture unavailable")
 	}
 	n := countCommits(in.Commits)
@@ -268,7 +279,7 @@ func proxyTurnsPerCommit(in ProxyInput) Proxy {
 	const key = "turns_per_commit"
 	const label = "Turns per commit"
 	const formula = "count(turns) / count(commits in the window)"
-	if in.CommitCapture != commitCaptureOK {
+	if !commitCaptureUsable(in.CommitCapture) {
 		return unavailable(key, label, UnitCount, formula, "commit capture unavailable")
 	}
 	n := countCommits(in.Commits)

@@ -18,6 +18,7 @@ import {
   Stagger,
 } from "@/components/primitives";
 import { ChartState } from "@/components/ChartState";
+import { ObsJobRider, ObsLanding } from "@shared/primitives/ObsFlight";
 import { apiCache, useApi, type ApiState } from "@/lib/useApi";
 import { fetchJSON } from "@/lib/api";
 import { useDaemonRestart } from "@/lib/useDaemonRestart";
@@ -516,6 +517,8 @@ function OutcomeCard({ outcome, pushLoop }: { outcome: EnrolOutcome; pushLoop: b
   return (
     <div className={`${BOX} ${TONE_BOX.success} space-y-2`}>
       <div className="flex flex-wrap items-center gap-2">
+        {/* Finish line (D-665..D-669): Obs lands on a successful enrolment. */}
+        <ObsLanding size={32} />
         <span className="font-medium text-fg-0">
           Enrolled in {orgDisplayLabel(outcome.org_display)} as {outcome.user_email}.
         </span>
@@ -728,6 +731,18 @@ function EnrolledView({
         />
       </Stagger>
 
+      {ov.daemon_credential_warning ? (
+        <div className={`${BOX} ${TONE_BOX.warn}`} role="status">
+          {ov.daemon_credential_warning}
+        </div>
+      ) : null}
+
+      {ov.machine_proof_warning ? (
+        <div className={`${BOX} ${TONE_BOX.warn}`} role="status">
+          {ov.machine_proof_warning}
+        </div>
+      ) : null}
+
       <div className="flex flex-wrap items-center gap-2">
         <Button size="sm" variant="primary" iconLeft={Send} onClick={() => void pushNow()} disabled={busy !== null}>
           {busy === "push" ? "Pushing..." : "Push now"}
@@ -915,6 +930,9 @@ function ShareHistoryCard({
 
       {progress ? (
         <div className="space-y-1.5" aria-live="polite">
+          {/* A job with real progress (D-665..D-669): Obs rides the true ratio,
+              never ahead, and lands into celebrate when nothing is waiting. */}
+          <ObsJobRider ratio={progress.done ? 1 : progress.ratio} />
           <Meter ratio={progress.ratio} tone={progress.done ? "success" : "accent"} label="History sent" />
           <div className="text-fg-2">
             {progress.done
@@ -1127,6 +1145,7 @@ function ReadOnlyEnrolment({ reason }: { reason: "remote" | "process" }) {
               />
             </Stagger>
             <PushPaused paused={data.push_paused} />
+            <RetentionHeld held={data.retention_held} />
             <LastPush push={data.last_push} />
           </>
         ) : (
@@ -1160,6 +1179,26 @@ function PushPaused({ paused }: { paused?: EnrolmentStatus["push_paused"] }) {
         Raise <Mono>[org_client].max_push_bytes</Mono>, narrow <Mono>[org_client.scope]</Mono>, or turn off a large{" "}
         <Mono>[org_client.share]</Mono> tier. The org server enforces its own body limit too, so raising the
         node-side value alone may not be enough.
+      </div>
+    </div>
+  );
+}
+
+// RetentionHeld renders the T-830 hold: node retention is keeping rows past
+// max_age_days because the org server has not accepted them, so a stuck push
+// shows here instead of the local database silently growing.
+function RetentionHeld({ held }: { held?: EnrolmentStatus["retention_held"] }) {
+  if (!held || held.rows <= 0) return null;
+  return (
+    <div className="rounded-2 border border-warn/40 bg-warn-soft px-3 py-2 text-[11.5px]">
+      <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.06em] text-warn">Retention held</div>
+      <div className="text-fg-2">
+        Retention held <b>{fmtInt(held.rows)}</b> rows awaiting push ({fmtInt(held.actions)} actions,{" "}
+        {fmtInt(held.sessions)} sessions). They are older than {held.max_age_days} days but the org server has not
+        accepted them yet, so they stay on this machine until it does.
+      </div>
+      <div className="mt-1 text-fg-3">
+        Check the last push below and <Mono>observer doctor</Mono>; the next retention pass after a successful push removes them.
       </div>
     </div>
   );

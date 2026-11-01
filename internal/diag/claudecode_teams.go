@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/hook"
 )
 
 // checkClaudeCodeTeams verifies the native-console (Claude Code Teams) ingest
@@ -55,15 +56,19 @@ func checkClaudeCodeTeams(cfg config.Config) Check {
 			note(StatusOK, fmt.Sprintf("Claude Code managed-settings present + parseable (%s)", path))
 		}
 	} else {
-		note(StatusWarn, "Claude Code managed-settings not found - deploy with `observer org emit-managed-settings` (file channel: /etc/claude-code/managed-settings.json)")
+		note(StatusWarn, fmt.Sprintf("Claude Code managed-settings not found - deploy with `observer org emit-managed-settings` (file channel: %s)", hook.ClaudeManagedPaths(runtime.GOOS).Settings))
 	}
 
 	// (c) MCP pin resolvable: the managed-mcp.json pin runs `npx -y
 	// @superbased/observer …`, so npx must be on PATH for the pin to start.
-	if _, err := exec.LookPath("npx"); err == nil {
-		note(StatusOK, "npx present - the managed-mcp.json pin can bootstrap the MCP server")
+	// The pin is opt-in (`--exclusive-mcp`, surface-gap D2), so npx only
+	// matters where a managed-mcp.json is deployed.
+	if path, ok := managedMCPPath(); !ok {
+		note(StatusOK, "no managed-mcp.json - Observer's MCP server is the one `observer init` registers per node")
+	} else if _, err := exec.LookPath("npx"); err == nil {
+		note(StatusOK, fmt.Sprintf("npx present - the managed-mcp.json pin (%s) can bootstrap the MCP server", path))
 	} else {
-		note(StatusWarn, "npx not on PATH - the managed-mcp.json `npx -y @superbased/observer` pin will not start")
+		note(StatusWarn, fmt.Sprintf("npx not on PATH - the managed-mcp.json (%s) `npx -y @superbased/observer` pin will not start", path))
 	}
 
 	msg := "native-console ingest enabled - all checks passed"
@@ -84,18 +89,27 @@ func dialable(addr string) bool {
 	return true
 }
 
-// managedSettingsPath returns the OS-conventional Claude Code managed-settings
-// path if it exists. Linux/WSL use /etc/claude-code/; macOS uses the system
-// Application Support dir.
+// managedSettingsPath returns this OS's Claude Code managed-settings path if
+// it exists. The path is the agentconfig FileRow's, through
+// hook.ClaudeManagedPaths (CC-5): /etc/claude-code on Linux and WSL, the
+// system Application Support dir on macOS, C:\Program Files\ClaudeCode on
+// Windows (never the legacy C:\ProgramData path, which Claude Code does not
+// read).
 func managedSettingsPath() (string, bool) {
-	candidates := []string{"/etc/claude-code/managed-settings.json"}
-	if runtime.GOOS == "darwin" {
-		candidates = append(candidates, "/Library/Application Support/ClaudeCode/managed-settings.json")
+	return existingPath(hook.ClaudeManagedPaths(runtime.GOOS).Settings)
+}
+
+// managedMCPPath returns this OS's Claude Code managed-mcp.json if it exists.
+func managedMCPPath() (string, bool) {
+	return existingPath(hook.ClaudeManagedPaths(runtime.GOOS).MCP)
+}
+
+func existingPath(p string) (string, bool) {
+	if p == "" {
+		return "", false
 	}
-	for _, p := range candidates {
-		if _, err := os.Stat(p); err == nil {
-			return p, true
-		}
+	if _, err := os.Stat(p); err == nil { //nolint:gosec // G703: a metadata read of the user's own local path; no privilege boundary is crossed
+		return p, true
 	}
 	return "", false
 }

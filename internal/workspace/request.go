@@ -25,10 +25,17 @@ type Request struct {
 	// prepared workspace:
 	//   - clone-local / clone-remote: `git -C <dest> checkout -b <Branch>`
 	//     after the clone, only when non-empty.
-	//   - worktree: `git worktree add -b <Branch> ...` — REQUIRED. A
-	//     worktree without a distinct branch collides with whatever
-	//     branch ProjectRoot already has checked out.
+	//   - worktree: the LABEL of the run's branch, which is always
+	//     `observer-sandbox/<ID>/<Branch>` (WorktreeBranch; "work" when
+	//     empty), so it never collides with a branch ProjectRoot has
+	//     checked out.
 	Branch string
+
+	// StartPoint, for SourceWorktree only, is the full object id the
+	// run's branch starts from (the caller reads ProjectRoot's HEAD
+	// first), so the run's base is recorded exactly. Empty starts from
+	// ProjectRoot's HEAD.
+	StartPoint string
 
 	// ManagedRoot is the daemon's workspaces directory
 	// (<observerDir>/workspaces), an absolute path. Unused for
@@ -45,10 +52,11 @@ type Request struct {
 	// opt-in ([terminal.sandbox].allow_remote_clone).
 	AllowRemoteClone bool
 
-	// AllowWorktreeSource gates SourceWorktree — it needs ProjectRoot's
-	// own .git bound read-write and attributes the sandboxed run to the
-	// main repo, not the workspace copy
-	// ([terminal.sandbox].allow_worktree_source).
+	// AllowWorktreeSource gates SourceWorktree: it mounts the main
+	// repository's .git folder writable in the box (its object store, the
+	// worktree's own git dir and the run's branch; PlanWorktreeBox) and
+	// attributes the sandboxed run to the main repository
+	// ([terminal.sandbox].allow_worktree_source, off by default).
 	AllowWorktreeSource bool
 
 	// RemoteAllowedHosts, when non-empty, restricts SourceCloneRemote to

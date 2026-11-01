@@ -1,0 +1,10 @@
+{
+  "source": "modal-client/go v0.11.1 (sandbox.go, sandbox_fs.go, errors.go), read 2026-10-22; no live call, no token",
+  "create": {"sandbox_id": "sb-0a1B2c3D4e5F6g7H8i9J0k"},
+  "poll_running": {"exit_code": null},
+  "poll_finished": {"exit_code": 0},
+  "get_tags": {"observer-run": "run-1"},
+  "not_found": {"error": "NotFoundError: Sandbox with id sb-0a1B2c3D4e5F6g7H8i9J0k not found"},
+  "resource_exhausted": {"error": "ResourceExhaustedError: rate limit exceeded"},
+  "lost_create": {"grpc_code": "Unavailable", "error": "rpc error: code = Unavailable desc = connection reset"}
+}

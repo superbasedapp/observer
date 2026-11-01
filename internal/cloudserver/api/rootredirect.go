@@ -1,23 +1,23 @@
-// Package api: rootredirect.go answers the bare "/" path — and the four
-// policy/pricing paths a checkout-domain reviewer fetches by convention —
-// on this server's own origin with a redirect to the marketing site.
+// Package api: rootredirect.go answers the bare "/" path and the four
+// policy/pricing paths a checkout-domain reviewer fetches by convention.
 //
-// Paddle's checkout-domain review fetches the domain root and, live-observed
-// 2026-09-13 against cloud.superbased.app, treats a 404 there as "your
-// website is offline" and fails the review — even though /portal/,
-// /portal/billing, /healthz and /v1/* all already answer correctly. The
-// marketing site (superbased.app) carries the pricing/terms/privacy/refund
-// pages a checkout-domain reviewer looks for, so sending the bare root there
-// fixes the review without touching any other route on this server.
+// THE BARE ROOT goes to the portal (operator ruling "Go to the portal",
+// D-830, T-946): "/" answers a same-origin 302 to /portal/ whenever this
+// server mounts the portal SPA, so a person who types cloud.superbased.app
+// lands on the sign-in page instead of the marketing site. Paddle's
+// checkout-domain review (live-observed 2026-09-13) fails a 404 at the root;
+// a 302 to a page that answers 200 passes it the same way the old redirect
+// to superbased.app did. A server built WITHOUT the portal SPA (tests, an
+// API-only replica) keeps the older behaviour: "/" redirects to the
+// configured marketing base, or stays 404 when that is disabled.
 //
-// The same review then (2026-09-14, provisional approval of
-// cloud.superbased.app) fetched /terms, /privacy, /refund-policy and
-// /pricing ON THE CHECKOUT DOMAIN ITSELF and reported every one as
-// inaccessible (all four were 404 here; the marketing site serves them at
-// the same paths). marketingRedirectPaths is the table of those paths; each
-// 302s to the same path under the root-redirect base, so the ONE configured
-// target (SBCI_ROOT_REDIRECT_URL) governs all five redirects and disabling
-// it disables all of them together.
+// THE FOUR POLICY PATHS are unchanged. The same review (2026-09-14,
+// provisional approval of cloud.superbased.app) fetched /terms, /privacy,
+// /refund-policy and /pricing ON THE CHECKOUT DOMAIN ITSELF and reported every
+// one as inaccessible while they were 404 here; the marketing site serves them
+// at the same paths. marketingRedirectPaths is the table of those paths; each
+// 302s to the same path under the root-redirect base (SBCI_ROOT_REDIRECT_URL),
+// and disabling that base disables all four together.
 package api
 
 import (
@@ -28,13 +28,15 @@ import (
 	"strings"
 )
 
-// defaultRootRedirectURL is the "/" redirect target used when
+// defaultRootRedirectURL is the marketing base the policy paths redirect
+// under (and "/" too on a server without the portal SPA) when
 // SBCI_ROOT_REDIRECT_URL is unset and Options.RootRedirectURL is nil.
 const defaultRootRedirectURL = "https://superbased.app/"
 
 // rootRedirectEnvVar is the environment variable that overrides
-// defaultRootRedirectURL. Unset ⇒ the default applies; set to an explicit
-// empty string ⇒ the redirect is disabled and "/" stays 404.
+// defaultRootRedirectURL. Unset means the default applies; set to an explicit
+// empty string disables the marketing redirects (the policy paths go back to
+// 404; "/" still goes to the portal when the SPA is mounted).
 const rootRedirectEnvVar = "SBCI_ROOT_REDIRECT_URL"
 
 // rootRedirectURLFromEnv resolves SBCI_ROOT_REDIRECT_URL. It distinguishes
@@ -97,31 +99,64 @@ func (s *Server) handleMarketingRedirect(w http.ResponseWriter, r *http.Request)
 	http.Redirect(w, r, marketingRedirectTarget(s.rootRedirectURL, r.URL.Path), http.StatusFound) //nolint:gosec // G710: the path is one exact entry of the fixed redirect table
 }
 
-// handleRoot answers the bare "/" with a 302 redirect to s.rootRedirectURL.
-// It is registered only when that target is non-empty (see
-// mountRootRedirect), so a disabled redirect never reaches this handler and
-// mountRootRedirect never registers a pattern that would call it with an
-// empty target.
-func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
-	http.Redirect(w, r, s.rootRedirectURL, http.StatusFound)
+// portalRootPath is where "/" sends a visitor when this server mounts the
+// portal SPA: a same-origin path, so the redirect never leaves the host the
+// request arrived on and the canonical-host fence still applies to it.
+const portalRootPath = "/portal/"
+
+// rootTarget is one row of the "/" decision table: the first row whose
+// condition holds supplies the redirect target. An empty target means "/" is
+// not registered and stays 404.
+type rootTarget struct {
+	name   string
+	when   func(s *Server) bool
+	target func(s *Server) string
 }
 
-// mountRootRedirect registers the exact-match "/" route and the
-// marketingRedirectPaths routes on mux when a redirect target is configured. The single "GET /{$}" pattern also serves
-// HEAD (net/http's ServeMux matches a HEAD request against a GET pattern
-// when no HEAD-specific pattern is registered, and http.Redirect already
-// omits the response body for HEAD); every other method on "/" and every
-// other path are left alone, so they fall through to the mux's ordinary
-// 404/405 handling exactly as before this route existed. Each marketing
-// path is registered the same way ("GET /terms" matches exactly "/terms";
-// "/terms/" and "/terms/x" stay 404). A disabled target
-// (s.rootRedirectURL == "") registers nothing, leaving "/" and the four
-// paths at their pre-existing 404.
+// rootTargets is the ordered "/" decision table, walked top-down by
+// rootRedirectTarget.
+var rootTargets = []rootTarget{
+	{
+		name:   "portal mounted",
+		when:   func(s *Server) bool { return s.portalSPA != nil },
+		target: func(*Server) string { return portalRootPath },
+	},
+	{
+		name:   "marketing base configured",
+		when:   func(s *Server) bool { return s.rootRedirectURL != "" },
+		target: func(s *Server) string { return s.rootRedirectURL },
+	},
+}
+
+// rootRedirectTarget resolves where "/" redirects to from rootTargets, or ""
+// when no row applies (the route is then not registered at all).
+func (s *Server) rootRedirectTarget() string {
+	for _, row := range rootTargets {
+		if row.when(s) {
+			return row.target(s)
+		}
+	}
+	return ""
+}
+
+// mountRootRedirect registers the exact-match "/" route (when
+// rootRedirectTarget names a target) and the marketingRedirectPaths routes
+// (when a marketing base is configured) on mux. The single "GET /{$}" pattern
+// also serves HEAD (net/http's ServeMux matches a HEAD request against a GET
+// pattern when no HEAD-specific pattern is registered, and http.Redirect
+// already omits the response body for HEAD); every other method on "/" and
+// every other path are left alone, so they fall through to the mux's ordinary
+// 404/405 handling. Each marketing path is registered the same way ("GET
+// /terms" matches exactly "/terms"; "/terms/" and "/terms/x" stay 404).
 func (s *Server) mountRootRedirect(mux *http.ServeMux) {
+	if target := s.rootRedirectTarget(); target != "" {
+		mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, target, http.StatusFound)
+		})
+	}
 	if s.rootRedirectURL == "" {
 		return
 	}
-	mux.HandleFunc("GET /{$}", s.handleRoot)
 	for _, p := range marketingRedirectPaths {
 		mux.HandleFunc("GET "+p, s.handleMarketingRedirect)
 	}

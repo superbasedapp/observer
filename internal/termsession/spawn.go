@@ -160,6 +160,12 @@ type Spec struct {
 	// flags ending in --); when non-empty argv() prepends it before
 	// [BinPath, Subcommand]. Empty = no wrapper (unchanged behaviour).
 	WrapArgv []string
+	// StripOSC52 removes OSC 52 (clipboard set and query) sequences from
+	// the session's output before any viewer sees them (internal/termfilter;
+	// WINFIX4 audit finding 2, ruling P-175). Set for a sandboxed run unless
+	// [terminal.sandbox].allow_osc52_clipboard; false leaves the output
+	// byte for byte as the process wrote it.
+	StripOSC52 bool
 }
 
 // ArgvMode selects the launch argv SHAPE for a SpecAgent session. It is an

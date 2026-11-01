@@ -20,11 +20,13 @@ import (
 // prime-agent (usage.cost.total), crush and goose (the store's cumulative
 // session cost), aider (the "Cost: $x message" chat-history clause), junie
 // (modelUsage cost), mistral-code (meta.json session_cost), freebuff (desktop
-// metrics costUsd). docs/new-adapter-checklist.md files these as
+// metrics costUsd). Added 2026-10-21: kimchi (per-call usage.cost.total),
+// deepagents-code (OpenRouter response_metadata.cost), dimcode (the run's
+// cost only when its quality is "exact"). docs/new-adapter-checklist.md files these as
 // "provider-reported cost" rows.
 var reportsCostTools = []string{
-	"aider", "cline-cli", "command-code", "crush", "freebuff", "goose", "hermes",
-	"junie", "kilo-code-cli", "mistral-code", "opencode", "pi", "prime-agent",
+	"aider", "cline-cli", "command-code", "crush", "deepagents-code", "dimcode", "dirac", "freebuff", "goose", "hermes",
+	"junie", "kilo-code-cli", "kimchi", "mistral-code", "opencode", "pi", "prime-agent",
 }
 
 // reportsCostPackages is the set of internal/adapter packages whose
@@ -32,8 +34,8 @@ var reportsCostTools = []string{
 // reportsCostTools: a new adapter that starts storing a cost fails here until
 // its registry row is flagged (or deliberately not).
 var reportsCostPackages = []string{
-	"aider", "clinecli", "commandcode", "crush", "freebuff", "goose", "hermes",
-	"junie", "kilocode", "mistralcode", "opencode", "pi", "primeagent",
+	"aider", "clinecli", "commandcode", "crush", "deepagents", "dimcode", "dirac", "freebuff", "goose", "hermes",
+	"junie", "kilocode", "kimchi", "mistralcode", "opencode", "pi", "primeagent",
 }
 
 func TestReportsCostSetIsPinned(t *testing.T) {

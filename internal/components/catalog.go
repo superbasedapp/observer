@@ -13,7 +13,13 @@ import (
 // row is added, removed or renamed, or when a field's meaning changes; the
 // components digest a binary reports mixes it in, so two binaries with the
 // same compiled ids but different catalogs never look identical.
-const CatalogVersion = 1
+//
+// History: 2 the security, sandbox and isolation rows; 3 (lane SEC-F2B,
+// one bump for the wave) the security.provenance row (SEC-F2A),
+// org.security.ci and the code-scanner driver rows SEC-G5 adds alongside;
+// 4 (lane GATES-SEC, one bump) security.scan.trivy, security.scan.kics,
+// isolation.seal and org.security.githubapp.
+const CatalogVersion = 4
 
 var (
 	buildOnce sync.Once

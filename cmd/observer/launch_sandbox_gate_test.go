@@ -18,6 +18,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/db"
 	"github.com/marmutapp/superbased-observer/internal/db/dbtemplate"
 	"github.com/marmutapp/superbased-observer/internal/guard"
+	"github.com/marmutapp/superbased-observer/internal/hookdisable"
 	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/store"
 	"github.com/marmutapp/superbased-observer/internal/termsvc"
@@ -195,9 +196,119 @@ func writeSandboxGateConfig(t *testing.T, dir, mode string) string {
 // seams at the test's values; the returned func restores them. Callers are
 // never parallel.
 func setSandboxGateSeams(gd *guard.Guard, gate func(string) nodeToolGateState, sandboxed bool) func() {
-	prevGuard, prevGate, prevEnv := cliLaunchGuard, cliLaunchToolGate, cliSandboxedEnv
+	prevGuard, prevGate, prevEnv, prevDir := cliLaunchGuard, cliLaunchToolGate, cliSandboxedEnv, cliLaunchDir
 	cliLaunchGuard = func(context.Context, config.Config, *store.Store) *guard.Guard { return gd }
 	cliLaunchToolGate = func(_, tool string) nodeToolGateState { return gate(tool) }
 	cliSandboxedEnv = func() bool { return sandboxed }
-	return func() { cliLaunchGuard, cliLaunchToolGate, cliSandboxedEnv = prevGuard, prevGate, prevEnv }
+	// No launch directory: the test process's own checkout must not decide.
+	cliLaunchDir = func() (string, error) { return "", errors.New("no launch directory in this test") }
+	return func() {
+		cliLaunchGuard, cliLaunchToolGate, cliSandboxedEnv, cliLaunchDir = prevGuard, prevGate, prevEnv, prevDir
+	}
+}
+
+// TestSandboxFallbackProjectHookSwitch (T-910): a blocking-hook tool whose
+// hook is current on the node is NOT trusted for a launch in a project whose
+// settings switch its hooks off, on both launch paths; the same project with
+// the switch explicitly on launches as before.
+func TestSandboxFallbackProjectHookSwitch(t *testing.T) {
+	silenced := map[string]hookdisable.Switch{}
+	for _, s := range hookdisable.Switches {
+		// Only a key switch: the test writes the setting as a nested bool,
+		// which a list-membership row (goose disabledPlugins) never reads.
+		if s.Scope != hookdisable.ScopeProject || !s.KeySwitch() {
+			continue
+		}
+		for _, tool := range s.Tools {
+			if _, ok := silenced[tool]; !ok {
+				silenced[tool] = s
+			}
+		}
+	}
+	hookBlock := firstTool(t, func(c integration.Capability) bool {
+		_, ok := silenced[c.Tool]
+		return ok && c.EnforcementChannel() == integration.EnforceHookBlock && c.Proxy != nil
+	})
+	row := silenced[hookBlock.Tool]
+	for _, on := range []bool{true, false} {
+		t.Run(fmt.Sprintf("switch set=%v", on), func(t *testing.T) {
+			dir := t.TempDir()
+			value := row.Off
+			if !on {
+				value = !row.Off
+			}
+			settings := filepath.Join(dir, filepath.FromSlash(row.ProjectRel))
+			if err := os.MkdirAll(filepath.Dir(settings), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeFileT(t, settings, nestedBoolJSON(row.Key, value))
+			gcfg := config.Default().Guard
+			gcfg.Enabled, gcfg.Mode = true, "enforce"
+			gcfg.Rules.OrgBundle = filepath.Join(dir, "org-policy-bundle.json")
+			gcfg.Rules.UserPolicy = ""
+			pub, priv, err := ed25519.GenerateKey(rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeFileT(t, gcfg.Rules.OrgBundle, signedGuardBundleJSON(t, priv, pub, 3, "[fallbacks]\nsandbox_unavailable = \"org_disallow\"\n"))
+			gd, err := guard.New(guard.Options{Config: gcfg, Home: dir, OrgKeyPinHash: pinOf(pub), ManagedTenancy: func() bool { return true }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			gate := func(string) nodeToolGateState { return nodeToolGateState{Current: true, Reason: "registered"} }
+
+			svc := termsvc.New(termsvc.Options{
+				Recorder: assembledRecorder{},
+				Launcher: &recordingLauncher{},
+				Policy:   termsvc.Policy{AllowFresh: true, AllowedTools: []string{hookBlock.Tool}, AllowedProjectRoots: []string{dir}},
+			})
+			a := &launchManagerAdapter{svc: svc, guard: gd, toolGate: gate}
+			_, dashErr := a.CreateFresh(dashapi.FreshLaunchSpec{Tool: hookBlock.Tool, Subcommand: hookBlock.Tool, ProjectRoot: dir})
+
+			cfgPath := writeSandboxGateConfig(t, dir, "enforce")
+			// This test isolates the hook.switch row. The repo.trust row runs
+			// before it and, with security.trust on (developer and full
+			// distros), refuses this hooks-off repository itself (S-703,
+			// hooks_off_switch; TestRepoTrustRow), so it is removed here.
+			appendFileT(t, cfgPath, "[components]\nremove = [\"security.trust\"]\n")
+			restore := setSandboxGateSeams(gd, gate, false)
+			cliLaunchDir = func() (string, error) { return dir, nil }
+			cliErr := enforceBudgetControlledLaunch(context.Background(), cfgPath, hookBlock.Tool,
+				budgetLaunchEvidence{Route: budgetLaunchRouteDirect})
+			restore()
+
+			for _, p := range []struct {
+				path string
+				err  error
+			}{{"dashboard", dashErr}, {"cli", cliErr}} {
+				refused := errors.Is(p.err, dashapi.ErrLaunchSandboxRequired)
+				if refused != on {
+					t.Fatalf("%s (%s, %s): refused=%v err=%v", p.path, hookBlock.Tool, row.ID, refused, p.err)
+				}
+			}
+		})
+	}
+}
+
+// appendFileT appends body to path.
+func appendFileT(t *testing.T, path, body string) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(body); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// nestedBoolJSON renders {"a":{"b":v}} for the dotted key "a.b".
+func nestedBoolJSON(key string, v bool) string {
+	segs := strings.Split(key, ".")
+	out := fmt.Sprintf("%v", v)
+	for i := len(segs) - 1; i >= 0; i-- {
+		out = fmt.Sprintf("{%q:%s}", segs[i], out)
+	}
+	return out
 }

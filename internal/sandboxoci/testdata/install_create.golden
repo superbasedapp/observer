@@ -1,0 +1,105 @@
+{
+  "body": {
+    "User": "1000:1000",
+    "AttachStdin": false,
+    "AttachStdout": true,
+    "AttachStderr": true,
+    "Tty": true,
+    "OpenStdin": false,
+    "StdinOnce": false,
+    "Env": [
+      "HTTP_PROXY=http://127.0.0.1:3128",
+      "HTTPS_PROXY=http://127.0.0.1:3128",
+      "http_proxy=http://127.0.0.1:3128",
+      "https_proxy=http://127.0.0.1:3128",
+      "NO_PROXY=",
+      "no_proxy=",
+      "HOME=/tmp/observer-install-home",
+      "npm_config_cache=/tmp/observer-install-npm-cache",
+      "npm_config_update_notifier=false",
+      "NO_UPDATE_NOTIFIER=1"
+    ],
+    "Entrypoint": [
+      "/usr/bin/observer",
+      "sandbox-oci-install",
+      "--gateway",
+      "/tmp/.observer-sandbox-net/gateway.sock",
+      "--port",
+      "3128",
+      "--",
+      "npm",
+      "install",
+      "--global",
+      "--prefix",
+      "/observer-tool-cache",
+      "--ignore-scripts",
+      "--no-audit",
+      "--no-fund",
+      "--no-update-notifier",
+      "@vendor/tool-a@2.1.309"
+    ],
+    "Cmd": [],
+    "Image": "node@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "WorkingDir": "/tmp",
+    "Labels": {
+      "app.superbased.observer.install": "inst000000000001",
+      "app.superbased.observer.role": "sandbox",
+      "app.superbased.observer.run": "run0000000000000001"
+    },
+    "StopSignal": "SIGTERM",
+    "StopTimeout": 10,
+    "HostConfig": {
+      "NetworkMode": "none",
+      "CapDrop": [
+        "ALL"
+      ],
+      "CapAdd": [],
+      "SecurityOpt": [
+        "no-new-privileges"
+      ],
+      "ReadonlyRootfs": true,
+      "Privileged": false,
+      "Init": false,
+      "AutoRemove": false,
+      "IpcMode": "private",
+      "PidsLimit": 512,
+      "Devices": [],
+      "LogConfig": {
+        "Type": "none"
+      },
+      "RestartPolicy": {
+        "Name": "no"
+      },
+      "Mounts": [
+        {
+          "Type": "bind",
+          "Source": "/usr/bin/observer",
+          "Target": "/usr/bin/observer",
+          "ReadOnly": true,
+          "BindOptions": {
+            "Propagation": "rprivate"
+          }
+        },
+        {
+          "Type": "bind",
+          "Source": "/tmp/observer-sbx-inst-1",
+          "Target": "/tmp/.observer-sandbox-net",
+          "ReadOnly": true,
+          "BindOptions": {
+            "Propagation": "rprivate"
+          }
+        },
+        {
+          "Type": "volume",
+          "Source": "observer-tool-inst0000-10354ab9ea147a52984b5156",
+          "Target": "/observer-tool-cache",
+          "ReadOnly": false
+        }
+      ],
+      "Tmpfs": {
+        "/tmp": "rw,nosuid,nodev,size=1073741824,mode=0700,uid=1000,gid=1000"
+      }
+    }
+  },
+  "name": "observer-sbx-inst0000-run0000000000000001-install"
+}

@@ -114,6 +114,10 @@ func TestHandleSessionProcesses(t *testing.T) {
 	if root.Command != "npm test" {
 		t.Errorf("root.Command = %q, want 'npm test' (correlated)", root.Command)
 	}
+	// last_seen_at rides along for the Call stack view's "exit not seen" bars.
+	if want := base.Add(time.Second).UTC().Format(time.RFC3339); root.LastSeenAt != want {
+		t.Errorf("root.LastSeenAt = %q, want %q", root.LastSeenAt, want)
+	}
 	if root.ActionID == nil || root.TurnIndex == nil || *root.TurnIndex != 3 {
 		t.Errorf("root action link = id:%v turn:%v, want set/turn 3", root.ActionID, root.TurnIndex)
 	}
@@ -259,4 +263,40 @@ func hasReason(reasons []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// TestNodeFromRowLastSeenAt pins the last_seen_at field the Call stack view
+// reads to draw an honest "exit not seen" bar: RFC3339 UTC when the capture
+// recorded it, absent (empty) when it did not.
+func TestNodeFromRowLastSeenAt(t *testing.T) {
+	seen := time.Date(2026, 10, 15, 14, 5, 36, 0, time.FixedZone("x", 2*3600))
+	cases := []struct {
+		name string
+		row  store.ProcessRunRow
+		want string
+	}{
+		{"recorded", store.ProcessRunRow{ProcessKey: "k1", LastSeenAt: seen}, "2026-10-15T12:05:36Z"},
+		{"zero time is absent", store.ProcessRunRow{ProcessKey: "k2"}, ""},
+		{"running process keeps it", store.ProcessRunRow{ProcessKey: "k3", LastSeenAt: seen, Exited: false}, "2026-10-15T12:05:36Z"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			n := nodeFromRow(tc.row, nil, nil, nil)
+			if n.LastSeenAt != tc.want {
+				t.Fatalf("LastSeenAt = %q, want %q", n.LastSeenAt, tc.want)
+			}
+			b, err := json.Marshal(n)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var m map[string]any
+			if err := json.Unmarshal(b, &m); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			_, present := m["last_seen_at"]
+			if present != (tc.want != "") {
+				t.Fatalf("last_seen_at present=%v, want %v (omitempty)", present, tc.want != "")
+			}
+		})
+	}
 }

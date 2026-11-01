@@ -52,6 +52,15 @@
 // (OBSERVER_CROSSMOUNT_DISABLE) the same way, which is what e2e
 // harnesses set for the subprocesses they spawn.
 //
+// # An isolated home detects and writes no foreign profile
+//
+// A real binary run with HOME (USERPROFILE on Windows) outside the account's
+// real home, with `--no-crossmount`, with a `--config` outside the real home,
+// or with EnvDisableForeignHomes set detects no foreign home, and
+// AutoDetectSuppressed treats its home as a pinned one (isolation.go, R-013,
+// incident 2026-10-25). DetectionOffReason names which rule applied; the
+// doctor's crossmount row prints it.
+//
 // # MSIX-packaged Windows apps (Claude Desktop / Cowork)
 //
 // An MSIX-packaged Windows app redirects its Roaming AppData: what the

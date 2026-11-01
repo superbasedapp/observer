@@ -72,7 +72,28 @@ type MetricsInput struct {
 	ErrorRate             float64
 	ExplorationEfficiency float64
 	ContinuityScore       float64
+	// Usage says whether the node holds ANY token usage rows for the session
+	// (D-866). It is a DATA-PRESENCE fact the caller reads from the store, never
+	// inferred from the figures being zero: a measured session can legitimately
+	// total zero tokens. The zero value (UsageUnspecified) keeps the pre-D-866
+	// envelope bytes exactly, for a caller that predates the field.
+	Usage UsagePresence
 }
+
+// UsagePresence is the caller's statement of whether token usage was captured
+// for a session. See usageStatusRules for how it maps onto the envelope.
+type UsagePresence int
+
+const (
+	// UsageUnspecified is a caller that predates the field: the envelope carries
+	// no usage_status, byte-identical to an older build.
+	UsageUnspecified UsagePresence = iota
+	// UsageCaptured means at least one counted token row fed the metrics.
+	UsageCaptured
+	// UsageNotCaptured means no token row fed the metrics: the figures are
+	// absent data, not zero usage.
+	UsageNotCaptured
+)
 
 // ActionInput is one normalized action. Path is the raw local path; the
 // builder derives Category from it (extension) when Category is empty, and

@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/cloudcontract"
-	"github.com/marmutapp/superbased-observer/internal/cloudserver/foundry"
+	"github.com/marmutapp/superbased-observer/internal/cloudserver/inference"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/jobs"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/store"
 )
@@ -31,12 +31,13 @@ type Auditor func(ctx context.Context, eventType, detailJSON string) error
 // Options configures one proving run. Every dependency is explicit — there is
 // no ambient credential, no ambient route, and no ambient fixture source.
 type Options struct {
-	// FoundryAPIKey is the PROVE-lane provider credential, passed EXPLICITLY by
+	// APIKey is the PROVE-lane provider credential (for the provider family of
+	// the route being proved), passed EXPLICITLY by
 	// the caller. This is the whole credential-separation design: the lane can
 	// only ever call the provider with a key handed to it here, so it cannot
 	// reach the production worker's key and cannot weaken the worker's
 	// credential-ABSENCE boundary. Empty ⇒ Run refuses.
-	FoundryAPIKey string
+	APIKey string
 
 	// RouteID names the route to prove against (a non-production route pinned by
 	// the operator). Empty ⇒ Run refuses; the lane never guesses a route.
@@ -45,13 +46,15 @@ type Options struct {
 	// Control reads the route snapshot + dialect verification record. Required.
 	Control ControlPlane
 
-	// Attestor is the SAME jobs.ProviderAttestor the worker uses (in production
-	// a jobs.AttestationGate over the ARM ContentLogging reader). Required, and
-	// fail-closed: nil would be an unattested provider call.
+	// Attestor is the SAME jobs.ProviderAttestor the worker uses (a
+	// jobs.AttestationGate over the provider family's attestor: the ARM
+	// ContentLogging reader for Foundry, the disclosed mode for Anthropic).
+	// Required, and fail-closed: nil would be an unattested provider call.
 	Attestor jobs.ProviderAttestor
 
-	// Provider is the Foundry client. Required.
-	Provider foundry.Provider
+	// Provider is the inference seam (the router over the configured provider
+	// clients). Required.
+	Provider inference.Provider
 
 	// Fixtures is the catalog to run. Nil ⇒ Catalog(). A caller may pass a
 	// SUBSET of the compiled-in catalog; it may not pass evidence from anywhere
@@ -83,8 +86,8 @@ const (
 	// StepDialect checks the operator dialect-verification record (FA5).
 	StepDialect Step = "dialect_record"
 	// StepProvider builds the evidence-as-data prompt and makes the one bounded
-	// Foundry call.
-	StepProvider Step = "foundry_call"
+	// provider call (Foundry or Anthropic, by the route dialect).
+	StepProvider Step = "provider_call"
 	// StepNormalize normalizes, scrubs, and grounds the completion (FE1/FE3).
 	StepNormalize Step = "normalize_scrub_ground"
 )
@@ -166,7 +169,7 @@ func (r Report) Passed() bool {
 // can emit beyond fixed labels is derived from the synthetic fixtures (their own
 // authored content, and the model's answer about it).
 func (r Report) Print(w io.Writer) {
-	fmt.Fprintf(w, "observer-cloud prove: fixture-only Foundry proving lane\n")
+	fmt.Fprintf(w, "observer-cloud prove: fixture-only provider proving lane\n")
 	fmt.Fprintf(w, "  route: %s (dialect %s)\n", r.RouteID, r.Dialect)
 	fmt.Fprintf(w, "  started: %s\n", r.StartedAt.UTC().Format(time.RFC3339))
 	fmt.Fprintf(w, "  fixtures: %d (compiled-in catalog; no client evidence)\n\n", len(r.Fixtures))
@@ -204,8 +207,9 @@ const AuditEventType = "prove_run"
 // It is deliberately distinct from any worker error: the fix is to set the
 // prove-lane variable, never to reach for the production worker's key.
 var ErrNoProveCredential = errors.New(
-	"prove: no prove-lane Foundry credential supplied - set SBCI_PROVE_FOUNDRY_API_KEY " +
-		"(this lane NEVER reads SBCI_FOUNDRY_API_KEY: the production worker's credential-absence boundary is untouched)",
+	"prove: no prove-lane credential supplied - set SBCI_PROVE_ANTHROPIC_API_KEY (anthropic routes) or " +
+		"SBCI_PROVE_FOUNDRY_API_KEY (foundry routes) " +
+		"(this lane NEVER reads the worker's SBCI_ANTHROPIC_API_KEY or SBCI_FOUNDRY_API_KEY: the production worker's credential-absence boundary is untouched)",
 )
 
 // Run executes the proving lane: for every fixture, the same pipeline stages the
@@ -219,7 +223,7 @@ var ErrNoProveCredential = errors.New(
 // an error and runs nothing. A pipeline failure is reported per step in the
 // Report — the caller decides the exit code from Report.Passed.
 func Run(ctx context.Context, opts Options) (Report, error) {
-	if strings.TrimSpace(opts.FoundryAPIKey) == "" {
+	if strings.TrimSpace(opts.APIKey) == "" {
 		return Report{}, ErrNoProveCredential
 	}
 	if strings.TrimSpace(opts.RouteID) == "" {
@@ -232,7 +236,7 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 		return Report{}, errors.New("prove: no attestor configured - an unattested provider call is never allowed (fail closed)")
 	}
 	if opts.Provider == nil {
-		return Report{}, errors.New("prove: no Foundry provider configured")
+		return Report{}, errors.New("prove: no inference provider configured")
 	}
 	now := opts.Now
 	if now == nil {
@@ -357,9 +361,16 @@ func runFixture(ctx context.Context, opts Options, f Fixture, now func() time.Ti
 	}
 	fx.pass(StepAttestation, "verified: %s", att.Reason)
 
-	// Step 4 — dialect verification record. Only responses_store_false requires
-	// one; chat_completions is stateless by design.
-	if route.Dialect == string(foundry.DialectResponsesStoreFalse) {
+	// Step 4: dialect. An unknown dialect is never executable; a dialect whose
+	// capability row requires an operator verification record
+	// (responses_store_false) needs a live one. chat_completions and
+	// anthropic_messages are stateless single calls by design.
+	spec, known := inference.SpecFor(route.Dialect)
+	if !known {
+		fx.fail(StepDialect, "dialect %q is not in the inference dialect table (fail closed)", route.Dialect)
+		return fx.report, fx.dialect
+	}
+	if spec.RequiresVerificationRecord {
 		ok, err := opts.Control.DialectVerified(ctx, route, now())
 		switch {
 		case err != nil:
@@ -381,9 +392,9 @@ func runFixture(ctx context.Context, opts Options, f Fixture, now func() time.Ti
 		fx.fail(StepProvider, "evidence delimiter collision: %v", err)
 		return fx.report, fx.dialect
 	}
-	res, err := opts.Provider.Complete(ctx, jobs.BuildLunaRequest(route, opts.FoundryAPIKey, prompt))
+	res, err := opts.Provider.Complete(ctx, jobs.BuildLunaRequest(route, opts.APIKey, prompt))
 	if err != nil {
-		if errors.Is(err, foundry.ErrPersistenceViolation) {
+		if errors.Is(err, inference.ErrPersistenceViolation) {
 			fx.fail(StepProvider, "PERSISTENCE VIOLATION - the endpoint indicated it stored the prompt/completion despite store:false")
 		} else {
 			fx.fail(StepProvider, "provider error: %v", err)

@@ -84,13 +84,14 @@ func Embedded(ctx context.Context, dir string, opts Options) (*Log, error) {
 	}
 	o.URL = srv.ClientURL()
 
-	nc, err := connectNATS(o)
+	w := newConnWatch(o.Logger)
+	nc, err := connectNATS(o, w)
 	if err != nil {
 		srv.Shutdown()
 		srv.WaitForShutdown()
 		return nil, fmt.Errorf("natslog.Embedded: %w: %w", err, telemetrylog.ErrUnavailable)
 	}
-	l, err := newLog(ctx, nc, o, srv)
+	l, err := newLog(ctx, nc, o, srv, w)
 	if err != nil {
 		nc.Close()
 		srv.Shutdown()

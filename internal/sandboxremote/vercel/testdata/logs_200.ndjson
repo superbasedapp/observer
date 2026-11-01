@@ -1,0 +1,3 @@
+{"stream":"stdout","data":"hello "}
+{"stream":"stderr","data":"a warning"}
+{"stream":"stdout","data":"world\n"}

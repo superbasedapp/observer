@@ -344,11 +344,11 @@ func TestCheckCodexHookTrust_RegisteredButNoConfigToml(t *testing.T) {
 	events := codexExpectedHookEvents()
 	codexHookTrustWriteHooks(t, home, events...)
 	c := checkCodexHookTrust(home)
-	if c.Status != StatusWarn {
-		t.Errorf("status=%s want Warn (config.toml missing, all untrusted)", c.Status)
+	if c.Status != StatusFail {
+		t.Errorf("status=%s want Fail (config.toml missing, all untrusted: the tool gate is off)", c.Status)
 	}
-	if !strings.Contains(c.Message, fmt.Sprintf("%d codex hook", len(events))) {
-		t.Errorf("message=%q want the %d count", c.Message, len(events))
+	if !strings.Contains(c.Message, fmt.Sprintf("%d need approval", len(events))) || !strings.Contains(c.Message, "gate is OFF") {
+		t.Errorf("message=%q want the %d count and the gate-off verdict", c.Message, len(events))
 	}
 	if len(c.Details) == 0 || !strings.HasPrefix(c.Details[0], "untrusted:") {
 		t.Fatalf("first detail must name the untrusted events: %v", c.Details)
@@ -409,8 +409,8 @@ func TestCheckCodexHookTrust_PartialTrust(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := checkCodexHookTrust(home)
-	if c.Status != StatusWarn {
-		t.Fatalf("status=%s want Warn", c.Status)
+	if c.Status != StatusFail {
+		t.Fatalf("status=%s want Fail (PreToolUse, the tool gate, is untrusted)", c.Status)
 	}
 	if strings.Contains(c.Details[0], "SessionStart") {
 		t.Errorf("SessionStart is trusted, not in the untrusted line: %q", c.Details[0])
@@ -450,8 +450,8 @@ func TestCheckCodexHookTrust_ModifiedSinceTrusted(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := checkCodexHookTrust(home)
-	if c.Status != StatusWarn || c.Details[0] != "untrusted: PreToolUse" {
-		t.Fatalf("status=%s details=%v, want Warn with only PreToolUse blocked", c.Status, c.Details)
+	if c.Status != StatusFail || c.Details[0] != "untrusted: PreToolUse" {
+		t.Fatalf("status=%s details=%v, want Fail (gate off) with only PreToolUse blocked", c.Status, c.Details)
 	}
 	if !strings.Contains(strings.Join(c.Details, "\n"), "(re-trust in /hooks): PreToolUse") {
 		t.Errorf("modified state not explained: %v", c.Details)

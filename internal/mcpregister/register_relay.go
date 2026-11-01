@@ -55,8 +55,8 @@ import (
 func (r *Registrar) RelayClients() []project.Client {
 	var out []project.Client
 	for _, tool := range r.Installed() {
-		loc, ok := locate.ForClient(tool, r.opts.HomeDir)
-		if !ok {
+		loc, ok := r.location(tool)
+		if !ok || loc.Refusal() != nil {
 			continue
 		}
 		_, writer := wrapWriters[loc.Format]
@@ -69,12 +69,15 @@ func (r *Registrar) RelayClients() []project.Client {
 // restore-time Client carries only tool + path) and resolves the writer.
 func (r *Registrar) resolveClient(c project.Client) (project.Client, formatWriter, error) {
 	if c.Format == "" {
-		loc, ok := locate.ForClient(c.Tool, r.opts.HomeDir)
+		loc, ok := r.location(c.Tool)
 		if !ok {
 			return c, formatWriter{}, fmt.Errorf("mcp.relay-writer: tool %q has no MCP config location", c.Tool)
 		}
 		c.Format = string(loc.Format)
 		if c.ConfigPath == "" {
+			if err := loc.Refusal(); err != nil {
+				return c, formatWriter{}, fmt.Errorf("mcp.relay-writer: %w", err)
+			}
 			c.ConfigPath = loc.Path
 		}
 	}

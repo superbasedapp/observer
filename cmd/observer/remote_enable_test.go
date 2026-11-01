@@ -63,7 +63,7 @@ func TestRemoteEnableProvisionsSecretAndConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("secret file missing: %v", err)
 	}
-	if perm := fi.Mode().Perm(); perm != 0o600 {
+	if perm := fi.Mode().Perm(); posixModes && perm != 0o600 {
 		t.Errorf("secret file perm = %o, want 600", perm)
 	}
 	hashBytes, _ := os.ReadFile(secretPath)
@@ -331,7 +331,7 @@ func TestRemoteEnableSeamMatchesCLI(t *testing.T) {
 		if err != nil {
 			t.Fatalf("secret missing in %s: %v", dir, err)
 		}
-		if perm := fi.Mode().Perm(); perm != 0o600 {
+		if perm := fi.Mode().Perm(); posixModes && perm != 0o600 {
 			t.Errorf("secret perm in %s = %o, want 600", dir, perm)
 		}
 	}

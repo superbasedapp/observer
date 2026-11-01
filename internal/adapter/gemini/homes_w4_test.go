@@ -1,0 +1,21 @@
+package gemini
+
+import (
+	"path/filepath"
+	"slices"
+	"testing"
+)
+
+// TestWatchRootsFollowGeminiCLIHome (S-17 / CLI-4, lane w4-homes-b): GEMINI_CLI_HOME moves
+// the tool's home, so the adapter watches the relocated session subtree
+// beside the per-home defaults. Red before: the roots were per-home only.
+func TestWatchRootsFollowGeminiCLIHome(t *testing.T) {
+	alt := filepath.Join(t.TempDir(), "relocated")
+	t.Setenv("GEMINI_CLI_HOME", alt)
+	got := defaultRoots()
+	for _, want := range []string{filepath.Join(alt, ".gemini", "tmp")} {
+		if !slices.Contains(got, want) {
+			t.Errorf("roots = %v, want %s", got, want)
+		}
+	}
+}

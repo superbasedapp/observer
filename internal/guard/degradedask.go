@@ -40,11 +40,11 @@ func ConfirmBlockLine(av ActionVerdict, sessionID string) string {
 	rule := av.Verdict.RuleID
 	if sessionID != "" {
 		return fmt.Sprintf(
-			"observer: %s needs your confirmation before %s runs, and this tool cannot ask you, so it was blocked. To allow it, run `observer guard approve %s --session %s` (or approve it on the Observer dashboard Security page), then let the agent retry the identical call.",
+			"observer: %s needs your confirmation before %s runs, and this tool cannot ask you, so it was blocked. To allow it, the developer (not the agent) runs `observer guard approve %s --session %s` (or approves it on the Observer dashboard Security page), then lets the agent retry the identical call.",
 			rule, what, rule, sessionID)
 	}
 	return fmt.Sprintf(
-		"observer: %s needs your confirmation before %s runs, and this tool cannot ask you, so it was blocked. This tool reported no session id, so approve %s on the Observer dashboard Security page, then let the agent retry the identical call.",
+		"observer: %s needs your confirmation before %s runs, and this tool cannot ask you, so it was blocked. This tool reported no session id, so the developer (not the agent) approves %s on the Observer dashboard Security page, then lets the agent retry the identical call.",
 		rule, what, rule)
 }
 

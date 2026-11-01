@@ -12,8 +12,12 @@
 // This package reproduces that hash (Hash) so a changed entry can be told
 // apart from a trusted one, and classifies every event Observer registers
 // (Classify), including an event Observer expects but hooks.json lacks.
-// It is DETECTION ONLY: nothing here writes Codex's config, and Observer
-// never trusts a hook on the user's behalf (decision D-148).
+// PlanTrust (trust.go) plans the trust records the hook writer records for
+// Observer's OWN entries when it registers them (live check 2026-10-20,
+// operator ruling; it narrows decision D-148): only handlers the caller
+// claims, hashed exactly as Codex does, never an entry the user switched
+// off. Nothing here writes a file; internal/hook does, under the consent
+// that authorizes the hook write.
 //
 // Pure: callers pass file bytes; no file, SQL, HTTP or fsnotify access.
 package codextrust

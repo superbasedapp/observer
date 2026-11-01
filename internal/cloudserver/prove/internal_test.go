@@ -58,12 +58,12 @@ func TestMalformedFixtureFailsBeforeAnythingLeaves(t *testing.T) {
 	provider := &foundry.FakeProvider{Response: foundry.Response{Content: "{}"}}
 
 	rep, err := Run(context.Background(), Options{
-		FoundryAPIKey: "prove-key",
-		RouteID:       "r1",
-		Control:       control,
-		Attestor:      att,
-		Provider:      provider,
-		Fixtures:      []Fixture{broken},
+		APIKey:   "prove-key",
+		RouteID:  "r1",
+		Control:  control,
+		Attestor: att,
+		Provider: provider,
+		Fixtures: []Fixture{broken},
 	})
 	if err != nil {
 		t.Fatalf("Run returned a configuration error, want a reported step failure: %v", err)

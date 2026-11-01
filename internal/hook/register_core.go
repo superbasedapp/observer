@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -18,6 +19,10 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/credfile"
+	"github.com/marmutapp/superbased-observer/internal/hookdigest"
+	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
+	"github.com/marmutapp/superbased-observer/internal/regularfile"
+	"github.com/marmutapp/superbased-observer/internal/testwriteguard"
 )
 
 // RegistrationResult summarizes a single tool registration.
@@ -25,9 +30,13 @@ type RegistrationResult struct {
 	Tool       string   // claude-code[-windows] | cursor[-windows] | codex[-windows]
 	ConfigPath string   // absolute path to the patched config file
 	HooksAdded []string // event names that now point at the observer binary
-	AlreadySet []string // events that already pointed at the observer (skipped)
-	DryRun     bool
-	Error      error
+	// HooksDropped are the events whose Observer per-node entry this pass
+	// removed because a trusted administrator hooks file already runs it
+	// (managedhooks.go); a non-Observer entry is never removed.
+	HooksDropped []string
+	AlreadySet   []string // events that already pointed at the observer (skipped)
+	DryRun       bool
+	Error        error
 
 	// Skipped reports that the registrar deliberately wrote nothing.
 	// SkipKind says why, and the two reasons mean opposite things for
@@ -75,6 +84,31 @@ type RegistrationResult struct {
 	// still happened (fail-open to wiring) — this is a reporting
 	// channel, never control flow. Empty on every conclusive path.
 	ProbeWarning string
+
+	// Warnings are NON-FATAL, operator-actionable notes about wiring that is
+	// (or would be) in place but may not run on the host as configured
+	// today, e.g. a Windows hook runner whose shell is not on the Windows
+	// PATH (windowsshell.go). Registration happened exactly as without them;
+	// they never change control flow. Nil on every path with nothing to say.
+	Warnings []string
+
+	// RepairCopy is where a managed repair of a neutralised Observer
+	// artifact kept the bytes it replaced (T-884): a new
+	// "<path>.displaced-<UTC>" file next to the artifact (keepRepairCopy).
+	// Empty when the registration repaired nothing, or the artifact is
+	// credential-bearing and is never copied.
+	RepairCopy string
+
+	// TrustRecorded names the events whose host-side trust record this
+	// registration wrote for Observer's own entries (a host that runs a
+	// hook only once it is trusted: Codex, live check 2026-10-20). Empty
+	// when nothing needed recording.
+	TrustRecorded []string
+	// TrustNote is a NON-FATAL note: Observer's entries were registered
+	// but at least one could not be trusted (the reason, never file
+	// contents), so the host will not run it until the user approves it
+	// there. Empty when every entry is trusted.
+	TrustNote string
 }
 
 // SkipKind is RegistrationResult.SkipKind: why a registrar wrote nothing.
@@ -100,6 +134,18 @@ type Options struct {
 	// BinaryPath is the absolute path to the running observer binary
 	// that hook commands will invoke. Required.
 	BinaryPath string
+	// WSLTwinBinaryPath is the Windows observer.exe a "-wsl" twin's hook
+	// runs through WSL interop, when BinaryPath is a package manager's
+	// launcher (an npm .cmd / .bat or a pip console script) that interop
+	// cannot run: the binary that launcher started, which the caller is
+	// (FU-214, operator ruling option 1). The twin re-points to it on every
+	// registration, so an upgrade that moves it is repaired at the next
+	// `observer start`. Empty: the twin runs BinaryPath.
+	WSLTwinBinaryPath string
+	// PinPluginPaths renders in-process plugin shims that ignore
+	// OBSERVER_BIN and OBSERVER_CONFIG from the host's environment
+	// (pluginshim.RenderOptions.PinPaths): set on a managed node.
+	PinPluginPaths bool
 	// DryRun, when true, computes the result without touching any files.
 	DryRun bool
 	// Force, when true, overwrites existing non-observer hook entries for
@@ -140,13 +186,73 @@ type Options struct {
 	// entry to this binary. Applies to the Claude Code registrars.
 	KeepEquivalentHooks bool
 
+	// RepairOwnedArtifacts, when true, marks a managed node's repair pass
+	// (T-872): an artifact Observer owns by NAME (a file Observer names, or
+	// an entry Observer names inside a shared file) that Observer installed
+	// before (hook_checksums.json records it) but that no longer reads as
+	// Observer's is rewritten and reported as a repair instead of refused.
+	// A genuinely foreign hook, and every artifact that is Observer's only by
+	// content, is still refused (conflictRules, ownership.go). The
+	// heartbeat's re-registration sets it on a managed node only; false keeps
+	// the refusal every other caller has always had.
+	RepairOwnedArtifacts bool
+
+	// ToolGateFailsClosed is true when guard enforcement closes the tool
+	// gate on this node (the caller resolves it from the guard posture or
+	// the config, the hook failure plan's own answer). A writer whose host
+	// fails OPEN on a hook failure unless told otherwise (Goose's
+	// on_failure) then writes the host's fail-closed switch. False keeps
+	// every host's default.
+	ToolGateFailsClosed bool
+
+	// WindowsBridgeFailClosed is true on a MANAGED node whose guard
+	// enforcement closes the tool gate (the caller resolves both). A
+	// cross-OS Windows registrar may then write the fail-closed hook bridge
+	// (`observer hook-bridge`) for its tool-gate events, so a gated call
+	// blocks when WSL cannot run the hook (surface-gap AW-37, D12). The
+	// writer is switched off behind live check LC6
+	// (integration.WriterKindHookBridge): while that waits, every registrar
+	// writes today's wsl.exe bridge byte for byte whatever this says.
+	WindowsBridgeFailClosed bool
+
+	// Selected reports whether an optional component is SELECTED (the
+	// caller's component snapshot with its opt-in rule applied). A binding
+	// with RegisterWhen is written only while Selected(its component) is
+	// true, and a writer removes the entry Observer wrote for it when it is
+	// not (the security feedback's post-tool events, lane sec-h). nil
+	// means the caller holds no component state, and leaves opt-in events
+	// alone: no writer adds one and none removes one Observer already wrote
+	// (the generic settings entry stays, the plugin shim keeps the post
+	// block it has, the Cline script stays). Only a caller that resolves
+	// the selection (observer start, observer init) changes them. On a file
+	// with no opt-in entry, nil writes what the writers wrote before the
+	// field existed.
+	Selected func(component string) bool
+
 	// binaryWorks overrides hookBinaryWorks in tests.
 	binaryWorks func(path string) bool
 
-	// Getenv resolves the environment overrides a plugin-shim host honours
-	// for its plugin directory (XDG_CONFIG_HOME, PI_CODING_AGENT_DIR).
-	// nil means no environment lookup at all: only HomeDir decides, which
-	// is what tests want. Production callers pass os.Getenv.
+	// fileExists overrides the Windows hook-shell file probe in tests
+	// (windowsshell.go); nil means os.Stat on a regular file.
+	fileExists func(path string) bool
+
+	// WindowsPATH returns the PERSISTENT Windows PATH (machine then user,
+	// as a newly launched program inherits it), in the form the Windows
+	// hook-shell check reads for this host: `;`-separated C:\... on a
+	// Windows observer, `:`-separated /mnt/<drive>/... from WSL. ok=false
+	// falls back to Getenv("PATH"). nil (every test, unless it injects one)
+	// means no persistent read. Production passes PersistentWindowsPATH.
+	WindowsPATH func() (path string, ok bool)
+
+	// Getenv reads the relocation variables of the files the registry
+	// writes (CLAUDE_CONFIG_DIR, CODEX_HOME, the plugin-shim hosts'
+	// XDG_CONFIG_HOME and PI_CODING_AGENT_DIR, and every other rule on the
+	// files' agentconfig rows). nil is the one pinned-home rule
+	// (crossmount.HomeEnv, R-188 F1): os.Getenv only when HomeDir is not
+	// pinned and the process home is not isolated
+	// (crossmount.IsolationReason), and no variable otherwise, so a pinned
+	// or isolated home resolves every file under itself. Production
+	// callers pass nil.
 	Getenv func(string) string
 
 	// WSLDistro names the WSL distribution to invoke via wsl.exe when
@@ -195,16 +301,40 @@ type Options struct {
 	// /mnt/c/Users/<u>); the registrar appends the tool's own subdir
 	// itself (.gemini, .qwen, .factory, .qoder, .config/poolside,
 	// .commandcode respectively). Default: the first crossmount-detected
-	// Windows home carrying that subdir. Windsurf/Devin Desktop Cascade
-	// has NO Windows counterpart here — its only grounded install
-	// channel is the macOS Homebrew cask (internal/integration's devin
-	// row), so a cross-OS bridge would have nothing to bridge to.
+	// Windows home carrying that subdir. Devin Desktop (Windsurf Cascade)
+	// is grounded on Windows (LC29) and has its own bridge,
+	// devin-windows, which resolves under WindowsUserHome
+	// (register_crossos_ide.go, surface-gap IDE-6).
 	WindowsGeminiHome      string
 	WindowsQwenHome        string
 	WindowsFactoryHome     string
 	WindowsQoderHome       string
 	WindowsPoolsideHome    string
 	WindowsCommandCodeHome string
+
+	// WindowsCopilotHome is the same for the copilot-cli-windows bridge
+	// (the registrar appends .copilot/hooks itself). Default: the one
+	// crossmount-detected Windows home, owned by the current Windows user,
+	// carrying a .copilot directory.
+	WindowsCopilotHome string
+	// WindowsUserHome is the Windows USER home (e.g. /mnt/c/Users/<u>) the
+	// 2026-10-21 wave's cross-OS targets (ibm-bob-windows,
+	// codebuddy-windows, deepagents-code-windows, dimcode-windows,
+	// dirac-windows, vtcode-windows) resolve their vendor directory under;
+	// each appends its own subdir. Default: the first crossmount-detected
+	// Windows home carrying that subdir.
+	WindowsUserHome string
+	// WSLUserHome is the Linux user home inside a WSL distro as this Windows
+	// host reaches it (\\wsl.localhost\<distro>\home\<user>), the home every
+	// Windows to WSL twin ("<tool>-wsl", register_crossos_wsl.go) writes
+	// under. Default: the one WSL home crossmount sees that is proven the
+	// operator's (the only user directory in its distro) and carries the
+	// tool. Pass it to choose among several.
+	WSLUserHome string
+	// GOOS is the OS whose hook-file shapes a native registration writes
+	// (Dirac's per-event script form, VT Code's config path, the Kimchi
+	// bash gate). Empty means the running OS; tests pin it.
+	GOOS string
 }
 
 // Registry is the per-tool registration dispatcher.
@@ -224,6 +354,10 @@ type Registry struct {
 	// and the next `observer enroll --wire-clients` detected those as
 	// installed tools and wired ~20 tools the machine never had.
 	removing bool
+	// foreignOSTwin marks the derived registry of a Windows to WSL twin
+	// (register_crossos_wsl.go): its home is another OS's, so this host's
+	// administrator hooks file is not a layer of it.
+	foreignOSTwin bool
 }
 
 // NewRegistry returns a registry ready to install hooks.
@@ -239,6 +373,7 @@ func NewRegistry(opts Options) (*Registry, error) {
 		}
 		opts.HomeDir = home
 	}
+	opts.Getenv = crossmount.HomeEnv(homeOverride, opts.Getenv)
 	return &Registry{opts: opts, homeOverride: homeOverride}, nil
 }
 
@@ -250,22 +385,35 @@ func NewRegistry(opts Options) (*Registry, error) {
 // hooks at the Windows path so the Windows process can invoke the
 // WSL-side observer binary and its hook writes land in the daemon's own
 // DB.
+//
+// A target switched off behind a live-check gate (livegate.go, DEC-12) is
+// never listed, so `observer start`, `observer init` and the dashboard,
+// which all iterate this list, never reach it; InstalledLiveGated names
+// the detected gated targets for the doctor.
 func (r *Registry) Installed() []string {
+	tools, _ := splitLiveGated(r.installedAll(false))
+	return tools
+}
+
+// installedAll is Installed before the live-check gate is applied. With
+// includeGated false a gated cross-OS target is not even detected (its
+// detection reads another OS's home); InstalledLiveGated passes true.
+func (r *Registry) installedAll(includeGated bool) []string {
 	var tools []string
-	if r.dirExists(filepath.Join(r.opts.HomeDir, ".claude")) {
+	if r.claudeInstalled() {
 		tools = append(tools, "claude-code")
 	}
 	if r.dirExists(filepath.Join(r.opts.HomeDir, ".cursor")) {
 		tools = append(tools, "cursor")
 	}
-	if r.dirExists(filepath.Join(r.opts.HomeDir, ".codex")) {
+	if r.codexInstalled() {
 		tools = append(tools, "codex")
 	}
 	// Part B item 1: Gemini CLI, Qwen Code, Factory Droid — probed the
 	// same way as every other native dir-based install (no vendor
 	// binary probe here; Installed() has never shelled out to a
 	// tool's own CLI, it only checks for the config directory).
-	if r.dirExists(filepath.Join(r.opts.HomeDir, ".gemini")) {
+	if r.dirExists(filepath.Join(r.opts.HomeDir, ".gemini")) || r.homeArtifactExists("gemini-cli") {
 		tools = append(tools, "gemini-cli")
 	}
 	// Antigravity CLI keeps its state under ~/.gemini/antigravity-cli; its
@@ -273,10 +421,17 @@ func (r *Registry) Installed() []string {
 	// when this signal puts the tool on the auto-register list. Missing
 	// before 2026-10-03: demo node 1's `observer start` registered every
 	// other hook but never wrote ~/.gemini/config/hooks.json.
-	if r.dirExists(filepath.Join(r.opts.HomeDir, ".gemini", "antigravity-cli")) {
+	//
+	// Surface-gap W-2c: the Antigravity App and IDE read the same
+	// ~/.gemini/config/hooks.json, so their data directories are install
+	// signals for this target too (agyHookFileReaderDirs). So is the
+	// shared hooks file's own directory, resolved from the catalogued
+	// artifact (WINNODE2 item 5b): the Google Antigravity VS Code
+	// extension and the IDE never create antigravity-cli.
+	if r.agyInstalled() {
 		tools = append(tools, "antigravity-cli")
 	}
-	if r.dirExists(filepath.Join(r.opts.HomeDir, ".qwen")) {
+	if r.dirExists(filepath.Join(r.opts.HomeDir, ".qwen")) || r.homeArtifactExists("qwen-code") {
 		tools = append(tools, "qwen-code")
 	}
 	if r.dirExists(filepath.Join(r.opts.HomeDir, ".factory")) {
@@ -289,7 +444,7 @@ func (r *Registry) Installed() []string {
 	// and commandcode's registration target (~/.commandcode/mods/) is a
 	// mods directory this repo creates itself on registration, not a
 	// pre-existing install signal worth probing.
-	if r.dirExists(filepath.Join(r.opts.HomeDir, ".qoder")) {
+	if r.dirExists(filepath.Join(r.opts.HomeDir, ".qoder")) || r.homeArtifactExists("qoder") {
 		tools = append(tools, "qoder")
 	}
 	if r.dirExists(filepath.Join(r.opts.HomeDir, ".config", "poolside")) {
@@ -303,13 +458,19 @@ func (r *Registry) Installed() []string {
 		tools = append(tools, "command-code")
 	}
 	// Hook-parity Lane A6: the tool-gate-only mechanisms, each detected by
-	// the vendor's own state directory (installedToolGateDirs).
+	// the vendor's own state directory (installedToolGateDirs), or the home
+	// its catalogued artifact resolves to (homeArtifacts: the vendor's own
+	// relocation variable, Goose's native Windows home).
 	for _, d := range installedToolGateDirs {
+		found := r.homeArtifactExists(d.tool)
 		for _, rel := range d.dirs {
-			if r.dirExists(filepath.Join(append([]string{r.opts.HomeDir}, rel...)...)) {
-				tools = append(tools, d.tool)
+			if found {
 				break
 			}
+			found = r.dirExists(filepath.Join(append([]string{r.opts.HomeDir}, rel...)...))
+		}
+		if found {
+			tools = append(tools, d.tool)
 		}
 	}
 
@@ -329,8 +490,8 @@ func (r *Registry) Installed() []string {
 	}
 	// Part B item 1/2 cross-OS bridges: the same detection convention as
 	// the three above, one per long-tail vendor that plausibly ships a
-	// Windows-native client. Windsurf/Devin Desktop Cascade has no row
-	// here — see Options.WindowsCommandCodeHome's doc comment.
+	// Windows-native client. Devin Desktop's bridge (devin-windows) is
+	// listed with the Wave 7 IDE targets below.
 	if r.detectWindowsGeminiHome() != "" {
 		tools = append(tools, "gemini-cli-windows")
 	}
@@ -349,6 +510,17 @@ func (r *Registry) Installed() []string {
 	if r.detectWindowsCommandCodeHome() != "" {
 		tools = append(tools, "command-code-windows")
 	}
+	if r.detectWindowsCopilotHome() != "" {
+		tools = append(tools, "copilot-cli-windows")
+	}
+	// The 2026-10-21 wave's cross-OS bridges (waveCrossOSTargets).
+	tools = append(tools, r.installedWaveWindows()...)
+	// The Windows to WSL twins (register_crossos_wsl.go); gated.
+	tools = append(tools, r.installedWSLTwins(includeGated)...)
+	// The Wave 7 IDE targets (register_crossos_ide.go); gated.
+	tools = append(tools, r.installedIDETargets(includeGated)...)
+	// The Xcode agent homes (register_xcode.go); gated.
+	tools = append(tools, r.installedXcodeTargets(includeGated)...)
 	return tools
 }
 
@@ -401,6 +573,45 @@ var hookTargetWriters = map[string]struct {
 	"command-code":         {(*Registry).registerCommandCodeAll, (*Registry).unregisterCommandCodeAll},
 	"command-code-windows": {(*Registry).registerCommandCodeWindowsAll, (*Registry).unregisterCommandCodeWindowsAll},
 	"antigravity-cli":      {(*Registry).registerAntigravityCLI, (*Registry).unregisterAntigravityCLI},
+	// Surface-gap Wave 7 IDE targets (register_crossos_ide.go); gated.
+	"antigravity-cli-windows": {(*Registry).registerAntigravityCLIWindows, (*Registry).unregisterAntigravityCLIWindows},
+	"devin-windows":           {(*Registry).registerDevinWindows, (*Registry).unregisterDevinWindows},
+	"devin-jetbrains":         {(*Registry).registerDevinJetBrains, (*Registry).unregisterDevinJetBrains},
+	// The Xcode agent homes (register_xcode.go, FU-145, FU-160); the Gemini
+	// one stays off on LCR-91's finding (no BeforeTool, FU-195).
+	"claude-code-xcode": {(*Registry).registerClaudeCodeXcode, (*Registry).unregisterClaudeCodeXcode},
+	"codex-xcode":       {(*Registry).registerCodexXcode, (*Registry).unregisterCodexXcode},
+	"gemini-cli-xcode":  {(*Registry).registerGeminiCLIXcode, (*Registry).unregisterGeminiCLIXcode},
+	// The 2026-10-21 wave (register_wave1021*.go).
+	"ibm-bob":                 {(*Registry).registerIBMBob, (*Registry).unregisterIBMBob},
+	"ibm-bob-windows":         waveWindowsWriter("ibm-bob"),
+	"codebuddy":               {(*Registry).registerCodeBuddy, (*Registry).unregisterCodeBuddy},
+	"codebuddy-windows":       waveWindowsWriter("codebuddy"),
+	"deepagents-code":         {(*Registry).registerDeepAgents, (*Registry).unregisterDeepAgents},
+	"deepagents-code-windows": waveWindowsWriter("deepagents-code"),
+	"dimcode":                 {(*Registry).registerDimCode, (*Registry).unregisterDimCode},
+	"dimcode-windows":         waveWindowsWriter("dimcode"),
+	"dirac":                   {(*Registry).registerDirac, (*Registry).unregisterDirac},
+	"dirac-windows":           waveWindowsWriter("dirac"),
+	"autohand":                {(*Registry).registerAutohand, (*Registry).unregisterAutohand},
+	"vtcode":                  {(*Registry).registerVTCode, (*Registry).unregisterVTCode},
+	"vtcode-windows":          waveWindowsWriter("vtcode"),
+	"kimchi":                  {(*Registry).registerKimchi, (*Registry).unregisterKimchi},
+}
+
+// waveWindowsWriter is the hookTargetWriters row of a 2026-10-21 wave
+// "-windows" target.
+func waveWindowsWriter(tool string) struct {
+	register   func(*Registry) RegistrationResult
+	unregister func(*Registry) UnregistrationResult
+} {
+	return struct {
+		register   func(*Registry) RegistrationResult
+		unregister func(*Registry) UnregistrationResult
+	}{
+		func(r *Registry) RegistrationResult { return r.registerWaveWindows(tool) },
+		func(r *Registry) UnregistrationResult { return r.unregisterWaveWindows(tool) },
+	}
 }
 
 // toolGateWriters are the hook-parity Lane A4-A6 tool-gate-only writers,
@@ -411,17 +622,21 @@ var toolGateWriters = map[string]struct {
 	register   func(*Registry) RegistrationResult
 	unregister func(*Registry) UnregistrationResult
 }{
-	"grok":             {(*Registry).registerGrok, (*Registry).unregisterGrok},
-	"copilot-cli":      {(*Registry).registerCopilotCLI, (*Registry).unregisterCopilotCLI},
-	"goose":            {(*Registry).registerGoose, (*Registry).unregisterGoose},
-	"junie":            {(*Registry).registerJunie, (*Registry).unregisterJunie},
-	"crush":            {(*Registry).registerCrush, (*Registry).unregisterCrush},
-	"open-interpreter": {(*Registry).registerOpenInterpreter, (*Registry).unregisterOpenInterpreter},
-	"zcode":            {(*Registry).registerZcode, (*Registry).unregisterZcode},
-	"mistral-code":     {(*Registry).registerMistralVibe, (*Registry).unregisterMistralVibe},
-	"cline-cli":        {(*Registry).registerCline, (*Registry).unregisterCline},
-	"muse":             {(*Registry).registerMuse, (*Registry).unregisterMuse},
-	"kimi-code":        {(*Registry).registerKimiCode, (*Registry).unregisterKimiCode},
+	"grok":        {(*Registry).registerGrok, (*Registry).unregisterGrok},
+	"copilot-cli": {(*Registry).registerCopilotCLI, (*Registry).unregisterCopilotCLI},
+	// The cross-OS bridge (live check 2026-10-20): a WSL daemon wiring the
+	// Windows Copilot CLI, which had no Observer hook at all.
+	"copilot-cli-windows": {(*Registry).registerCopilotCLIWindows, (*Registry).unregisterCopilotCLIWindows},
+	"goose":               {(*Registry).registerGoose, (*Registry).unregisterGoose},
+	"junie":               {(*Registry).registerJunie, (*Registry).unregisterJunie},
+	"crush":               {(*Registry).registerCrush, (*Registry).unregisterCrush},
+	"open-interpreter":    {(*Registry).registerOpenInterpreter, (*Registry).unregisterOpenInterpreter},
+	"zcode":               {(*Registry).registerZcode, (*Registry).unregisterZcode},
+	"mistral-code":        {(*Registry).registerMistralVibe, (*Registry).unregisterMistralVibe},
+	"cline-cli":           {(*Registry).registerCline, (*Registry).unregisterCline},
+	"muse":                {(*Registry).registerMuse, (*Registry).unregisterMuse},
+	"kimi-code":           {(*Registry).registerKimiCode, (*Registry).unregisterKimiCode},
+	"kiro-cli":            {(*Registry).registerKiroCLI, (*Registry).unregisterKiroCLI},
 }
 
 // Register installs observer hooks into the config file for tool. Supported
@@ -429,13 +644,22 @@ var toolGateWriters = map[string]struct {
 // "codex", "codex-windows". Unknown tools return an error. A target whose
 // registry row declares the credential-file exception
 // (integration.HookSpec.HooksShareCredentialFile) also runs under
-// guardCredentialRegistration (credentialfile.go).
+// guardCredentialRegistration (credentialfile.go). A target switched off
+// behind a live-check gate (liveGateRefusal: its registry row's or its
+// cross-OS target row's) writes nothing and returns a SkipLiveGated result
+// instead, whoever calls it.
 func (r *Registry) Register(tool string) RegistrationResult {
-	return r.guardCredentialRegistration(tool, r.register(tool))
+	if res, gated := r.liveGateRefusal(tool); gated {
+		return res
+	}
+	return r.withWindowsShellWarning(tool, r.guardCredentialRegistration(tool, r.register(tool)))
 }
 
 // register dispatches Register to tool's writer.
 func (r *Registry) register(tool string) RegistrationResult {
+	if row, ok := wslTwinFor(tool); ok {
+		return r.registerWSLTwin(row)
+	}
 	if w, ok := toolGateWriters[tool]; ok {
 		return w.register(r)
 	}
@@ -460,7 +684,9 @@ func (r *Registry) register(tool string) RegistrationResult {
 //     (forward- or back-slashed, quoted or bare);
 //   - the cross-OS bridge, as the `*-windows` registrars write it —
 //     `[MSYS_NO_PATHCONV=1 ]wsl.exe -d <distro> -- /home/<u>/observer
-//     hook cursor stop --config /home/<u>/.observer/config.toml`.
+//     hook cursor stop --config /home/<u>/.observer/config.toml`, or the
+//     portable form (portableBridgeCommand) with `//`-escaped paths and a
+//     trailing `; exit $LASTEXITCODE`.
 //
 // tool is the hook vocabulary token: "claude-code", "cursor" or
 // "codex".
@@ -503,10 +729,34 @@ func isObserverAnyHookEntry(cmd, tool string) bool {
 	return false
 }
 
+// IsObserverHookCommand reports whether cmd is a hook command Observer
+// registers for any tool: isObserverAnyHookEntry asked with the tool token
+// the command itself names after `hook`. It is the one recogniser the
+// repository trust user-scope baseline uses to leave Observer's own hook
+// entries out of what it reports as new (plans decision log P-037).
+func IsObserverHookCommand(cmd string) bool {
+	for _, c := range []string{cmd, strings.ReplaceAll(cmd, `\`, "/")} {
+		toks := stripHookCommandPrefix(splitCommandTokens(c))
+		if len(toks) >= 3 && toks[1] == "hook" && toks[2] != "" {
+			return isObserverAnyHookEntry(cmd, toks[2])
+		}
+	}
+	return false
+}
+
+// IsObserverStatuslineCommand reports whether cmd is the status line
+// command Observer registers (isObserverStatuslineEntry).
+func IsObserverStatuslineCommand(cmd string) bool { return isObserverStatuslineEntry(cmd) }
+
+// IsObserverBinary reports whether an executable token names an observer
+// binary by its base name (isObserverBinaryToken).
+func IsObserverBinary(tok string) bool { return isObserverBinaryToken(tok) }
+
 // observerHookInvocation is isObserverAnyHookEntry's single tokenized
 // test: strip env assignments + any wsl.exe bridge prefix, then require
 // argv[0] to name an observer binary followed by `hook <tool>`.
 func observerHookInvocation(cmd, tool string) bool {
+	cmd, _ = trimBridgeExitTrailer(cmd)
 	toks := stripHookCommandPrefix(splitCommandTokens(cmd))
 	if len(toks) < 3 {
 		return false
@@ -514,13 +764,19 @@ func observerHookInvocation(cmd, tool string) bool {
 	return isObserverBinaryToken(toks[0]) && toks[1] == "hook" && toks[2] == tool
 }
 
-// stripHookCommandPrefix removes the leading `KEY=VALUE` environment
+// stripHookCommandPrefix removes a leading PowerShell call operator `&`, the
+// leading `KEY=VALUE` environment
 // assignments and, if present, the `wsl.exe -d <distro> --` bridge that
 // registerClaudeCodeWindows writes, returning the tokens of the command
 // actually executed. Returns nil when a bridge prefix is present but
 // malformed (no `--` separator), so a half-understood command is never
 // treated as ours.
 func stripHookCommandPrefix(toks []string) []string {
+	// PowerShell's call operator, which the native Codex writer puts before
+	// a quoted Windows binary (codexHookExe).
+	if len(toks) > 1 && toks[0] == "&" {
+		toks = toks[1:]
+	}
 	for len(toks) > 0 && strings.Contains(toks[0], "=") &&
 		!strings.ContainsAny(toks[0], `/\`) {
 		toks = toks[1:]
@@ -581,15 +837,39 @@ const maxSettingsFileBytes int64 = 5 << 20 // 5 MiB
 // maxSettingsFileBytes guard applied via Stat BEFORE the read. Callers
 // keep their own os.ErrNotExist handling — a missing file returns the
 // wrapped fs.ErrNotExist from Stat, exactly as os.ReadFile would.
+//
+// Only a regular file is read, through the bounded reader
+// (regularfile.Read: opened non-blocking, re-checked on the descriptor,
+// capped): a FIFO, device or directory at a settings path is refused
+// instead of hanging `observer init` or `uninstall` on the read. The
+// refusals are composed from the path and the limit only (safeErrorf).
+// settingsFileRead is the bounded read behind readSettingsFile (a variable
+// so a test can return each error class without a real unreadable file).
+var settingsFileRead = regularfile.Read
+
 func readSettingsFile(path string) ([]byte, error) {
 	fi, err := os.Stat(path)
 	if err != nil {
 		return nil, err
 	}
+	if !fi.Mode().IsRegular() {
+		return nil, safeErrorf("%s is not a regular file (a FIFO, a device or a directory); refusing to read or modify it", path)
+	}
 	if fi.Size() > maxSettingsFileBytes {
 		return nil, safeErrorf("%s is %d bytes, over observer's %d-byte settings-file limit; refusing to read or modify it", path, fi.Size(), maxSettingsFileBytes)
 	}
-	return os.ReadFile(path)
+	b, err := settingsFileRead(path, maxSettingsFileBytes)
+	switch {
+	case err == nil:
+		return b, nil
+	case errors.Is(err, os.ErrNotExist):
+		return nil, err
+	case errors.Is(err, regularfile.ErrNotRegular), errors.Is(err, regularfile.ErrTooLarge):
+		return nil, safeErrorf("%s changed while it was read (it is no longer a regular file of at most %d bytes); refusing to read or modify it", path, maxSettingsFileBytes)
+	case errors.Is(err, fs.ErrPermission):
+		return nil, safeErrorf("%s is unreadable (permission denied); refusing to modify it", path)
+	}
+	return nil, safeErrorf("%s is unreadable (an I/O error while reading it); refusing to modify it", path)
 }
 
 // decodeSettingsObject decodes a settings/config file body into the
@@ -739,6 +1019,12 @@ func dirPresent(p string) bool {
 // the atomic temp+rename below at least guarantees the file is never
 // observed half-written.
 func lockSettingsFile(path string) (func(), error) {
+	// Test-binary write guard (incident 2026-10-20): refused BEFORE the lock
+	// file is created, so a test can never leave even a sentinel in a real
+	// config directory. Not fail-open: the caller writes nothing.
+	if err := testwriteguard.Check("write", path); err != nil {
+		return func() {}, err
+	}
 	lockPath := path + settingsLockSuffix
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
 		return func() {}, nil // fail-open: see docstring
@@ -752,8 +1038,17 @@ func lockSettingsFile(path string) (func(), error) {
 			_ = f.Close()
 			return func() { unlockSettingsFile(lockPath, ownerID) }, nil
 		}
-		if !errors.Is(err, os.ErrExist) {
+		// lockCreateHeld (lockfs_*.go): "exists", and on Windows the
+		// access-denied and sharing errors a lock being released gives.
+		if !lockCreateHeld(err) {
 			return func() {}, nil // fail-open: see docstring
+		}
+		if !errors.Is(err, os.ErrExist) && time.Now().After(deadline) {
+			// Refused the whole time and no lock file is there: the
+			// directory itself refuses the create (fail-open, docstring).
+			if _, serr := os.Lstat(lockPath); errors.Is(serr, os.ErrNotExist) {
+				return func() {}, nil
+			}
 		}
 		// Held by someone else. Break it if it looks abandoned —
 		// ownership-verified so a concurrent breaker can't win an ABA
@@ -827,6 +1122,12 @@ func randomHex(n int) string {
 // attempt moments earlier — is inherent to any check-then-act sequence
 // over a path and is what breakStaleLock's rename-and-reverify closes.
 func observeStaleLock(lockPath string) (content []byte, stale bool) {
+	// A handle-free look first: a contender that opens a live lock on
+	// every poll blocks its holder's delete on Windows (sharing
+	// violation), so the file is opened only when it already looks stale.
+	if fi, err := os.Stat(lockPath); err != nil || time.Since(fi.ModTime()) <= settingsLockStale {
+		return nil, false
+	}
 	f, err := os.Open(lockPath)
 	if err != nil {
 		return nil, false
@@ -862,7 +1163,10 @@ func observeStaleLock(lockPath string) (content []byte, stale bool) {
 //     instant, so of any number of concurrent breakers racing the
 //     same stale lock, AT MOST ONE wins the rename — everyone else
 //     gets ENOENT and falls through having removed nothing (no
-//     double-break, no partial state).
+//     double-break, no partial state). On Windows several renames can
+//     succeed in a chain (a breaker that opened the source first moves
+//     it on under its new name); every breaker but the last then finds
+//     its quarantine gone and returns, so the last one decides alone.
 //  2. Read the quarantined file and compare its bytes to observed.
 //     Equal confirms the rename moved the SAME lock instance we
 //     originally observed as stale — lock files are write-once
@@ -888,7 +1192,17 @@ func breakStaleLock(lockPath string, observed []byte) {
 		// unlock+recreate) already moved/removed the source first.
 		return
 	}
-	current, readErr := os.ReadFile(quarantine)
+	current, readErr := readQuarantinedLock(quarantine)
+	if errors.Is(readErr, os.ErrNotExist) {
+		// Lost the race after all. On Windows a rename is not an atomic
+		// claim against a concurrent rename of the same source: a breaker
+		// that opened lockPath before our rename still moves the file,
+		// under its new name, into its own quarantine, so our rename can
+		// succeed and the file then leave our path. That breaker reads
+		// and decides; we hold nothing. (No one else knows our random
+		// quarantine name, so this cannot happen on POSIX.)
+		return
+	}
 	if readErr == nil && bytes.Equal(current, observed) {
 		// Confirmed: this was genuinely the same stale-lock instance
 		// we decided to break. Discard it for good.
@@ -909,6 +1223,36 @@ func breakStaleLock(lockPath string, observed []byte) {
 	}
 	slog.Default().Warn("hook: stale-lock break caught a live lock instead of an abandoned one and could not restore it; its owner may need to retry", "lock_path", lockPath)
 	_ = os.Remove(quarantine)
+}
+
+// quarantineReadAttempts and quarantineReadBackoff bound how long
+// readQuarantinedLock waits out a peer that holds the quarantined file
+// open.
+const (
+	quarantineReadAttempts = 20
+	quarantineReadBackoff  = 2 * time.Millisecond
+)
+
+// readQuarantinedLock reads the lock file breakStaleLock just renamed to
+// quarantine. A read that fails for any reason but the file being gone is
+// retried briefly: on Windows a concurrent breaker's rename of the same
+// file holds it open (a sharing violation here), and once that rename
+// lands the file is gone from our path (os.ErrNotExist, we lost) or the
+// rename failed and the read succeeds. Treating the transient failure as
+// "a live lock" restored a stale lock to lockPath under contention.
+func readQuarantinedLock(quarantine string) ([]byte, error) {
+	var (
+		b   []byte
+		err error
+	)
+	for i := 0; i < quarantineReadAttempts; i++ {
+		b, err = os.ReadFile(quarantine)
+		if err == nil || errors.Is(err, os.ErrNotExist) {
+			return b, err
+		}
+		time.Sleep(quarantineReadBackoff)
+	}
+	return b, err
 }
 
 // unlockSettingsFile releases a lock previously acquired by
@@ -934,7 +1278,7 @@ func unlockSettingsFile(lockPath, ownerID string) {
 		slog.Default().Warn("hook: lock file no longer matches this holder's identity at unlock time; leaving it alone (owned by a successor)", "lock_path", lockPath)
 		return
 	}
-	_ = os.Remove(lockPath)
+	removeLockFile(lockPath)
 }
 
 // pinnedTarget captures, at a single instant right after a settings
@@ -1016,6 +1360,9 @@ func (p pinnedTarget) verifyUnmoved() error {
 // after the lock was acquired and before path was first read — see
 // pinnedTarget's doc comment for why (F6).
 func writeJSONIndented(dir string, pinned pinnedTarget, settings map[string]json.RawMessage) error {
+	if err := checkTestWritePinned(pinned); err != nil {
+		return fmt.Errorf("hook.write: %w", err)
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("hook.write: mkdir: %w", err)
 	}
@@ -1107,6 +1454,18 @@ func writeJSONIndented(dir string, pinned pinnedTarget, settings map[string]json
 	return nil
 }
 
+// checkTestWritePinned applies crossmount's test-binary write guard to both
+// the path a writer was handed and the symlink target it will rename onto.
+func checkTestWritePinned(pinned pinnedTarget) error {
+	if err := testwriteguard.Check("write", pinned.path); err != nil {
+		return err
+	}
+	if pinned.target != pinned.path {
+		return testwriteguard.Check("write", pinned.target)
+	}
+	return nil
+}
+
 // atomicWriteFile writes data to path via a UNIQUE temp file — never a
 // fixed `<path>.tmp`, which two observer processes racing to patch the
 // same file would otherwise stomp: whichever opens second truncates
@@ -1137,7 +1496,13 @@ func atomicWriteFile(pinned pinnedTarget, data []byte) error {
 // bits set to mode (0 keeps the temp file's 0600). The credential-file
 // writers pass the existing file's mode so a rewrite never changes it.
 func atomicWriteFileMode(pinned pinnedTarget, data []byte, mode os.FileMode) error {
+	if err := checkTestWritePinned(pinned); err != nil {
+		return fmt.Errorf("hook.atomicWriteFile: %w", err)
+	}
 	target := pinned.target
+	if err := testWriteRefused(target); err != nil {
+		return err
+	}
 	dir := filepath.Dir(target)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("hook.atomicWriteFile: mkdir: %w", err)
@@ -1210,6 +1575,9 @@ func atomicWriteFileMode(pinned pinnedTarget, data []byte, mode os.FileMode) err
 // the file survives, and the caller's stale delete decision is
 // discarded instead of acted on.
 func removeEmptyConfigFile(path string, expected []byte) error {
+	if err := testwriteguard.Check("write", path); err != nil {
+		return err
+	}
 	fi, err := os.Lstat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -1246,42 +1614,28 @@ func removeEmptyConfigFile(path string, expected []byte) error {
 // serialize here, or their concurrent read-modify-write of the shared
 // registry loses each other's entries (and, pre-atomic-write, could
 // splice their bodies together).
-func (r *Registry) recordChecksum(path string) error {
+//
+// tool is the registration target label (RegistrationResult.Tool) stored in
+// the entry so the managed-integrity probe can name the tool behind a risk on
+// this file (T-847). The entry's other fields (last_result, the repair
+// record) are kept: before T-847 every re-record replaced the entry, which
+// erased a repair record on the very next idempotent pass.
+func (r *Registry) recordChecksum(tool, path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("hook.recordChecksum: %w", err)
 	}
 	sum := sha256.Sum256(data)
-	entry := map[string]any{
-		"sha256":      hex.EncodeToString(sum[:]),
-		"registered":  time.Now().UTC().Format(time.RFC3339),
-		"binary_path": r.opts.BinaryPath,
-	}
-
-	csPath := r.opts.ChecksumsPath
-	if csPath == "" {
-		csPath = filepath.Join(r.opts.HomeDir, ".observer", "hook_checksums.json")
-	}
-
-	unlock, err := r.lockSettings(csPath)
-	if err != nil {
-		return fmt.Errorf("hook.recordChecksum: %w", err)
-	}
-	defer unlock()
-
-	// Pin the write target now, before the read — see pinnedTarget (F6).
-	pinned := pinWriteTarget(csPath)
-
-	current := map[string]any{}
-	if raw, err := os.ReadFile(csPath); err == nil {
-		_ = json.Unmarshal(raw, &current)
-	}
-	current[path] = entry
-	body, err := json.MarshalIndent(current, "", "  ")
-	if err != nil {
-		return fmt.Errorf("hook.recordChecksum: marshal: %w", err)
-	}
-	if err := atomicWriteFile(pinned, body); err != nil {
+	if err := r.updateChecksumEntry(path, func(entry map[string]any) {
+		delete(entry, hookdigest.KeyScope)
+		delete(entry, hookdigest.KeyDigest)
+		entry["sha256"] = hex.EncodeToString(sum[:])
+		entry["registered"] = time.Now().UTC().Format(time.RFC3339)
+		entry["binary_path"] = r.opts.BinaryPath
+		if tool != "" {
+			entry["tool"] = tool
+		}
+	}); err != nil {
 		return fmt.Errorf("hook.recordChecksum: %w", err)
 	}
 	return nil
@@ -1431,7 +1785,44 @@ type UnregistrationResult struct {
 	Skipped       bool // true when the config file does not exist — nothing to do
 	ChecksumMatch bool // true when the stored install-time checksum matched pre-mutation
 	Error         error
+	// TrustRemoved names the events whose host-side trust record Observer
+	// had written and removed with the entries (Codex). TrustNotRemoved
+	// names the ones that could not be removed in place and were left (the
+	// others are still removed). TrustNote is a non-fatal note when a
+	// record could not be removed.
+	TrustRemoved    []string
+	TrustNotRemoved []string
+	TrustNote       string
+
+	// HooksKeptForeign names the events (for a whole file, its events)
+	// whose entry is in Observer's `<bin> hook <tool> <event>` shape but
+	// runs a binary not judged an Observer binary (FU-203): kept byte for
+	// byte, for ForeignBinaryReason, with or without --force.
+	HooksKeptForeign []string
+
+	// HooksKeptForeignIn names the file of each HooksKeptForeign event
+	// when a removal spans several files (Kiro: Observer's own agent and
+	// the user's own agent files, FU-213); empty when every kept event is
+	// in ConfigPath.
+	HooksKeptForeignIn []KeptForeignFile
+
+	// FilesKeptForeign names the whole files an unregister would delete
+	// (a plugin, a mod, a manifest, a dedicated hooks file) that do not
+	// read as Observer's (FU-212): kept byte for byte, with or without
+	// --force, for ForeignFileReason.
+	FilesKeptForeign []string
 }
+
+// KeptForeignFile is one file an unregister kept entries in for
+// ForeignBinaryReason, and the events kept there.
+type KeptForeignFile struct {
+	Path   string
+	Events []string
+}
+
+// ForeignFileReason is why an UnregistrationResult's FilesKeptForeign were
+// kept, for a caller that reports them (`observer uninstall`).
+const ForeignFileReason = "not an observer-managed file; observer never deletes a file it did not write"
 
 // Unregister removes observer hook entries from tool's config file. Only
 // entries whose Command starts with opts.BinaryPath are removed; any
@@ -1450,6 +1841,9 @@ func (r *Registry) Unregister(tool string) UnregistrationResult {
 
 // unregister dispatches Unregister to tool's writer.
 func (r *Registry) unregister(tool string) UnregistrationResult {
+	if row, ok := wslTwinFor(tool); ok {
+		return r.unregisterWSLTwin(row)
+	}
 	if w, ok := toolGateWriters[tool]; ok {
 		return w.unregister(r)
 	}
@@ -1533,9 +1927,15 @@ func (r *Registry) removeChecksum(path string) error {
 	if err := json.Unmarshal(raw, &current); err != nil {
 		return fmt.Errorf("hook.removeChecksum: parse: %w", err)
 	}
+	// FU-212: the registry is deleted only when the entry this call drops
+	// was its last one (the bytes it read, compared again before the
+	// delete), never because a file at its path is empty of entries.
+	if _, had := current[path]; !had {
+		return nil
+	}
 	delete(current, path)
 	if len(current) == 0 {
-		if err := os.Remove(csPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := removeEmptyConfigFile(csPath, raw); err != nil {
 			return fmt.Errorf("hook.removeChecksum: remove %s: %w", csPath, err)
 		}
 		return nil
@@ -1611,4 +2011,16 @@ func splitCommandTokens(cmd string) []string {
 	}
 	flush()
 	return toks
+}
+
+// anyGeminiDirExists reports whether any of dirs exists under the user's
+// ~/.gemini (the Antigravity products' data directories, Installed's
+// install signal for the shared agy hook file).
+func (r *Registry) anyGeminiDirExists(dirs []string) bool {
+	for _, dir := range dirs {
+		if r.dirExists(filepath.Join(r.opts.HomeDir, ".gemini", dir)) {
+			return true
+		}
+	}
+	return false
 }

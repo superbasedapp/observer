@@ -21,6 +21,10 @@ func TestValidateRemoteURL(t *testing.T) {
 		// is ACCEPTED (the whitespace guard above only catches the spaced
 		// form) — so removing the ext:: check must fail HERE, not elsewhere.
 		{"ext-transport-no-space-reject", "ext::evil", nil, true},
+		// RB1 sweep S2: every <helper>::<address> form runs git-remote-<helper>.
+		{"fd-helper-reject", "fd::0", nil, true},
+		{"named-helper-reject", "testgit::x", nil, true},
+		{"hg-helper-reject", "hg::https://example.com/r", nil, true},
 		{"file-scheme-reject", "file:///etc/passwd", nil, true},
 		{"leading-dash-reject", "-evilhost/repo.git", nil, true},
 		{"upload-pack-embedded-reject", "https://github.com/x/--upload-pack=evil.git", nil, true},

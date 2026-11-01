@@ -22,33 +22,36 @@ func dryRunTwin(t *testing.T, r *Registry) *Registry {
 	return d
 }
 
-// TestClineHookCurrencyNeedsExecutable pins review M2-08: Cline runs the
-// hook file as a program, so the right bytes in a file that is not
-// executable are no hook. The dry-run currency read reports it as not set,
-// and a real registration repairs the mode.
+// TestClineHookCurrencyNeedsExecutable pins review M2-08 for the Cline
+// PreToolUse gate file (FU-154): Cline runs the hook file as a program, so
+// the right bytes in a file that is not executable are no hook. A real
+// registration repairs the gate file's mode.
 func TestClineHookCurrencyNeedsExecutable(t *testing.T) {
 	if clineHooksUnsupportedOS(runtime.GOOS) {
-		t.Skip("Cline hook files are macOS / Linux only")
+		t.Skip("the Cline guard is macOS / Linux only")
 	}
 	r := toolGateRegistry(t, false, ".cline")
 	path := filepath.Join(r.opts.HomeDir, ".cline", "hooks", "PreToolUse")
 	if res := r.Register("cline-cli"); res.Error != nil {
 		t.Fatal(res.Error)
 	}
-	if res := dryRunTwin(t, r).Register("cline-cli"); len(res.AlreadySet) != 1 {
-		t.Fatalf("an executable current script reads %+v, want AlreadySet", res)
+	if res := dryRunTwin(t, r).Register("cline-cli"); len(res.AlreadySet) != 3 || len(res.HooksAdded) != 0 {
+		t.Fatalf("a current guard reads %+v, want AlreadySet beforeModel, beforeTool, PreToolUse", res)
 	}
 	if err := os.Chmod(path, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if res := dryRunTwin(t, r).Register("cline-cli"); len(res.AlreadySet) != 0 || len(res.HooksAdded) != 1 {
-		t.Fatalf("a 0644 script with the right bytes reads %+v, want it NOT current (HooksAdded)", res)
+	if res := dryRunTwin(t, r).Register("cline-cli"); len(res.HooksAdded) != 1 || res.HooksAdded[0] != "PreToolUse" {
+		t.Fatalf("a non-executable gate file reads %+v, want PreToolUse not current", res)
 	}
-	if res := r.Register("cline-cli"); res.Error != nil || len(res.HooksAdded) != 1 {
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if res := r.Register("cline-cli"); res.Error != nil {
 		t.Fatalf("repair = %+v", res)
 	}
-	if fi, _ := os.Stat(path); fi.Mode().Perm()&0o100 == 0 {
-		t.Fatalf("repair left mode %v", fi.Mode())
+	if !clineHookExecutable(path) {
+		t.Fatal("repair left the gate file not executable")
 	}
 }
 

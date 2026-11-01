@@ -87,30 +87,51 @@ func TestConformanceMatrix(t *testing.T) {
 		// Hook-parity Lanes A4-A6 (2026-10-03): the remaining pre-tool gates
 		// whose deny is documented on the vendor surface (or grounded on the
 		// vendor binary on demo node 1).
-		models.ToolAntigravityCLI + "/hook:PreToolUse":  true,
-		models.ToolClineCLI + "/hook:PreToolUse":        true, // T-342: the CLI owns the ~/.cline/hooks gate
-		models.ToolCopilotCLI + "/hook:preToolUse":      true,
-		models.ToolCrush + "/hook:PreToolUse":           true,
-		models.ToolDevin + "/hook:pre_run_command":      true,
-		models.ToolDevin + "/hook:pre_write_code":       true,
-		models.ToolDevin + "/hook:pre_read_code":        true,
-		models.ToolDevin + "/hook:pre_mcp_tool_use":     true,
-		models.ToolGoose + "/hook:PreToolUse":           true,
-		models.ToolGrok + "/hook:PreToolUse":            true,
-		models.ToolJunie + "/hook:PreToolUse":           true,
-		models.ToolMistralCode + "/hook:pre_tool":       true,
-		models.ToolOpenInterpreter + "/hook:PreToolUse": true,
-		models.ToolPoolside + "/hook:PreToolUse":        true,
-		models.ToolZcode + "/hook:PreToolUse":           true,
+		models.ToolAntigravityCLI + "/hook:PreToolUse": true,
+		// Guard-fix lane B (2026-10-15): the Cline CLI gate moved from the
+		// ~/.cline/hooks PreToolUse file (T-342; its cancel stopped the run)
+		// to the Plugin API (beforeTool skip, beforeModel stop), live on
+		// cline 3.0.68; Copilot CLI userPromptSubmitted blocks with handled +
+		// modifiedPrompt, live on copilot 1.0.96.
+		models.ToolClineCLI + "/hook:beforeTool":  true,
+		models.ToolClineCLI + "/hook:beforeModel": true,
+		// FU-154 (lane w12-fixes): Cline CLI 3.0.3 loads no plugin and runs
+		// the ~/.cline/hooks PreToolUse file again, which now execs the tool
+		// gate (dialect cline-pretool: {"cancel":true} stops the run); live
+		// on MAC-6 (2026-10-30), documented in docs/guard.md and
+		// docs/clinecli-adapter.md.
+		models.ToolClineCLI + "/hook:PreToolUse":            true,
+		models.ToolCopilotCLI + "/hook:userPromptSubmitted": true,
+		// Guard-enforcement fix (2026-10-15, agy 1.3.5 live): PreInvocation's
+		// {"injectSteps":[{}]} aborts the turn before the main model request
+		// (an undocumented error path, gated on the agy version at run time).
+		models.ToolAntigravityCLI + "/hook:PreInvocation": true,
+		models.ToolCopilotCLI + "/hook:preToolUse":        true,
+		models.ToolCrush + "/hook:PreToolUse":             true,
+		models.ToolDevin + "/hook:pre_run_command":        true,
+		models.ToolDevin + "/hook:pre_write_code":         true,
+		models.ToolDevin + "/hook:pre_read_code":          true,
+		models.ToolDevin + "/hook:pre_mcp_tool_use":       true,
+		models.ToolGoose + "/hook:PreToolUse":             true,
+		models.ToolGrok + "/hook:PreToolUse":              true,
+		models.ToolJunie + "/hook:PreToolUse":             true,
+		models.ToolMistralCode + "/hook:pre_tool":         true,
+		models.ToolOpenInterpreter + "/hook:PreToolUse":   true,
+		models.ToolPoolside + "/hook:PreToolUse":          true,
+		models.ToolZcode + "/hook:PreToolUse":             true,
 		// Hook-parity Lane D (2026-10-03): the in-process plugin hosts
 		// through the one plugin shim (throw / {block} / Hermes' block
-		// directive), and OpenCode / Kilo CLI chat.message, a modify-only
-		// seam where the shim delivers a block by replacing the message.
+		// directive), and OpenCode / Kilo CLI chat.message, where the shim
+		// throws so the host rejects the prompt before the model call
+		// (opencode 1.18.31, live 2026-10-15). pi `input` (2026-10-15):
+		// {action:"handled"} sends no request (pi 1.0.0 extensions/types.ts
+		// InputEventResult, live on demo node 1).
 		models.ToolOpenCode + "/hook:tool.execute.before":    true,
 		models.ToolOpenCode + "/hook:chat.message":           true,
 		models.ToolKiloCodeCLI + "/hook:tool.execute.before": true,
 		models.ToolKiloCodeCLI + "/hook:chat.message":        true,
 		models.ToolPi + "/hook:tool_call":                    true,
+		models.ToolPi + "/hook:input":                        true,
 		models.ToolHermes + "/hook:pre_tool_call":            true,
 		models.ToolCommandCode + "/hook:beforeToolCall":      true,
 		// LIVE-GROUND-2 (2026-10-06, D-363; T-581): Muse's settings.json
@@ -132,8 +153,56 @@ func TestConformanceMatrix(t *testing.T) {
 		// stderr is the reason the model sees; UserPromptSubmit: the
 		// installed 2.1.1 source appends stderr as a <hook_result>), so Q4's
 		// documented deny semantics hold.
-		models.ToolKimiCode + "/hook:PreToolUse":       true,
+		models.ToolKimiCode + "/hook:PreToolUse": true,
+		// gfiD (2026-10-15): Kiro CLI's preToolUse exit-2 block, documented
+		// in the 2.x reference and observed live with probe hooks (kiro-cli
+		// 2.28.0: the model got "PreToolHook blocked the tool execution").
+		// Its userPromptSubmit cannot block, so it is no row here.
+		models.ToolKiroCLI + "/hook:preToolUse":        true,
 		models.ToolKimiCode + "/hook:UserPromptSubmit": true,
+		// The 2026-10-21 wave: every gate's deny was fired live by the hook
+		// probe against the shipped build (docs/guard.md "Live grounding:
+		// 2026-10-21 wave"). Kimchi and Cortex Code are reached through
+		// Observer's Claude Code hooks (foreignhost.go reroute).
+		models.ToolIBMBob + "/hook:PreToolUse":               true,
+		models.ToolIBMBob + "/hook:UserPromptSubmit":         true,
+		models.ToolCodeBuddy + "/hook:PreToolUse":            true,
+		models.ToolCodeBuddy + "/hook:UserPromptSubmit":      true,
+		models.ToolDeepAgentsCode + "/hook:PreToolUse":       true,
+		models.ToolDeepAgentsCode + "/hook:UserPromptSubmit": true,
+		models.ToolDimCode + "/hook:PreToolUse":              true,
+		models.ToolDimCode + "/hook:UserPromptSubmit":        true,
+		models.ToolDirac + "/hook:PreToolUse":                true,
+		models.ToolDirac + "/hook:UserPromptSubmit":          true,
+		models.ToolAutohand + "/hook:pre-tool":               true,
+		models.ToolAutohand + "/hook:pre-prompt":             true,
+		models.ToolVTCode + "/hook:PreToolUse":               true,
+		models.ToolVTCode + "/hook:UserPromptSubmit":         true,
+		models.ToolKimchi + "/hook:tool_call":                true,
+		models.ToolKimchi + "/hook:PreToolUse":               true,
+		models.ToolKimchi + "/hook:UserPromptSubmit":         true,
+		models.ToolCortexCode + "/hook:PreToolUse":           true,
+		models.ToolCortexCode + "/hook:UserPromptSubmit":     true,
+		// Surface-gap lane w5-foreign: the Antigravity App and IDE run the
+		// antigravity-cli registration (the agy deny and PreInvocation
+		// semantics above, antigravity.google/docs/hooks?tab=ide), and
+		// DeepSeek Harness runs Observer's Claude Code hooks through its
+		// dsh-hooks-claude-code bridge (deny and ask, vendor source
+		// 0.2.1-rc.3); both are served by the claude-code / antigravity-cli
+		// receivers under the host's own id.
+		models.ToolAntigravity + "/hook:PreToolUse":    true,
+		models.ToolAntigravity + "/hook:PreInvocation": true,
+		models.ToolDeepSeek + "/hook:PreToolUse":       true,
+		models.ToolDeepSeek + "/hook:UserPromptSubmit": true,
+		// Surface-gap R-194 G2 (lane w6-tails): the Copilot CLI runtime's
+		// Claude-compatible PreToolUse replay (live check 12 payload)
+		// reaching Observer's Claude Code hooks is judged as copilot-cli,
+		// with the Claude JSON deny, while Observer's own copilot-cli
+		// registration is absent. The deny is Claude Code's documented
+		// PreToolUse shape on a runtime that runs Claude settings hooks
+		// (doc-grounded, which Q4 accepts); the deny on this path is not
+		// yet live-run (the w6-tails report's G2 live check).
+		models.ToolCopilotCLI + "/hook:PreToolUse": true,
 	}
 	if len(blockers) != len(want) {
 		t.Errorf("block-capable channels = %v, want exactly %d documented ones", blockers, len(want))
@@ -283,6 +352,32 @@ func TestConformanceDisplayOrderHasNoStaleRows(t *testing.T) {
 	for _, k := range conformanceDisplayOrder {
 		if generated[k] == 0 {
 			t.Errorf("display order lists %q but no binding generates it", k)
+		}
+	}
+}
+
+// TestConformanceSameChannelReplayHasNoSecondRow: cursor's Claude-hook replay
+// of preToolUse (FU-122) is a fallback on the channel the registered gate
+// already names, so the matrix keeps one cursor hook:preToolUse row (the
+// registered gate's), while copilot-cli's replay on its own PascalCase event
+// keeps its row.
+func TestConformanceSameChannelReplayHasNoSecondRow(t *testing.T) {
+	count := map[string]int{}
+	for _, e := range ConformanceMatrix() {
+		count[e.Client+" "+e.Channel]++
+	}
+	for key, want := range map[string]int{
+		"cursor hook:preToolUse":      1,
+		"copilot-cli hook:PreToolUse": 1,
+		"copilot-cli hook:preToolUse": 1,
+	} {
+		if count[key] != want {
+			t.Errorf("%s: %d rows, want %d", key, count[key], want)
+		}
+	}
+	for key, n := range count {
+		if n > 1 {
+			t.Errorf("%s: %d rows of one channel", key, n)
 		}
 	}
 }

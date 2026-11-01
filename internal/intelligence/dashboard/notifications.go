@@ -128,6 +128,7 @@ var notificationLoaders = []func(s *Server, r *http.Request, in *feed.Input){
 	(*Server).loadCacheNotifications,
 	(*Server).loadUpdateNotifications,
 	(*Server).loadOrgNotifications,
+	(*Server).loadMessageNotifications,
 	func(s *Server, r *http.Request, in *feed.Input) { in.Ingest = s.ingestFacts(r.Context()) },
 }
 

@@ -167,3 +167,44 @@ func TestClearIdentityBoundDocsKeepsAnApplyInFlight(t *testing.T) {
 		t.Errorf("an apply in flight lost its row: %+v", st)
 	}
 }
+
+// TestReEnrolmentClearsTheProjectAudienceFence is audit finding 9: the
+// project audience's downgrade fence (a guard_policy_state row keyed by the
+// server URL) goes with the enrolment identity, so a new identity starts a
+// new fence; every other policy-state row stays.
+func TestReEnrolmentClearsTheProjectAudienceFence(t *testing.T) {
+	t.Parallel()
+	s, _ := newTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for _, r := range []GuardPolicyStateRow{
+		{Layer: "org", Path: "https://a.example" + ProjectAudienceFenceSuffix, Version: "9", ContentHash: "d9", LoadedAt: now},
+		{Layer: "org", Path: "/home/u/.observer/org-bundle.json", Version: "12", ContentHash: "h12", LoadedAt: now},
+	} {
+		if _, err := s.RecordGuardPolicyState(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.ClearIdentityBoundDocs(ctx, &Enrolment{OrgID: "org-a", OrgServerURL: "https://a.example", UserID: "u1"}); err != nil {
+		t.Fatalf("ClearIdentityBoundDocs: %v", err)
+	}
+	states, err := s.LatestGuardPolicyStates(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fence, bundle bool
+	for _, st := range states {
+		if strings.HasSuffix(st.Path, ProjectAudienceFenceSuffix) {
+			fence = true
+		}
+		if st.Version == "12" {
+			bundle = true
+		}
+	}
+	if fence {
+		t.Fatal("the project audience downgrade fence survived a re-enrolment")
+	}
+	if !bundle {
+		t.Fatal("the clear removed an unrelated policy-state row")
+	}
+}

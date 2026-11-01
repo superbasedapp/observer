@@ -11,7 +11,10 @@
 #
 # What it does, and nothing more:
 #   - builds observer-org and observer-mcpgw (the two images the demo .env pins, kept in
-#     lockstep, register row DR-38) from the requested commit;
+#     lockstep, register row DR-38) plus the observer-devnode and observer-cloud images the
+#     one-box demo kit runs (deploy/demo-box; observer-cloud is its Cloud Intelligence slot),
+#     each for linux/amd64 + linux/arm64, from the requested commit, so a box that pulls
+#     (the arm64 Oracle demo box) never builds any of them itself;
 #   - pushes them to the enterprise registry under ONE non-release tag `demo-<sha9>`
 #     (never a v* tag, never the stable / edge channel tags, never an existing tag);
 #   - keyless-signs each BY DIGEST with the same pinned cosign as the release workflows, and
@@ -35,8 +38,8 @@
 #   ref      a full 40-hex commit SHA (or a branch) that exists on origin;
 #   version  the stamp baked into the binaries, a pre-release with a build suffix,
 #            e.g. 1.35.0-rc.13+demo.946c485e0 (it must sort above the last release).
-# The run summary prints the digest-pinned ORG_REF / MCPGW_REF / AGENTGATEWAY_IMAGE for the
-# on-box roll.
+# The run summary prints the digest-pinned ORG_REF / MCPGW_REF / DEVNODE_REF / CLOUD_REF /
+# AGENTGATEWAY_IMAGE for the on-box roll.
 
 name: demo-org-images
 
@@ -61,7 +64,7 @@ permissions:
 
 env:
   # The one spelling of the enterprise registry (= npm-release.yml env.ENTERPRISE_REGISTRY).
-  ENTERPRISE_REGISTRY: superbasedenterprise.azurecr.io
+  ENTERPRISE_REGISTRY: ghcr.io/marmutapp
   # cosign pinned exactly as npm-release.yml pins it.
   COSIGN_VERSION: v2.6.5
   COSIGN_SHA256: c3b4f5410e608af03a5eb0aaac84a4313d8da131248e08ff1759ac70c79d1644
@@ -102,12 +105,12 @@ jobs:
         id: r
         env:
           INPUT_VERSION: ${{ inputs.version }}
-          REGISTRY_USERNAME: ${{ secrets.ENTERPRISE_REGISTRY_USERNAME }}
-          REGISTRY_PASSWORD: ${{ secrets.ENTERPRISE_REGISTRY_PASSWORD }}
+          REGISTRY_USERNAME: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           if [ -z "${REGISTRY_USERNAME:-}" ] || [ -z "${REGISTRY_PASSWORD:-}" ]; then
-            echo "::error::ENTERPRISE_REGISTRY_* not set; a demo image build has nothing to publish to"
+            echo "::error::no registry credential (the run's GITHUB_TOKEN); a demo image build has nothing to publish to"
             exit 1
           fi
           sha="$(git rev-parse HEAD)"
@@ -139,6 +142,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      packages: write
     outputs:
       digest: ${{ steps.push.outputs.digest }}
     env:
@@ -167,8 +171,8 @@ jobs:
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ${{ env.ENTERPRISE_REGISTRY }}
-          username: ${{ secrets.ENTERPRISE_REGISTRY_USERNAME }}
-          password: ${{ secrets.ENTERPRISE_REGISTRY_PASSWORD }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Refuse to overwrite an existing tag
         run: |
@@ -187,6 +191,8 @@ jobs:
           context: ${{ env.BUILD_CTX }}
           file: ${{ env.BUILD_CTX }}/Dockerfile.observer-org
           push: true
+          # One multi-arch index (amd64 + arm64); the signature binds to it.
+          platforms: linux/amd64,linux/arm64
           build-args: |
             VERSION=${{ env.VERSION }}
           tags: |
@@ -227,6 +233,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      packages: write
     outputs:
       digest: ${{ steps.push.outputs.digest }}
     env:
@@ -246,7 +253,10 @@ jobs:
           mkdir -p "$ctx"
           git archive --format=tar "$SHA" | tar -x -C "$ctx"
           test -f "$ctx/Dockerfile.observer-mcpgw"
-          echo "BUILD_CTX=$ctx" >> "$GITHUB_ENV"
+          {
+            echo "BUILD_CTX=$ctx"
+            echo "SCAN_LAYOUT=${RUNNER_TEMP}/demo-scan"
+          } >> "$GITHUB_ENV"
 
       - name: Install syft + grype (pinned, retried)
         run: |
@@ -269,32 +279,38 @@ jobs:
       - name: Set up Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
-      - name: Build (loaded locally, not pushed)
+      - name: Build linux/amd64 + linux/arm64 into a local OCI layout (not pushed)
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         env:
           DOCKER_BUILD_RECORD_UPLOAD: 'false'
         with:
           context: ${{ env.BUILD_CTX }}
           file: ${{ env.BUILD_CTX }}/Dockerfile.observer-mcpgw
-          load: true
+          # The Go compile cross-builds on the runner and the runtime stage
+          # has no RUN, so arm64 needs no QEMU.
+          platforms: linux/amd64,linux/arm64
           push: false
           provenance: false
           sbom: false
           build-args: |
             VERSION=${{ env.VERSION }}
-          tags: observer-mcpgw:demo-scan
+          outputs: type=oci,dest=${{ env.SCAN_LAYOUT }},tar=false
 
-      - name: SBOM (SPDX + CycloneDX) and CVE gate (report-only for a demo build)
+      - name: SBOM (SPDX + CycloneDX) and CVE gate (report-only for a demo build), per platform
         run: |
           set -euo pipefail
           mkdir -p sbom
-          syft scan docker:observer-mcpgw:demo-scan -q \
-            -o spdx-json=sbom/observer-mcpgw.spdx.json \
-            -o cyclonedx-json=sbom/observer-mcpgw.cdx.json
-          grype sbom:sbom/observer-mcpgw.cdx.json -o table -o json=sbom/observer-mcpgw.grype.json
-          if ! "$CHECK" gate --grype-json sbom/observer-mcpgw.grype.json --image observer-mcpgw --exceptions "$CVE_EXCEPTIONS"; then
-            echo "::warning::observer-mcpgw CVE gate FAILED (report-only for a demo build; a v* release enforces it)"
-          fi
+          for arch in amd64 arm64; do
+            base=observer-mcpgw
+            [ "$arch" = amd64 ] || base="observer-mcpgw-${arch}"
+            syft scan "oci-dir:${SCAN_LAYOUT}" --platform "linux/${arch}" -q \
+              -o "spdx-json=sbom/${base}.spdx.json" \
+              -o "cyclonedx-json=sbom/${base}.cdx.json"
+            grype "sbom:sbom/${base}.cdx.json" -o table -o "json=sbom/${base}.grype.json"
+            if ! "$CHECK" gate --grype-json "sbom/${base}.grype.json" --image observer-mcpgw --exceptions "$CVE_EXCEPTIONS"; then
+              echo "::warning::observer-mcpgw linux/${arch} CVE gate FAILED (report-only for a demo build; a v* release enforces it)"
+            fi
+          done
 
       - name: Upload SBOMs + scan report
         if: always()
@@ -309,8 +325,8 @@ jobs:
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ${{ env.ENTERPRISE_REGISTRY }}
-          username: ${{ secrets.ENTERPRISE_REGISTRY_USERNAME }}
-          password: ${{ secrets.ENTERPRISE_REGISTRY_PASSWORD }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Push the scanned image (refuses an existing tag)
         id: push
@@ -321,11 +337,13 @@ jobs:
             echo "::error::${image}:${TAG} already exists; never overwrite"
             exit 1
           fi
-          docker tag observer-mcpgw:demo-scan "${image}:${TAG}"
-          docker push "${image}:${TAG}"
-          digest=$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "${image}:${TAG}" | sed -n "s|^${image}@||p" | head -n1)
-          if ! [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            echo "::error::could not resolve the pushed digest of ${image}:${TAG}"
+          # The multi-arch index digest exactly as built and scanned; skopeo
+          # (preinstalled) pushes the layout without rewriting it.
+          digest=$(jq -r '.manifests[0].digest' "${SCAN_LAYOUT}/index.json")
+          skopeo copy --all --preserve-digests "oci:${SCAN_LAYOUT}" "docker://${image}:${TAG}"
+          pushed=$(docker buildx imagetools inspect "${image}:${TAG}" --format '{{json .Manifest}}' | jq -r .digest)
+          if ! [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || [ "$pushed" != "$digest" ]; then
+            echo "::error::pushed digest '${pushed}' of ${image}:${TAG} is not the scanned layout's '${digest}'"
             exit 1
           fi
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
@@ -349,16 +367,206 @@ jobs:
         run: |
           set -euo pipefail
           cosign sign --yes "$REF"
-          cosign attest --yes --type spdxjson --predicate sbom/observer-mcpgw.spdx.json "$REF"
-          cosign attest --yes --type cyclonedx --predicate sbom/observer-mcpgw.cdx.json "$REF"
+          for base in observer-mcpgw observer-mcpgw-arm64; do
+            cosign attest --yes --type spdxjson --predicate "sbom/${base}.spdx.json" "$REF"
+            cosign attest --yes --type cyclonedx --predicate "sbom/${base}.cdx.json" "$REF"
+          done
           cosign verify "$REF" --certificate-identity-regexp "$CERT_IDENTITY_REGEXP" \
             --certificate-oidc-issuer "$OIDC_ISSUER" >/dev/null
           echo "signed + attested $REF"
 
   # ----------------------------------------------------------------
+  # observer-devnode: the simulated developer node the one-box demo kit
+  # (deploy/demo-box) runs. build -> push (demo tag only) -> sign by
+  # digest, the org_image shape. Its runtime stage runs apt-get, so the
+  # arm64 half runs under QEMU (the Go compile still cross-builds).
+  # ----------------------------------------------------------------
+  devnode_image:
+    name: observer-devnode image (build, push, sign)
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    env:
+      SHA: ${{ needs.resolve.outputs.sha }}
+      TAG: ${{ needs.resolve.outputs.tag }}
+      VERSION: ${{ needs.resolve.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
+
+      - name: Build context from git archive of the commit
+        run: |
+          set -euo pipefail
+          ctx="${RUNNER_TEMP}/ctx"
+          mkdir -p "$ctx"
+          git archive --format=tar "$SHA" | tar -x -C "$ctx"
+          test -f "$ctx/deploy/observer-devnode/Dockerfile"
+          echo "BUILD_CTX=$ctx" >> "$GITHUB_ENV"
+
+      - name: Set up QEMU (the arm64 image runs `apt-get` under emulation)
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+        with:
+          platforms: arm64
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Log in to the enterprise registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.ENTERPRISE_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Refuse to overwrite an existing tag
+        run: |
+          set -euo pipefail
+          if docker buildx imagetools inspect "${ENTERPRISE_REGISTRY}/observer-devnode:${TAG}" >/dev/null 2>&1; then
+            echo "::error::${ENTERPRISE_REGISTRY}/observer-devnode:${TAG} already exists; never overwrite"
+            exit 1
+          fi
+
+      - name: Build and push
+        id: push
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: 'false'
+        with:
+          context: ${{ env.BUILD_CTX }}
+          file: ${{ env.BUILD_CTX }}/deploy/observer-devnode/Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=${{ env.VERSION }}
+          tags: |
+            ${{ env.ENTERPRISE_REGISTRY }}/observer-devnode:${{ env.TAG }}
+
+      - name: Install cosign (pinned, retried)
+        # Byte-identical to npm-release.yml's install script.
+        run: |
+          set -euo pipefail
+          base="${COSIGN_DOWNLOAD_BASE:-https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}}"
+          mkdir -p "${HOME}/.cosign"
+          curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 --retry-max-time 300 \
+            -o "${HOME}/.cosign/cosign" "${base}/cosign-linux-amd64"
+          echo "${COSIGN_SHA256}  ${HOME}/.cosign/cosign" | sha256sum -c -
+          chmod +x "${HOME}/.cosign/cosign"
+          echo "${HOME}/.cosign" >> "${GITHUB_PATH}"
+          "${HOME}/.cosign/cosign" version
+
+      - name: Sign image by digest (keyless) and self-verify
+        env:
+          REF: ${{ env.ENTERPRISE_REGISTRY }}/observer-devnode@${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cosign sign --yes "$REF"
+          cosign verify "$REF" --certificate-identity-regexp "$CERT_IDENTITY_REGEXP" \
+            --certificate-oidc-issuer "$OIDC_ISSUER" >/dev/null
+          echo "signed $REF"
+
+  # ----------------------------------------------------------------
+  # observer-cloud: the Cloud Intelligence service the one-box demo kit
+  # runs in its `cloud` slot (deploy/demo-box/docker-compose.cloud.yaml,
+  # DEMO_CLOUD=on). build -> push (demo tag only) -> sign by digest, the
+  # org_image shape. The Go compile cross-builds on the runner and the
+  # distroless runtime stage has no RUN, so arm64 needs no QEMU.
+  # ----------------------------------------------------------------
+  cloud_image:
+    name: observer-cloud image (build, push, sign)
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    env:
+      SHA: ${{ needs.resolve.outputs.sha }}
+      TAG: ${{ needs.resolve.outputs.tag }}
+      VERSION: ${{ needs.resolve.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
+
+      - name: Build context from git archive of the commit
+        run: |
+          set -euo pipefail
+          ctx="${RUNNER_TEMP}/ctx"
+          mkdir -p "$ctx"
+          git archive --format=tar "$SHA" | tar -x -C "$ctx"
+          test -f "$ctx/Dockerfile.observer-cloud"
+          echo "BUILD_CTX=$ctx" >> "$GITHUB_ENV"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Log in to the enterprise registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ${{ env.ENTERPRISE_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Refuse to overwrite an existing tag
+        run: |
+          set -euo pipefail
+          if docker buildx imagetools inspect "${ENTERPRISE_REGISTRY}/observer-cloud:${TAG}" >/dev/null 2>&1; then
+            echo "::error::${ENTERPRISE_REGISTRY}/observer-cloud:${TAG} already exists; never overwrite"
+            exit 1
+          fi
+
+      - name: Build and push
+        id: push
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: 'false'
+        with:
+          context: ${{ env.BUILD_CTX }}
+          file: ${{ env.BUILD_CTX }}/Dockerfile.observer-cloud
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=${{ env.VERSION }}
+          tags: |
+            ${{ env.ENTERPRISE_REGISTRY }}/observer-cloud:${{ env.TAG }}
+
+      - name: Install cosign (pinned, retried)
+        # Byte-identical to npm-release.yml's install script.
+        run: |
+          set -euo pipefail
+          base="${COSIGN_DOWNLOAD_BASE:-https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}}"
+          mkdir -p "${HOME}/.cosign"
+          curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 --retry-max-time 300 \
+            -o "${HOME}/.cosign/cosign" "${base}/cosign-linux-amd64"
+          echo "${COSIGN_SHA256}  ${HOME}/.cosign/cosign" | sha256sum -c -
+          chmod +x "${HOME}/.cosign/cosign"
+          echo "${HOME}/.cosign" >> "${GITHUB_PATH}"
+          "${HOME}/.cosign/cosign" version
+
+      - name: Sign image by digest (keyless) and self-verify
+        env:
+          REF: ${{ env.ENTERPRISE_REGISTRY }}/observer-cloud@${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cosign sign --yes "$REF"
+          cosign verify "$REF" --certificate-identity-regexp "$CERT_IDENTITY_REGEXP" \
+            --certificate-oidc-issuer "$OIDC_ISSUER" >/dev/null
+          echo "signed $REF"
+
+  # ----------------------------------------------------------------
   # agentgateway: the STOCK sidecar the demo .env pins (AGENTGATEWAY_IMAGE),
   # mirrored the way agent-access-images.yml's agentgateway_mirror does it
-  # (T-752), so a demo re-pin needs no manual `az acr import`: verify the
+  # (T-752), so a demo re-pin needs no manual image import: verify the
   # digest the REQUESTED commit pins against the exact upstream release
   # identity + its provenance, SBOM it (image + Cargo.lock at the pinned
   # revision), run the CVE gate (REPORT-ONLY here, like mcpgw_image above),
@@ -374,6 +582,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      packages: write
     outputs:
       repository: ${{ steps.copy.outputs.repository }}
       version: ${{ steps.copy.outputs.version }}
@@ -456,8 +665,8 @@ jobs:
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ${{ env.ENTERPRISE_REGISTRY }}
-          username: ${{ secrets.ENTERPRISE_REGISTRY_USERNAME }}
-          password: ${{ secrets.ENTERPRISE_REGISTRY_PASSWORD }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Copy by digest (upstream signatures + attestations travel)
         id: copy
@@ -497,7 +706,7 @@ jobs:
   # ----------------------------------------------------------------
   summary:
     name: Digest-pinned refs for the demo roll
-    needs: [resolve, org_image, mcpgw_image, agentgateway_mirror]
+    needs: [resolve, org_image, mcpgw_image, devnode_image, cloud_image, agentgateway_mirror]
     runs-on: ubuntu-latest
     steps:
       - name: Print the refs
@@ -507,6 +716,8 @@ jobs:
           VERSION: ${{ needs.resolve.outputs.version }}
           ORG_DIGEST: ${{ needs.org_image.outputs.digest }}
           MCPGW_DIGEST: ${{ needs.mcpgw_image.outputs.digest }}
+          DEVNODE_DIGEST: ${{ needs.devnode_image.outputs.digest }}
+          CLOUD_DIGEST: ${{ needs.cloud_image.outputs.digest }}
           AGW_REPOSITORY: ${{ needs.agentgateway_mirror.outputs.repository }}
           AGW_VERSION: ${{ needs.agentgateway_mirror.outputs.version }}
           AGW_DIGEST: ${{ needs.agentgateway_mirror.outputs.digest }}
@@ -519,5 +730,7 @@ jobs:
             echo "- version: \`${VERSION}\`"
             echo "- \`ORG_REF=${ENTERPRISE_REGISTRY}/observer-org:${TAG}@${ORG_DIGEST}\`"
             echo "- \`MCPGW_REF=${ENTERPRISE_REGISTRY}/observer-mcpgw:${TAG}@${MCPGW_DIGEST}\`"
+            echo "- \`DEVNODE_REF=${ENTERPRISE_REGISTRY}/observer-devnode:${TAG}@${DEVNODE_DIGEST}\`"
+            echo "- \`CLOUD_REF=${ENTERPRISE_REGISTRY}/observer-cloud:${TAG}@${CLOUD_DIGEST}\`"
             echo "- \`AGENTGATEWAY_IMAGE=${AGW_REPOSITORY}:${AGW_VERSION}@${AGW_DIGEST}\`"
           } | tee -a "$GITHUB_STEP_SUMMARY"

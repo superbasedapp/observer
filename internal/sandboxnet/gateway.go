@@ -23,6 +23,10 @@ const defaultDialTimeout = 15 * time.Second
 // interface addresses cannot be listed; the gateway then fails closed.
 const ruleLocalAddrsUnavailable = "local-addresses-unavailable"
 
+// LogEgressRefused is the message of every refusal the gateway logs, with
+// the attributes host, port and rules (RefusalLogger keys on it).
+const LogEgressRefused = "sandboxnet: egress refused"
+
 // connectEstablished is the reply sent on the hijacked conn after a
 // successful CONNECT dial.
 const connectEstablished = "HTTP/1.1 200 Connection Established\r\n\r\n"
@@ -49,6 +53,15 @@ type Gateway struct {
 	Allow []netip.Prefix
 	// Logger receives refusals and upstream failures. Nil means slog.Default().
 	Logger *slog.Logger
+	// Providers, when set, is the run's model-provider host block (section
+	// 7.3, provider.go). Nil means the block is off.
+	Providers *ProviderBlock
+	// Hosts, when set, is the run's host allow-list (G23, hosts.go): a
+	// target host must be listed, checked before any resolution, and a
+	// literal-IP target is refused. Nil means no list: every public host
+	// passes, as before the list existed (agent runs keep nil; only the
+	// first-start install step's gateway sets one).
+	Hosts *HostRules
 
 	once  sync.Once
 	proxy *httputil.ReverseProxy
@@ -112,7 +125,7 @@ func (g *Gateway) serveConnect(w http.ResponseWriter, r *http.Request) {
 	if target == "" && r.URL != nil {
 		target = r.URL.Host
 	}
-	upstream, err := g.dialAllowed(r.Context(), "tcp", target)
+	upstream, err := g.dialChecked(r.Context(), "tcp", target, formConnect)
 	if err != nil {
 		g.writeError(w, err)
 		return
@@ -136,6 +149,16 @@ func (g *Gateway) serveConnect(w http.ResponseWriter, r *http.Request) {
 	if brw != nil && brw.Reader.Buffered() > 0 {
 		client = &bufferedConn{Conn: conn, r: brw.Reader}
 	}
+	if g.Hosts != nil {
+		// A listed name may sit on a shared edge: the tunnel carries only a
+		// TLS session whose server name is the CONNECT target (tlsname.go).
+		host, port, _ := splitTarget(target)
+		if !g.admitTunnel(r.Context(), client, upstream, strings.ToLower(host), port) {
+			_ = client.Close()
+			_ = upstream.Close()
+			return
+		}
+	}
 	pipe(r.Context(), client, upstream)
 }
 
@@ -154,8 +177,10 @@ func (g *Gateway) serveForward(w http.ResponseWriter, r *http.Request) {
 // and never decompresses, so the response reaches the client as sent.
 func (g *Gateway) initProxy() {
 	tr := &http.Transport{
-		Proxy:                 nil,
-		DialContext:           g.dialAllowed,
+		Proxy: nil,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return g.dialChecked(ctx, network, addr, formAbsolute)
+		},
 		ForceAttemptHTTP2:     false,
 		DisableCompression:    true,
 		MaxIdleConns:          64,
@@ -181,12 +206,29 @@ func (g *Gateway) initProxy() {
 	}
 }
 
-// dialAllowed is the ONE resolve-once + policy + dial-by-IP path shared by
-// CONNECT and the absolute-form transport. Errors are *gatewayError.
-func (g *Gateway) dialAllowed(ctx context.Context, network, hostport string) (net.Conn, error) {
+// dialChecked is the ONE resolve-once + policy + dial-by-IP path shared by
+// CONNECT (form formConnect) and the absolute-form transport (formAbsolute).
+// Errors are *gatewayError.
+func (g *Gateway) dialChecked(ctx context.Context, network, hostport string, form requestForm) (net.Conn, error) {
 	host, port, err := splitTarget(hostport)
 	if err != nil {
 		return nil, &gatewayError{status: http.StatusBadRequest, reason: "sandbox egress gateway: " + err.Error()}
+	}
+	if rule := g.Hosts.Check(host); rule != "" {
+		g.logger().Warn(LogEgressRefused, "host", host, "port", port, "rules", rule)
+		return nil, &gatewayError{status: http.StatusForbidden, reason: "sandbox egress gateway: destination refused by rule " + rule + " (this run may reach only " + strings.Join(g.Hosts.Entries(), ", ") + ")"}
+	}
+	if g.Hosts != nil && !listedPortAllowed(form, port) {
+		g.logger().Warn(LogEgressRefused, "host", host, "port", port, "rules", RulePortNotAllowed)
+		return nil, &gatewayError{status: http.StatusForbidden, reason: "sandbox egress gateway: destination refused by rule " + RulePortNotAllowed + " (this run may use only port 443 through CONNECT, or port 80 for a plain http request)"}
+	}
+	if g.Hosts != nil {
+		// The name resolved is the name the list checked.
+		host = strings.ToLower(host)
+	}
+	if rule := g.Providers.checkTarget(host); rule != "" {
+		g.logger().Warn(LogEgressRefused, "host", host, "port", port, "rules", rule)
+		return nil, &gatewayError{status: http.StatusForbidden, reason: "sandbox egress gateway: destination refused by rule " + rule + providerHint}
 	}
 	local, err := g.localAddrs()
 	if err != nil {
@@ -204,6 +246,10 @@ func (g *Gateway) dialAllowed(ctx context.Context, network, hostport string) (ne
 		}
 		if len(ips) == 0 {
 			return nil, &gatewayError{status: http.StatusBadGateway, reason: "sandbox egress gateway: host has no addresses"}
+		}
+		if rule := g.Providers.checkResolved(ips, g.resolve); rule != "" {
+			g.logger().Warn(LogEgressRefused, "host", host, "port", port, "rules", rule)
+			return nil, &gatewayError{status: http.StatusForbidden, reason: "sandbox egress gateway: destination refused by rule " + rule + providerHint}
 		}
 	}
 
@@ -225,8 +271,14 @@ func (g *Gateway) dialAllowed(ctx context.Context, network, hostport string) (ne
 			}
 		}
 	}
+	if chosen != nil && parseLiteral(host) != nil {
+		if rule := g.Providers.checkLiteral(chosen, g.Allow); rule != "" {
+			g.logger().Warn(LogEgressRefused, "host", host, "port", port, "rules", rule)
+			return nil, &gatewayError{status: http.StatusForbidden, reason: "sandbox egress gateway: destination refused by rule " + rule + providerHint}
+		}
+	}
 	if chosen == nil {
-		g.logger().Warn("sandboxnet: egress refused", "host", host, "port", port, "rules", strings.Join(rules, ","))
+		g.logger().Warn(LogEgressRefused, "host", host, "port", port, "rules", strings.Join(rules, ","))
 		reason := "sandbox egress gateway: destination refused by rule " + strings.Join(rules, ", ")
 		if allowListable {
 			reason += " (to allow a private destination, add its CIDR to " + AllowCIDRsConfigKey + ")"

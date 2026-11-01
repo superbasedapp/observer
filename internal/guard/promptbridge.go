@@ -110,6 +110,7 @@ func (g *Guard) ActionVerdictFromPrompt(pv PromptVerdict, em Emission, input Act
 		DegradedFrom:  combineDegradedFrom(pv.DegradedFrom, em.DegradedFrom),
 		GuardError:    pv.GuardError,
 		SuppressAlert: suppress,
+		SilentStop:    pv.BlockSilent && pv.Action == PromptActionBlock,
 		GrantID:       pv.GrantID,
 	}
 }

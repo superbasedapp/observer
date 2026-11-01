@@ -58,6 +58,11 @@ type detector struct {
 	// (wslWindowsUsersRoot / windowsWSLHostRoot). Empty = the real root;
 	// only StageForeignLayoutForTest ever sets it.
 	foreignRoot string
+	// wslDistros names the WSL distros a Windows host reads homes from
+	// (wsldistros.go: the running ones). nil lists the foreign root
+	// instead, which only a staged test layout (a temp dir) can do:
+	// Windows refuses to list \\wsl.localhost\ itself (FU-189).
+	wslDistros func() ([]string, error)
 }
 
 // The real foreign mount roots the scan enumerates. Fixed mount points, NOT
@@ -67,6 +72,14 @@ const (
 	wslWindowsUsersRoot = "/mnt/c/Users"
 	windowsWSLHostRoot  = `\\wsl.localhost\`
 )
+
+// RealForeignMountRoots returns the real foreign-OS mount roots: the WSL view
+// of the Windows users directory and the Windows views of WSL
+// (\\wsl.localhost\ and its \\wsl$\ alias). internal/testwriteguard refuses
+// every test-binary write under them (incident 2026-10-20).
+func RealForeignMountRoots() []string {
+	return []string{wslWindowsUsersRoot, windowsWSLHostRoot, `\\wsl$\`}
+}
 
 func defaultDetector() *detector {
 	// One snapshot for both the permission and the root, so a restore racing
@@ -81,8 +94,14 @@ func defaultDetector() *detector {
 		getenv:          os.Getenv,
 		suppressForeign: foreignSuppressedWith(staged, os.Getenv(EnvDisableForeignHomes), testBinaryGuard),
 	}
+	// An isolated home (isolation.go, R-013) detects no foreign profile.
+	if !d.suppressForeign && activeIsolationReason(staged) != "" {
+		d.suppressForeign = true
+	}
 	if staged != nil {
 		d.foreignRoot = staged.root
+	} else {
+		d.wslDistros = runningWSLDistros
 	}
 	return d
 }
@@ -127,8 +146,13 @@ func cachedExtraHomes() []HomeRoot {
 }
 
 // resetExtrasCacheForTest empties the cache so a test observes a fresh
-// scan. Test-only; never called from production code.
-func resetExtrasCacheForTest() {
+// scan.
+func resetExtrasCacheForTest() { resetExtrasCache() }
+
+// resetExtrasCache empties the cache. Production calls it only when
+// DisableForProcess switches detection off, so a scan cached before the
+// switch is never served after it.
+func resetExtrasCache() {
 	extrasCache.mu.Lock()
 	defer extrasCache.mu.Unlock()
 	extrasCache.val = nil
@@ -260,21 +284,20 @@ func (d *detector) wslWindowsHomes() []HomeRoot {
 }
 
 // windowsWSLHomes enumerates Linux user homes reachable from a Windows
-// host via \\wsl.localhost\<distro>\home\<user>. Returns nil when
-// \\wsl.localhost\ is not enumerable (no WSL installed, or no distros
-// running). Best-effort: distros are typically reachable only when the
-// distro is running or recently used; that's an acceptable limitation.
+// host via \\wsl.localhost\<distro>\home\<user>, for the RUNNING distros
+// only (wsldistros.go: opening a stopped distro's path would start it).
+// Returns nil when no distro is running or wsl.exe cannot be run.
 func (d *detector) windowsWSLHomes() []HomeRoot {
 	root := d.foreignRootOr(windowsWSLHostRoot)
-	if !d.statDir(root) {
-		return nil
-	}
-	distros, err := d.readDir(root)
+	distros, err := d.listWSLDistros(root)
 	if err != nil {
 		return nil
 	}
 	var out []HomeRoot
 	for _, distro := range distros {
+		if !wslDistroName.MatchString(distro) {
+			continue
+		}
 		homeDir := filepath.Join(root, distro, "home")
 		if !d.statDir(homeDir) {
 			continue
@@ -296,6 +319,18 @@ func (d *detector) windowsWSLHomes() []HomeRoot {
 		}
 	}
 	return out
+}
+
+// listWSLDistros names the distros windowsWSLHomes opens: the injected
+// list, or (a staged test layout) the entries of root.
+func (d *detector) listWSLDistros(root string) ([]string, error) {
+	if d.wslDistros != nil {
+		return d.wslDistros()
+	}
+	if !d.statDir(root) {
+		return nil, errWSLListUnavailable
+	}
+	return d.readDir(root)
 }
 
 // foreignRootOr returns the staged foreign mount root when one is set, else

@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -80,12 +81,20 @@ var hookParityTargets = []string{
 	// Hook-parity Lane A6 tool-gate writers.
 	"grok", "copilot-cli", "goose", "junie", "crush", "open-interpreter", "zcode",
 	"mistral-code", "cline-cli",
+	// Live check 2026-10-20: the Copilot CLI cross-OS bridge.
+	"copilot-cli-windows",
 	// Live-ground lane 2 (T-479): the Muse settings writer.
 	"muse",
 	// Live-ground lane 3 (T-378): the Kimi Code config.toml writer.
 	"kimi-code",
+	// gfiD (2026-10-15): the Kiro CLI agent JSON + V3 hooks writer.
+	"kiro-cli",
 	// hook-parity Lane D: the plugin-shim format writer.
 	"opencode", "kilo-code-cli", "pi",
+	// The 2026-10-21 wave.
+	"ibm-bob", "ibm-bob-windows", "codebuddy", "codebuddy-windows",
+	"deepagents-code", "deepagents-code-windows", "dimcode", "dimcode-windows",
+	"dirac", "dirac-windows", "autohand", "vtcode", "vtcode-windows", "kimchi",
 }
 
 // hookParityToolDirs are the native config directories pre-created in every
@@ -96,7 +105,10 @@ var hookParityToolDirs = []string{
 	filepath.Join(".codeium", "windsurf"), ".commandcode",
 	".grok", ".copilot", ".agents", ".junie", filepath.Join(".config", "crush"),
 	".openinterpreter", ".zcode", ".vibe", ".cline", filepath.Join(".config", "devin"), filepath.Join(".config", "muse"),
-	".kimi-code",
+	".kimi-code", ".kiro",
+	".bob", ".codebuddy", ".deepagents", ".dimcode", ".dirac", ".autohand",
+	filepath.Join(".config", "vtcode"), filepath.Join("AppData", "Roaming", "vinhnx", "vtcode", "config"),
+	filepath.Join(".config", "kimchi"),
 }
 
 // hookParityTarget registers one target into a fresh throwaway home with a
@@ -148,6 +160,11 @@ func hookParityRegister(t *testing.T, target string) hookParityWrite {
 		WindowsQoderHome:       winHome,
 		WindowsPoolsideHome:    winHome,
 		WindowsCommandCodeHome: winHome,
+		WindowsCopilotHome:     winHome,
+		WindowsUserHome:        winHome,
+		// The native writers whose file shape follows the OS write the
+		// Linux shape here (the golden is a Linux golden on every host).
+		GOOS: "linux",
 	})
 	if err != nil {
 		t.Fatalf("NewRegistry: %v", err)
@@ -158,6 +175,9 @@ func hookParityRegister(t *testing.T, target string) hookParityWrite {
 		s = strings.ReplaceAll(s, filepath.ToSlash(home), "$HOME")
 		s = strings.ReplaceAll(s, strings.ReplaceAll(home, "/", `\`), "$HOME")
 		s = strings.ReplaceAll(s, strings.ReplaceAll(home, "/", `\\`), "$HOME")
+		// A native Windows home written into a TOML or JSON string is
+		// escaped (C:\\Users\\...): fold that spelling too.
+		s = strings.ReplaceAll(s, strings.ReplaceAll(home, `\`, `\\`), "$HOME")
 		return s
 	}
 	w := hookParityWrite{
@@ -197,6 +217,7 @@ func hookParityRegister(t *testing.T, target string) hookParityWrite {
 // TestHookParityGolden_WriterBytes pins the exact bytes every registration
 // writer produces into a fresh home, native and -windows.
 func TestHookParityGolden_WriterBytes(t *testing.T) {
+	skipGoldenOffLinuxShape(t)
 	out := map[string]hookParityWrite{}
 	for _, target := range hookParityTargets {
 		out[target] = hookParityRegister(t, target)
@@ -208,6 +229,7 @@ func TestHookParityGolden_WriterBytes(t *testing.T) {
 // registers: the three per-vendor slices plus the events every other writer
 // reports in HooksAdded.
 func TestHookParityGolden_EventLists(t *testing.T) {
+	skipGoldenOffLinuxShape(t)
 	events := map[string][]string{
 		"claudeCodeEvents": append([]string(nil), claudeCodeEvents...),
 		"cursorEvents":     append([]string(nil), cursorEvents...),
@@ -220,4 +242,17 @@ func TestHookParityGolden_EventLists(t *testing.T) {
 		events["registered:"+target] = added
 	}
 	checkHookParityGolden(t, "event_lists.json", marshalGolden(t, events))
+}
+
+// skipGoldenOffLinuxShape skips the byte-equality gate on Windows. The
+// goldens are the writers' bytes on Linux and macOS; on Windows the same
+// writers write different bytes by design (native path separators, and the
+// Cline guard plugin is not installed there, cline/cline #14767), so the
+// gate cannot be byte-equal (Windows 11 Pro live run, PT-02). The writers'
+// Windows behaviour is pinned by their own tests.
+func skipGoldenOffLinuxShape(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the hook-parity goldens are the Linux and macOS writer bytes; Windows writes native separators and skips the Cline guard by design")
+	}
 }

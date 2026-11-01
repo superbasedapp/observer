@@ -1,0 +1,21 @@
+{
+  "metadata": {
+    "workspace_label": "demo-wsl",
+    "workspace_path": "/home/user/demo-wsl",
+    "model": "minimax/minimax-m3.1-flash:free",
+    "provider": "openrouter",
+    "theme": "ciapre",
+    "reasoning_effort": "medium",
+    "loaded_skills": [],
+    "prompt_cache_lineage_id": "lineage-6471da03-80ef-4c2f-ab85-91b2f21f983a",
+    "primary_agent": "build"
+  },
+  "started_at": "2026-10-21T09:04:40.078493840Z",
+  "ended_at": "2026-10-21T09:15:34.008113269Z",
+  "total_messages": 55,
+  "distinct_tools": [
+    "command_session_internal"
+  ],
+  "transcript": [],
+  "messages": []
+}

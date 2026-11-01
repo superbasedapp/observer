@@ -59,16 +59,15 @@ func TestIsPipeOrSocket(t *testing.T) {
 		t.Fatalf("closed fd %d reported as a pipe/socket", probe)
 	}
 
-	// The guard must reject the runtime's own epoll fd if it ever lands at the
-	// inherited number: an epoll descriptor is an anonymous inode, neither a
-	// FIFO nor a socket.
-	ep, err := syscall.EpollCreate1(0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer syscall.Close(ep)
-	if isPipeOrSocket(ep) {
-		t.Fatalf("epoll fd reported as a pipe/socket")
+	// The guard must reject the runtime's own poller fd if it ever lands at
+	// the inherited number: an epoll (Linux) or kqueue (macOS, the BSDs)
+	// descriptor is neither a FIFO nor a socket. runtimePollerFD is per OS
+	// (oob_emit_poller_*_test.go), so this file compiles on every unix.
+	if ep, ok := runtimePollerFD(t); ok {
+		defer syscall.Close(ep)
+		if isPipeOrSocket(ep) {
+			t.Fatalf("runtime poller fd reported as a pipe/socket")
+		}
 	}
 }
 

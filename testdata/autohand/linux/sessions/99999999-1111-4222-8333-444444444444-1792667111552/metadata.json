@@ -1,0 +1,13 @@
+{
+  "sessionId": "99999999-1111-4222-8333-444444444444-1792667111552",
+  "createdAt": "2026-10-22T11:05:11.552Z",
+  "lastActiveAt": "2026-10-22T11:05:13.123Z",
+  "projectPath": "/home/user/proj",
+  "projectName": "proj",
+  "model": "minimax/minimax-m3.1-flash:free",
+  "messageCount": 0,
+  "status": "active",
+  "client": "terminal",
+  "title": "Hi",
+  "titleSource": "auto"
+}

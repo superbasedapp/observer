@@ -119,10 +119,13 @@ export function NotificationBell() {
         </button>
       </Tooltip>
       {open && (
+        // At phone width the bell sits mid-bar, so a popover anchored to its
+        // right edge ran off the left of the screen (T-854 review): there it
+        // spans the viewport under the top bar instead.
         <div
           role="dialog"
           aria-label="Notifications"
-          className="absolute right-0 top-9 z-50 w-[24rem] max-w-[calc(100vw-2rem)] rounded-3 border border-line-2 bg-bg-1 p-3 text-[12px] shadow-lg"
+          className="fixed inset-x-3 top-[calc(var(--header-h)+0.25rem)] z-50 max-h-[calc(100dvh-var(--header-h)-1rem)] overflow-y-auto rounded-3 border border-line-2 bg-bg-1 p-3 text-[12px] shadow-lg sm:absolute sm:inset-x-auto sm:right-0 sm:top-9 sm:w-[24rem] sm:max-w-[calc(100vw-2rem)]"
         >
           <div className="mb-2 flex items-center justify-between gap-2">
             <span className="flex items-center gap-1">

@@ -1,0 +1,770 @@
+{
+ "group": "snowflake",
+ "research_file": "docs/plans/native-console-wave-2026-10-21-phase0.md",
+ "checked_on": "2026-10-23",
+ "surfaces": [
+  {
+   "id": "snowflake.account_usage.cortex_code_cli_usage_history",
+   "vendor_group": "snowflake",
+   "vendor": "snowflake",
+   "plane": "snowflake.account_usage",
+   "reach": "pull_api",
+   "transport": "api",
+   "auth": {
+    "kind": "bearer",
+    "doc": "Snowflake SQL API key-pair JWT (Authorization: Bearer, X-Snowflake-Authorization-Token-Type: KEYPAIR_JWT) for a service user with IMPORTED PRIVILEGES on the SNOWFLAKE database"
+   },
+   "paging": {
+    "style": "unspecified",
+    "doc": "SQL API result partitions (GET /api/v2/statements/{handle}?partition=N)"
+   },
+   "rate": {
+    "documented": false,
+    "doc": "429 on too many concurrent requests (SQL API reference)"
+   },
+   "tier": {
+    "doc": "any Snowflake account with Cortex Code; reading ACCOUNT_USAGE needs a role with IMPORTED PRIVILEGES on SNOWFLAKE"
+   },
+   "freshness_doc": "up to 1 hour",
+   "lookback_doc": "365 days",
+   "per_user_doc": "per request, USER_NAME (login name)",
+   "mechanism_doc": "SELECT over SNOWFLAKE.ACCOUNT_USAGE.CORTEX_CODE_CLI_USAGE_HISTORY via POST /api/v2/statements on the customer's own account host (https://<account>.snowflakecomputing.com): USER_ID, USER_NAME, USER_TAGS, REQUEST_ID, PARENT_REQUEST_ID, USAGE_TIME, TOKEN_CREDITS, TOKENS, TOKENS_GRANULAR and CREDITS_GRANULAR per model (input, cache_read_input, cache_write_input, output), METADATA",
+   "read_write_doc": "R",
+   "class_doc": "Usage, Cost (credits)",
+   "grain_doc": "PerCall (one row per request)",
+   "build": "buildable",
+   "build_doc": "Driverable; served today by the legacy-shaped poller internal/orgserver/cortexanalytics (AP-135)",
+   "sensitivity": "pii",
+   "secret_class": "never_returns_secret",
+   "supplies": [
+    {
+     "class": "Usage",
+     "grain": "per_call",
+     "unit": "tokens",
+     "accuracy": "exact",
+     "identity": [
+      "vendor_user_id"
+     ],
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "Cost",
+     "grain": "per_call",
+     "unit": "credits",
+     "accuracy": "exact",
+     "identity": [
+      "vendor_user_id"
+     ],
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    }
+   ],
+   "controls": [],
+   "customer_host": true,
+   "sources": [
+    {
+     "url": "https://docs.snowflake.com/en/sql-reference/account-usage/cortex_code_cli_usage_history",
+     "checked_on": "2026-10-23"
+    },
+    {
+     "url": "https://docs.snowflake.com/en/developer-guide/sql-api/reference",
+     "checked_on": "2026-10-23"
+    },
+    {
+     "url": "https://docs.snowflake.com/en/developer-guide/sql-api/authenticating",
+     "checked_on": "2026-10-23"
+    }
+   ],
+   "notes": "AP-135 (2026-10-23): read by the org-server poller internal/orgserver/cortexanalytics ([cortex_analytics], off by default), not by a vendor connections driver: no vendorconn auth kind covers Snowflake key-pair JWT and the host is the customer's own account. Requests are folded into (UTC day, user, interface, model) totals in cortex_analytics_daily (server migration 261 / PostgreSQL 0128); credits are Snowflake credits, never dollars, and never enter spendCTE (no request id joins the node adapter). Code-complete, gated on live credentials: synthesized fixtures only, no Snowflake account contacted.",
+   "derivation": {
+    "reach_rule": "phase0",
+    "build_rule": "ap135",
+    "source_rule": "literal_url",
+    "auth_rule": "plane: snowflake sql api key-pair jwt"
+   },
+   "status": "synthetic, awaiting live validation"
+  },
+  {
+   "id": "snowflake.account_usage.cortex_code_desktop_usage_history",
+   "vendor_group": "snowflake",
+   "vendor": "snowflake",
+   "plane": "snowflake.account_usage",
+   "reach": "pull_api",
+   "transport": "api",
+   "auth": {
+    "kind": "bearer",
+    "doc": "Snowflake SQL API key-pair JWT (Authorization: Bearer, X-Snowflake-Authorization-Token-Type: KEYPAIR_JWT) for a service user with IMPORTED PRIVILEGES on the SNOWFLAKE database"
+   },
+   "paging": {
+    "style": "unspecified",
+    "doc": "SQL API result partitions (GET /api/v2/statements/{handle}?partition=N)"
+   },
+   "rate": {
+    "documented": false,
+    "doc": "429 on too many concurrent requests (SQL API reference)"
+   },
+   "tier": {
+    "doc": "any Snowflake account with Cortex Code; reading ACCOUNT_USAGE needs a role with IMPORTED PRIVILEGES on SNOWFLAKE"
+   },
+   "freshness_doc": "undocumented (the CLI view's 1 hour assumed)",
+   "lookback_doc": "undocumented (365 days assumed)",
+   "per_user_doc": "per request, USER_NAME (login name)",
+   "mechanism_doc": "SELECT over SNOWFLAKE.ACCOUNT_USAGE.CORTEX_CODE_DESKTOP_USAGE_HISTORY via POST /api/v2/statements on the customer's own account host (https://<account>.snowflakecomputing.com): USER_ID, USER_NAME, USER_TAGS, REQUEST_ID, PARENT_REQUEST_ID, USAGE_TIME, TOKEN_CREDITS, TOKENS, TOKENS_GRANULAR and CREDITS_GRANULAR per model (input, cache_read_input, cache_write_input, output), METADATA",
+   "read_write_doc": "R",
+   "class_doc": "Usage, Cost (credits)",
+   "grain_doc": "PerCall (one row per request)",
+   "build": "buildable",
+   "build_doc": "Driverable; served today by the legacy-shaped poller internal/orgserver/cortexanalytics (AP-135)",
+   "sensitivity": "pii",
+   "secret_class": "never_returns_secret",
+   "supplies": [
+    {
+     "class": "Usage",
+     "grain": "per_call",
+     "unit": "tokens",
+     "accuracy": "exact",
+     "identity": [
+      "vendor_user_id"
+     ],
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "Cost",
+     "grain": "per_call",
+     "unit": "credits",
+     "accuracy": "exact",
+     "identity": [
+      "vendor_user_id"
+     ],
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    }
+   ],
+   "controls": [],
+   "customer_host": true,
+   "sources": [
+    {
+     "url": "https://docs.snowflake.com/en/sql-reference/account-usage/cortex_code_cli_usage_history",
+     "checked_on": "2026-10-23"
+    },
+    {
+     "url": "https://docs.snowflake.com/en/developer-guide/sql-api/reference",
+     "checked_on": "2026-10-23"
+    },
+    {
+     "url": "https://docs.snowflake.com/en/developer-guide/sql-api/authenticating",
+     "checked_on": "2026-10-23"
+    }
+   ],
+   "notes": "AP-135: named by the CLI view's usage notes as the Desktop sibling; its own page was seen in search only, so its columns are assumed identical to the CLI view (Inferred). Read by internal/orgserver/cortexanalytics with interface desktop; a missing view fails only that interface. Code-complete, gated on live credentials.",
+   "derivation": {
+    "reach_rule": "phase0",
+    "build_rule": "ap135",
+    "source_rule": "literal_url",
+    "auth_rule": "plane: snowflake sql api key-pair jwt"
+   },
+   "status": "synthetic, awaiting live validation"
+  },
+  {
+   "id": "snowflake.account_usage.cortex_code_snowsight_usage_history",
+   "vendor_group": "snowflake",
+   "vendor": "snowflake",
+   "plane": "snowflake.account_usage",
+   "reach": "pull_api",
+   "transport": "api",
+   "auth": {
+    "kind": "bearer",
+    "doc": "Snowflake SQL API key-pair JWT (Authorization: Bearer, X-Snowflake-Authorization-Token-Type: KEYPAIR_JWT) for a service user with IMPORTED PRIVILEGES on the SNOWFLAKE database"
+   },
+   "paging": {
+    "style": "unspecified",
+    "doc": "SQL API result partitions (GET /api/v2/statements/{handle}?partition=N)"
+   },
+   "rate": {
+    "documented": false,
+    "doc": "429 on too many concurrent requests (SQL API reference)"
+   },
+   "tier": {
+    "doc": "any Snowflake account with Cortex Code; reading ACCOUNT_USAGE needs a role with IMPORTED PRIVILEGES on SNOWFLAKE"
+   },
+   "freshness_doc": "undocumented (the CLI view's 1 hour assumed)",
+   "lookback_doc": "undocumented (365 days assumed)",
+   "per_user_doc": "per request, USER_NAME (login name)",
+   "mechanism_doc": "SELECT over SNOWFLAKE.ACCOUNT_USAGE.CORTEX_CODE_SNOWSIGHT_USAGE_HISTORY via POST /api/v2/statements on the customer's own account host (https://<account>.snowflakecomputing.com): USER_ID, USER_NAME, USER_TAGS, REQUEST_ID, PARENT_REQUEST_ID, USAGE_TIME, TOKEN_CREDITS, TOKENS, TOKENS_GRANULAR and CREDITS_GRANULAR per model (input, cache_read_input, cache_write_input, output), METADATA",
+   "read_write_doc": "R",
+   "class_doc": "Usage, Cost (credits)",
+   "grain_doc": "PerCall (one row per request)",
+   "build": "buildable",
+   "build_doc": "Driverable; served today by the legacy-shaped poller internal/orgserver/cortexanalytics (AP-135)",
+   "sensitivity": "pii",
+   "secret_class": "never_returns_secret",
+   "supplies": [
+    {
+     "class": "Usage",
+     "grain": "per_call",
+     "unit": "tokens",
+     "accuracy": "exact",
+     "identity": [
+      "vendor_user_id"
+     ],
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "Cost",
+     "grain": "per_call",
+     "unit": "credits",
+     "accuracy": "exact",
+     "identity": [
+      "vendor_user_id"
+     ],
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    }
+   ],
+   "controls": [],
+   "customer_host": true,
+   "sources": [
+    {
+     "url": "https://docs.snowflake.com/en/sql-reference/account-usage/cortex_code_cli_usage_history",
+     "checked_on": "2026-10-23"
+    },
+    {
+     "url": "https://docs.snowflake.com/en/developer-guide/sql-api/reference",
+     "checked_on": "2026-10-23"
+    },
+    {
+     "url": "https://docs.snowflake.com/en/developer-guide/sql-api/authenticating",
+     "checked_on": "2026-10-23"
+    }
+   ],
+   "notes": "AP-135: named by the CLI view's usage notes as the Snowsight sibling; its own page was seen in search only, so its columns are assumed identical to the CLI view (Inferred). Read by internal/orgserver/cortexanalytics with interface snowsight. Code-complete, gated on live credentials.",
+   "derivation": {
+    "reach_rule": "phase0",
+    "build_rule": "ap135",
+    "source_rule": "literal_url",
+    "auth_rule": "plane: snowflake sql api key-pair jwt"
+   },
+   "status": "synthetic, awaiting live validation"
+  },
+  {
+   "id": "snowflake.organization_usage.cortex_code_cli_usage_history",
+   "vendor_group": "snowflake",
+   "vendor": "snowflake",
+   "plane": "snowflake.organization_usage",
+   "reach": "pull_api",
+   "transport": "api",
+   "auth": {
+    "kind": "bearer",
+    "doc": "Snowflake SQL API key-pair JWT (Authorization: Bearer, X-Snowflake-Authorization-Token-Type: KEYPAIR_JWT) for a service user with IMPORTED PRIVILEGES on the SNOWFLAKE database"
+   },
+   "paging": {
+    "style": "unspecified",
+    "doc": "SQL API result partitions (GET /api/v2/statements/{handle}?partition=N)"
+   },
+   "rate": {
+    "documented": false,
+    "doc": "429 on too many concurrent requests (SQL API reference)"
+   },
+   "tier": {
+    "doc": "Enterprise Edition; queried from the organization account only"
+   },
+   "freshness_doc": "up to 24 hours",
+   "lookback_doc": "365 days",
+   "per_user_doc": "per request, USER_ID (no USER_NAME), with ORGANIZATION_NAME, ACCOUNT_LOCATOR, ACCOUNT_NAME",
+   "mechanism_doc": "SELECT over SNOWFLAKE.ORGANIZATION_USAGE.CORTEX_CODE_CLI_USAGE_HISTORY via the SQL API on the organization account: ORGANIZATION_NAME, ACCOUNT_LOCATOR, ACCOUNT_NAME, USER_ID, USER_TAGS, REQUEST_ID, PARENT_REQUEST_ID, USAGE_TIME, TOKEN_CREDITS, TOKENS, TOKENS_GRANULAR, CREDITS_GRANULAR, METADATA",
+   "read_write_doc": "R",
+   "class_doc": "Usage, Cost (credits)",
+   "grain_doc": "PerCall (one row per request)",
+   "build": "buildable",
+   "build_doc": "Driverable; served today by the legacy-shaped poller internal/orgserver/cortexanalytics (AP-135)",
+   "sensitivity": "pii",
+   "secret_class": "never_returns_secret",
+   "supplies": [
+    {
+     "class": "Usage",
+     "grain": "per_call",
+     "unit": "tokens",
+     "accuracy": "exact",
+     "identity": [
+      "vendor_user_id",
+      "vendor_account_id"
+     ],
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "Cost",
+     "grain": "per_call",
+     "unit": "credits",
+     "accuracy": "exact",
+     "identity": [
+      "vendor_user_id",
+      "vendor_account_id"
+     ],
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    }
+   ],
+   "controls": [],
+   "customer_host": true,
+   "sources": [
+    {
+     "url": "https://docs.snowflake.com/en/sql-reference/organization-usage/cortex_code_cli_usage_history",
+     "checked_on": "2026-10-23"
+    },
+    {
+     "url": "https://docs.snowflake.com/en/developer-guide/sql-api/reference",
+     "checked_on": "2026-10-23"
+    },
+    {
+     "url": "https://docs.snowflake.com/en/developer-guide/sql-api/authenticating",
+     "checked_on": "2026-10-23"
+    }
+   ],
+   "notes": "AP-135: read by internal/orgserver/cortexanalytics with [cortex_analytics].schema = organization_usage (CLI only; Snowflake documents no Desktop or Snowsight view in this schema). The user key is stored as user_id:<n> and never joined to a member by email. Code-complete, gated on live credentials.",
+   "derivation": {
+    "reach_rule": "phase0",
+    "build_rule": "ap135",
+    "source_rule": "literal_url",
+    "auth_rule": "plane: snowflake sql api key-pair jwt"
+   },
+   "status": "synthetic, awaiting live validation"
+  },
+  {
+   "id": "snowflake.account_usage.snowflake_coco_usage_history",
+   "vendor_group": "snowflake",
+   "vendor": "snowflake",
+   "plane": "snowflake.account_usage",
+   "reach": "pull_api",
+   "transport": "api",
+   "auth": {
+    "kind": "bearer",
+    "doc": "Snowflake SQL API key-pair JWT"
+   },
+   "paging": {
+    "style": "unspecified",
+    "doc": "n/a"
+   },
+   "rate": {
+    "documented": false,
+    "doc": "undocumented"
+   },
+   "tier": {
+    "doc": "unknown"
+   },
+   "freshness_doc": "unknown",
+   "lookback_doc": "unknown",
+   "per_user_doc": "per request, with an INTERFACE column (search result)",
+   "mechanism_doc": "unified CLI + Desktop + Snowsight usage view named by the CLI view's usage notes; its own reference page was not fetched",
+   "read_write_doc": "R",
+   "class_doc": "Usage, Cost (credits)",
+   "grain_doc": "PerCall",
+   "build": "awaiting_reference",
+   "build_doc": "AwaitingReference: no column reference fetched",
+   "sensitivity": "pii",
+   "secret_class": "unclassified",
+   "supplies": [
+    {
+     "class": "Usage",
+     "grain": "per_call",
+     "unit": "tokens",
+     "accuracy": "unassessed",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "awaiting_reference",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "Cost",
+     "grain": "per_call",
+     "unit": "credits",
+     "accuracy": "unassessed",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "awaiting_reference",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    }
+   ],
+   "controls": [],
+   "customer_host": true,
+   "sources": [
+    {
+     "url": "https://docs.snowflake.com/en/sql-reference/account-usage/cortex_code_cli_usage_history",
+     "checked_on": "2026-10-23"
+    }
+   ],
+   "notes": "AP-135: not read. The poller reads the three per-interface views instead, so this view would only double count them.",
+   "derivation": {
+    "reach_rule": "phase0",
+    "build_rule": "ap135",
+    "source_rule": "literal_url",
+    "auth_rule": "plane: snowflake sql api key-pair jwt"
+   },
+   "status": "synthetic, awaiting live validation"
+  },
+  {
+   "id": "snowflake.cortexcode.managed_settings",
+   "vendor_group": "snowflake",
+   "vendor": "snowflake",
+   "plane": "snowflake.cortexcode",
+   "reach": "file_projection",
+   "transport": "local_file",
+   "auth": {
+    "kind": "local_file",
+    "doc": "root-owned file written by MDM or configuration management"
+   },
+   "paging": {
+    "style": "unspecified",
+    "doc": "n/a"
+   },
+   "rate": {
+    "documented": false,
+    "doc": "undocumented"
+   },
+   "tier": {
+    "doc": "all Cortex Code installs"
+   },
+   "freshness_doc": "read at CLI start",
+   "lookback_doc": "n/a",
+   "per_user_doc": "per device",
+   "mechanism_doc": "managed-settings.json (\"version\": \"1.0\") at /etc/cortex/ (Linux, WSL), /Library/Application Support/Cortex/ (macOS), %ProgramData%\\Cortex\\ (Windows): permissions (onlyAllow, deny, defaultMode, dangerouslyAllowAll), settings (forceNoHistoryMode, forceSandboxEnabled, forceSandboxMode), required.minimumVersion, defaults, files (connectionsFile, mcpFile), ui (showManagedBanner, bannerText, hideDangerousOptions), enabled, tenant.allowedAccounts, auth (allowedMethods, accounts), cli / desktop overrides, sql (defaultMode, lockMode). No telemetry and no hooks key.",
+   "read_write_doc": "W (file)",
+   "class_doc": "Policy",
+   "grain_doc": "Snapshot",
+   "build": "buildable",
+   "build_doc": "Generator built: observer org emit-managed-settings --provider cortex-code (AP-135) emits files.mcpFile + the admin mcp.json; doctor probe cortex-code-teams",
+   "sensitivity": "metadata",
+   "secret_class": "never_returns_secret",
+   "supplies": [
+    {
+     "class": "Policy",
+     "grain": "snapshot",
+     "unit": "unspecified",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "buildable",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    }
+   ],
+   "controls": [
+    {
+     "class": "ManagedSettings",
+     "facet": "F",
+     "caps": {
+      "read": false,
+      "write": true,
+      "readback": false,
+      "effect_evidence": false,
+      "idempotency": false,
+      "local_file": true,
+      "repository": false
+     },
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "MCPAllowList",
+     "facet": "F",
+     "caps": {
+      "read": false,
+      "write": true,
+      "readback": false,
+      "effect_evidence": false,
+      "idempotency": false,
+      "local_file": true,
+      "repository": false
+     },
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "ToolPolicy",
+     "facet": "F",
+     "caps": {
+      "read": false,
+      "write": true,
+      "readback": false,
+      "effect_evidence": false,
+      "idempotency": false,
+      "local_file": true,
+      "repository": false
+     },
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "RetentionPolicy",
+     "facet": "F",
+     "caps": {
+      "read": false,
+      "write": true,
+      "readback": false,
+      "effect_evidence": false,
+      "idempotency": false,
+      "local_file": true,
+      "repository": false
+     },
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    }
+   ],
+   "sources": [
+    {
+     "url": "https://docs.snowflake.com/en/user-guide/cortex-code/managed-settings",
+     "checked_on": "2026-10-23"
+    },
+    {
+     "url": "https://docs.snowflake.com/en/user-guide/cortex-code/cortex-code-mcp",
+     "checked_on": "2026-10-23"
+    },
+    {
+     "repo_path": "docs/plans/native-console-wave-2026-10-21-phase0.md",
+     "checked_on": "2026-10-23"
+    }
+   ],
+   "notes": "AP-135 Rail B. Code-complete; not verified on a managed install (no file on the grounding box).",
+   "derivation": {
+    "reach_rule": "phase0",
+    "build_rule": "ap135",
+    "source_rule": "literal_url",
+    "auth_rule": "plane: managed file"
+   },
+   "status": "synthetic, awaiting live validation"
+  },
+  {
+   "id": "snowflake.cortexcode.ai_observability_events",
+   "vendor_group": "snowflake",
+   "vendor": "snowflake",
+   "plane": "snowflake.cortexcode",
+   "reach": "pull_api",
+   "transport": "api",
+   "auth": {
+    "kind": "bearer",
+    "doc": "Snowflake SQL API with the SNOWFLAKE.AI_OBSERVABILITY_READER application role"
+   },
+   "paging": {
+    "style": "unspecified",
+    "doc": "n/a"
+   },
+   "rate": {
+    "documented": false,
+    "doc": "undocumented"
+   },
+   "tier": {
+    "doc": "all"
+   },
+   "freshness_doc": "undocumented",
+   "lookback_doc": "undocumented",
+   "per_user_doc": "per prompt trace (CodingAgentRun, CodingAgent.Step-0)",
+   "mechanism_doc": "Cortex Code's own OTLP traces and logs, sent by the CLI only to the customer's Snowflake account and stored in SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS; Step-0 carries the prompt, the response, tokens and request_id",
+   "read_write_doc": "R",
+   "class_doc": "Telemetry, Content",
+   "grain_doc": "Event",
+   "build": "catalog_only",
+   "build_doc": "CatalogOnly by operator ruling AP-132 (2026-10-23): Observer reads only vendor enterprise APIs, not this export",
+   "sensitivity": "content",
+   "secret_class": "unclassified",
+   "supplies": [
+    {
+     "class": "Telemetry",
+     "grain": "event",
+     "unit": "unspecified",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "catalog_only",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    },
+    {
+     "class": "Content",
+     "grain": "event",
+     "unit": "text",
+     "accuracy": "exact",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "catalog_only",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    }
+   ],
+   "controls": [],
+   "customer_host": true,
+   "sources": [
+    {
+     "url": "https://docs.snowflake.com/en/user-guide/cortex-code/observability",
+     "checked_on": "2026-10-23"
+    }
+   ],
+   "notes": "Not read (operator ruling AP-132). A reader would be a content-bearing org source needing the ShareOptions gate and a privacy sentinel.",
+   "derivation": {
+    "reach_rule": "phase0",
+    "build_rule": "ap135",
+    "source_rule": "literal_url",
+    "auth_rule": "plane: snowflake sql api key-pair jwt"
+   },
+   "status": "synthetic, awaiting live validation"
+  },
+  {
+   "id": "snowflake.account.cortex_code_daily_credit_limit",
+   "vendor_group": "snowflake",
+   "vendor": "snowflake",
+   "plane": "snowflake.account",
+   "reach": "manual_only",
+   "transport": "ui",
+   "auth": {
+    "kind": "console_session",
+    "doc": "ACCOUNTADMIN sets the parameter (ALTER ACCOUNT / ALTER USER)"
+   },
+   "paging": {
+    "style": "unspecified",
+    "doc": "n/a"
+   },
+   "rate": {
+    "documented": false,
+    "doc": "undocumented"
+   },
+   "tier": {
+    "doc": "all"
+   },
+   "freshness_doc": "immediate",
+   "lookback_doc": "n/a",
+   "per_user_doc": "per user (account default or user override)",
+   "mechanism_doc": "account / user parameter CORTEX_CODE_CLI_DAILY_EST_CREDIT_LIMIT_PER_USER (estimated daily credits per user); the CLI's /status shows 24h usage against it",
+   "read_write_doc": "W (SQL)",
+   "class_doc": "Limits",
+   "grain_doc": "Snapshot",
+   "build": "catalog_only",
+   "build_doc": "CatalogOnly: a write would be a vendor-side control write; not in AP-135",
+   "sensitivity": "metadata",
+   "secret_class": "never_returns_secret",
+   "supplies": [
+    {
+     "class": "Limits",
+     "grain": "snapshot",
+     "unit": "credits",
+     "accuracy": "estimated",
+     "coverage": {
+      "completeness": "segment"
+     },
+     "build": "catalog_only",
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    }
+   ],
+   "controls": [
+    {
+     "class": "SpendLimitUser",
+     "facet": "U",
+     "caps": {
+      "read": false,
+      "write": false,
+      "readback": false,
+      "effect_evidence": false,
+      "idempotency": false,
+      "local_file": false,
+      "repository": false
+     },
+     "verification": {
+      "synthetic": "doc_only",
+      "live": "live_pending"
+     }
+    }
+   ],
+   "sources": [
+    {
+     "url": "https://docs.snowflake.com/en/user-guide/cortex-code/credit-usage-limit",
+     "checked_on": "2026-10-23"
+    }
+   ],
+   "notes": "Seen in search results only (Phase 0 [S]).",
+   "derivation": {
+    "reach_rule": "phase0",
+    "build_rule": "ap135",
+    "source_rule": "search_result",
+    "auth_rule": "plane: sql parameter"
+   },
+   "status": "synthetic, awaiting live validation"
+  }
+ ]
+}

@@ -35,7 +35,7 @@ const sourceKindUser = "user"
 // mirroring internal/adapter/muse's emitTurnTerminal polarity.
 const turnEndCompleted = "completed"
 
-// sessionHeader is the FIRST line of every session.jsonl.zstd — a
+// sessionHeader is the FIRST line of every session log: a
 // distinct shape from every other line (no seq/time/data envelope).
 type sessionHeader struct {
 	Type            string `json:"type"`

@@ -10,6 +10,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/diag"
 	"github.com/marmutapp/superbased-observer/internal/proxyroute"
+	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
 // doctorReportInput is one `observer doctor [scope]` run's inputs.
@@ -34,6 +35,10 @@ type doctorReportInput struct {
 // drift. An unscoped run returns every check.
 func buildDoctorReport(ctx context.Context, in doctorReportInput) (diag.Report, error) {
 	cfg, database, binary, configPath := in.Config, in.DB, in.Binary, in.ConfigPath
+	// The sandbox section and the hook_block lines read one probe: the
+	// lines' fallback channel is sandbox_enforce only where a sandbox can
+	// be built here.
+	sandboxChecks, sandboxAvailable := sandboxDoctorSection(ctx, cfg, configPath)
 	report := diag.Run(ctx, diag.DoctorOptions{
 		Config:         cfg,
 		DB:             database,
@@ -43,32 +48,63 @@ func buildDoctorReport(ctx context.Context, in doctorReportInput) (diag.Report, 
 		HomeDir:        in.HomeDir,
 		Scope:          in.Scope,
 		ForceIntegrity: in.ForceIntegrity,
+		// T-915: the route rows read the component selection route
+		// maintenance acts on, so a tool the policy did not select is "not
+		// selected by policy" and, with the route writer off, every tool is
+		// "routing switched off by policy", never route drift.
+		RouteSelection: routeSelection(componentSnapshotForConfig(cfg)),
 		// Fold the obs-plane admission health checks (judge
 		// reachability + audit-chain verify) into doctor, built in the
 		// one obs wiring file so diag never imports internal/obs.
 		ExtraChecks: append(append(append(
 			obsAdmissionDoctorChecks(ctx, cfg, database, slog.Default()),
 			oversizeCaptureCheck(ctx, cfg, database),
+			// T-830: rows retention keeps only because the org push has
+			// not accepted them, so a stuck push is visible.
+			retentionPushHoldCheck(ctx, cfg, database),
 			otlpIngressPostureCheck(cfg),
+			// R-188 F5: hook activity records skipped while the hook spool
+			// was past its cap with nothing draining it.
+			hookSpoolCheck(configPath),
+			// CLI-4: a tool home variable the login shell sets but this process
+			// does not (lane w4-homes-b).
+			loginEnvDriftCheck(),
 			// T-536: which exporting tools the proxy owns tokens for;
 			// none when this node serves no proxy (REVIEW-4 P4-18).
 			otlpTokenOwnerCheck(cfg,
 				proxyServingReason(cfg, componentSnapshotForConfig(cfg).Active("capture.proxy")),
-				proxyroute.InspectRoutes(doctorHome(in.HomeDir))),
+				proxyroute.ApplyActiveProvider(proxyroute.InspectRoutes(doctorHome(in.HomeDir)))),
 			// T-323: a user guard-policy.toml the guard drops is a
 			// doctor ERROR naming the file, line and parse error.
 			guardUserPolicyDoctorCheck(cfg, userHomeOrEmpty(), os.ReadFile, userPolicyFailClosedOnNode(configPath)),
+			// Code security (security pillar plan section 4.11): one line
+			// while the module is not active.
+			securityDoctorCheck(ctx, configPath, doctorStore(database)),
+			// Package checks (security.deps): online state, disclosure,
+			// index kinds and the not-set-up state.
+			securityDepsDoctorCheck(ctx, configPath),
+			// Code rules (security.scan.opengrep): the engine's
+			// verification and the rule pack; nothing started.
+			securityCodeDoctorCheck(ctx, configPath),
+			// SARIF import and actionlint (security.scan.sarif-import and
+			// security.scan.actionlint, lane sec-g5): one line each,
+			// nothing read or started.
+			securitySARIFImportDoctorCheck(ctx, configPath),
+			securityActionlintDoctorCheck(ctx, configPath),
+			securityIaCDoctorCheck(ctx, configPath),
 		),
 			// One line per hook_block tool: does its tool-gate hook
 			// hold on this node, or what it falls back to and why
 			// (toolgate_node.go, the launch decision's own source).
-			toolGateEnforcementChecks(func(tool string) nodeToolGateState {
+			toolGateEnforcementChecks(sandboxAvailable, func(tool string) nodeToolGateState {
 				return nodeToolGate(binary, configPath, tool)
 			})...),
 			// The Components section (modular packaging 7.3, T-661):
 			// selection, build, policy, signature, leftovers, then one
 			// row per separately installed artifact (lane MP-ART, T-601).
-			append(componentsDoctorChecksFor(ctx, configPath), componentsArtifactChecksFor(configPath, in.HomeDir)...)...),
+			append(append(componentsDoctorChecksFor(ctx, configPath), componentsArtifactChecksFor(configPath, in.HomeDir)...),
+				// The sandbox module's section (sandbox plan v2 11.6).
+				sandboxChecks...)...),
 	})
 	scope := in.Scope
 	if scope == "" {
@@ -78,7 +114,7 @@ func buildDoctorReport(ctx context.Context, in doctorReportInput) (diag.Report, 
 	// (detection + watch path + proxy-routing for the routable ones).
 	// Otherwise fall back to a substring filter over the general checks
 	// (org, hooks, db, ...).
-	c, ok := diag.CheckAdapter(scope, cfg)
+	c, ok := diag.CheckAdapterIn(scope, cfg, doctorHome(in.HomeDir))
 	if !ok {
 		report = report.Filter(scope)
 		if report.Matched() == 0 {
@@ -98,7 +134,7 @@ func buildDoctorReport(ctx context.Context, in doctorReportInput) (diag.Report, 
 	// capture-health notes CheckAdapter already prints, so it lands as its
 	// own check rather than another Details line. Always StatusOK: this is
 	// informational, never a capture defect.
-	if line, ok := controlCoverageLine(scope); ok {
+	if line, ok := controlCoverageLineObserved(ctx, database, scope); ok {
 		report.Checks = append(report.Checks, diag.Check{
 			Name:    scope + ".control-coverage",
 			Status:  diag.StatusOK,
@@ -138,4 +174,12 @@ func dashboardToolDoctor(configPath string) func(ctx context.Context, cfg config
 			Config: cfg, DB: database, Binary: binary, ConfigPath: configPath, Scope: tool,
 		})
 	}
+}
+
+// doctorStore wraps the doctor's database handle, nil when there is none.
+func doctorStore(database *sql.DB) *store.Store {
+	if database == nil {
+		return nil
+	}
+	return store.New(database)
 }

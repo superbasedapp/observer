@@ -15,6 +15,13 @@ import (
 // under a temp watch root and returns (adapter, path).
 func fixture(t *testing.T, name string) (*Adapter, string) {
 	t.Helper()
+	return fixtureAs(t, name, sessionLogName)
+}
+
+// fixtureAs is fixture with an explicit on-disk basename, so a test can
+// place a fixture under a versioned name (session.v4.jsonl.zstd).
+func fixtureAs(t *testing.T, name, base string) (*Adapter, string) {
+	t.Helper()
 	root := filepath.Join(t.TempDir(), ".dsh", "sessions")
 	dir := filepath.Join(root, "--work-project--", "session-019f1111-2222-7333-8444-555555555555")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -25,7 +32,7 @@ func fixture(t *testing.T, name string) (*Adapter, string) {
 	if err != nil {
 		t.Fatalf("read fixture %s: %v", src, err)
 	}
-	dst := filepath.Join(dir, sessionLogName)
+	dst := filepath.Join(dir, base)
 	if err := os.WriteFile(dst, body, 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
 	}
@@ -71,6 +78,21 @@ func TestIsSessionFile(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "in watch root, versioned basename (v4)",
+			path: filepath.Join(root, "--work-project--", "session-abc", "session.v4.jsonl.zstd"),
+			want: true,
+		},
+		{
+			name: "in watch root, versioned basename upper-cased",
+			path: filepath.Join(root, "--work-project--", "session-abc", "SESSION.V12.JSONL.ZSTD"),
+			want: true,
+		},
+		{
+			name: "in watch root, versioned basename with no digits",
+			path: filepath.Join(root, "--work-project--", "session-abc", "session.v.jsonl.zstd"),
+			want: false,
+		},
+		{
 			name: "in watch root, wrong basename",
 			path: filepath.Join(root, "--work-project--", "session-abc", "session.jsonl"),
 			want: false,
@@ -95,6 +117,127 @@ func TestIsSessionFile(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := a.IsSessionFile(tc.path); got != tc.want {
 				t.Errorf("IsSessionFile(%q) = %v, want %v", tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSessionLogRank pins the accepted session-log basenames and their
+// version ranks, one row per shape.
+func TestSessionLogRank(t *testing.T) {
+	cases := []struct {
+		base     string
+		wantRank int
+		wantOK   bool
+	}{
+		{"session.jsonl.zstd", unversionedRank, true},
+		{"Session.JSONL.zstd", unversionedRank, true},
+		{"session.v0.jsonl.zstd", 0, true},
+		{"session.v4.jsonl.zstd", 4, true},
+		{"session.v12.jsonl.zstd", 12, true},
+		{"session.v999999.jsonl.zstd", 999999, true},
+		{"session.v1234567.jsonl.zstd", 0, false},
+		{"session.v.jsonl.zstd", 0, false},
+		{"session.v+4.jsonl.zstd", 0, false},
+		{"session.v-4.jsonl.zstd", 0, false},
+		{"session.v4a.jsonl.zstd", 0, false},
+		{"session.v4.jsonl", 0, false},
+		{"session.jsonl", 0, false},
+		{"session.v4.jsonl.zstd.tmp", 0, false},
+		{".credentials.yaml", 0, false},
+		{"settings.yaml", 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.base, func(t *testing.T) {
+			rank, ok := sessionLogRank(tc.base)
+			if ok != tc.wantOK || (ok && rank != tc.wantRank) {
+				t.Errorf("sessionLogRank(%q) = (%d, %v), want (%d, %v)", tc.base, rank, ok, tc.wantRank, tc.wantOK)
+			}
+		})
+	}
+}
+
+// TestParseSessionFileV4 pins FU-93: a session log under the versioned
+// basename session.v4.jsonl.zstd parses exactly like the unversioned one
+// (same header keys, same record types).
+func TestParseSessionFileV4(t *testing.T) {
+	a, path := fixtureAs(t, "session.v4.jsonl.zstd", "session.v4.jsonl.zstd")
+	if !a.IsSessionFile(path) {
+		t.Fatalf("IsSessionFile(%q) = false, want true", path)
+	}
+	res := parse(t, a, path, 0)
+
+	wantSession := "session-019f2222-3333-7444-8555-666666666666"
+	actions := map[string]int{}
+	for _, ev := range res.ToolEvents {
+		if ev.SessionID != wantSession {
+			t.Errorf("ToolEvent %q SessionID = %q, want %q", ev.SourceEventID, ev.SessionID, wantSession)
+		}
+		actions[ev.ActionType]++
+	}
+	if actions[models.ActionUserPrompt] != 1 {
+		t.Errorf("user prompts = %d, want 1 (plugin-injected message filtered)", actions[models.ActionUserPrompt])
+	}
+	if actions[models.ActionReadFile] != 1 || actions[models.ActionRunCommand] != 1 {
+		t.Errorf("actions = %v, want one read_file and one run_command", actions)
+	}
+	if len(res.TokenEvents) != 2 {
+		t.Fatalf("got %d TokenEvents, want 2", len(res.TokenEvents))
+	}
+	if got := res.TokenEvents[1]; got.InputTokens != 900 || got.CacheReadTokens != 6144 || got.OutputTokens != 64 {
+		t.Errorf("TokenEvents[1] = in %d / cache %d / out %d, want 900 / 6144 / 64",
+			got.InputTokens, got.CacheReadTokens, got.OutputTokens)
+	}
+	for _, w := range res.Warnings {
+		t.Errorf("unexpected warning: %s", w)
+	}
+}
+
+// TestParseSessionFileHighestVersionWins pins the supersede rule: when one
+// session directory holds more than one session log, only the
+// highest-versioned one yields events, so an upgraded Harness that leaves
+// its old log behind is never ingested twice.
+func TestParseSessionFileHighestVersionWins(t *testing.T) {
+	a, legacy := fixture(t, "session.jsonl.zstd")
+	dir := filepath.Dir(legacy)
+	body, err := os.ReadFile(filepath.Join("..", "..", "..", "testdata", "deepseek", "session.v4.jsonl.zstd"))
+	if err != nil {
+		t.Fatalf("read v4 fixture: %v", err)
+	}
+	v4 := filepath.Join(dir, "session.v4.jsonl.zstd")
+	v10 := filepath.Join(dir, "session.v10.jsonl.zstd")
+	for _, p := range []string{v4, v10} {
+		if err := os.WriteFile(p, body, 0o600); err != nil {
+			t.Fatalf("write %s: %v", p, err)
+		}
+	}
+
+	cases := []struct {
+		name       string
+		path       string
+		wantEvents bool
+	}{
+		{"unversioned log superseded", legacy, false},
+		{"v4 superseded by v10 (numeric, not lexical, order)", v4, false},
+		{"v10 is the highest and is parsed", v10, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if !a.IsSessionFile(tc.path) {
+				t.Fatalf("IsSessionFile(%q) = false, want true (shape match is independent of siblings)", tc.path)
+			}
+			res := parse(t, a, tc.path, 0)
+			got := len(res.ToolEvents)+len(res.TokenEvents) > 0
+			if got != tc.wantEvents {
+				t.Errorf("events emitted = %v (%d tool, %d token), want %v",
+					got, len(res.ToolEvents), len(res.TokenEvents), tc.wantEvents)
+			}
+			fi, err := os.Stat(tc.path)
+			if err != nil {
+				t.Fatalf("stat: %v", err)
+			}
+			if res.NewOffset != fi.Size() {
+				t.Errorf("NewOffset = %d, want %d (a superseded log still advances its watermark)", res.NewOffset, fi.Size())
 			}
 		})
 	}

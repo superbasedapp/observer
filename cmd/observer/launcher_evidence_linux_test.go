@@ -23,8 +23,11 @@ import (
 // against an attested surface and asserts the vendor process STARTED.
 
 // TestKiloLauncherRecoversUnderAttestedProcessCutoff covers the strongest
-// case: kilo-code-cli is native-exempt, so it can never prove a proxy route
-// and the attested cutoff is its ONLY admission path.
+// case: kilo-code-cli has no proxy route Observer drives (probe_required
+// since gap review CLI-9, 2026-10-28: Kilo documents a custom provider
+// baseURL, live check LC24, but no writer or routed turn exists), so it
+// cannot prove a proxy route and the attested cutoff is its ONLY admission
+// path.
 func TestKiloLauncherRecoversUnderAttestedProcessCutoff(t *testing.T) {
 	cfgPath, dbPath := writeManagedBudgetLaunchFixture(t, true, "enforce")
 	bin, marker := writeBudgetLaunchMarkerBinary(t, "kilo")

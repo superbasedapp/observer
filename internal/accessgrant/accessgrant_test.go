@@ -35,6 +35,7 @@ func TestRequestTypeTable(t *testing.T) {
 		{TypeModelAccess, KeyWritePolicy, 90 * day},
 		{TypeFeatureEnable, KeyAdminDeployment, 90 * day},
 		{TypeBudgetIncrease, KeyWriteBudgets, 0},
+		{TypeFindingException, KeyWriteSecurity, 90 * day},
 	}
 	for _, c := range cases {
 		rt, ok := TypeByID(c.id)

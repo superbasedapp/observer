@@ -68,8 +68,14 @@ func (d Disposition) String() string {
 // that already exists: a compaction (its tables reference sessions), a
 // session end (Ingest will not bootstrap a session from its terminal marker)
 // and a row with no project root (Ingest cannot create a session without
-// one; the drainer fills the root from the existing session).
+// one; the drainer fills the root from the existing session). An activity
+// row never does.
 func (r Record) NeedsSession() bool {
+	if r.Kind == KindActivity {
+		// Liveness is counted per (tool, event, session id) whether or not
+		// the session was captured: an activity row is never held.
+		return false
+	}
 	return r.Kind != "" || r.ActionType == models.ActionSessionEnd || r.ProjectRoot == ""
 }
 

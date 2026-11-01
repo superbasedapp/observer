@@ -88,3 +88,17 @@ func TestPageArgsSkip(t *testing.T) {
 		t.Errorf("a subtree pathspec must follow the -- separator, got %v", sub)
 	}
 }
+
+// TestPageArgsRange pins the range form the incremental scan uses since
+// 2026-10-15 (`log <rev> ^<exclude>` with no --since), and the empty
+// exclude collapsing to PageArgsRev.
+func TestPageArgsRange(t *testing.T) {
+	got := strings.Join(PageArgsRange("aaa", "bbb", 50, 100, "."), " ")
+	want := "log aaa ^bbb --no-renames --no-color --date-order -n 50 --skip=100 --numstat --format=tformat:" + logFormat + " -- ."
+	if got != want {
+		t.Fatalf("PageArgsRange = %q\nwant %q", got, want)
+	}
+	if a, b := strings.Join(PageArgsRange("aaa", "", 5, 0, ""), " "), strings.Join(PageArgsRev("aaa", "", 5, 0, ""), " "); a != b {
+		t.Fatalf("empty exclude: %q != %q", a, b)
+	}
+}

@@ -2069,10 +2069,11 @@ func TestIsSessionFile(t *testing.T) {
 }
 
 func TestWatchPathsHonorsCodexHome(t *testing.T) {
-	t.Setenv("CODEX_HOME", "/custom/codex")
+	custom := filepath.Join(t.TempDir(), "custom", "codex")
+	t.Setenv("CODEX_HOME", custom)
 	a := New()
 	paths := a.WatchPaths()
-	want := filepath.Join("/custom/codex", "sessions")
+	want := filepath.Join(custom, "sessions")
 	if len(paths) != 1 || paths[0] != want {
 		t.Errorf("CODEX_HOME not honored: %v", paths)
 	}

@@ -60,6 +60,15 @@ func (g *Guard) EvaluateHook(ev policy.Event) (ActionVerdict, bool) {
 			verdict, appr, guardErr, budgetStop = bv, approvalOutcome{}, nil, true
 		}
 	}
+	// The project_unknown floor (projectfloor.go): where the org's project
+	// layer for this root is unknown and the org chose "ask", the verdict is
+	// raised to ask (individual) or deny (managed); never lowered, and no
+	// approval softens it.
+	if !budgetStop {
+		if fv, ok := g.projectFloor(es, ev, verdict); ok {
+			verdict, appr = fv, approvalOutcome{}
+		}
+	}
 	av := ActionVerdict{
 		Input: ActionInput{
 			SessionID:   ev.SessionID,
@@ -81,7 +90,7 @@ func (g *Guard) EvaluateHook(ev policy.Event) (ActionVerdict, bool) {
 		// (its remedy is a budget request, not an access request).
 		av.Category = string(policy.CategoryBudget)
 	} else {
-		g.stampOrgOverride(es, &av)
+		g.stampOrgOverrideAt(es, &av, projectLookupRoot(&ev))
 	}
 	// An exception is audited: the row records what the verdict WAS
 	// downgraded from (§14.4 exception register) and, for an org grant,

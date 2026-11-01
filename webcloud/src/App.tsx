@@ -4,6 +4,7 @@ import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { PageTransition, TopProgress } from "@shared/primitives/Motion";
 import { Skeleton } from "@shared/primitives/Skeleton";
 import { usePortalActivity } from "./lib/query";
+import { useRouteRider } from "@shared/lib/routeRider";
 import { DashboardSkeleton } from "./components/LoadState";
 import { getSession, hasCsrf, onCsrfSync } from "./api";
 import { clearConsentState, loadConsent, needsConsentSetup } from "./consent";
@@ -263,6 +264,12 @@ export function App() {
 
 // Leaf reader of the query cache's foreground activity. Keep it a leaf: the
 // shell re-rendering on every busy/idle flip would re-render the whole app.
+// D-665..D-669: Obs rides the line only during a slow ROUTE load (useRouteRider:
+// from navigation until that page's own requests settle), never for a later
+// filter change, refetch or poll.
 function ActivityProgress() {
-  return <TopProgress active={usePortalActivity() > 0} className="z-40" />;
+  const { pathname } = useLocation();
+  const active = usePortalActivity() > 0;
+  const rider = useRouteRider(pathname, active);
+  return <TopProgress active={active} rider={rider} className="z-40" />;
 }

@@ -4,13 +4,13 @@ import "testing"
 
 func goodTE() (ExchangeRequest, ExchangeContext) {
 	return ExchangeRequest{
-			GrantType: GrantTypeTokenExchange, SubjectToken: "bearer", SubjectType: TokenTypeAccessToken,
-			ActorToken: "actor", ActorType: TokenTypeJWT, Resource: testAud, RequestedType: TokenTypeAccessToken,
-		}, ExchangeContext{
-			MemberActive: true, MemberGen: 7, CredGen: 2, ActorCredGen: 2, AgentAllowed: true, CredActive: true, MachineBound: true,
-			SubjectVerified: true, ActorVerified: true, CredAssurance: CredNodeEnrolled, ClientAttestation: AttestProcessAttested,
-			Agent: AgentRef{ID: "ad_1", ClientID: "agent:claude-code", Kind: "coding_agent", Product: "claude-code"}, Node: NodeRef{ID: "m_9b21"},
-		}
+		GrantType: GrantTypeTokenExchange, SubjectToken: "bearer", SubjectType: TokenTypeAccessToken,
+		ActorToken: "actor", ActorType: TokenTypeJWT, Resource: testAud, RequestedType: TokenTypeAccessToken,
+	}, ExchangeContext{
+		MemberActive: true, MemberGen: 7, CredGen: 2, ActorCredGen: 2, AgentAllowed: true, CredActive: true, MachineBound: true,
+		SubjectVerified: true, ActorVerified: true, CredAssurance: CredNodeEnrolled, ClientAttestation: AttestProcessAttested,
+		Agent: AgentRef{ID: "ad_1", ClientID: "agent:claude-code", Kind: "coding_agent", Product: "claude-code"}, Node: NodeRef{ID: "m_9b21"},
+	}
 }
 
 func goodCC() (ExchangeRequest, ExchangeContext) {

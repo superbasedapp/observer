@@ -59,10 +59,18 @@ type cursorHookEntry struct {
 	Command string `json:"command"`
 }
 
+// cursorHooksPath is the user hooks file the cursor registration writes
+// (~/.cursor/hooks.json under the registry's home), the one owner of that
+// path for the registrar and the own-registration reader
+// (cursorObserverEvents).
+func (r *Registry) cursorHooksPath() string {
+	return filepath.Join(r.opts.HomeDir, ".cursor", "hooks.json")
+}
+
 func (r *Registry) registerCursor() RegistrationResult {
 	res := RegistrationResult{Tool: "cursor", DryRun: r.opts.DryRun}
-	cursorDir := filepath.Join(r.opts.HomeDir, ".cursor")
-	path := filepath.Join(cursorDir, "hooks.json")
+	path := r.cursorHooksPath()
+	cursorDir := filepath.Dir(path)
 	res.ConfigPath = path
 
 	unlock, err := r.lockSettings(path)
@@ -92,8 +100,36 @@ func (r *Registry) registerCursor() RegistrationResult {
 	if existing, ok := settings["hooks"]; ok {
 		_ = json.Unmarshal(existing, &hooks)
 	}
+	// FU-192: an entry in Observer's shape running another binary is kept.
+	if r.refusesForeignBinary(&res, "hook.registerCursor", path, identityContent, shapedHooksInText(settings["hooks"], "cursor")) {
+		return res
+	}
+	shapeDrift := shapeDriftEvents(settings["hooks"], flatCommandEntries(isObserverCursorEntry))
 
-	for _, event := range cursorEvents {
+	// IDE-5: Cursor merges its enterprise hooks.json with this file, so an
+	// event the administrator file already runs Observer's hook for is not
+	// registered here a second time, and Observer's own earlier per-node
+	// entry for it is removed (a non-Observer entry stays).
+	plan := r.managedHooksPlanFor("cursor", cursorEvents)
+	res.Warnings = append(res.Warnings, plan.warnings...)
+	for _, ev := range plan.drop {
+		kept := dropCursorEntries(hooks[ev], isObserverCursorEntry)
+		if len(kept) == len(hooks[ev]) {
+			continue
+		}
+		res.HooksDropped = append(res.HooksDropped, ev)
+		if len(kept) == 0 {
+			delete(hooks, ev)
+		} else {
+			hooks[ev] = kept
+		}
+	}
+	if plan.complete && len(res.HooksDropped) == 0 {
+		return plan.finish(res)
+	}
+	events := plan.register
+
+	for _, event := range events {
 		// Forward-slash-normalize the binary + config path before
 		// quoting — see registerClaudeCode for the full rationale
 		// (the harness can strip the single quotes upstream, leaving
@@ -101,6 +137,14 @@ func (r *Registry) registerCursor() RegistrationResult {
 		// strip). Forward slashes survive any shell wrapping.
 		binPath := forwardSlashPath(r.opts.BinaryPath)
 		cmd := shellQuoteIfNeeded(binPath) + " hook cursor " + event + r.configFlagSuffixForwardSlash()
+		if shapeDrift[event] {
+			// T-847: an Observer entry with a field Observer never writes
+			// (a matcher, a timeout) is rewritten, never "already set";
+			// the typed decode above would otherwise drop the field without
+			// anyone hearing about it.
+			shapeRewrite(&res, event, cmd, cmd)
+			hooks[event] = dropCursorEntries(hooks[event], isObserverCursorEntry)
+		}
 		if slicesContainsCommand(hooks[event], cmd) {
 			res.AlreadySet = append(res.AlreadySet, event)
 			continue
@@ -116,7 +160,7 @@ func (r *Registry) registerCursor() RegistrationResult {
 		if hasStaleObserverEntry(hooks[event], cmd) {
 			hooks[event] = filterStaleObserverEntries(hooks[event], cmd)
 		}
-		if !r.opts.Force && hasCursorConflict(hooks[event]) {
+		if r.refuses(res.ConfigPath, identityContent) && hasCursorConflict(hooks[event]) {
 			res.Error = fmt.Errorf("hook.registerCursor: event %s already has a non-observer hook; pass --force to overwrite", event)
 			return res
 		}
@@ -133,17 +177,17 @@ func (r *Registry) registerCursor() RegistrationResult {
 	settings["hooks"] = hookJSON
 
 	if r.opts.DryRun {
-		return res
+		return plan.finish(res)
 	}
 	if err := writeJSONIndented(cursorDir, pinned, settings); err != nil {
 		res.Error = err
 		return res
 	}
-	if err := r.recordChecksum(path); err != nil {
+	if err := r.recordChecksum(res.Tool, path); err != nil {
 		res.Error = err
 		return res
 	}
-	return res
+	return plan.finish(res)
 }
 
 // IsOrphanedObserverCursorHTTPHook reports whether cmd is a stale
@@ -263,6 +307,17 @@ func hasCursorConflict(entries []cursorHookEntry) bool {
 
 // slicesContainsCommand reports whether entries holds a hook with
 // Command == want.
+// dropCursorEntries removes every entry whose command ours recognises.
+func dropCursorEntries(entries []cursorHookEntry, ours func(string) bool) []cursorHookEntry {
+	out := entries[:0:0]
+	for _, e := range entries {
+		if !ours(e.Command) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 func slicesContainsCommand(entries []cursorHookEntry, want string) bool {
 	for _, e := range entries {
 		if e.Command == want {
@@ -338,8 +393,8 @@ func filterStaleObserverEntries(entries []cursorHookEntry, want string) []cursor
 
 func (r *Registry) unregisterCursor() UnregistrationResult {
 	res := UnregistrationResult{Tool: "cursor", DryRun: r.opts.DryRun}
-	cursorDir := filepath.Join(r.opts.HomeDir, ".cursor")
-	path := filepath.Join(cursorDir, "hooks.json")
+	path := r.cursorHooksPath()
+	cursorDir := filepath.Dir(path)
 	res.ConfigPath = path
 
 	unlock, err := r.lockSettings(path)
@@ -375,6 +430,8 @@ func (r *Registry) unregisterCursor() UnregistrationResult {
 	for event, entries := range hooks {
 		var survivors []cursorHookEntry
 		removed := 0
+		foreign := false
+		mine := r.removableEntry("cursor", isObserverCursorEntry, &foreign)
 		for _, e := range entries {
 			// Content-heuristic so cross-binary installs (npm bundle,
 			// renamed $HOME, prior worktree binary) get cleaned up
@@ -382,11 +439,14 @@ func (r *Registry) unregisterCursor() UnregistrationResult {
 			// Mirrors the register-side isObserverCursorEntry usage —
 			// without this, byte-exact prefix-match would leave
 			// orphaned entries behind on `observer uninstall cursor`.
-			if isObserverCursorEntry(e.Command) {
+			if mine(e.Command) {
 				removed++
 				continue
 			}
 			survivors = append(survivors, e)
+		}
+		if foreign {
+			noteKeptForeign(&res, event)
 		}
 		if removed > 0 {
 			res.HooksRemoved = append(res.HooksRemoved, event)

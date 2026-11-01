@@ -230,6 +230,16 @@ type FreshLaunchSpec struct {
 	// WorkspaceBranch is an optional branch to check out after clone/
 	// worktree. Ignored for "live".
 	WorkspaceBranch string
+	// Backend is the isolation row the New Terminal picker chose for this
+	// launch, already re-validated by handleTerminalLaunch against the
+	// daemon's probed rows; "" lets selection pick (it never takes a beta
+	// row, ruling P-062). Ignored when Sandbox is false.
+	Backend string
+	// SignInSeed and SignInAsk carry the New Terminal dialog's answer to
+	// copying the tool's sign-in into the box, and that it can ask (lane
+	// BOXSIGNIN; termsvc.FreshRequest). Ignored when Sandbox is false.
+	SignInSeed *bool
+	SignInAsk  bool
 }
 
 // SSHLaunchSpec is the dashboard's server-derived SSH remote-system request.
@@ -337,6 +347,30 @@ type LaunchInfo struct {
 	// ledger G19 (no durable "was this run sandboxed?" column exists).
 	// Drives the dashboard's "sandboxed" pill on the Terminals list/header.
 	Sandboxed bool `json:"sandboxed,omitempty"`
+	// Isolation is the sandboxed run's G19 evidence for the run pill
+	// (sandbox plan v2 section 9): closed enums only, no path, so it is
+	// safe on the snapshot remote viewers see. Nil for an unsandboxed run.
+	Isolation *LaunchIsolation `json:"isolation,omitempty"`
+}
+
+// LaunchIsolation is the run pill's view of a sandboxed run: the class
+// built, the backend, the network tier, the computed capture level and the
+// rule that decided it ("C6" with "full" renders as "full
+// (gateway-guarded)"), and this host's verification of the backend.
+type LaunchIsolation struct {
+	Class        string `json:"class"`
+	Backend      string `json:"backend,omitempty"`
+	EgressTier   string `json:"egress_tier,omitempty"`
+	CaptureLevel string `json:"capture_level,omitempty"`
+	CaptureRule  string `json:"capture_rule,omitempty"`
+	Verification string `json:"verification,omitempty"`
+	// CaptureDegraded says the run's capture was lowered after launch
+	// (sandbox plan v2 section 5.2), and CaptureCauses why: the closed
+	// cause vocabulary of internal/sandboxrelayd (hooks_drifted means the
+	// box's hook configuration no longer matches the launch's, so capture
+	// is no longer complete).
+	CaptureDegraded bool     `json:"capture_degraded,omitempty"`
+	CaptureCauses   []string `json:"capture_causes,omitempty"`
 }
 
 // ErrLaunchTooMany signals the concurrent-session cap was hit (429).

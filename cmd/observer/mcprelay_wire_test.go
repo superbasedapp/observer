@@ -627,7 +627,7 @@ func TestMCPRelay_ProjectionEndToEnd(t *testing.T) {
 		t.Fatalf("codex config re-rendered:\n%s", b)
 	}
 	for _, p := range []string{cursorPath, codexPath, opencodePath} {
-		if fi, err := os.Stat(p); err != nil || fi.Mode().Perm() != 0o644 {
+		if fi, err := os.Stat(p); err != nil || (posixModes && fi.Mode().Perm() != 0o644) {
 			t.Fatalf("%s mode not kept: %v %v", p, fi, err)
 		}
 	}

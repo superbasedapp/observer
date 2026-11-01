@@ -236,7 +236,8 @@
         "file",
         "cmd",
         "search",
-        "web"
+        "web",
+        "meta"
       ]
     },
     "antigravity-cli": {
@@ -244,7 +245,20 @@
         "file",
         "cmd",
         "search",
-        "web"
+        "web",
+        "meta"
+      ]
+    },
+    "autohand": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "agent",
+        "skill",
+        "user",
+        "meta"
       ]
     },
     "claude-code": {
@@ -277,6 +291,19 @@
         "search",
         "web",
         "agent",
+        "mcp",
+        "user",
+        "meta"
+      ]
+    },
+    "codebuddy": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "agent",
+        "skill",
         "mcp",
         "user",
         "meta"
@@ -327,6 +354,18 @@
         "meta"
       ]
     },
+    "cortex-code": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "agent",
+        "skill",
+        "user",
+        "meta"
+      ]
+    },
     "cowork": {
       "categories": [
         "file",
@@ -345,7 +384,8 @@
         "cmd",
         "search",
         "web",
-        "agent"
+        "agent",
+        "mcp"
       ]
     },
     "cursor": {
@@ -355,6 +395,17 @@
         "search",
         "agent",
         "mcp",
+        "meta"
+      ]
+    },
+    "deepagents-code": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "agent",
+        "user",
         "meta"
       ]
     },
@@ -377,6 +428,30 @@
         "search",
         "web",
         "agent",
+        "user",
+        "meta"
+      ]
+    },
+    "dimcode": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "agent",
+        "skill",
+        "user",
+        "meta"
+      ]
+    },
+    "dirac": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "agent",
+        "skill",
         "user",
         "meta"
       ]
@@ -445,6 +520,17 @@
         "meta"
       ]
     },
+    "ibm-bob": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "agent",
+        "skill",
+        "meta"
+      ]
+    },
     "junie": {
       "categories": [
         "file",
@@ -473,6 +559,19 @@
         "meta"
       ]
     },
+    "kimchi": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "agent",
+        "skill",
+        "mcp",
+        "user",
+        "meta"
+      ]
+    },
     "kimi-code": {
       "categories": [
         "file",
@@ -490,6 +589,8 @@
         "file",
         "cmd",
         "search",
+        "agent",
+        "mcp",
         "meta"
       ]
     },
@@ -611,6 +712,29 @@
         "cmd",
         "search",
         "web",
+        "mcp",
+        "user",
+        "meta"
+      ]
+    },
+    "stakpak": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "agent",
+        "skill"
+      ]
+    },
+    "vtcode": {
+      "categories": [
+        "file",
+        "cmd",
+        "search",
+        "web",
+        "agent",
+        "skill",
         "mcp",
         "user",
         "meta"

@@ -1,0 +1,6 @@
+{"providers":{
+  "openai":{"credential_count":3,"active_count":2,"exhausted_count":1,"total_requests":120,"approx_cost":12.5,
+    "quota_groups":{"default":{"remaining_percent":42,"reset_time":"2025-10-10T12:00:00Z"}}},
+  "anthropic":{"credential_count":1,"active_count":1,"exhausted_count":0,"total_requests":40,"approx_cost":3.0,
+    "quota_groups":[{"remaining_percent":80}]}},
+ "summary":{"total_requests":160,"total_tokens":7000,"approx_cost":15.5}}

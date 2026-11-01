@@ -6,7 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -38,6 +38,10 @@ import (
 type launchManagerAdapter struct {
 	svc *termsvc.Service
 	mgr *termsession.Manager
+	// budgetState loads the daemon's config and database for the managed
+	// hard-budget rows of a dashboard fresh launch (OSH-R-007). Nil (a test
+	// adapter) leaves those rows out.
+	budgetState func(ctx context.Context, configPath string) (config.Config, *sql.DB, func(), error)
 	// remoteAuthz runs the §4.δ authorization conjunction and mints the
 	// unforgeable WriterGrant for a remote writer acquire. Nil until the
 	// remote-execute tier is wired (Phase 4 §4.γ/§4.δ) — a nil authorizer fails
@@ -67,6 +71,12 @@ type launchManagerAdapter struct {
 	// consumer must nil-check via guard.Mode(), which itself has no
 	// nil-receiver guard.
 	guard *guard.Guard
+	// repoTrust builds the repository trust row's dependencies for one
+	// dashboard launch from the current config (launch_trust.go); it gives
+	// nil while security.trust is inactive, and is itself nil in a build
+	// without the module. Its ask defers to the inner launcher, which asks
+	// in the PTY.
+	repoTrust func() *repoTrustDeps
 	// sandboxProber backs the same B9 probe the dashboard's own
 	// /api/terminal/sandbox endpoint uses, reused here so CreateFresh's
 	// auto-upgrade decision and the dashboard's own availability display never
@@ -131,7 +141,7 @@ func applyTerminalBounds(opts *termsession.Options, tc config.TerminalConfig, lo
 // BOTH it and the [terminal.launch].allow_fresh_agent opt-in.
 func terminalLaunchPolicy(tc config.TerminalConfig) termsvc.Policy {
 	return termsvc.Policy{
-		AllowFresh:          tc.Enabled && tc.Launch.AllowFreshAgent,
+		AllowFresh:          terminalAllowFreshAgent(tc),
 		AllowedTools:        tc.Launch.AllowedTools,
 		AllowedProjectRoots: tc.Launch.AllowedProjectRoots,
 		AllowShell:          tc.Enabled && tc.Launch.AllowShell,
@@ -201,10 +211,6 @@ func (a *launchManagerAdapter) CreateFresh(spec dashapi.FreshLaunchSpec) (string
 	// gate only PEEKS (review M3-10): the inner `observer <tool>` launcher
 	// the PTY runs counts the use, once, when it starts the tool, so a
 	// launch refused below (sandbox, allowed tools) spends nothing.
-	if allowed, _, _ := a.nf.ToolLaunchAllowed(spec.Tool); !allowed {
-		return "", fmt.Errorf("%w: your organization disallows %s; request access from the Requests page",
-			dashapi.ErrLaunchToolNotAllowed, spec.Tool)
-	}
 	// P7 gateway-arc item 3: sandbox-enforce lane. When the process-wide
 	// guard is in enforce mode and this tool's enforcement channel ON THIS
 	// NODE (integration.Capability.NodeEnforcement: a hook_block tool counts
@@ -232,15 +238,56 @@ func (a *launchManagerAdapter) CreateFresh(spec dashapi.FreshLaunchSpec) (string
 	// sandboxLaunchDecision (launch_sandbox_gate.go). `observer <tool>`
 	// launches from any terminal reach the same owner through the shared
 	// admission chokepoint, so the two paths cannot drift.
-	probe := func() bool {
-		return a.sandboxProber != nil && a.sandboxProber.ProbeSandbox(context.Background()).Available
+	//
+	// T-910: a project-scope hook switch in the launch's project makes the
+	// tool's hook not current for THIS launch.
+	//
+	// F0-4: the gates above (tool.disallow, repo.trust, hook.switch,
+	// sandbox.select) and their order are rows of the launch-gate table
+	// (launch_gates.go); the termsvc authorization below runs after it.
+	run := &launchGateRun{
+		ctx:    context.Background(),
+		path:   launchPathDashboardFresh,
+		tool:   spec.Tool,
+		stderr: io.Discard,
+		toolLaunchAllowed: func(tool string) bool {
+			allowed, _, _ := a.nf.ToolLaunchAllowed(tool)
+			return allowed
+		},
+		launchDir:     func() (string, error) { return spec.ProjectRoot, nil },
+		baseToolGate:  a.toolGate,
+		sandboxGateOn: func(*launchGateRun) bool { return true },
+		guardFor:      func(*launchGateRun) *guard.Guard { return a.guard },
+		sandboxProbe: func() bool {
+			return a.sandboxProber != nil && a.sandboxProber.ProbeSandbox(context.Background()).Available
+		},
+		sandboxRefusal: dashboardSandboxRefusal,
+		sandboxed:      spec.Sandbox,
+		repoTrustFor: func(*launchGateRun) *repoTrustDeps {
+			if a.repoTrust == nil {
+				return nil
+			}
+			return a.repoTrust()
+		},
+		// OSH-R-007: the managed hard budget is admitted daemon-side before
+		// the PTY spawns (rows state.load, budget.authority, budget.guard,
+		// budget.spend), from the daemon's own config and database. Coverage
+		// stays with the inner launcher, which has the real route evidence.
+		configPath:   daemonConfigPath(),
+		daemonRunsFn: func() bool { return true },
+		stateSource:  a.budgetState,
+		budgetExempt: spec.Shell || a.budgetState == nil,
 	}
-	switch sandboxLaunchDecision(a.guard, spec.Tool, spec.Sandbox, probe, a.toolGate) {
-	case sandboxLaunchUpgrade:
-		spec.Sandbox = true
-	case sandboxLaunchRefuse:
-		return "", dashboardSandboxRefusal(spec.Tool)
+	if run.budgetExempt {
+		// A plain shell (or a test adapter with no state source) is not
+		// judged by the budget rows, so it never reads the daemon's config
+		// or database either (audit follow-up F4).
+		run.stateSource = noLaunchState
 	}
+	if err := walkLaunchGates(run, launchGates); err != nil {
+		return "", err
+	}
+	spec.Sandbox = run.sandboxed
 	res, err := a.svc.LaunchFresh(context.Background(), termsvc.FreshRequest{
 		Tool:        spec.Tool,
 		Subcommand:  spec.Subcommand,
@@ -257,6 +304,9 @@ func (a *launchManagerAdapter) CreateFresh(spec dashapi.FreshLaunchSpec) (string
 		WorkspaceSource: spec.WorkspaceSource,
 		WorkspaceRemote: spec.WorkspaceRemote,
 		WorkspaceBranch: spec.WorkspaceBranch,
+		SandboxBackend:  spec.Backend,
+		SignInSeed:      spec.SignInSeed,
+		SignInAsk:       spec.SignInAsk,
 	})
 	if err != nil {
 		return "", mapFreshErr(err)
@@ -445,7 +495,7 @@ func (a *launchManagerAdapter) CreateSetup(spec dashapi.SetupSpec) (string, erro
 func setupChildDir() string {
 	home, _ := os.UserHomeDir()
 	return setupWorkDir(home, os.TempDir(), func(p string) bool {
-		fi, err := os.Stat(p)
+		fi, err := os.Stat(p) //nolint:gosec // G703: a metadata read of the user's own local path; no privilege boundary is crossed
 		return err == nil && fi.IsDir()
 	})
 }
@@ -508,6 +558,24 @@ func (a *launchManagerAdapter) SubscribeRemote(handle string) (dashapi.LaunchSub
 // IsSetupSession reports whether a handle is a SpecSetup (privileged, local-only)
 // session — the dashboard redacts these from remote snapshots and refuses their
 // remote termination.
+// noLaunchState is a dashboard walk's state source when the adapter has no
+// budgetState: no config and no database, so the rows that read them stay
+// inert.
+func noLaunchState(context.Context, string) (config.Config, *sql.DB, func(), error) {
+	return config.Config{}, nil, nil, nil
+}
+
+// RunSandboxed reports whether handle is a live run termsvc launched and
+// whether it runs in a sandbox, the answer the dashboard's Jump-in gate
+// judges a join with (OSH-R-003). isRun is false for a setup PTY or an
+// unknown handle.
+func (a *launchManagerAdapter) RunSandboxed(handle string) (sandboxed, isRun bool) {
+	if a == nil || a.svc == nil {
+		return false, false
+	}
+	return a.svc.Sandboxed(handle)
+}
+
 func (a *launchManagerAdapter) IsSetupSession(handle string) bool {
 	return a.mgr.IsSetupSession(handle)
 }
@@ -867,7 +935,22 @@ func mapRemoteAcquireDenial(err error, capabilityConsumed bool) error {
 	return dashapi.NewControlDeniedError(reason, capabilityConsumed, err)
 }
 
-func (a *launchManagerAdapter) Close(handle string) { a.mgr.Close(handle) }
+// Close is the dashboard's Stop & close: the run's end records
+// dashboard_stop before the PTY is closed (Windows 11 Pro run 4, N3).
+func (a *launchManagerAdapter) Close(handle string) {
+	a.svc.MarkEnding(handle, termrun.EndDashboardStop)
+	a.mgr.Close(handle)
+}
+
+// EndReasonForExit is the end reason the exit frame names: the one the
+// terminal service recorded or marked for handle's run, else what the exit
+// code alone says (internal/termrun/endreason.go).
+func (a *launchManagerAdapter) EndReasonForExit(handle string, code int) string {
+	if r := a.svc.EndReasonForHandle(handle); r != "" {
+		return r
+	}
+	return termrun.EndReasonForExit(code)
+}
 
 // RevokeAllRemoteWriters delegates to the PTY manager's remote-only global kill
 // (leaving the owner-local loopback writer untouched) through the ONE
@@ -940,6 +1023,12 @@ func (a *launchManagerAdapter) Snapshot() []dashapi.LaunchInfo {
 		if sb, ok := a.svc.Sandboxed(s.ID); ok {
 			info.Sandboxed = sb
 		}
+		if iso, ok := a.svc.Isolation(s.ID); ok && info.Sandboxed {
+			info.Isolation = launchIsolationFor(iso)
+			if runID, ok := a.svc.RunIDForHandle(s.ID); ok {
+				relayPillHealth(info.Isolation, runID)
+			}
+		}
 		if runID, ok := a.svc.RunIDForHandle(s.ID); ok {
 			info.RunID = runID
 			// An attach run carries no source session at spawn — it is
@@ -960,6 +1049,22 @@ func (a *launchManagerAdapter) Snapshot() []dashapi.LaunchInfo {
 			info.Tool = tool
 		}
 		out = append(out, info)
+	}
+	return out
+}
+
+// launchIsolationFor is the run pill's view of a run's G19 evidence; nil
+// for a run that recorded no isolation class.
+func launchIsolationFor(iso termrun.Isolation) *dashapi.LaunchIsolation {
+	if iso.Class == "" || iso.Class == "none" {
+		return nil
+	}
+	out := &dashapi.LaunchIsolation{
+		Class: iso.Class, EgressTier: iso.EgressTier, CaptureLevel: iso.CaptureLevel,
+		CaptureRule: iso.CaptureRule, Verification: iso.Verification,
+	}
+	if len(iso.Stack) > 0 {
+		out.Backend = iso.Stack[0]
 	}
 	return out
 }

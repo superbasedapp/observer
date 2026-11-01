@@ -1,0 +1,1481 @@
+{
+ "resourceLogs": [
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "kimchi"
+      }
+     },
+     {
+      "key": "user_agent.original",
+      "value": {
+       "stringValue": "kimchi/1.17.0"
+      }
+     }
+    ],
+    "droppedAttributesCount": 0
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "kimchi",
+      "version": "1.0.0"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1792707514174000000",
+       "observedTimeUnixNano": "1792707514174000000",
+       "severityNumber": 9,
+       "severityText": "INFO",
+       "eventName": "session.start",
+       "body": {
+        "stringValue": "session.start"
+       },
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "01a165b1-cd10-71bf-97ff-2e5a1ebfdeac"
+         }
+        },
+        {
+         "key": "client",
+         "value": {
+          "stringValue": "pi"
+         }
+        },
+        {
+         "key": "source",
+         "value": {
+          "stringValue": "cli"
+         }
+        },
+        {
+         "key": "session_type",
+         "value": {
+          "stringValue": "coding"
+         }
+        },
+        {
+         "key": "ferment_id",
+         "value": {
+          "stringValue": ""
+         }
+        },
+        {
+         "key": "model",
+         "value": {
+          "stringValue": "mock-model"
+         }
+        },
+        {
+         "key": "telemetry.cli_version",
+         "value": {
+          "stringValue": "1.17.0"
+         }
+        },
+        {
+         "key": "pi_mode",
+         "value": {
+          "stringValue": "print"
+         }
+        },
+        {
+         "key": "permission_mode",
+         "value": {
+          "stringValue": "yolo"
+         }
+        },
+        {
+         "key": "multi_model_enabled",
+         "value": {
+          "stringValue": "false"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0,
+       "flags": 0,
+       "traceId": "",
+       "spanId": ""
+      },
+      {
+       "timeUnixNano": "1792707514174000000",
+       "observedTimeUnixNano": "1792707514174000000",
+       "severityNumber": 9,
+       "severityText": "INFO",
+       "eventName": "user_message",
+       "body": {
+        "stringValue": "user_message"
+       },
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "01a165b1-cd10-71bf-97ff-2e5a1ebfdeac"
+         }
+        },
+        {
+         "key": "client",
+         "value": {
+          "stringValue": "pi"
+         }
+        },
+        {
+         "key": "message_length",
+         "value": {
+          "stringValue": "42"
+         }
+        },
+        {
+         "key": "turn_index",
+         "value": {
+          "stringValue": "1"
+         }
+        },
+        {
+         "key": "source",
+         "value": {
+          "stringValue": "cli"
+         }
+        },
+        {
+         "key": "session_type",
+         "value": {
+          "stringValue": "coding"
+         }
+        },
+        {
+         "key": "ferment_id",
+         "value": {
+          "stringValue": ""
+         }
+        },
+        {
+         "key": "model",
+         "value": {
+          "stringValue": "mock-model"
+         }
+        },
+        {
+         "key": "telemetry.cli_version",
+         "value": {
+          "stringValue": "1.17.0"
+         }
+        },
+        {
+         "key": "pi_mode",
+         "value": {
+          "stringValue": "print"
+         }
+        },
+        {
+         "key": "permission_mode",
+         "value": {
+          "stringValue": "yolo"
+         }
+        },
+        {
+         "key": "multi_model_enabled",
+         "value": {
+          "stringValue": "false"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0,
+       "flags": 0,
+       "traceId": "",
+       "spanId": ""
+      },
+      {
+       "timeUnixNano": "1792707514290000000",
+       "observedTimeUnixNano": "1792707514290000000",
+       "severityNumber": 9,
+       "severityText": "INFO",
+       "eventName": "api_request",
+       "body": {
+        "stringValue": "api_request"
+       },
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "01a165b1-cd10-71bf-97ff-2e5a1ebfdeac"
+         }
+        },
+        {
+         "key": "client",
+         "value": {
+          "stringValue": "pi"
+         }
+        },
+        {
+         "key": "provider",
+         "value": {
+          "stringValue": "mock"
+         }
+        },
+        {
+         "key": "input_tokens",
+         "value": {
+          "stringValue": "234"
+         }
+        },
+        {
+         "key": "output_tokens",
+         "value": {
+          "stringValue": "56"
+         }
+        },
+        {
+         "key": "cache_read_tokens",
+         "value": {
+          "stringValue": "1000"
+         }
+        },
+        {
+         "key": "cache_creation_tokens",
+         "value": {
+          "stringValue": "0"
+         }
+        },
+        {
+         "key": "cost_usd",
+         "value": {
+          "stringValue": "0.000446"
+         }
+        },
+        {
+         "key": "duration_ms",
+         "value": {
+          "stringValue": "11"
+         }
+        },
+        {
+         "key": "request.trace_id",
+         "value": {
+          "stringValue": "4d733eeb33c51846496aa2bb5da386f2"
+         }
+        },
+        {
+         "key": "request.span_id",
+         "value": {
+          "stringValue": "f6fa329037fed96d"
+         }
+        },
+        {
+         "key": "source",
+         "value": {
+          "stringValue": "cli"
+         }
+        },
+        {
+         "key": "session_type",
+         "value": {
+          "stringValue": "coding"
+         }
+        },
+        {
+         "key": "ferment_id",
+         "value": {
+          "stringValue": ""
+         }
+        },
+        {
+         "key": "model",
+         "value": {
+          "stringValue": "mock-model"
+         }
+        },
+        {
+         "key": "telemetry.cli_version",
+         "value": {
+          "stringValue": "1.17.0"
+         }
+        },
+        {
+         "key": "pi_mode",
+         "value": {
+          "stringValue": "print"
+         }
+        },
+        {
+         "key": "permission_mode",
+         "value": {
+          "stringValue": "yolo"
+         }
+        },
+        {
+         "key": "multi_model_enabled",
+         "value": {
+          "stringValue": "false"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0,
+       "flags": 0,
+       "traceId": "",
+       "spanId": ""
+      },
+      {
+       "timeUnixNano": "1792707514307000000",
+       "observedTimeUnixNano": "1792707514307000000",
+       "severityNumber": 9,
+       "severityText": "INFO",
+       "eventName": "claude_code.tool_decision",
+       "body": {
+        "stringValue": "claude_code.tool_decision"
+       },
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "01a165b1-cd10-71bf-97ff-2e5a1ebfdeac"
+         }
+        },
+        {
+         "key": "client",
+         "value": {
+          "stringValue": "pi"
+         }
+        },
+        {
+         "key": "tool_name",
+         "value": {
+          "stringValue": "read"
+         }
+        },
+        {
+         "key": "tool_use_id",
+         "value": {
+          "stringValue": "call_mock1"
+         }
+        },
+        {
+         "key": "decision",
+         "value": {
+          "stringValue": "accept"
+         }
+        },
+        {
+         "key": "decision_source",
+         "value": {
+          "stringValue": "config"
+         }
+        },
+        {
+         "key": "source_detail",
+         "value": {
+          "stringValue": "yolo_bypass"
+         }
+        },
+        {
+         "key": "permission_mode",
+         "value": {
+          "stringValue": "yolo"
+         }
+        },
+        {
+         "key": "source",
+         "value": {
+          "stringValue": "cli"
+         }
+        },
+        {
+         "key": "session_type",
+         "value": {
+          "stringValue": "coding"
+         }
+        },
+        {
+         "key": "ferment_id",
+         "value": {
+          "stringValue": ""
+         }
+        },
+        {
+         "key": "model",
+         "value": {
+          "stringValue": "mock-model"
+         }
+        },
+        {
+         "key": "telemetry.cli_version",
+         "value": {
+          "stringValue": "1.17.0"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0,
+       "flags": 0,
+       "traceId": "",
+       "spanId": ""
+      },
+      {
+       "timeUnixNano": "1792707514312000000",
+       "observedTimeUnixNano": "1792707514312000000",
+       "severityNumber": 9,
+       "severityText": "INFO",
+       "eventName": "claude_code.tool_decision",
+       "body": {
+        "stringValue": "claude_code.tool_decision"
+       },
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "01a165b1-cd10-71bf-97ff-2e5a1ebfdeac"
+         }
+        },
+        {
+         "key": "client",
+         "value": {
+          "stringValue": "pi"
+         }
+        },
+        {
+         "key": "tool_name",
+         "value": {
+          "stringValue": "bash"
+         }
+        },
+        {
+         "key": "tool_use_id",
+         "value": {
+          "stringValue": "call_mock2"
+         }
+        },
+        {
+         "key": "decision",
+         "value": {
+          "stringValue": "accept"
+         }
+        },
+        {
+         "key": "decision_source",
+         "value": {
+          "stringValue": "config"
+         }
+        },
+        {
+         "key": "source_detail",
+         "value": {
+          "stringValue": "yolo_bypass"
+         }
+        },
+        {
+         "key": "permission_mode",
+         "value": {
+          "stringValue": "yolo"
+         }
+        },
+        {
+         "key": "source",
+         "value": {
+          "stringValue": "cli"
+         }
+        },
+        {
+         "key": "session_type",
+         "value": {
+          "stringValue": "coding"
+         }
+        },
+        {
+         "key": "ferment_id",
+         "value": {
+          "stringValue": ""
+         }
+        },
+        {
+         "key": "model",
+         "value": {
+          "stringValue": "mock-model"
+         }
+        },
+        {
+         "key": "telemetry.cli_version",
+         "value": {
+          "stringValue": "1.17.0"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0,
+       "flags": 0,
+       "traceId": "",
+       "spanId": ""
+      },
+      {
+       "timeUnixNano": "1792707514316000000",
+       "observedTimeUnixNano": "1792707514316000000",
+       "severityNumber": 9,
+       "severityText": "INFO",
+       "eventName": "claude_code.tool_decision",
+       "body": {
+        "stringValue": "claude_code.tool_decision"
+       },
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "01a165b1-cd10-71bf-97ff-2e5a1ebfdeac"
+         }
+        },
+        {
+         "key": "client",
+         "value": {
+          "stringValue": "pi"
+         }
+        },
+        {
+         "key": "tool_name",
+         "value": {
+          "stringValue": "write"
+         }
+        },
+        {
+         "key": "tool_use_id",
+         "value": {
+          "stringValue": "call_mock3"
+         }
+        },
+        {
+         "key": "decision",
+         "value": {
+          "stringValue": "accept"
+         }
+        },
+        {
+         "key": "decision_source",
+         "value": {
+          "stringValue": "config"
+         }
+        },
+        {
+         "key": "source_detail",
+         "value": {
+          "stringValue": "yolo_bypass"
+         }
+        },
+        {
+         "key": "permission_mode",
+         "value": {
+          "stringValue": "yolo"
+         }
+        },
+        {
+         "key": "source",
+         "value": {
+          "stringValue": "cli"
+         }
+        },
+        {
+         "key": "session_type",
+         "value": {
+          "stringValue": "coding"
+         }
+        },
+        {
+         "key": "ferment_id",
+         "value": {
+          "stringValue": ""
+         }
+        },
+        {
+         "key": "model",
+         "value": {
+          "stringValue": "mock-model"
+         }
+        },
+        {
+         "key": "telemetry.cli_version",
+         "value": {
+          "stringValue": "1.17.0"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0,
+       "flags": 0,
+       "traceId": "",
+       "spanId": ""
+      },
+      {
+       "timeUnixNano": "1792707514369000000",
+       "observedTimeUnixNano": "1792707514369000000",
+       "severityNumber": 9,
+       "severityText": "INFO",
+       "eventName": "tool_result",
+       "body": {
+        "stringValue": "tool_result"
+       },
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "01a165b1-cd10-71bf-97ff-2e5a1ebfdeac"
+         }
+        },
+        {
+         "key": "client",
+         "value": {
+          "stringValue": "pi"
+         }
+        },
+        {
+         "key": "tool_name",
+         "value": {
+          "stringValue": "write"
+         }
+        },
+        {
+         "key": "success",
+         "value": {
+          "stringValue": "true"
+         }
+        },
+        {
+         "key": "duration_ms",
+         "value": {
+          "stringValue": "55"
+         }
+        },
+        {
+         "key": "tool_result_size_chars",
+         "value": {
+          "stringValue": "74"
+         }
+        },
+        {
+         "key": "turn_index",
+         "value": {
+          "stringValue": "1"
+         }
+        },
+        {
+         "key": "source",
+         "value": {
+          "stringValue": "cli"
+         }
+        },
+        {
+         "key": "session_type",
+         "value": {
+          "stringValue": "coding"
+         }
+        },
+        {
+         "key": "ferment_id",
+         "value": {
+          "stringValue": ""
+         }
+        },
+        {
+         "key": "model",
+         "value": {
+          "stringValue": "mock-model"
+         }
+        },
+        {
+         "key": "telemetry.cli_version",
+         "value": {
+          "stringValue": "1.17.0"
+         }
+        },
+        {
+         "key": "pi_mode",
+         "value": {
+          "stringValue": "print"
+         }
+        },
+        {
+         "key": "permission_mode",
+         "value": {
+          "stringValue": "yolo"
+         }
+        },
+        {
+         "key": "multi_model_enabled",
+         "value": {
+          "stringValue": "false"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0,
+       "flags": 0,
+       "traceId": "",
+       "spanId": ""
+      },
+      {
+       "timeUnixNano": "1792707514369000000",
+       "observedTimeUnixNano": "1792707514369000000",
+       "severityNumber": 9,
+       "severityText": "INFO",
+       "eventName": "file_written",
+       "body": {
+        "stringValue": "file_written"
+       },
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "01a165b1-cd10-71bf-97ff-2e5a1ebfdeac"
+         }
+        },
+        {
+         "key": "client",
+         "value": {
+          "stringValue": "pi"
+         }
+        },
+        {
+         "key": "language",
+         "value": {
+          "stringValue": "Plain text"
+         }
+        },
+        {
+         "key": "file_hash",
+         "value": {
+          "stringValue": "ad7703e59f2c"
+         }
+        },
+        {
+         "key": "lines_added",
+         "value": {
+          "stringValue": "1"
+         }
+        },
+        {
+         "key": "duration_ms",
+         "value": {
+          "stringValue": "55"
+         }
+        },
+        {
+         "key": "turn_index",
+         "value": {
+          "stringValue": "1"
+         }
+        },
+        {
+         "key": "source",
+         "value": {
+          "stringValue": "cli"
+         }
+        },
+        {
+         "key": "session_type",
+         "value": {
+          "stringValue": "coding"
+         }
+        },
+        {
+         "key": "ferment_id",
+         "value": {
+          "stringValue": ""
+         }
+        },
+        {
+         "key": "model",
+         "value": {
+          "stringValue": "mock-model"
+         }
+        },
+        {
+         "key": "telemetry.cli_version",
+         "value": {
+          "stringValue": "1.17.0"
+         }
+        },
+        {
+         "key": "pi_mode",
+         "value": {
+          "stringValue": "print"
+         }
+        },
+        {
+         "key": "permission_mode",
+         "value": {
+          "stringValue": "yolo"
+         }
+        },
+        {
+         "key": "multi_model_enabled",
+         "value": {
+          "stringValue": "false"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0,
+       "flags": 0,
+       "traceId": "",
+       "spanId": ""
+      },
+      {
+       "timeUnixNano": "1792707514372000000",
+       "observedTimeUnixNano": "1792707514372000000",
+       "severityNumber": 9,
+       "severityText": "INFO",
+       "eventName": "tool_result",
+       "body": {
+        "stringValue": "tool_result"
+       },
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "01a165b1-cd10-71bf-97ff-2e5a1ebfdeac"
+         }
+        },
+        {
+         "key": "client",
+         "value": {
+          "stringValue": "pi"
+         }
+        },
+        {
+         "key": "tool_name",
+         "value": {
+          "stringValue": "read"
+         }
+        },
+        {
+         "key": "success",
+         "value": {
+          "stringValue": "true"
+         }
+        },
+        {
+         "key": "duration_ms",
+         "value": {
+          "stringValue": "80"
+         }
+        },
+        {
+         "key": "tool_result_size_chars",
+         "value": {
+          "stringValue": "17"
+         }
+        },
+        {
+         "key": "turn_index",
+         "value": {
+          "stringValue": "1"
+         }
+        },
+        {
+         "key": "source",
+         "value": {
+          "stringValue": "cli"
+         }
+        },
+        {
+         "key": "session_type",
+         "value": {
+          "stringValue": "coding"
+         }
+        },
+        {
+         "key": "ferment_id",
+         "value": {
+          "stringValue": ""
+         }
+        },
+        {
+         "key": "model",
+         "value": {
+          "stringValue": "mock-model"
+         }
+        },
+        {
+         "key": "telemetry.cli_version",
+         "value": {
+          "stringValue": "1.17.0"
+         }
+        },
+        {
+         "key": "pi_mode",
+         "value": {
+          "stringValue": "print"
+         }
+        },
+        {
+         "key": "permission_mode",
+         "value": {
+          "stringValue": "yolo"
+         }
+        },
+        {
+         "key": "multi_model_enabled",
+         "value": {
+          "stringValue": "false"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0,
+       "flags": 0,
+       "traceId": "",
+       "spanId": ""
+      },
+      {
+       "timeUnixNano": "1792707514372000000",
+       "observedTimeUnixNano": "1792707514372000000",
+       "severityNumber": 9,
+       "severityText": "INFO",
+       "eventName": "file_read",
+       "body": {
+        "stringValue": "file_read"
+       },
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "01a165b1-cd10-71bf-97ff-2e5a1ebfdeac"
+         }
+        },
+        {
+         "key": "client",
+         "value": {
+          "stringValue": "pi"
+         }
+        },
+        {
+         "key": "language",
+         "value": {
+          "stringValue": "Plain text"
+         }
+        },
+        {
+         "key": "file_hash",
+         "value": {
+          "stringValue": "2cffdc92a9d3"
+         }
+        },
+        {
+         "key": "duration_ms",
+         "value": {
+          "stringValue": "80"
+         }
+        },
+        {
+         "key": "file_size_chars",
+         "value": {
+          "stringValue": "17"
+         }
+        },
+        {
+         "key": "read_is_truncated",
+         "value": {
+          "stringValue": "false"
+         }
+        },
+        {
+         "key": "turn_index",
+         "value": {
+          "stringValue": "1"
+         }
+        },
+        {
+         "key": "source",
+         "value": {
+          "stringValue": "cli"
+         }
+        },
+        {
+         "key": "session_type",
+         "value": {
+          "stringValue": "coding"
+         }
+        },
+        {
+         "key": "ferment_id",
+         "value": {
+          "stringValue": ""
+         }
+        },
+        {
+         "key": "model",
+         "value": {
+          "stringValue": "mock-model"
+         }
+        },
+        {
+         "key": "telemetry.cli_version",
+         "value": {
+          "stringValue": "1.17.0"
+         }
+        },
+        {
+         "key": "pi_mode",
+         "value": {
+          "stringValue": "print"
+         }
+        },
+        {
+         "key": "permission_mode",
+         "value": {
+          "stringValue": "yolo"
+         }
+        },
+        {
+         "key": "multi_model_enabled",
+         "value": {
+          "stringValue": "false"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0,
+       "flags": 0,
+       "traceId": "",
+       "spanId": ""
+      },
+      {
+       "timeUnixNano": "1792707514401000000",
+       "observedTimeUnixNano": "1792707514401000000",
+       "severityNumber": 9,
+       "severityText": "INFO",
+       "eventName": "tool_result",
+       "body": {
+        "stringValue": "tool_result"
+       },
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "01a165b1-cd10-71bf-97ff-2e5a1ebfdeac"
+         }
+        },
+        {
+         "key": "client",
+         "value": {
+          "stringValue": "pi"
+         }
+        },
+        {
+         "key": "tool_name",
+         "value": {
+          "stringValue": "bash"
+         }
+        },
+        {
+         "key": "success",
+         "value": {
+          "stringValue": "true"
+         }
+        },
+        {
+         "key": "duration_ms",
+         "value": {
+          "stringValue": "93"
+         }
+        },
+        {
+         "key": "tool_result_size_chars",
+         "value": {
+          "stringValue": "61"
+         }
+        },
+        {
+         "key": "turn_index",
+         "value": {
+          "stringValue": "1"
+         }
+        },
+        {
+         "key": "source",
+         "value": {
+          "stringValue": "cli"
+         }
+        },
+        {
+         "key": "session_type",
+         "value": {
+          "stringValue": "coding"
+         }
+        },
+        {
+         "key": "ferment_id",
+         "value": {
+          "stringValue": ""
+         }
+        },
+        {
+         "key": "model",
+         "value": {
+          "stringValue": "mock-model"
+         }
+        },
+        {
+         "key": "telemetry.cli_version",
+         "value": {
+          "stringValue": "1.17.0"
+         }
+        },
+        {
+         "key": "pi_mode",
+         "value": {
+          "stringValue": "print"
+         }
+        },
+        {
+         "key": "permission_mode",
+         "value": {
+          "stringValue": "yolo"
+         }
+        },
+        {
+         "key": "multi_model_enabled",
+         "value": {
+          "stringValue": "false"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0,
+       "flags": 0,
+       "traceId": "",
+       "spanId": ""
+      },
+      {
+       "timeUnixNano": "1792707514401000000",
+       "observedTimeUnixNano": "1792707514401000000",
+       "severityNumber": 9,
+       "severityText": "INFO",
+       "eventName": "command_executed",
+       "body": {
+        "stringValue": "command_executed"
+       },
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "01a165b1-cd10-71bf-97ff-2e5a1ebfdeac"
+         }
+        },
+        {
+         "key": "client",
+         "value": {
+          "stringValue": "pi"
+         }
+        },
+        {
+         "key": "command_type",
+         "value": {
+          "stringValue": "bash"
+         }
+        },
+        {
+         "key": "exit_code",
+         "value": {
+          "stringValue": "0"
+         }
+        },
+        {
+         "key": "duration_ms",
+         "value": {
+          "stringValue": "93"
+         }
+        },
+        {
+         "key": "bash_output_size_chars",
+         "value": {
+          "stringValue": "61"
+         }
+        },
+        {
+         "key": "turn_index",
+         "value": {
+          "stringValue": "1"
+         }
+        },
+        {
+         "key": "source",
+         "value": {
+          "stringValue": "cli"
+         }
+        },
+        {
+         "key": "session_type",
+         "value": {
+          "stringValue": "coding"
+         }
+        },
+        {
+         "key": "ferment_id",
+         "value": {
+          "stringValue": ""
+         }
+        },
+        {
+         "key": "model",
+         "value": {
+          "stringValue": "mock-model"
+         }
+        },
+        {
+         "key": "telemetry.cli_version",
+         "value": {
+          "stringValue": "1.17.0"
+         }
+        },
+        {
+         "key": "pi_mode",
+         "value": {
+          "stringValue": "print"
+         }
+        },
+        {
+         "key": "permission_mode",
+         "value": {
+          "stringValue": "yolo"
+         }
+        },
+        {
+         "key": "multi_model_enabled",
+         "value": {
+          "stringValue": "false"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0,
+       "flags": 0,
+       "traceId": "",
+       "spanId": ""
+      },
+      {
+       "timeUnixNano": "1792707514499000000",
+       "observedTimeUnixNano": "1792707514499000000",
+       "severityNumber": 9,
+       "severityText": "INFO",
+       "eventName": "api_request",
+       "body": {
+        "stringValue": "api_request"
+       },
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "01a165b1-cd10-71bf-97ff-2e5a1ebfdeac"
+         }
+        },
+        {
+         "key": "client",
+         "value": {
+          "stringValue": "pi"
+         }
+        },
+        {
+         "key": "provider",
+         "value": {
+          "stringValue": "mock"
+         }
+        },
+        {
+         "key": "input_tokens",
+         "value": {
+          "stringValue": "234"
+         }
+        },
+        {
+         "key": "output_tokens",
+         "value": {
+          "stringValue": "56"
+         }
+        },
+        {
+         "key": "cache_read_tokens",
+         "value": {
+          "stringValue": "1000"
+         }
+        },
+        {
+         "key": "cache_creation_tokens",
+         "value": {
+          "stringValue": "0"
+         }
+        },
+        {
+         "key": "cost_usd",
+         "value": {
+          "stringValue": "0.000446"
+         }
+        },
+        {
+         "key": "duration_ms",
+         "value": {
+          "stringValue": "3"
+         }
+        },
+        {
+         "key": "request.trace_id",
+         "value": {
+          "stringValue": "c06168c457aaa33e08e09ca65c3c0247"
+         }
+        },
+        {
+         "key": "request.span_id",
+         "value": {
+          "stringValue": "8a407592ef5e542c"
+         }
+        },
+        {
+         "key": "source",
+         "value": {
+          "stringValue": "cli"
+         }
+        },
+        {
+         "key": "session_type",
+         "value": {
+          "stringValue": "coding"
+         }
+        },
+        {
+         "key": "ferment_id",
+         "value": {
+          "stringValue": ""
+         }
+        },
+        {
+         "key": "model",
+         "value": {
+          "stringValue": "mock-model"
+         }
+        },
+        {
+         "key": "telemetry.cli_version",
+         "value": {
+          "stringValue": "1.17.0"
+         }
+        },
+        {
+         "key": "pi_mode",
+         "value": {
+          "stringValue": "print"
+         }
+        },
+        {
+         "key": "permission_mode",
+         "value": {
+          "stringValue": "yolo"
+         }
+        },
+        {
+         "key": "multi_model_enabled",
+         "value": {
+          "stringValue": "false"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0,
+       "flags": 0,
+       "traceId": "",
+       "spanId": ""
+      },
+      {
+       "timeUnixNano": "1792707514531000000",
+       "observedTimeUnixNano": "1792707514531000000",
+       "severityNumber": 9,
+       "severityText": "INFO",
+       "eventName": "session.end",
+       "body": {
+        "stringValue": "session.end"
+       },
+       "attributes": [
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "01a165b1-cd10-71bf-97ff-2e5a1ebfdeac"
+         }
+        },
+        {
+         "key": "client",
+         "value": {
+          "stringValue": "pi"
+         }
+        },
+        {
+         "key": "duration_ms",
+         "value": {
+          "stringValue": "470"
+         }
+        },
+        {
+         "key": "ended_by",
+         "value": {
+          "stringValue": "quit"
+         }
+        },
+        {
+         "key": "compaction_count",
+         "value": {
+          "stringValue": "0"
+         }
+        },
+        {
+         "key": "turn_index",
+         "value": {
+          "stringValue": "2"
+         }
+        },
+        {
+         "key": "source",
+         "value": {
+          "stringValue": "cli"
+         }
+        },
+        {
+         "key": "session_type",
+         "value": {
+          "stringValue": "coding"
+         }
+        },
+        {
+         "key": "ferment_id",
+         "value": {
+          "stringValue": ""
+         }
+        },
+        {
+         "key": "model",
+         "value": {
+          "stringValue": "mock-model"
+         }
+        },
+        {
+         "key": "telemetry.cli_version",
+         "value": {
+          "stringValue": "1.17.0"
+         }
+        },
+        {
+         "key": "pi_mode",
+         "value": {
+          "stringValue": "print"
+         }
+        },
+        {
+         "key": "permission_mode",
+         "value": {
+          "stringValue": "yolo"
+         }
+        },
+        {
+         "key": "multi_model_enabled",
+         "value": {
+          "stringValue": "false"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0,
+       "flags": 0,
+       "traceId": "",
+       "spanId": ""
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

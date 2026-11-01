@@ -16,7 +16,8 @@
 
 // --- Decision / Severity (shared enums) ---
 
-import { toneOf, type Tone } from "./tone";
+import { toneOf, type Tone } from "./tone.ts";
+import type { GuardCoverageLane } from "./guardToolCoverage.ts";
 
 export type Decision = "allow" | "flag" | "ask" | "deny";
 export type Severity = "info" | "warn" | "high" | "critical";
@@ -183,17 +184,36 @@ export type GuardRuleCatalogEntry = {
   observe: Decision;
   enforce: Decision;
   doc: string;
-  // coverageNote, when set, is an honest per-rule caveat about WHERE the rule
-  // can act - rendered under the rule wherever an admin authors or previews
-  // it. Data on the row, never a UI branch on the rule id. Set today on the
-  // two prompt rules: they act before send only on tools with a prompt-submit
-  // hook or an Observer proxy route (prompt-guard coverage audit 2026-10-02).
-  coverageNote?: string;
+  // coverageLanes, when set, names the lanes the rule is judged on, so the
+  // admin form renders the GENERATED per-tool coverage for each
+  // (guardToolCoverage.ts: which tools block / ask / warn / record only for
+  // the decision the row pins). Data on the row, never a UI branch on the
+  // rule id; a row without it falls back to its category's lanes
+  // (CATEGORY_COVERAGE_LANES, guardRuleCoverageLanes).
+  coverageLanes?: GuardCoverageLane[];
 };
 
-// PROMPT_RULE_COVERAGE_NOTE is the shared caveat for the prompt rules.
-const PROMPT_RULE_COVERAGE_NOTE =
-  "On a developer's prompt this rule can stop or warn before send only where the tool has a prompt-submit hook or routes through the Observer proxy. On tools with neither (Security > Control coverage lists them, e.g. Antigravity CLI) it can only flag the prompt after it was sent, from the captured transcript. With Enforce off the rule only warns on a prompt (flag): the developer is never asked to confirm or blocked. With Enforce on, an ask is a resend-to-confirm and a deny blocks, where the tool's seam allows it.";
+// Lane sets the catalog rows below name explicitly.
+const CL_PROMPT: GuardCoverageLane[] = ["prompt"];
+const CL_PROMPT_TOOL: GuardCoverageLane[] = ["prompt", "toolCall"];
+const CL_TOOL: GuardCoverageLane[] = ["toolCall"];
+
+// CATEGORY_COVERAGE_LANES: the categories whose rules are judged on a tool
+// call (a shell command, a file access, an MCP call) at the tool gate. Taint
+// rules depend on live session state that not every gate holds,
+// and the posture / budget / anomaly / MCP-pin rules are not tool-gate
+// judgements, so they carry no per-tool view.
+const CATEGORY_COVERAGE_LANES: Readonly<Record<string, GuardCoverageLane[]>> = {
+  destructive: ["toolCall"],
+  boundary: ["toolCall"],
+  exfil: ["toolCall"],
+};
+
+/** guardRuleCoverageLanes returns the lanes a catalog rule's per-tool coverage view shows. */
+export function guardRuleCoverageLanes(entry: GuardRuleCatalogEntry | undefined): GuardCoverageLane[] {
+  if (!entry) return [];
+  return entry.coverageLanes ?? CATEGORY_COVERAGE_LANES[entry.category] ?? [];
+}
 
 // GUARD_RULE_CATALOG — transcribed from internal/policy/rules_*.go
 // (policy.Catalog()). Where a rule id appears as multiple table rows (e.g. a
@@ -225,12 +245,20 @@ export const GUARD_RULE_CATALOG: GuardRuleCatalogEntry[] = [
   { id: "R-157", category: "boundary", severity: "high", observe: "flag", enforce: "ask", doc: "Wrapper whose inner command could not be analysed (fails closed)." },
   { id: "R-160", category: "boundary", severity: "critical", observe: "flag", enforce: "deny", doc: "Agent modifying observer/guard/hook configuration." },
   { id: "R-161", category: "boundary", severity: "high", observe: "flag", enforce: "flag", doc: "Agent modifying the project guard policy file." },
+  { id: "R-162", category: "boundary", severity: "critical", observe: "flag", enforce: "deny", doc: "Agent write, edit or shell command that turns a coding agent's hooks off (disableAllHooks and its siblings) in a hook-bearing settings file." },
+  { id: "R-163", category: "boundary", severity: "high", observe: "flag", enforce: "flag", doc: "Shell command writing a hook-bearing settings file with content the guard cannot see (recorded)." },
+  // Core agent-behaviour rules (D-761): internal/policy/rules_githooks.go, rules_selfapproval.go
+  { id: "R-112", category: "boundary", severity: "critical", observe: "flag", enforce: "deny", doc: "Git command that skips the repository's hooks (--no-verify, -n, core.hooksPath for one command, injected git config, or an alias that does so)." },
+  { id: "R-113", category: "boundary", severity: "high", observe: "flag", enforce: "deny", doc: "Git command run with a hook manager's skip switch in its environment (HUSKY=0, SKIP=, LEFTHOOK=0); an export of one alone asks." },
+  { id: "R-114", category: "boundary", severity: "high", observe: "flag", enforce: "deny", doc: "Change to where or whether git hooks run: git config core.hooksPath or core.fsmonitor, writes into .git/config, refs or objects or the global git config (deny); hook-manager config and .gitattributes custom drivers (ask)." },
+  { id: "R-165", category: "boundary", severity: "high", observe: "flag", enforce: "deny", doc: "Agent approving its own guard exception or loosening the guard (observer guard approve, the dashboard's approval routes, a write into guard_approvals); an exception request is recorded." },
+  { id: "R-166", category: "boundary", severity: "high", observe: "flag", enforce: "deny", doc: "Agent write to a protected test, CI or coverage path; off until [guard.boundary].protected_path_classes names a class (tests, ci, coverage)." },
   // Exfil — internal/policy/rules_exfil.go
   { id: "R-170", category: "exfil", severity: "critical", observe: "flag", enforce: "deny", doc: "Remote content piped into an interpreter (curl|sh-class remote-code execution)." },
   { id: "R-171", category: "exfil", severity: "high", observe: "flag", enforce: "ask", doc: "Shell command uploading file contents to a remote destination." },
-  { id: "R-172", category: "exfil", severity: "critical", observe: "flag", enforce: "deny", doc: "Secret-shaped value in a network command, an outbound LLM API request, or the developer's own prompt.", coverageNote: PROMPT_RULE_COVERAGE_NOTE },
+  { id: "R-172", category: "exfil", severity: "critical", observe: "flag", enforce: "deny", doc: "Secret-shaped value in a network command, an outbound LLM API request, or the developer's own prompt.", coverageLanes: CL_PROMPT_TOOL },
   { id: "R-173", category: "exfil", severity: "warn", observe: "flag", enforce: "flag", doc: "DNS lookup of an encoded-looking subdomain (DNS-tunnel exfil shape)." },
-  { id: "R-190", category: "pii", severity: "warn", observe: "flag", enforce: "deny", doc: "Deterministic PII (credit card, SSN, IBAN, ...) in the developer's own prompt text.", coverageNote: PROMPT_RULE_COVERAGE_NOTE },
+  { id: "R-190", category: "pii", severity: "warn", observe: "flag", enforce: "deny", doc: "Deterministic PII (credit card, SSN, IBAN, ...) in the developer's own prompt text.", coverageLanes: CL_PROMPT },
   // Injection — internal/policy/rules_inject.go
   { id: "R-180", category: "injection", severity: "high", observe: "flag", enforce: "flag", doc: "Inbound tool-result/web content carries injection-shaped instruction patterns." },
   // Posture — internal/policy/rules_posture.go
@@ -240,10 +268,11 @@ export const GUARD_RULE_CATALOG: GuardRuleCatalogEntry[] = [
   { id: "R-301", category: "mcp", severity: "warn", observe: "flag", enforce: "flag", doc: "New MCP server appeared without an approved pin." },
   { id: "R-302", category: "mcp", severity: "critical", observe: "flag", enforce: "flag", doc: "Pinned MCP server's declared tools or descriptions changed (rug-pull shape)." },
   { id: "R-303", category: "mcp", severity: "high", observe: "flag", enforce: "flag", doc: "MCP tool description carries a poisoning-shaped pattern." },
-  { id: "R-304", category: "mcp", severity: "critical", observe: "flag", enforce: "deny", doc: "Agent modifying an MCP server registry file." },
+  { id: "R-304", category: "mcp", severity: "critical", observe: "flag", enforce: "deny", doc: "Agent modifying an MCP server registry file.", coverageLanes: CL_TOOL },
   { id: "R-305", category: "mcp", severity: "critical", observe: "flag", enforce: "flag", doc: "Pinned MCP server's command/binary or URL changed under the same name." },
   // Anomaly — internal/policy/rules_anomaly.go (anomaly rules never deny, §12.2/F6)
   { id: "A-610", category: "anomaly", severity: "warn", observe: "flag", enforce: "flag", doc: "Identical tool call repeated consecutively past the stuck-loop threshold." },
+  { id: "A-613", category: "anomaly", severity: "high", observe: "flag", enforce: "flag", doc: "Repeated attempts at a denied action in different shapes (policy evasion); off until [guard.rules].evasion_window_seconds is set." },
   // Taint — internal/policy/rules_taint.go
   { id: "T-501", category: "taint", severity: "high", observe: "flag", enforce: "ask", doc: "Shell command while the session carries untrusted content with instruction-like patterns." },
   { id: "T-502", category: "taint", severity: "high", observe: "flag", enforce: "ask", doc: "Out-of-project write while the session carries untrusted content." },
@@ -279,14 +308,16 @@ export function guardMinDecisionFor(id: string): Decision | undefined {
 }
 
 // isGuardIntegrityRuleId names the guard's own INTEGRITY rules — R-160 (agent
-// modifying observer/guard/hook config) and R-161 (agent modifying the project
-// guard file). Mirrors internal/policy/engine.go::IsIntegrityRuleID, a closed
+// modifying observer/guard/hook config), R-161 (agent modifying the project
+// guard file), R-162 (agent turning a coding agent's hooks off, T-910) and
+// R-165 (agent approving its own guard exception, D-761).
+// Mirrors internal/policy/engine.go::IsIntegrityRuleID, a closed
 // set. The policy engine is a HARD BACKSTOP that refuses to disable or weaken
 // these below the org floor at merge time regardless of layer, so the picker
 // must never OFFER a weaken it can't apply — even in a weaken-allowed layer.
 export function isGuardIntegrityRuleId(id: string): boolean {
   const needle = id.trim();
-  return needle === "R-160" || needle === "R-161";
+  return needle === "R-160" || needle === "R-161" || needle === "R-162" || needle === "R-165";
 }
 
 // guardDecisionOptionsFor returns the decisions legal for a given rule id
@@ -294,7 +325,7 @@ export function isGuardIntegrityRuleId(id: string): boolean {
 // free-text one). This is a UI hint only — the org/user lint is the real
 // gate. NOTE: a weaken-allowed layer (the trusted-project layer §3, or the
 // user/global structured picker) offers all four decisions — EXCEPT for an
-// integrity rule (R-160/R-161), which stays escalate-only even when weakening
+// integrity rule (R-160/R-161/R-162/R-165), which stays escalate-only even when weakening
 // is allowed, matching the policy engine's hard backstop.
 export function guardDecisionOptionsFor(id: string, allowWeaken = false): Decision[] {
   if (allowWeaken && !isGuardIntegrityRuleId(id)) return DECISIONS;

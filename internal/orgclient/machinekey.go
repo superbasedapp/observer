@@ -15,8 +15,7 @@ import (
 	"sync"
 	"time"
 
-	keyring "github.com/zalando/go-keyring"
-
+	"github.com/marmutapp/superbased-observer/internal/keystore"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -74,8 +73,8 @@ func (s *machineKeyStore) LoadMachineKey() ([]byte, error) {
 	if s.path != "" {
 		return readAgentAccessKeyFile(s.path)
 	}
-	v, err := keyring.Get(s.service, recMachineKey)
-	if errors.Is(err, keyring.ErrNotFound) {
+	v, err := keystore.KeyringGet(s.service, recMachineKey)
+	if errors.Is(err, keystore.ErrKeyringNotFound) {
 		return nil, ErrNoSecret
 	}
 	return []byte(v), err
@@ -85,7 +84,7 @@ func (s *machineKeyStore) SaveMachineKey(raw []byte) error {
 	if s.path != "" {
 		return writeAgentAccessKeyFile(s.path, raw)
 	}
-	return keyring.Set(s.service, recMachineKey, string(raw))
+	return keystore.KeyringSet(s.service, recMachineKey, string(raw))
 }
 
 // SetMachineKeyStore injects the machine key slot. Unset (every build that
@@ -103,6 +102,8 @@ type machineKeyState struct {
 	registered string // serverURL|machine|fingerprint
 	retryAfter time.Time
 	warned     string
+	// proof is this process's last machine-proof outcome (machineproof_status.go).
+	proof MachineProofState
 }
 
 // machineKeyRetry is how long a refused or unsupported registration waits
@@ -221,9 +222,10 @@ func (c *Client) attachMachineProof(ctx context.Context, req *http.Request, enr 
 	}
 	priv, err := c.loadOrCreateMachineKey(enr.OrgID)
 	if err != nil {
-		c.logger.Warn("org machine key unavailable; requests carry no machine proof", "err", err)
+		c.noteMachineProof(MachineProofState{Known: true, Reason: MachineProofUnavailableReason(err)})
 		return
 	}
+	c.noteMachineProof(MachineProofState{Known: true, Available: true})
 	c.ensureMachineKeyRegistered(ctx, enr, machine, priv)
 	for k, v := range orgcontract.MachineProofHeaders(priv, enr.OrgID, enr.UserID, machine, method, path, time.Now()) {
 		req.Header.Set(k, v)

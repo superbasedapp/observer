@@ -35,6 +35,17 @@ func TestDetectInstallMethod(t *testing.T) {
 			wantMethod: MethodNPM, wantRule: "npm-package-path", wantAdvice: "npm i -g @superbased/observer@1.33.0",
 		},
 		{
+			// A Windows operator types the advice into PowerShell, whose
+			// default execution policy refuses the npm.ps1 shim (T-921).
+			name: "npm global install on Windows names npm.cmd",
+			probe: PathProbe{
+				ExecPath: `C:\Users\dev\AppData\Roaming\npm\node_modules\@superbased\observer-win32-x64\bin\observer.exe`,
+				GOOS:     "windows",
+				Writable: true,
+			},
+			wantMethod: MethodNPM, wantRule: "npm-package-path", wantAdvice: "npm.cmd i -g @superbased/observer@1.33.0",
+		},
+		{
 			name: "npm platform package (the binary really lives here)",
 			probe: PathProbe{
 				ExecPath: "/usr/lib/node_modules/@superbased/observer-linux-x64/bin/observer",
@@ -124,6 +135,35 @@ func TestDetectInstallMethod(t *testing.T) {
 				Writable: true,
 			},
 			wantMethod: MethodBrew, wantRule: "homebrew-cellar",
+		},
+		{
+			name: "a copy the Windows setup program installed (its uninstaller sits above bin)",
+			probe: PathProbe{
+				ExecPath:      `C:\Users\dev\AppData\Local\SuperBased\Observer\bin\observer.exe`,
+				GOOS:          "windows",
+				Writable:      true,
+				SiblingExists: fakePaths{"c:/users/dev/appdata/local/superbased/observer/" + InstallerUninstallerName: true}.sibling,
+			},
+			wantMethod: MethodInstaller, wantRule: "windows-setup-program", wantAdvice: "superbased.app/download",
+		},
+		{
+			name: "the same directory filled by install.ps1 (no uninstaller) stays a standalone binary",
+			probe: PathProbe{
+				ExecPath: `C:\Users\dev\AppData\Local\SuperBased\Observer\bin\observer.exe`,
+				GOOS:     "windows",
+				Writable: true,
+			},
+			wantMethod: MethodBinary, wantSelf: true, wantRule: "standalone-writable",
+		},
+		{
+			name: "the uninstaller marker means nothing off Windows",
+			probe: PathProbe{
+				ExecPath:      "/opt/superbased/observer/bin/observer",
+				GOOS:          "linux",
+				Writable:      true,
+				SiblingExists: fakePaths{"/opt/superbased/observer/" + InstallerUninstallerName: true}.sibling,
+			},
+			wantMethod: MethodBinary, wantSelf: true, wantRule: "standalone-writable",
 		},
 		{
 			name: "a dpkg-owned path",

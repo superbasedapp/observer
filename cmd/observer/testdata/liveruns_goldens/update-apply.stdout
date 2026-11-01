@@ -1,0 +1,3 @@
+The daemon accepted this request and is running it now.
+Ledger event 1. Follow it with `observer update history`.
+accepted; the daemon is running this apply on its own budget. Follow it with `observer update history`.

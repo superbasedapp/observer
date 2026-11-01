@@ -17,17 +17,30 @@ import (
 //
 // Failure to write is silent — the hook MUST never break the host
 // tool (spec P1). Operators see the file growing under
-// `~/.observer/hook-events.jsonl` when things are working.
+// `<observer home>/hook-events.jsonl` (default `~/.observer/`) when
+// things are working.
 
-// hookEventLogPath returns the per-user event-log file location.
-// Mirrors the [config.IntelligenceMCPConfig] convention of placing
-// observer state under `~/.observer/`.
+// hookEventLogPath returns the event-log file location in the Observer
+// home of the invocation's config (hookStateDir: the directory of
+// db_path, ~/.observer by default).
 func hookEventLogPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
+	return stateFilePath("hook-events.jsonl")
+}
+
+// forensicLogAllowed reports whether a forensic log (hook-events.jsonl,
+// cursor-stop-debug.jsonl) may be appended at path. Not when its directory
+// exists as a non-directory: the append could not succeed anyway, and
+// cmd/observer's test backstop makes the default ~/.observer such a file.
+// And, inside a test binary, not outside the test temp directory
+// (surface-gap FU-102): a refusal is recorded and fails the package run
+// through testwriteguard.Run, so a test that forgets to pin its home can
+// never append to the developer's real ~/.observer logs again. Outside a
+// test binary the second rule never refuses.
+func forensicLogAllowed(path string) bool {
+	if fi, err := os.Stat(filepath.Dir(path)); err == nil && !fi.IsDir() {
+		return false
 	}
-	return filepath.Join(home, ".observer", "hook-events.jsonl")
+	return testWriteRefused(path) == nil
 }
 
 // hookEvent is one row of the JSONL stream. Fields are flat to keep
@@ -66,6 +79,9 @@ var eventLogWriteMu sync.Mutex
 func appendHookEventLog(ev hookEvent) {
 	path := hookEventLogPath()
 	if path == "" {
+		return
+	}
+	if !forensicLogAllowed(path) {
 		return
 	}
 	if ev.Ts == "" {

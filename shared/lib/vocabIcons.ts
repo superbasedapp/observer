@@ -83,7 +83,10 @@ export const VOCAB_ICONS = {
     committed: I.GitCommitHorizontal, partial: I.CircleDashed, uncommitted: I.FileDiff, superseded: I.History,
     no_edits: I.FileMinus,
   },
-  commitCapture: { ok: I.GitCommitHorizontal, no_git: I.FolderX, never_scanned: I.ScanSearch, error: I.TriangleAlert },
+  commitCapture: {
+    ok: I.GitCommitHorizontal, catching_up: I.Hourglass, never_scanned: I.ScanSearch, no_git: I.Ban,
+    no_folder: I.FolderMinus, root_missing: I.FolderX, not_repo: I.FolderSearch, error: I.TriangleAlert,
+  },
   worktreeState: {
     modified: I.FilePen, added: I.FilePlus2, deleted: I.FileX2, renamed: I.ArrowRightLeft, untracked: I.FileQuestion,
     ignored: I.EyeOff, unmerged: I.GitMerge,
@@ -188,7 +191,8 @@ export const VOCAB_ICONS = {
   alertRuleKind: {
     threshold: I.Gauge, burn_rate: I.Flame, no_data: I.CircleSlash, fleet_authority_divergence: I.Split,
     fleet_integrity_risk: I.Fingerprint, fleet_no_contact: I.Unplug, fleet_governance_lapsed: I.FileWarning,
-    fleet_config_drift: I.FileDiff,
+    fleet_config_drift: I.FileDiff, ingest_backlog: I.Hourglass, fleet_bundle_tampered: I.FileX2,
+    fleet_local_weakening: I.ShieldOff, fleet_integrity_change: I.FilePen,
   },
   alertEvent: {
     firing: I.BellRing, fired: I.BellRing, ok: I.Check, resolved: I.Check, delivered: I.Send, attempted: I.Clock,
@@ -235,7 +239,8 @@ export const VOCAB_ICONS = {
   },
   fleetFinding: {
     governance_lapsed: I.FileWarning, authority_divergence: I.Split, integrity_risk: I.Fingerprint,
-    no_contact: I.Unplug, config_drift: I.FileDiff, resolved: I.Check,
+    no_contact: I.Unplug, config_drift: I.FileDiff, resolved: I.Check, integrity_change: I.FilePen,
+    bundle_tampered: I.FileX2, local_weakening: I.ShieldOff,
   },
   fleetPoint: {
     guard: I.Shield, router: I.Shuffle, "proxy-admitter": I.ShieldCheck, "proxy-egress": I.Route,
@@ -331,7 +336,7 @@ export const VOCAB_ICONS = {
   cacheCallVerdict: { first_call: I.Sparkles, hit: I.Zap, partial: I.CircleGauge, miss: I.RefreshCw },
   projectEvidence: {
     manual: I.Pencil, rule: I.ListChecks, auto_remote: I.GitBranch, auto_upstream: I.Building2,
-    auto_root_commit: I.GitCommitHorizontal, auto_scm: I.FolderGit2, suggested_remote: I.Lightbulb,
+    auto_root_commit: I.GitCommitHorizontal, auto_root_path: I.Folder, auto_scm: I.FolderGit2, suggested_remote: I.Lightbulb,
   },
   pricingSource: { negotiated: I.Handshake, list: I.Tags, imported: I.Import },
   pricingDiff: { added: I.Plus, changed: I.Pencil, removed: I.CircleMinus },
@@ -357,6 +362,32 @@ export const VOCAB_ICONS = {
     refunded: I.Undo2, charged_back: I.OctagonAlert,
   },
   planFeature: { included: I.Check, not_included: I.Minus },
+  // Delivery, commit to PR to merge (D-689; tone tables in
+  // web/src/lib/deliveryModel.ts). deliveryPR keys a PR chip: its lifecycle
+  // state, or for an open PR its readiness (internal/delivery/types.go).
+  deliveryPR: {
+    merged: I.GitMerge, closed_unmerged: I.GitPullRequestClosed, draft: I.GitPullRequestDraft, ready: I.Check,
+    conflicts: I.CircleX, checks_failing: I.CircleX, checks_pending: I.LoaderCircle, changes_requested: I.MessageSquareWarning,
+    review_required: I.Eye, behind: I.ArrowDownToLine, blocked_other: I.Ban, unknown: I.GitPullRequestArrow,
+  },
+  landingStatus: {
+    in_flight: I.Hourglass, local_only: I.Monitor, pushed: I.ArrowUpFromLine, in_pr: I.GitPullRequestArrow,
+    landed: I.CircleCheck, likely_landed: I.CircleDashed, abandoned: I.CircleSlash, landing_lost: I.TriangleAlert,
+  },
+  landingKind: {
+    exact_sha: I.GitCommitHorizontal, merge: I.GitMerge, squash: I.Layers, rebase: I.GitBranch, patch_id: I.Fingerprint,
+    squash_files: I.Files, content: I.TextSearch,
+  },
+  codeHostStatus: {
+    ok: I.CircleCheck, never_checked: I.CircleDashed, auth_failed: I.KeyRound, rate_limited: I.Gauge,
+    unreachable: I.CloudOff, repo_moved: I.MoveRight, wrong_shape: I.FileWarning, disabled: I.Ban,
+    needs_noninteractive_credentials: I.KeyRound,
+  },
+  mirrorStatus: {
+    ok: I.CircleCheck, cloning: I.LoaderCircle, failed: I.CircleX, over_cap: I.HardDrive, never: I.CircleDashed,
+    needs_noninteractive_credentials: I.KeyRound,
+  },
+  deliverySource: { provider: I.Cloud, mirror: I.Copy, user_refs: I.Monitor, none: I.Unlink },
 } satisfies Record<string, Record<string, LucideIcon>>;
 
 export type Vocab = keyof typeof VOCAB_ICONS;

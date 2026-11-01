@@ -1,0 +1,1 @@
+{"workspace_id":"ws_fixture123","currency":"USD","balance_scope":"caller","available_cost":7.25,"member_limit":{"limit_cost":50,"period":"month"},"spend":{"status":"unavailable","reason":"permission_missing"}}

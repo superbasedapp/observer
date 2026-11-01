@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
@@ -18,6 +19,8 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/policyfam"
 	"github.com/marmutapp/superbased-observer/internal/policyfam/admission"
 	"github.com/marmutapp/superbased-observer/internal/policyfam/nodefeatures"
+	"github.com/marmutapp/superbased-observer/internal/policyfam/nodefeatures/lkgsidecar"
+	"github.com/marmutapp/superbased-observer/internal/policyfam/nodegov"
 	"github.com/marmutapp/superbased-observer/internal/policyfam/providers"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -69,11 +72,32 @@ func policyResourceCacheDir(cfg config.Config) string {
 func policyResourceOptionsFor(cfg config.Config, liveCaps []string) orgclient.PolicyResourceOptions {
 	return orgclient.PolicyResourceOptions{
 		CacheDir:            policyResourceCacheDir(cfg),
-		AcceptFamilies:      cfg.OrgClient.Policy.AcceptFamilies,
-		PreauthorizeEnforce: cfg.OrgClient.Policy.PreauthorizeEnforce,
+		AcceptFamilies:      cfg.OrgClient.Policy.AcceptedFamilies(),
+		PreauthorizeEnforce: cfg.OrgClient.Policy.PreauthorizedFamilies(),
 		NodeAttrs:           policyResourceNodeAttrs(cfg),
 		LiveCapabilities:    liveCaps,
+		// The result-based posture gate (roadmap F0-8): each linked family's
+		// own evaluator (policyfam.LinkedFamily.CheckPosture), plus, for
+		// node.governance, the module posture providers of the pins it
+		// carries (nodegov.CheckPinPosture, N3).
+		CheckPosture: checkPolicyPosture,
 	}
+}
+
+// checkPolicyPosture composes the result-based posture gate: a
+// node.governance body is judged by the evaluators the modules registered
+// for the pin keys it carries (nodegov.CheckPinPosture; the sandbox module's
+// is cmd/observer/sandbox_posture_wire.go), every other family by its own
+// linked evaluator. A family or pin set with no evaluator always passes.
+func checkPolicyPosture(family string, spec any) (string, error) {
+	if family == policyfam.FamilyNodeGovernance {
+		s, ok := spec.(nodegov.PolicySpec)
+		if !ok {
+			return "", nil
+		}
+		return nodegov.CheckPinPosture(nodegov.SpecPins(s))
+	}
+	return policyfam.CheckLinkedPosture(family, spec)
 }
 
 // nodeLiveCapabilities composes the FULL capability-token list this node
@@ -90,10 +114,23 @@ func policyResourceOptionsFor(cfg config.Config, liveCaps []string) orgclient.Po
 // report) go through this same function so the two never drift — see
 // buildPolicyStateReporter in policystate_wire.go.
 func nodeLiveCapabilities(handle *obsAdmissionHandle) []string {
+	return nodeLiveCapabilitiesFor(handle, nil)
+}
+
+// nodeLiveCapabilitiesFor is nodeLiveCapabilities with the linked families'
+// tokens limited to those whose owning module active reports active (the
+// node's [components] snapshot, componentSnapshotForConfig): a deactivated
+// sandbox module advertises no terminals.isolation token, so a floor body
+// NACKs capability_mismatch there instead of being accepted by a module that
+// does not run. A nil active keeps every token.
+func nodeLiveCapabilitiesFor(handle *obsAdmissionHandle, active func(id string) bool) []string {
 	caps := handle.LiveCapabilities()
 	if tok := orgcontract.ModeCapabilityToken(providers.SupportedModeSchemaVersion); tok != "" {
 		caps = append(caps, tok)
 	}
+	// Every linked family's own live tokens (roadmap F0-9), the node side of
+	// the tokens the org server derives from a body (LinkedFamily legs).
+	caps = append(caps, policyfam.LinkedLiveCapabilitiesActive(active)...)
 	return caps
 }
 
@@ -412,7 +449,7 @@ type nodeFeaturesHandle struct {
 	// state change (apply → the applied list; inert/clear → empty). Best-effort;
 	// a nil writer is the ungoverned/solo no-op. Invoked AFTER the state mutex
 	// is released so file I/O never holds the lock.
-	sidecarWriter func(disallow []string)
+	sidecarWriter func(disallow []string, terminals *lkgsidecar.Terminals)
 	// toolGrant answers the dashboard launch gate's tool access question
 	// (request-grants G8, SetToolGrant): a verified org grant for exactly
 	// this tool, counting one use. nil = no grants.
@@ -482,7 +519,7 @@ func (h *nodeFeaturesHandle) ToolLaunchAllowed(tool string) (bool, string, int64
 
 // SetSidecarWriter binds the node.features LKG sidecar writer (P6 item 5).
 // Called once at daemon construction; nil-safe.
-func (h *nodeFeaturesHandle) SetSidecarWriter(fn func(disallow []string)) {
+func (h *nodeFeaturesHandle) SetSidecarWriter(fn func(disallow []string, terminals *lkgsidecar.Terminals)) {
 	if h == nil {
 		return
 	}
@@ -494,7 +531,7 @@ func (h *nodeFeaturesHandle) SetSidecarWriter(fn func(disallow []string)) {
 // emitSidecar invokes the sidecar writer (if bound) with the given disallow
 // list. Read the writer under the lock, call it outside — never hold the state
 // mutex across file I/O.
-func (h *nodeFeaturesHandle) emitSidecar(disallow []string) {
+func (h *nodeFeaturesHandle) emitSidecar(disallow []string, terminals *lkgsidecar.Terminals) {
 	if h == nil {
 		return
 	}
@@ -502,7 +539,7 @@ func (h *nodeFeaturesHandle) emitSidecar(disallow []string) {
 	fn := h.sidecarWriter
 	h.mu.Unlock()
 	if fn != nil {
-		fn(disallow)
+		fn(disallow, terminals)
 	}
 }
 
@@ -525,6 +562,20 @@ type nodeFeaturesState struct {
 	// nodefeatures.FeatureDecision/TerminalDecision's own fail-open input,
 	// so an inert body degrades to "every seam fail-open" for free.
 	spec *nodefeatures.PolicySpec
+}
+
+// processNodeFeatures is the daemon's node.features handle once `observer
+// start` built it; nil in every other process. A launch the daemon starts
+// (termsvc's PTY entries, and the daemon-started walks of the launch gate
+// table) reads the org's terminals decision from it (OSH-R-003); a
+// standalone launcher reads the daemon's sidecar instead.
+var processNodeFeatures atomic.Pointer[nodeFeaturesHandle]
+
+// daemonTerminalGate is the org's terminals decision for a launch the
+// daemon starts: TerminalAllowed on the daemon's handle (a nil handle, a
+// daemon with no org body, still applies an isolation floor in force).
+func daemonTerminalGate(requestedSandbox bool) (bool, string) {
+	return processNodeFeatures.Load().TerminalAllowed(requestedSandbox)
 }
 
 // newNodeFeaturesHandle builds the daemon-lifetime install seam.
@@ -553,6 +604,14 @@ func (h *nodeFeaturesHandle) Allowed(feature string) (bool, string) {
 // TerminalAllowed implements the dashapi.Options.TerminalFeatureGate
 // closure shape: (bool allowed, string reason). Nil-safe.
 func (h *nodeFeaturesHandle) TerminalAllowed(requestedSandbox bool) (bool, string) {
+	// An org isolation floor that implies sandbox_required (lane SBX-P1B,
+	// sandbox plan v2 section 8.1) refuses an unsandboxed terminal first,
+	// naming the floor; no floor in force changes nothing.
+	if !requestedSandbox {
+		if ok, reason := isolationFloorsAllowUnsandboxed(); !ok {
+			return false, reason
+		}
+	}
 	if h == nil {
 		return true, ""
 	}
@@ -560,6 +619,15 @@ func (h *nodeFeaturesHandle) TerminalAllowed(requestedSandbox bool) (bool, strin
 	spec := h.state.spec
 	h.mu.Unlock()
 	d := nodefeatures.TerminalDecision(spec, requestedSandbox)
+	if !d.Allowed && !requestedSandbox && nodefeatures.TerminalDecision(spec, true).Allowed {
+		// Refused only for want of a sandbox: on a machine that cannot run
+		// one at all (SBX-P1B merge audit finding 4, plan 11.5) the reason
+		// says so and names the org setting, instead of asking for a retry
+		// that cannot work.
+		if why := sandboxCannotRunHere(); why != "" {
+			return false, sandboxCannotRunRefusal(why)
+		}
+	}
 	if !d.Allowed && nodefeatures.TerminalDecisionEnabled(spec, true).Allowed {
 		// Denied because terminals are disabled: a feature access grant
 		// lifts that, and only that (the sandbox requirement stands).
@@ -598,7 +666,7 @@ func (h *nodeFeaturesHandle) Clear() {
 	h.mu.Unlock()
 	// Cleared org rail ⇒ nothing disallowed (fail-open); refresh the sidecar so
 	// a short-lived launcher never reads a stale disallow list after a withdraw.
-	h.emitSidecar(nil)
+	h.emitSidecar(nil, nil)
 }
 
 // recordApplied stamps a body that is actually in effect.
@@ -609,7 +677,7 @@ func (h *nodeFeaturesHandle) recordApplied(version int64, bodyHash string, spec 
 	h.mu.Lock()
 	h.state = nodeFeaturesState{hasOrgRail: true, version: version, bodyHash: bodyHash, spec: &spec}
 	h.mu.Unlock()
-	h.emitSidecar(disallowKeys(spec.Tools.Disallow))
+	h.emitSidecar(disallowKeys(spec.Tools.Disallow), sidecarTerminals(spec.Terminals))
 }
 
 // recordInert stamps a body that was ACCEPTED but not applied (the §6.4
@@ -627,7 +695,17 @@ func (h *nodeFeaturesHandle) recordInert(version int64, bodyHash, reason string)
 	h.mu.Unlock()
 	// An INERT body applies no disallow list (spec is nil ⇒ fail-open), so the
 	// sidecar must reflect "nothing disallowed" — never the inert body's list.
-	h.emitSidecar(nil)
+	h.emitSidecar(nil, nil)
+}
+
+// sidecarTerminals is the sidecar's copy of a governed terminals rule (nil
+// when the org does not govern terminals), so a CLI launcher's terminals
+// gate decides exactly what TerminalAllowed decides here (OSH-R-003).
+func sidecarTerminals(r nodefeatures.TerminalsRule) *lkgsidecar.Terminals {
+	if !r.Governed {
+		return nil
+	}
+	return &lkgsidecar.Terminals{Enabled: r.Enabled, SandboxRequired: r.SandboxRequired}
 }
 
 // nodeFeaturesFacts is the plain snapshot the P0-6 node.features point
@@ -713,7 +791,10 @@ func orgIdentityGateFor(ctx context.Context, oc *orgclient.Client) orgIdentityGa
 // egress.routing_guardrail install through *obsAdmissionHandle (nil-safe);
 // gateway.providers installs through the separate *gatewayProvidersHandle
 // (also nil-safe) since it has no obs/admission counterpart at all.
-func publishPolicyResourceResult(ident orgIdentityGate, handle *obsAdmissionHandle, gw *gatewayProvidersHandle, ngov *nodeGovernanceHandle, nf *nodeFeaturesHandle, family string, res orgclient.PolicyResourceResult, logger *slog.Logger) {
+//
+// It reports whether it installed res: true only for an install result that
+// passed the identity gate (the poller's adopter records a layer only then).
+func publishPolicyResourceResult(ident orgIdentityGate, handle *obsAdmissionHandle, gw *gatewayProvidersHandle, ngov *nodeGovernanceHandle, nf *nodeFeaturesHandle, family string, res orgclient.PolicyResourceResult, logger *slog.Logger) bool {
 	switch policyResourceDisposition(res) {
 	case prDispositionInstall:
 		// Plan §6.10 / GWF-SF1: re-check live enrolment identity immediately
@@ -725,7 +806,7 @@ func publishPolicyResourceResult(ident orgIdentityGate, handle *obsAdmissionHand
 		// family, not only the obs ones (AA-67, T-673). A nil gate fails
 		// closed.
 		if !ident.matches(res.OrgKey, res.Generation) {
-			return
+			return false
 		}
 		switch family {
 		case policyfam.FamilyAdmissionInput:
@@ -746,6 +827,15 @@ func publishPolicyResourceResult(ident orgIdentityGate, handle *obsAdmissionHand
 			// Agent Access P4 (mcprelay_wire.go): compile → swap → cache.
 			// A nil process handle ([mcp_relay].enabled=false) is a no-op.
 			mcpRelayPublish(res)
+		case policyfam.FamilyTerminalsIsolation:
+			// The sandbox module's floors (sandbox_posture_wire.go): read
+			// live by every sandbox selection; a no-op in a build without
+			// the module.
+			isolationFloorsPublish(res)
+		case policyfam.FamilySecurityScanning:
+			// Lane SEC-E (security_scanning_wire.go): the floor in force,
+			// read through securityFloorsApplied.
+			securityScanningPublish(res, logger)
 		case policyfam.FamilyNodeComponents:
 			// Modular packaging P4 (components_governance.go): there is no
 			// live seam. Every process that resolves component state reads
@@ -757,6 +847,7 @@ func publishPolicyResourceResult(ident orgIdentityGate, handle *obsAdmissionHand
 					"version", res.Version, "inert_reason", res.InertReason)
 			}
 		}
+		return true
 	case prDispositionClear:
 		clearOrgLayer(handle, gw, ngov, nf, family)
 	case prDispositionKeep:
@@ -765,6 +856,7 @@ func publishPolicyResourceResult(ident orgIdentityGate, handle *obsAdmissionHand
 				"family", family)
 		}
 	}
+	return false
 }
 
 // prDisposition is what one fetch result does to a family's installed Org
@@ -839,6 +931,10 @@ func clearOrgLayer(handle *obsAdmissionHandle, gw *gatewayProvidersHandle, ngov 
 		nf.Clear()
 	case policyfam.FamilyMCPAccess:
 		mcpRelayClear()
+	case policyfam.FamilyTerminalsIsolation:
+		isolationFloorsClear()
+	case policyfam.FamilySecurityScanning:
+		securityScanningClear()
 	}
 }
 
@@ -851,6 +947,19 @@ func clearOrgLayer(handle *obsAdmissionHandle, gw *gatewayProvidersHandle, ngov 
 // registers one now (D-DEMO-13) and the reporter itself stays dormant until
 // its channel is enabled.
 type policyResourceOutcomeSink func(family string, o orgclient.PolicyResourceFetchOutcome)
+
+// logLinkedFamilyConflicts reports, once at daemon start, every policy family
+// two pair files registered (roadmap F0-9). Such a family is unlinked, so
+// every body of it is refused; the log names why. It returns the list so a
+// test can check it without a logger.
+func logLinkedFamilyConflicts(logger *slog.Logger) []string {
+	conflicts := policyfam.LinkedConflicts()
+	if len(conflicts) > 0 && logger != nil {
+		logger.Warn("policy families registered more than once in this build; every body of them is refused until the build is fixed",
+			"families", conflicts)
+	}
+	return conflicts
+}
 
 // runPolicyResourcePoller runs the plan §6.6/§6.9 steady-state poll loop for
 // every v1 family, applying every outcome onto its install seam through the
@@ -869,14 +978,17 @@ func runPolicyResourcePoller(ctx context.Context, cfg config.Config, oc *orgclie
 	if logger == nil {
 		logger = slog.Default()
 	}
-	opts := policyResourceOptionsFor(cfg, nodeLiveCapabilities(handle))
+	logLinkedFamilyConflicts(logger)
+	opts := policyResourceOptionsFor(cfg, nodeLiveCapabilitiesFor(handle, componentSnapshotForConfig(cfg).ModuleActive))
 	ident := orgIdentityGateFor(ctx, oc)
+	adopter := newPolicyLayerAdopter()
 	logger.Debug("policy resource poller: starting", "families", policyfam.SupportedFamilies)
 	_ = oc.PolicyResourcePollLoop(ctx, opts, func(pr orgclient.PolicyResourcePollResult) {
 		switch {
 		case errors.Is(pr.Err, orgclient.ErrNotEnrolled):
 			// Plan §6.9 + Codex SF4: clear Org layer AND let Classify emit
 			// Cleared so the outcome sink wipes stale reject/unreachable slots.
+			adopter.forget(pr.Family)
 			clearOrgLayer(handle, gw, ngov, nf, pr.Family)
 		case pr.Err != nil:
 			// Transport/auth/indeterminate failure: leave whatever is
@@ -887,7 +999,7 @@ func runPolicyResourcePoller(ctx context.Context, cfg config.Config, oc *orgclie
 			// on a decisive fetch outcome. PolicyResourcePollLoop already
 			// logs the failure.
 		default:
-			publishPolicyResourceResult(ident, handle, gw, ngov, nf, pr.Family, pr.Result, logger)
+			adoptAndPublish(adopter, ident, handle, gw, ngov, nf, pr.Family, pr.Result, logger)
 		}
 		// Apply-then-poke: classify AFTER the Org-layer mutation so the
 		// reporter's next snapshot observes the post-apply state.
@@ -897,6 +1009,89 @@ func runPolicyResourcePoller(ctx context.Context, cfg config.Config, oc *orgclie
 			}
 		}
 	})
+}
+
+// policyLayerKey names one installed org layer: the enrolment identity it was
+// fetched under and the exact signed version and body.
+type policyLayerKey struct {
+	orgKey     string
+	generation int64
+	version    int64
+	bodyHash   string
+}
+
+func policyLayerKeyOf(res orgclient.PolicyResourceResult) policyLayerKey {
+	return policyLayerKey{orgKey: res.OrgKey, generation: res.Generation, version: res.Version, bodyHash: res.BodyHash}
+}
+
+// policyLayerAdopter is the poller's record of the layer it installed per
+// family (WINNODE item 1). It exists for one case: an "unchanged" fetch whose
+// verified layer this daemon never installed. That happens when the daemon
+// booted with no org layer (the last-known-good refetch failed: the network
+// was down, or on v1.36.0 Windows every cache write failed after its rename)
+// and the cache and the durable floor became consistent afterwards, written
+// by another process or by an earlier poll. The status table keeps the layer
+// on "unchanged", so before this the daemon stayed ungoverned until its next
+// restart while a CLI reading the same cache reported the policy installed.
+//
+// An unchanged result is as verified as an applied one (a 304 re-runs every
+// accept gate against the cache; an equal-floor 200 matched the durable
+// digest), so installing it once is as safe as installing a fresh apply. The
+// record is owned by one poller goroutine, so it needs no lock.
+type policyLayerAdopter struct {
+	installed map[string]policyLayerKey
+}
+
+func newPolicyLayerAdopter() *policyLayerAdopter {
+	return &policyLayerAdopter{installed: map[string]policyLayerKey{}}
+}
+
+// resolve returns the result to publish for family. A clear forgets the
+// layer, and a verified "unchanged" carrying a compiled spec this poller has
+// not installed yet becomes the install it would have been as an apply
+// (applied, or applied inert when enforcement is not allowed). Every other
+// result passes through unchanged. An install is recorded by record, and only
+// once publish reports it installed (adoptAndPublish).
+func (a *policyLayerAdopter) resolve(family string, res orgclient.PolicyResourceResult) orgclient.PolicyResourceResult {
+	switch policyResourceDisposition(res) {
+	case prDispositionClear:
+		delete(a.installed, family)
+	case prDispositionKeep:
+		if res.Status != orgclient.PRUnchanged || res.Spec == nil {
+			return res
+		}
+		if held, ok := a.installed[family]; ok && held == policyLayerKeyOf(res) {
+			return res
+		}
+		res.Status = orgclient.PRApplied
+		if !res.EnforceAllowed {
+			res.Status = orgclient.PRAppliedInert
+		}
+	}
+	return res
+}
+
+// record notes that publish installed res for family.
+func (a *policyLayerAdopter) record(family string, res orgclient.PolicyResourceResult) {
+	a.installed[family] = policyLayerKeyOf(res)
+}
+
+// adoptAndPublish is the poller's step for one decisive fetch result: the
+// adopter resolves it, publish installs it, and the adopter records the layer
+// only when publish actually installed it. The identity gate is a fresh
+// enrolment read on every call, so one failed read installs nothing; the
+// layer stays unrecorded and the next "unchanged" poll still adopts it.
+func adoptAndPublish(a *policyLayerAdopter, ident orgIdentityGate, handle *obsAdmissionHandle, gw *gatewayProvidersHandle, ngov *nodeGovernanceHandle, nf *nodeFeaturesHandle, family string, res orgclient.PolicyResourceResult, logger *slog.Logger) {
+	res = a.resolve(family, res)
+	if publishPolicyResourceResult(ident, handle, gw, ngov, nf, family, res, logger) {
+		a.record(family, res)
+	}
+}
+
+// forget drops family's record (the not-enrolled path clears the layer
+// without a result to resolve).
+func (a *policyLayerAdopter) forget(family string) {
+	delete(a.installed, family)
 }
 
 // --- §6.5 LKG-before-listener (item 4) -------------------------------------
@@ -923,7 +1118,7 @@ type verifiedCachedResource struct {
 // changed, so the cached policy no longer applies to it), which sends the
 // caller down matrix row 1: blank the ETag and refetch.
 func verifyCachedPolicyResource(ctx context.Context, st *store.Store, orgURL, family, path string, nodeAttrs orgcontract.Selectors) (verifiedCachedResource, error) {
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) //nolint:gosec // G703: false positive; every caller passes the node's own policy-resource cache file (<CacheDir>/<orgKey>/<generation>/<family>.json), and its content is signature-checked below
 	if err != nil {
 		return verifiedCachedResource{}, fmt.Errorf("read cache: %w", err)
 	}
@@ -1228,6 +1423,10 @@ func loadPolicyResourceLKGFamily(ident orgIdentityGate, ctx context.Context, oc 
 // that case, and vice versa: a nil handle with a non-nil gw still lets
 // gateway.providers load.
 func loadPolicyResourceLKG(ctx context.Context, cfg config.Config, oc *orgclient.Client, st *store.Store, handle *obsAdmissionHandle, gw *gatewayProvidersHandle, ngov *nodeGovernanceHandle, nf *nodeFeaturesHandle, logger *slog.Logger) {
+	// From here on this process holds the org layer in memory (the daemon,
+	// or a standalone proxy): readers that a CLI must satisfy from the
+	// verified cache read the installed layer instead (R-035).
+	policyResourceInstalledHere.Store(true)
 	if oc == nil || (handle == nil && gw == nil && ngov == nil && nf == nil) {
 		return
 	}
@@ -1243,9 +1442,70 @@ func loadPolicyResourceLKG(ctx context.Context, cfg config.Config, oc *orgclient
 	if err != nil || !ok || genRow.Tombstoned {
 		return // no live generation for this identity — nothing to load
 	}
-	opts := policyResourceOptionsFor(cfg, nodeLiveCapabilities(handle))
+	opts := policyResourceOptionsFor(cfg, nodeLiveCapabilitiesFor(handle, componentSnapshotForConfig(cfg).ModuleActive))
 	ident := orgIdentityGateFor(ctx, oc)
 	for _, family := range policyfam.SupportedFamilies {
 		loadPolicyResourceLKGFamily(ident, ctx, oc, st, opts, enr.OrgServerURL, orgKey, genRow.Generation, family, handle, gw, ngov, nf, logger)
 	}
+}
+
+// policyResourceInstalledHere reports that this process installs the org
+// policy resources itself (loadPolicyResourceLKG ran), so its in-memory org
+// layer is the truth; a CLI process reads the verified cache instead
+// (loadPolicyResourceFromCache).
+var policyResourceInstalledHere atomic.Bool
+
+// loadPolicyResourceFromCache is the read-only half of the LKG matrix for a
+// CLI process (R-035): one family's verified cache, installed only when it
+// matches the durable state exactly (row 3: same version and digest, the
+// live enrolment generation) and the family is accepted, with the same
+// enforce gate the daemon applies. It never repairs, refetches or writes;
+// anything else is "none", as for a daemon that left the family
+// uninstalled. ok reports an applied spec; inert names why it applies no
+// enforcement.
+func loadPolicyResourceFromCache(ctx context.Context, cfg config.Config, st *store.Store, family string) (spec any, inert string, ok bool) {
+	if st == nil {
+		return nil, "", false
+	}
+	enr, err := st.LoadEnrolment(ctx)
+	if err != nil || enr == nil {
+		return nil, "", false
+	}
+	orgKey := orgclient.OrgKey(enr.OrgServerURL, enr.OrgID)
+	genRow, has, err := st.LoadEnrolmentGeneration(ctx, orgKey)
+	if err != nil || !has || genRow.Tombstoned {
+		return nil, "", false
+	}
+	opts := policyResourceOptionsFor(cfg, nodeLiveCapabilitiesFor(nil, componentSnapshotForConfig(cfg).ModuleActive))
+	if !containsString(family, opts.AcceptFamilies) {
+		return nil, "", false
+	}
+	cachePath := filepath.Join(opts.CacheDir, orgKey, strconv.FormatInt(genRow.Generation, 10), family+".json")
+	cached, err := verifyCachedPolicyResource(ctx, st, enr.OrgServerURL, family, cachePath, opts.NodeAttrs)
+	if err != nil {
+		return nil, "", false
+	}
+	row, hasState, err := st.LoadPolicyResourceState(ctx, orgKey, family)
+	if err != nil || !hasState || row.Generation != genRow.Generation ||
+		cached.resource.Version != row.FloorVersion || cached.digest != row.MsgDigest {
+		return nil, "", false
+	}
+	if len(cached.resource.RequiredCapabilities) > 0 && !capabilitiesSubsetLKG(cached.resource.RequiredCapabilities, opts.LiveCapabilities) {
+		return nil, "", false
+	}
+	enforceAllowed, inertReason := policyResourceEnforceGate(family, cached.spec, opts.PreauthorizeEnforce)
+	if !enforceAllowed && inertReason == "" {
+		inertReason = "not_preauthorized"
+	}
+	return cached.spec, inertReason, true
+}
+
+// sandboxCannotRunRefusal is the terminal refusal on a machine where the
+// organization requires a sandboxed terminal and no sandbox can run (why).
+// While an isolation floor is in force a managed machine receives
+// "Require a sandboxed terminal" with it (D-753 Q43), so the reason names
+// both settings.
+func sandboxCannotRunRefusal(why string) string {
+	return "your organization requires a sandboxed terminal on this machine (\"Require a sandboxed terminal\", which an organization isolation floor sets on every managed machine), " +
+		"and this machine cannot run a sandbox: " + why + "; new terminals are refused, never run without one"
 }

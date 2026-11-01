@@ -235,6 +235,11 @@ func newServeCmd() *cobra.Command {
 					MaxResults:      cfg.Intelligence.MCP.GetRelations.MaxResults,
 				}
 			}
+			// The security module's tools (lane sec-c3): only while the
+			// module is active and [security.mcp].tools is on.
+			for _, t := range securityMCPTools(cfg, database, logger) {
+				mcpOpts.ExtraTools = append(mcpOpts.ExtraTools, t)
+			}
 			s, err := mcp.New(mcpOpts)
 			if err != nil {
 				return err

@@ -12,9 +12,10 @@ import (
 // Rung is the D-640 collection ladder rung a number came from.
 type Rung string
 
-// The ladder rungs. Rung 1 is the default; rung 2 is per-provider opt-in and
-// labelled experimental. Rung 3 (browser sessions) is a closed value only: no
-// source in this build uses it.
+// The ladder rungs. Rung 1 is the default; rungs 2 and 3 are per-provider
+// opt-in and labelled experimental. Rung 3 is a browser session the user
+// pastes (D-640 "then codexbar"); Observer never reads a browser's own cookie
+// store.
 const (
 	RungOfficial     Rung = "official"
 	RungExperimental Rung = "experimental"
@@ -37,7 +38,7 @@ const (
 	KindLocalState    SourceKind = "local_state"    // rung 2: a vendor app's non-credential local state
 	KindBorrowedToken SourceKind = "borrowed_token" // rung 2: another app's token, read-only
 	KindUndocumented  SourceKind = "undocumented"   // rung 2: the user's own key, undocumented endpoint
-	KindBrowser       SourceKind = "browser"        // rung 3: browser session (not built)
+	KindBrowser       SourceKind = "browser"        // rung 3: a browser session the user pastes
 )
 
 // rungOf binds each source kind to its ladder rung. A source never picks its
@@ -85,14 +86,34 @@ type Unit string
 // Units. Money is integer micros of one currency; credits are never
 // converted to money.
 const (
-	UnitPercent   Unit = "percent"
-	UnitCredits   Unit = "credits"
-	UnitUSDMicros Unit = "usd_micros"
-	UnitCNYMicros Unit = "cny_micros"
-	UnitRequests  Unit = "requests"
-	UnitTokens    Unit = "tokens"
-	UnitAICredits Unit = "ai_credits"
+	UnitPercent    Unit = "percent"
+	UnitCredits    Unit = "credits"
+	UnitUSDMicros  Unit = "usd_micros"
+	UnitCNYMicros  Unit = "cny_micros"
+	UnitEURMicros  Unit = "eur_micros"
+	UnitJPYMicros  Unit = "jpy_micros"
+	UnitRequests   Unit = "requests"
+	UnitTokens     Unit = "tokens"
+	UnitAICredits  Unit = "ai_credits"
+	UnitPoints     Unit = "points"
+	UnitCharacters Unit = "characters"
+	UnitKWh        Unit = "kwh"
+	UnitHours      Unit = "hours"
 )
+
+// AllUnits lists every unit, for vocabulary tests.
+func AllUnits() []Unit {
+	return []Unit{
+		UnitPercent, UnitCredits, UnitUSDMicros, UnitCNYMicros, UnitEURMicros, UnitJPYMicros,
+		UnitRequests, UnitTokens, UnitAICredits, UnitPoints, UnitCharacters, UnitKWh, UnitHours,
+	}
+}
+
+// moneyUnits are the units that are an amount of money.
+var moneyUnits = map[Unit]bool{UnitUSDMicros: true, UnitCNYMicros: true, UnitEURMicros: true, UnitJPYMicros: true}
+
+// IsMoney reports whether u is an amount of money (integer micros).
+func IsMoney(u Unit) bool { return moneyUnits[u] }
 
 // Status codes of a snapshot or an account. Codes, never prose: the
 // dashboard and the CLI own the words.
@@ -212,14 +233,11 @@ func MicrosFromDecimal(s string, scale int) (int64, error) {
 
 // CurrencyUnit maps an ISO currency code to a money unit; "" when unsupported.
 func CurrencyUnit(code string) Unit {
-	switch strings.ToUpper(strings.TrimSpace(code)) {
-	case "USD":
-		return UnitUSDMicros
-	case "CNY":
-		return UnitCNYMicros
-	}
-	return ""
+	return currencyUnits[strings.ToUpper(strings.TrimSpace(code))]
 }
+
+// currencyUnits maps ISO currency codes to money units.
+var currencyUnits = map[string]Unit{"USD": UnitUSDMicros, "CNY": UnitCNYMicros, "RMB": UnitCNYMicros, "EUR": UnitEURMicros, "JPY": UnitJPYMicros}
 
 // maxPlanLabel caps a vendor-supplied plan label.
 const maxPlanLabel = 64

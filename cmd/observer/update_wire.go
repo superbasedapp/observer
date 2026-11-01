@@ -56,6 +56,11 @@ type updateRuntime struct {
 	// applying serialises applies: two concurrent binary swaps on one node
 	// is not a race to make thread-safe, it is a state to forbid.
 	applying sync.Mutex
+	// liveDeferred is the request of the last apply that deferred for live
+	// sandboxed runs (posture deferred_live_sandbox), nil once an apply
+	// settles otherwise. The live-run question reads it, and its "apply when
+	// they finish" answer re-runs it (sandbox_liveruns.go, SBX-UPD-1).
+	liveDeferred atomic.Pointer[updateApplyRequest]
 	// releaseListeners gives up the proxy + dashboard sockets so the
 	// successor can bind them while this process stays alive to watch it.
 	// See SetReleaseListeners.
@@ -80,6 +85,16 @@ type updateRuntime struct {
 	// detection caches the install-method verdict; it cannot change without a
 	// reinstall, and Detect() stats the filesystem.
 	detection atomic.Value
+}
+
+// liveSandboxWorkName is the fixed label of the live sandboxed-run counter;
+// afterDrain maps it to update.ReasonDeferredLiveSandbox.
+const liveSandboxWorkName = "sandboxed terminal runs"
+
+// sandboxLiveCounter is the optional half of the terminal manager the update
+// drain reads: live runs launched through the Sandboxer seam.
+type sandboxLiveCounter interface {
+	LiveSandboxedCount() int
 }
 
 // newUpdateRuntime assembles the daemon-side updater. It returns nil when
@@ -110,6 +125,18 @@ func newUpdateRuntime(cfg config.Config, configPath string, s *store.Store, org 
 			}},
 		},
 	}
+	// Live sandboxed runs defer every apply, --force included (sandbox plan
+	// v2 section 5.5, I10, ledger SBX-UPD-1): ending one needs its owner's
+	// consent, which a maintenance-window --force does not give.
+	if sc, ok := mgr.(sandboxLiveCounter); ok {
+		u.quiescence.Live = append(u.quiescence.Live, quiesce.LiveWork{
+			Name: liveSandboxWorkName, Count: liveRunGatedCount(liveRunTriggerUpdateApply, sc.LiveSandboxedCount), Forcible: false,
+		})
+	}
+	// The live-run question (sandbox_liveruns.go) reads this runtime's
+	// sandbox deferral and re-runs it when the owner answers "apply when
+	// they finish".
+	updateLiveDeferredHook.Store(&liveDeferredHooks{pending: u.liveDeferredPending, apply: u.applyLiveDeferred})
 	// Distro-aware from here on (plan 5.6.1): the manifest fetch negotiates
 	// the v2 route first and runs verify rules 10-12 against this node's own
 	// distro, ceiling and policy, read fresh on every fetch.
@@ -450,6 +477,7 @@ func (u *updateRuntime) ApplyDetached(ctx context.Context, req updateApplyReques
 	go func() { //nolint:gosec // G118: the detached apply owns its budget by design so the handshake survives the request
 		defer u.applying.Unlock()
 		out, err := u.applyLocked(context.WithoutCancel(context.Background()), req)
+		u.noteLiveDeferral(req, out)
 		if err != nil {
 			u.logger.Warn("update: the detached apply failed", "state", out.State,
 				"error_class", out.ErrorClass, "detail", out.Detail, "err", err)
@@ -501,7 +529,46 @@ func (u *updateRuntime) Apply(ctx context.Context, req updateApplyRequest) (appl
 		return applyOutcome{}, errors.New("observer update: an apply is already in progress on this node")
 	}
 	defer u.applying.Unlock()
-	return u.applyLocked(ctx, req)
+	out, err := u.applyLocked(ctx, req)
+	u.noteLiveDeferral(req, out)
+	return out, err
+}
+
+// noteLiveDeferral remembers an apply deferred for live sandboxed runs, and
+// forgets it once an apply settles any other way.
+func (u *updateRuntime) noteLiveDeferral(req updateApplyRequest, out applyOutcome) {
+	if req.DryRun {
+		return
+	}
+	if out.Deferred && out.Reason == update.ReasonDeferredLiveSandbox {
+		r := req
+		u.liveDeferred.Store(&r)
+		return
+	}
+	if out.State != "" {
+		u.liveDeferred.Store(nil)
+	}
+}
+
+// liveDeferredPending reports whether an apply is waiting for live sandboxed
+// runs.
+func (u *updateRuntime) liveDeferredPending() bool { return u.liveDeferred.Load() != nil }
+
+// applyLiveDeferred re-runs the apply that deferred for live sandboxed runs
+// (the "apply when they finish" wait calls it once the count is zero).
+func (u *updateRuntime) applyLiveDeferred(ctx context.Context) error {
+	req := u.liveDeferred.Load()
+	if req == nil {
+		return errors.New("observer update: no apply is waiting for sandboxed runs")
+	}
+	out, err := u.Apply(ctx, *req)
+	if err != nil {
+		return err
+	}
+	if out.Deferred {
+		return fmt.Errorf("observer update: the apply deferred again: %s", out.Detail)
+	}
+	return nil
 }
 
 // applyLocked is Apply's body, with u.applying ALREADY held by the caller.
@@ -511,6 +578,11 @@ func (u *updateRuntime) Apply(ctx context.Context, req updateApplyRequest) (appl
 // release it when the goroutine it spawned is done.
 func (u *updateRuntime) applyLocked(ctx context.Context, req updateApplyRequest) (applyOutcome, error) {
 	if req.Rollback {
+		if req.DryRun {
+			// A dry run reports what the rollback would do and performs
+			// nothing (audit SEC-P4 F9; it used to roll back for real).
+			return u.rollbackDryRun(ctx)
+		}
 		return u.rollback(ctx)
 	}
 	row, err := u.store.LoadUpdateState(ctx)
@@ -573,11 +645,12 @@ func (u *updateRuntime) applyLocked(ctx context.Context, req updateApplyRequest)
 		Installed: update.Installed{
 			Version: version, SchemaVersion: schema, ExecPath: exePath, Detection: det,
 		},
-		StateDir: updateStateDirFor(u.cfg),
-		DBPath:   u.cfg.Observer.DBPath,
-		Window:   win,
-		Force:    req.Force,
-		DryRun:   req.DryRun,
+		StateDir:   updateStateDirFor(u.cfg),
+		DBPath:     u.cfg.Observer.DBPath,
+		ConfigPath: updateConfigPathFor(u.configPath),
+		Window:     win,
+		Force:      req.Force,
+		DryRun:     req.DryRun,
 		// The manifest's own answer to "does this release advance the
 		// schema". Zero (a manifest minted before the field existed) still
 		// means "may advance", so the conservative snapshot is the default
@@ -705,24 +778,72 @@ func updateFreeBytes(path string) (uint64, error) {
 	return statfsFreeBytes(path)
 }
 
-// rollback restores the previous binary, and the snapshot when the schema
-// advanced.
-func (u *updateRuntime) rollback(ctx context.Context) (applyOutcome, error) {
+// updateExecutablePath resolves the binary a rollback restores over (a test
+// seam: a test points it at a fake binary, never at its own executable).
+var updateExecutablePath = resolvedExecutablePath
+
+// rollbackDecision is the rollback's decision table read over the ledger
+// row and the live schema, shared by the rollback and its dry run.
+func (u *updateRuntime) rollbackDecision(ctx context.Context) (store.UpdateStateRow, update.RollbackDecision, error) {
 	row, err := u.store.LoadUpdateState(ctx)
 	if err != nil {
-		return applyOutcome{}, err
+		return row, update.RollbackDecision{}, err
 	}
 	schemaNow, err := u.store.SchemaVersion(ctx)
 	if err != nil {
-		return applyOutcome{}, err
+		return row, update.RollbackDecision{}, err
 	}
-	decision := update.DecideRollback(update.RollbackInput{
+	appliedNow, err := u.store.AppliedMigrationSteps(ctx)
+	if err != nil {
+		return row, update.RollbackDecision{}, err
+	}
+	return row, update.DecideRollback(update.RollbackInput{
 		State:                 row.State,
 		HasPreviousBinary:     fileExists(row.PreviousBinaryPath),
 		PreviousSchemaVersion: row.PreviousSchemaVersion,
 		CurrentSchemaVersion:  schemaNow,
+		PreviousAppliedSteps:  row.PreviousAppliedSteps,
+		CurrentAppliedSteps:   appliedNow,
 		HasDBBackup:           fileExists(row.PreviousDBBackupPath),
-	})
+	}), nil
+}
+
+// rollbackDryRun reports the steps a rollback would take and performs none
+// of them (audit SEC-P4 F9): no drain, no binary swap, no config.toml or
+// database restore, no ledger row and no hand-over. A rollback the table
+// refuses is reported refused, as the real one would be.
+func (u *updateRuntime) rollbackDryRun(ctx context.Context) (applyOutcome, error) {
+	row, decision, err := u.rollbackDecision(ctx)
+	if err != nil {
+		return applyOutcome{}, err
+	}
+	if decision.Refuse {
+		return applyOutcome{State: decision.State, ErrorClass: decision.ErrorClass, Detail: decision.Reason},
+			errors.New(decision.Reason)
+	}
+	steps := []string{"drain in-flight proxied requests"}
+	if decision.RestoreBinary {
+		steps = append(steps,
+			fmt.Sprintf("restore the previous binary (%s) over %s", row.PreviousVersion, updateExecutablePath()),
+			"restore the pre-apply config.toml")
+	}
+	if decision.RestoreDB {
+		steps = append(steps, "restore the pre-apply database snapshot "+row.PreviousDBBackupPath)
+		if decision.DiscardsDataWindow {
+			steps = append(steps, "discard the rows ingested after that snapshot")
+		}
+	}
+	steps = append(steps, "record the rollback and hand over to the restored binary")
+	return applyOutcome{State: row.State, Detail: "dry run, nothing was changed: " + decision.Reason, Steps: steps}, nil
+}
+
+// rollback restores the previous binary and its pre-apply config.toml, and
+// the snapshot when the schema advanced.
+func (u *updateRuntime) rollback(ctx context.Context) (applyOutcome, error) {
+	row, decision, err := u.rollbackDecision(ctx)
+	if err != nil {
+		return applyOutcome{}, err
+	}
 	if decision.Refuse {
 		return applyOutcome{State: decision.State, ErrorClass: decision.ErrorClass, Detail: decision.Reason},
 			errors.New(decision.Reason)
@@ -737,11 +858,16 @@ func (u *updateRuntime) rollback(ctx context.Context) (applyOutcome, error) {
 	if derr != nil {
 		return applyOutcome{State: update.StateFailed, ErrorClass: update.ErrorDrain, Detail: derr.Error()}, derr
 	}
-	exePath := resolvedExecutablePath()
+	exePath := updateExecutablePath()
+	var cfgRes rollbackConfigResult
 	if decision.RestoreBinary {
 		if err := restoreBinary(osSwapFS{}, runtime.GOOS, row.PreviousBinaryPath, exePath, row.PreviousVersion); err != nil {
 			return applyOutcome{State: update.StateFailed, ErrorClass: update.ErrorSwap, Detail: err.Error()}, err
 		}
+		// The pre-apply config.toml comes back with the binary, through the
+		// one restore every rollback path shares (merge audit finding 1); a
+		// failure never skips the database restore below (finding 2).
+		cfgRes = restoreRollbackConfig(updateConfigPathFor(u.configPath), row.PreviousBinaryPath, time.Now())
 	}
 	// The state writer for the rest of this function. It is a variable
 	// because the DB-restoring branch replaces the file underneath us and the
@@ -756,7 +882,7 @@ func (u *updateRuntime) rollback(ctx context.Context) (applyOutcome, error) {
 			u.logger.Warn("update: closing the database before restoring the snapshot failed", "err", cerr)
 		}
 		if err := restoreDatabaseSnapshot(row.PreviousDBBackupPath, u.cfg.Observer.DBPath); err != nil {
-			return applyOutcome{State: update.StateFailed, ErrorClass: update.ErrorHealthcheck, Detail: err.Error()}, err
+			return applyOutcome{State: update.StateFailed, ErrorClass: update.ErrorHealthcheck, Detail: err.Error() + cfgRes.failureNote()}, err
 		}
 		reopened, rerr := reopenUpdateStore(u.cfg.Observer.DBPath)
 		if rerr != nil {
@@ -774,17 +900,28 @@ func (u *updateRuntime) rollback(ctx context.Context) (applyOutcome, error) {
 	if decision.DiscardsDataWindow {
 		detail += "; rows ingested after the pre-apply snapshot were discarded"
 	}
+	out := applyOutcome{
+		State: update.StateRolledBack, ErrorClass: decision.ErrorClass,
+		RolledBack: true, Detail: decision.Reason,
+	}
+	cfgRes.markOutcome(&out)
+	if cfgRes.Err != nil {
+		row.State, row.ErrorClass = out.State, out.ErrorClass
+		detail += cfgRes.failureNote()
+	}
 	if writer != nil {
 		_ = writer.SaveUpdateState(ctx, row)
 		_ = writer.AppendUpdateEvent(ctx, store.UpdateEventRow{
 			FromVersion: version, ToVersion: row.PreviousVersion,
-			ManifestVersion: row.LastManifestVersion, State: update.StateRolledBack,
-			ErrorClass: decision.ErrorClass, Detail: detail,
+			ManifestVersion: row.LastManifestVersion, State: row.State,
+			ErrorClass: row.ErrorClass, Detail: detail,
 		})
 	}
-	out := applyOutcome{
-		State: update.StateRolledBack, ErrorClass: decision.ErrorClass,
-		RolledBack: true, Detail: decision.Reason,
+	if cfgRes.Err != nil {
+		// The previous binary (and any snapshot) is already in place, so
+		// this process still hands over, non-zero, and says why.
+		go u.exitAfterFailedHandover(out)
+		return out, fmt.Errorf("observer update rollback: the previous binary was restored but config.toml was not: %w", cfgRes.Err)
 	}
 	go u.exitAfterHandover()
 	return out, nil

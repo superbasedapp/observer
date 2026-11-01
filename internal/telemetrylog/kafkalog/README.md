@@ -6,7 +6,7 @@ network), so the org configuration loader can use it too. `Connect` and `Probe`
 read metadata/configuration; they never create or alter a topic.
 
 The package uses franz-go 1.20.7 / kmsg 1.12.0 (Go 1.24 minimum, compatible with
-the repository's pinned Go 1.26.9). It is pure Go; no librdkafka/CGO dependency.
+the repository's pinned Go 1.27.2). It is pure Go; no librdkafka/CGO dependency.
 
 ## Required broker contract
 
@@ -88,7 +88,7 @@ or render the zero-valued stats fields as an empty healthy queue.
 
 ```bash
 # Unit tests (live cases skip without the explicit broker variable).
-GOTOOLCHAIN=go1.26.9 go test ./internal/telemetrylog/kafkalog
+GOTOOLCHAIN=go1.27.2 go test ./internal/telemetrylog/kafkalog
 # Disposable Apache Kafka 3.9.1, loopback-only listeners, no external service.
 bash internal/telemetrylog/kafkalog/test-kafka.sh -race -v
 ```

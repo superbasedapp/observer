@@ -16,6 +16,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/fsatomic"
 	"github.com/marmutapp/superbased-observer/internal/govern"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
+	"github.com/marmutapp/superbased-observer/internal/policyfam"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
@@ -37,8 +38,9 @@ import (
 //     grant qualifies (an individual or BYO node is never touched: its lists
 //     are its operator's own opt-in);
 //   - the families owed are govern.ManagedFamilyBackfill over the grant's
-//     govern.ManagedGovernedFamilies, the node's current accept_families and
-//     the record of what this enrolment was already offered;
+//     govern.ManagedGovernedFamilies (only those linked in this build,
+//     linkedManagedFamilies), the node's current accept_families and the
+//     record of what this enrolment was already offered;
 //   - the write is additive (existing entries and order are kept, nothing is
 //     ever removed) and is checked by re-loading the config; a result that
 //     does not load is rolled back byte for byte;
@@ -64,7 +66,8 @@ type managedFamiliesRecord struct {
 type managedPolicyFacts struct {
 	OrgKey     string
 	Generation int64
-	// Governed is govern.ManagedGovernedFamilies of the live grant.
+	// Governed is govern.ManagedGovernedFamilies of the live grant, kept to
+	// the families linked in this build (linkedManagedFamilies).
 	Governed []string
 }
 
@@ -76,7 +79,10 @@ func loadManagedPolicyFacts(ctx context.Context, st *store.Store, now time.Time)
 	if err != nil {
 		return managedPolicyFacts{}, false, err
 	}
-	if enr == nil || !enr.IsManaged() {
+	// Managed by enrolment or by its org's switch to enterprise (P-204).
+	if managed, merr := orgclient.NodeManagedFor(ctx, st, enr); merr != nil {
+		return managedPolicyFacts{}, false, merr
+	} else if !managed {
 		return managedPolicyFacts{}, false, nil
 	}
 	orgKey := orgclient.OrgKey(enr.OrgServerURL, enr.OrgID)
@@ -90,12 +96,45 @@ func loadManagedPolicyFacts(ctx context.Context, st *store.Store, now time.Time)
 	if !row.ExpiresAt.IsZero() && now.After(row.ExpiresAt) {
 		return managedPolicyFacts{}, false, nil
 	}
-	governed := govern.ManagedGovernedFamilies(row.Authority)
+	governed := linkedManagedFamilies(govern.ManagedGovernedFamilies(row.Authority))
 	if len(governed) == 0 {
 		return managedPolicyFacts{}, false, nil
 	}
 	return managedPolicyFacts{OrgKey: orgKey, Generation: row.Generation, Governed: governed}, true, nil
 }
+
+// linkedManagedFamilies keeps the families whose compiler is linked in this
+// build (policyfam.IsFamilyLinked). A family whose compiler an optional
+// component adds (security.scanning and terminals.isolation, until the
+// security and sandbox lanes link theirs) is never written into config.toml
+// by a build that cannot compile it: an older binary that does not know the
+// name refuses the whole config, and an update rollback restores the binary
+// and the database but not config.toml (audit SHR-KIT finding 1). Such a
+// family is not recorded as offered either, so the first build that links
+// it offers it once, at its first start. Both the enrolment write
+// (managedPolicyFamiliesToWrite) and the start-time backfill read through it.
+func linkedManagedFamilies(families []string) []string {
+	var out []string
+	for _, f := range families {
+		if policyfam.IsFamilyLinked(f) && managedFamilyWriteHeld[f] == "" {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// managedFamilyWriteHeld lists linked families the managed accept-list write
+// still holds back, each with its reason. Empty since the SEC-E merge
+// (plans decision P-047): a released binary refuses a config.toml whose
+// accept_families or preauthorize_enforce names a family it does not know,
+// also after a manual downgrade, but ignores a key it does not know. So the
+// writers put every family a released binary does not know
+// (config.SplitPolicyFamilies: security.scanning, terminals.isolation and
+// every later one) into accept_module_families / preauthorize_module_enforce
+// instead, and never touch the old keys for it; and every update rollback
+// also restores the pre-apply config.toml (update_apply.go). A family that
+// must be held again is listed here with its reason.
+var managedFamilyWriteHeld = map[string]string{}
 
 // readManagedFamiliesRecord returns the record for (orgKey, generation), or
 // have=false when none exists or it belongs to another enrolment identity.
@@ -126,12 +165,12 @@ type managedBackfillResult struct {
 // backfillManagedPolicyFamilies is the I/O-light core: given the facts, the
 // config path, the node's current lists and the record path, it adds the
 // owed families to both keys and records what this enrolment was offered.
-func backfillManagedPolicyFamilies(cfgPath, recordPath string, facts managedPolicyFacts, accept, preauth []string, now time.Time) (managedBackfillResult, error) {
+func backfillManagedPolicyFamilies(cfgPath, recordPath string, facts managedPolicyFacts, policy config.OrgClientPolicyConfig, now time.Time) (managedBackfillResult, error) {
 	rec, have := readManagedFamiliesRecord(recordPath, facts.OrgKey, facts.Generation)
-	owed := govern.ManagedFamilyBackfill(facts.Governed, rec.Offered, have, accept)
+	owed := govern.ManagedFamilyBackfill(facts.Governed, rec.Offered, have, policy.AcceptedFamilies())
 	var res managedBackfillResult
 	if len(owed) > 0 {
-		if err := addManagedPolicyFamilies(cfgPath, accept, preauth, owed); err != nil {
+		if err := addManagedPolicyFamilies(cfgPath, policy, owed); err != nil {
 			return res, err
 		}
 		res.Added = owed
@@ -193,13 +232,16 @@ func appendMissingFamilies(cur, add []string) []string {
 	return out
 }
 
-// addManagedPolicyFamilies merges add into both [org_client.policy] keys of
+// addManagedPolicyFamilies merges add into the [org_client.policy] keys of
 // the file at path, additively: a missing table is appended, a missing key
 // is inserted after the header, an existing key's value (single- or
-// multi-line) is replaced by its old entries plus add. The result is
-// re-loaded through config.Load; if it does not load, the original bytes
-// are restored and the load error returned.
-func addManagedPolicyFamilies(path string, accept, preauth, add []string) error {
+// multi-line) is replaced by its old entries plus add. A family a released
+// binary knows goes to accept_families / preauthorize_enforce; every other
+// one to accept_module_families / preauthorize_module_enforce
+// (config.SplitPolicyFamilies), and a pair with nothing to add is left
+// byte for byte. The result is re-loaded through config.Load; if it does
+// not load, the original bytes are restored and the load error returned.
+func addManagedPolicyFamilies(path string, policy config.OrgClientPolicyConfig, add []string) error {
 	orig, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return err
@@ -207,15 +249,26 @@ func addManagedPolicyFamilies(path string, accept, preauth, add []string) error 
 	lines := strings.Split(string(orig), "\n")
 	headerIdx := managedPolicyHeaderLineIndex(lines)
 	if headerIdx == -1 {
-		if err := appendManagedPolicyBlock(path, quotedTomlStringList(add)); err != nil {
+		if err := appendManagedPolicyBlock(path, add); err != nil {
 			return err
 		}
 		return verifyManagedPolicyWrite(path, orig)
 	}
-	newAccept := quotedTomlStringList(appendMissingFamilies(accept, add))
-	newPreauth := quotedTomlStringList(appendMissingFamilies(preauth, add))
-	lines = setManagedPolicyKey(lines, headerIdx, "preauthorize_enforce", newPreauth)
-	lines = setManagedPolicyKey(lines, managedPolicyHeaderLineIndex(lines), "accept_families", newAccept)
+	addOld, addModule := config.SplitPolicyFamilies(add)
+	pairs := []struct {
+		acceptKey, preauthKey string
+		accept, preauth, add  []string
+	}{
+		{"accept_families", "preauthorize_enforce", policy.AcceptFamilies, policy.PreauthorizeEnforce, addOld},
+		{"accept_module_families", "preauthorize_module_enforce", policy.AcceptModuleFamilies, policy.PreauthorizeModuleEnforce, addModule},
+	}
+	for _, p := range pairs {
+		if len(p.add) == 0 {
+			continue
+		}
+		lines = setManagedPolicyKey(lines, managedPolicyHeaderLineIndex(lines), p.preauthKey, quotedTomlStringList(appendMissingFamilies(p.preauth, p.add)))
+		lines = setManagedPolicyKey(lines, managedPolicyHeaderLineIndex(lines), p.acceptKey, quotedTomlStringList(appendMissingFamilies(p.accept, p.add)))
+	}
 	if err := fsatomic.WriteFile(path, []byte(strings.Join(lines, "\n")), fsatomic.Options{FilePerm: 0o600}); err != nil {
 		return err
 	}
@@ -329,8 +382,7 @@ func reconcileManagedPolicyAtStart(ctx context.Context, configPath string, errOu
 		return
 	}
 	recordPath := filepath.Join(filepath.Dir(cfg.Observer.DBPath), managedFamiliesRecordName)
-	res, err := backfillManagedPolicyFamilies(cfgPath, recordPath, facts,
-		cfg.OrgClient.Policy.AcceptFamilies, cfg.OrgClient.Policy.PreauthorizeEnforce, now)
+	res, err := backfillManagedPolicyFamilies(cfgPath, recordPath, facts, cfg.OrgClient.Policy, now)
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
 			fmt.Fprintf(errOut, "WARN managed policy families: %v (continuing with the config as it was)\n", err)
@@ -338,7 +390,7 @@ func reconcileManagedPolicyAtStart(ctx context.Context, configPath string, errOu
 		return
 	}
 	if len(res.Added) > 0 {
-		fmt.Fprintf(errOut, "managed enrolment: added %s to [org_client.policy] accept_families and preauthorize_enforce in %s "+
+		fmt.Fprintf(errOut, "managed enrolment: added %s to [org_client.policy] (accept_families and preauthorize_enforce, or their _module_ twins for a module family) in %s "+
 			"(families your accepted managed grant governs that this machine had not been offered yet)\n",
 			quotedTomlStringList(res.Added), cfgPath)
 	}

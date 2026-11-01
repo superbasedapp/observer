@@ -311,6 +311,7 @@ func TestAttachNoticesAreOneLine(t *testing.T) {
 		"daemon-unreachable": attachDaemonUnreachableNotice,
 		"daemon-child":       attachDaemonChildNotice,
 		"config-disabled":    attachConfigDisabledNotice,
+		"in-sandbox":         attachInSandboxNotice,
 	} {
 		if notice == "" {
 			t.Errorf("%s notice must be non-empty", name)

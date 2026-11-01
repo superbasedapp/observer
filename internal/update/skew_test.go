@@ -172,6 +172,7 @@ func TestMethodSelfUpdatableCoversEveryMethod(t *testing.T) {
 		MethodBrew:           false,
 		MethodAPT:            false,
 		MethodRPM:            false,
+		MethodInstaller:      false,
 		MethodUnknown:        false,
 	}
 	for m, w := range want {

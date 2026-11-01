@@ -13,7 +13,9 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/cfgfmt"
 	"github.com/marmutapp/superbased-observer/internal/integration"
+	"github.com/marmutapp/superbased-observer/internal/proxyauth"
 	"github.com/marmutapp/superbased-observer/internal/routeprov"
+	"github.com/marmutapp/superbased-observer/internal/testwriteguard"
 )
 
 // ProvenanceFileName is the route-provenance state file, kept in the
@@ -46,6 +48,9 @@ func saveProvenance(path string, f routeprov.File) error {
 	f.Version = routeprov.FileVersion
 	body, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
+		return fmt.Errorf("proxyroute.saveProvenance: %w", err)
+	}
+	if err := testwriteguard.Check("write", path); err != nil {
 		return fmt.Errorf("proxyroute.saveProvenance: %w", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -85,14 +90,24 @@ func (r *Registrar) note(res RegistrationResult, want string) RegistrationResult
 		res.ProvenanceError = err
 		return res
 	}
-	changed := f.Note(routeprov.Record{
+	rec := routeprov.Record{
 		Tool:          res.Tool,
 		ConfigPath:    res.ConfigPath,
 		Value:         want,
 		Writer:        r.opts.Writer,
 		PriorProvider: res.PriorProvider,
 		WrittenAt:     time.Now().UTC().Format(time.RFC3339),
-	}, outcome)
+		RouteKey:      res.RouteKey,
+		Lane:          res.LaneID,
+		LaneRoot:      res.LaneRoot,
+	}
+	if outcome == routeprov.OutcomeWrote {
+		// The value the write replaced, so a removal puts it back (only a
+		// write that rewrote a value carries one).
+		rec.PriorBaseURL = res.PriorBaseURL
+		keepPriorsOnFormChange(f.Find(res.Tool, res.ConfigPath), &rec)
+	}
+	changed := f.Note(rec, outcome)
 	if changed {
 		if err := saveProvenance(path, f); err != nil {
 			res.ProvenanceError = err
@@ -101,22 +116,65 @@ func (r *Registrar) note(res RegistrationResult, want string) RegistrationResult
 	return res
 }
 
+// keepPriorsOnFormChange carries what the ORIGINAL write replaced across a
+// rewrite of the same route between the plain and the proxy client token
+// form (OSH-R-009, audit F3): the form change replaced Observer's own value,
+// not the developer's, so a later removal must still put back the provider
+// and base URL the first write found. Any other rewrite keeps its own priors.
+func keepPriorsOnFormChange(cur *routeprov.Record, rec *routeprov.Record) {
+	if cur == nil || cur.Value == rec.Value || !proxyauth.SameRoute(cur.Value, rec.Value) {
+		return
+	}
+	rec.PriorProvider = cur.PriorProvider
+	rec.PriorBaseURL = cur.PriorBaseURL
+	if len(rec.RouteKey) == 0 {
+		rec.RouteKey = cur.RouteKey
+	}
+	if rec.Lane == "" {
+		rec.Lane, rec.LaneRoot = cur.Lane, cur.LaneRoot
+	}
+}
+
 // routeShape is how Leave reads and removes one tool's route. A tool without
 // a shape is recorded but never removed; Leave names it so the developer can
 // remove it by hand. Every tool proxyroute writes a persisted route for has a
 // shape since T-156a (the probe-lane readers / removers live in
 // probe_remove.go, beside the writers they undo).
+//
+// Both take the provenance record (nil when there is none): a lane route
+// records WHERE it was written (RouteKey) and what it replaced
+// (PriorBaseURL), and its reader and remover use exactly that.
+//
+// want and move are the port move (portmove.go, D-745): want is the value
+// the tool's writer writes for the recorded route at a proxy port, move
+// rewrites a recorded route that is still exactly rec.Value to another value
+// in place. A shape without them is never moved.
 type routeShape struct {
-	read   func(path string) (string, bool, error)
-	remove func(path, value, priorProvider string) error
+	read   func(path string, rec *routeprov.Record) (string, bool, error)
+	remove func(path string, rec routeprov.Record) error
+	want   func(rec routeprov.Record, port int) (string, bool)
+	move   func(path string, rec routeprov.Record, to string) error
+}
+
+// fixedShape adapts a reader / remover pair that knows only the tool's fixed
+// route key.
+func fixedShape(read func(string) (string, bool, error), remove func(path, value, priorProvider string) error) routeShape {
+	return routeShape{
+		read:   func(path string, _ *routeprov.Record) (string, bool, error) { return read(path) },
+		remove: func(path string, rec routeprov.Record) error { return remove(path, rec.Value, rec.PriorProvider) },
+	}
 }
 
 var routeShapes = map[string]routeShape{
-	"claude-code": {readClaudeRouteAt, removeClaudeRouteAt},
-	"codex":       {readCodexRouteAt, removeCodexRouteAt},
-	"kimi-code":   {readKimiRouteAt, removeKimiRouteAt},
-	"qwen-code":   {readQwenRouteAt, removeQwenRouteAt},
-	"crush":       {readCrushRouteAt, removeCrushRouteAt},
+	"claude-code": movable(fixedShape(readClaudeRouteAt, removeClaudeRouteAt), fixedWant(claudeBaseURL), moveClaudeRouteAt),
+	"codex":       movable(fixedShape(readCodexRouteAt, removeCodexRouteAt), fixedWant(codexBaseURL), moveCodexRouteAt),
+	"kimi-code":   movable(routeShape{read: readKimiRouteFor, remove: removeKimiRouteFor}, laneAwareWant(openAICompatProxyURL), moveKimiRouteFor),
+	"qwen-code": movable(routeShape{
+		read:   func(path string, _ *routeprov.Record) (string, bool, error) { return readQwenRouteAt(path) },
+		remove: removeQwenRouteFor,
+	}, laneAwareWant(openAICompatProxyURL), moveQwenRouteFor),
+	"crush": movable(fixedShape(readCrushRouteAt, removeCrushRouteAt), fixedWant(openAICompatProxyURL), moveCrushRouteAt),
+	"cline": movable(routeShape{read: readClineRouteFor, remove: removeClineRouteFor}, clineWant, moveClineRouteFor),
 }
 
 func shapeFor(tool string) (routeShape, bool) {
@@ -137,11 +195,54 @@ type LeaveRoute struct {
 // CLI's `observer unenroll` and the dashboard's Leave alike. With apply
 // false it only plans (the Leave dialog's list); with apply true it removes
 // every route Observer's enrolment wrote that is still exactly what it wrote
-// (routeprov.Decide) and drops those records. Routes you, `observer init`,
-// Settings > Setup or a launcher set are kept. The native Claude Code and
-// Codex routes are always reported when they point at an observer, so the
-// dialog can say a route will be kept, not just stay silent.
+// (routeprov.Decide) and drops those records; the managed daemon's own
+// route maintenance writes (routeprov.WriterManaged) are organization-owned
+// too and leave with it. Routes you, `observer init`, Settings > Setup or a
+// launcher set are kept. The native Claude Code and Codex routes are always
+// reported when they point at an observer, so the dialog can say a route
+// will be kept, not just stay silent.
 func (r *Registrar) LeaveRoutes(apply bool) ([]LeaveRoute, error) {
+	return r.releaseRoutes(apply, routeprov.OrgOwned, true)
+}
+
+// ReleaseManagedRoutes is what the organization turning route maintenance
+// OFF does (lane P1, the admin's proxy.maintain_routes setting): exactly what
+// leaving the organization does to routes, without leaving. It removes every
+// route the organization wrote (enrolment, routeprov.WriterEnrolment, and the
+// managed daemon, routeprov.WriterManaged) that is still exactly what it
+// wrote, puts back what each one replaced (the original provider host of a
+// lane route, Codex's prior provider), and drops those records. Routes you,
+// `observer init`, Settings > Setup or a launcher set are never touched, and
+// neither is an organization route you have changed since. With apply false
+// it only plans. Only organization records are reported.
+func (r *Registrar) ReleaseManagedRoutes(apply bool) ([]LeaveRoute, error) {
+	return r.releaseRoutes(apply, routeprov.OrgOwned, false)
+}
+
+// RouteLanes returns the node-local proxy route lanes the recorded routes
+// address (lane id to upstream host root), for the daemon to install into
+// the proxy at start before it accepts a request, so a lane route written
+// earlier never meets a refused lane. A missing provenance file yields none;
+// an unreadable one returns its error (for the log) and none.
+func (r *Registrar) RouteLanes() (map[string]string, error) {
+	f, err := loadProvenance(r.ProvenancePath())
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	for _, rec := range f.Records {
+		if rec.Lane != "" && rec.LaneRoot != "" {
+			out[rec.Lane] = rec.LaneRoot
+		}
+	}
+	return out, nil
+}
+
+// releaseRoutes removes the recorded routes whose writer owned() accepts.
+// withNative also considers every record and the native Claude Code and
+// Codex routes that have none (Leave's dialog); without it only records
+// owned() accepts are considered.
+func (r *Registrar) releaseRoutes(apply bool, owned func(routeprov.Writer) bool, withNative bool) ([]LeaveRoute, error) {
 	path := r.ProvenancePath()
 	f, err := loadProvenance(path)
 	if err != nil {
@@ -157,21 +258,35 @@ func (r *Registrar) LeaveRoutes(apply bool) ([]LeaveRoute, error) {
 		}
 	}
 	for _, rec := range f.Records {
-		add(target{rec.Tool, rec.ConfigPath})
+		if withNative || owned(rec.Writer) {
+			add(target{rec.Tool, rec.ConfigPath})
+		}
 	}
-	add(target{"claude-code", filepath.Join(r.opts.HomeDir, ".claude", "settings.json")})
-	add(target{"codex", filepath.Join(r.opts.HomeDir, ".codex", "config.toml")})
+	if withNative {
+		// A native route file a relative relocation variable hides names
+		// no file Observer could have written, so there is nothing to
+		// release there (R-188 F6).
+		if p, err := r.claudeSettingsPath(); err == nil {
+			add(target{"claude-code", p})
+		}
+		if p, err := r.codexConfigPath(); err == nil {
+			add(target{"codex", p})
+		}
+	}
 
 	var out []LeaveRoute
 	changed := false
 	for _, t := range targets {
 		rec := f.Find(t.tool, t.path)
 		shape, removable := shapeFor(t.tool)
-		in := routeprov.DecideInput{Tool: t.tool, ConfigPath: t.path, Record: rec, Removable: removable, Setting: integration.RouteSetting(t.tool)}
+		in := routeprov.DecideInput{
+			Tool: t.tool, ConfigPath: t.path, Record: rec, Removable: removable,
+			Setting: integration.RouteSetting(t.tool), OwnedBy: owned,
+		}
 		var readErr error
 		switch {
 		case removable:
-			in.Current, in.Present, readErr = shape.read(t.path)
+			in.Current, in.Present, readErr = shape.read(t.path, rec)
 		case rec != nil:
 			// No reader for this tool: report what enrolment recorded.
 			in.Current, in.Present = rec.Value, true
@@ -185,7 +300,7 @@ func (r *Registrar) LeaveRoutes(apply bool) ([]LeaveRoute, error) {
 		}
 		d := routeprov.Decide(in)
 		if d.Action == routeprov.ActionNone {
-			if rec != nil && rec.Writer == routeprov.WriterEnrolment && apply {
+			if rec != nil && owned(rec.Writer) && apply {
 				f.Drop(t.tool, t.path) // the route is gone; so is the claim
 				changed = true
 			}
@@ -198,7 +313,7 @@ func (r *Registrar) LeaveRoutes(apply bool) ([]LeaveRoute, error) {
 		}
 		lr := LeaveRoute{Decision: d}
 		if apply && d.Action == routeprov.ActionRemove {
-			if err := shape.remove(t.path, rec.Value, rec.PriorProvider); err != nil {
+			if err := shape.remove(t.path, *rec); err != nil {
 				lr.Error = err.Error()
 			} else {
 				lr.Removed = true

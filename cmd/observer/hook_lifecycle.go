@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
@@ -47,7 +46,8 @@ type lifecycleDeps struct {
 	pidbridge func(configPath string) pidbridgeWriter
 }
 
-func productionLifecycleDeps() lifecycleDeps {
+func productionLifecycleDeps(ctx context.Context) lifecycleDeps {
+	hc := hookContext(ctx)
 	return lifecycleDeps{
 		now: time.Now,
 		spoolPath: func(configPath string) string {
@@ -58,8 +58,8 @@ func productionLifecycleDeps() lifecycleDeps {
 			return hookspool.Path(resolved)
 		},
 		appendRow: hookspool.Append,
-		parentPID: os.Getppid(),
-		ancestors: defaultAncestors,
+		parentPID: hc.ParentPID(),
+		ancestors: hc.Ancestors,
 		pidbridge: makePidbridgeWriter,
 	}
 }
@@ -90,6 +90,7 @@ func handleLifecycleHook(ctx context.Context, tool, label string, b integration.
 	markHookReplied()
 
 	plan := hooklifecycle.Decide(tool, b, body, deps.now())
+	noteHookSession(plan.SessionID)
 	if plan.SessionID == "" {
 		fmt.Fprintf(stderr, "observer-hook: %s no session id in payload; nothing recorded\n", label)
 		return

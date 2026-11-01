@@ -1,0 +1,9 @@
+{
+  "period": {"startTime": "2025-10-01T00:00:00Z", "endTime": "2025-11-01T00:00:00Z"},
+  "budgets": [
+    {"scope": "USER", "scopeId": "user-fixture", "budgetLimitUsd": "50", "totalSpendUsd": "12.5", "providerBudgets": []},
+    {"scope": "TEAM_POOLED", "scopeId": "0123456789abcdef", "budgetType": "POOLED", "budgetLimitUsd": "500", "totalSpendUsd": "510.00",
+     "providerBudgets": [{"provider": "anthropic", "limitType": "CAPPED", "budgetLimitUsd": "200", "usageUsd": "150"}]},
+    {"scope": "ORGANIZATION_SOFT", "scopeId": "org-fixture", "budgetLimitUsd": "", "totalSpendUsd": "900"}
+  ]
+}

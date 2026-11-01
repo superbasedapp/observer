@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/fsatomic"
 	"github.com/marmutapp/superbased-observer/internal/processbridge/setup"
 	"github.com/marmutapp/superbased-observer/internal/processobs"
 	"github.com/marmutapp/superbased-observer/internal/processobs/bridge"
@@ -76,7 +77,9 @@ func resolveProcessBridgeListenToken(pc config.ProcessConfig, observerDir string
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", fmt.Errorf("mkdir: %w", err)
 	}
-	if err := os.WriteFile(path, []byte(tok+"\n"), 0o600); err != nil {
+	// Owner-only on every OS (on Windows a protected DACL, R-160), and a
+	// rename over any empty file left at path, whatever its access was.
+	if err := fsatomic.WriteFile(path, []byte(tok+"\n"), fsatomic.Options{TempPattern: ".process-bridge-token-*", OwnerOnly: true}); err != nil {
 		return "", fmt.Errorf("persist token: %w", err)
 	}
 	return tok, nil

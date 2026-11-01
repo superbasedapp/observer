@@ -120,6 +120,56 @@ func TestUserDir_WindowsNativeAppDataUnset(t *testing.T) {
 	}
 }
 
+// TestDevinDesktopProduct pins the Devin Desktop row (surface-gap S-10,
+// NEW-9): its Electron user-data dir per OS, and the host token the devin
+// adapter already stamps, so extension capture inside Devin Desktop lands
+// on the same surface host as Devin's own sessions.
+func TestDevinDesktopProduct(t *testing.T) {
+	var devin Product
+	for _, p := range Products() {
+		if p.Dir == "Devin" {
+			devin = p
+		}
+	}
+	if devin.Dir == "" {
+		t.Fatal("Products() has no Devin Desktop row")
+	}
+	if devin.Host != "devin-desktop" || devin.Remote {
+		t.Fatalf("Devin row = %+v, want Host devin-desktop, desktop layout", devin)
+	}
+	for _, tc := range []struct {
+		name string
+		h    crossmount.HomeRoot
+		want string
+	}{
+		{
+			name: "windows",
+			h:    crossmount.HomeRoot{Path: `C:\Users\auzy_`, OS: crossmount.OSWindows, Origin: "wsl-mnt:auzy_"},
+			want: filepath.Join(`C:\Users\auzy_`, "AppData", "Roaming", "Devin", "User"),
+		},
+		{
+			name: "darwin",
+			h:    crossmount.HomeRoot{Path: "/Users/auzy", OS: crossmount.OSDarwin, Origin: "native"},
+			want: filepath.Join("/Users/auzy", "Library", "Application Support", "Devin", "User"),
+		},
+		{
+			name: "linux",
+			h:    crossmount.HomeRoot{Path: "/home/auzy", OS: crossmount.OSLinux, Origin: "native"},
+			want: filepath.Join("/home/auzy", ".config", "Devin", "User"),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := UserDir(tc.h, devin); got != tc.want {
+				t.Errorf("UserDir = %q, want %q", got, tc.want)
+			}
+		})
+	}
+	p, ok := ProductForPath(filepath.Join("/home/auzy", ".config", "Devin", "User", "globalStorage", "github.copilot-chat"))
+	if !ok || p.Host != "devin-desktop" {
+		t.Errorf("ProductForPath(Devin/User) = %+v, %v; want devin-desktop", p, ok)
+	}
+}
+
 func TestProducts(t *testing.T) {
 	got := Products()
 	if len(got) != len(products) {
@@ -130,7 +180,7 @@ func TestProducts(t *testing.T) {
 	if products[0].Dir == "mutated" {
 		t.Fatalf("Products() leaked the internal slice — mutation affected package state")
 	}
-	wantOrder := []string{"Code", "Code - Insiders", "VSCodium", "Cursor", "Windsurf", "Kiro", "Qoder", "Trae", ".vscode-server", ".cursor-server"}
+	wantOrder := []string{"Code", "Code - Insiders", "VSCodium", "Cursor", "Windsurf", "Devin", "Kiro", "Qoder", "Trae", ".vscode-server", ".cursor-server", ".windsurf-server", ".kiro-server"}
 	got = Products()
 	for i, w := range wantOrder {
 		if got[i].Dir != w {
@@ -139,7 +189,7 @@ func TestProducts(t *testing.T) {
 	}
 	// Desktop products first, remote ones last.
 	for i, p := range got {
-		wantRemote := i >= len(got)-2
+		wantRemote := i >= len(got)-4
 		if p.Remote != wantRemote {
 			t.Errorf("Products()[%d] (%s) Remote = %v, want %v", i, p.Dir, p.Remote, wantRemote)
 		}
@@ -250,6 +300,17 @@ func TestProductForPath(t *testing.T) {
 			wantFound: true,
 		},
 		{
+			name:      "windows devin desktop globalStorage",
+			path:      `C:\Users\auzy_\AppData\Roaming\Devin\User\globalStorage\saoudrizwan.claude-dev`,
+			wantDir:   "Devin",
+			wantFound: true,
+		},
+		{
+			name:      "devin cli store is not a product dir",
+			path:      `C:\Users\auzy_\AppData\Roaming\devin\cli\sessions.db`,
+			wantFound: false,
+		},
+		{
 			name:      "non-matching path",
 			path:      "/home/auzy/.local/share/kilo/kilo.db",
 			wantFound: false,
@@ -271,5 +332,33 @@ func TestProductForPath(t *testing.T) {
 				t.Errorf("ProductForPath(%q).Dir = %q, want %q", tc.path, got.Dir, tc.wantDir)
 			}
 		})
+	}
+}
+
+// TestRemoteServerLayouts pins IDE-1's Windsurf and Kiro server rows: the
+// VS Code Server shape under the remote home, sniffed back by path.
+func TestRemoteServerLayouts(t *testing.T) {
+	h := crossmount.HomeRoot{Path: "/home/me", OS: crossmount.OSLinux, Origin: "native"}
+	for _, c := range []struct{ dir, host string }{
+		{".windsurf-server", "windsurf-remote"},
+		{".kiro-server", "kiro-remote"},
+	} {
+		var found *Product
+		for _, p := range Products() {
+			if p.Dir == c.dir {
+				p := p
+				found = &p
+			}
+		}
+		if found == nil || !found.Remote || found.Host != c.host {
+			t.Fatalf("no remote row %s/%s: %+v", c.dir, c.host, found)
+		}
+		want := "/home/me/" + c.dir + "/data/User"
+		if got := UserDir(h, *found); got != want {
+			t.Errorf("UserDir = %q, want %q", got, want)
+		}
+		if p, ok := ProductForPath(want + "/globalStorage/x"); !ok || p.Host != c.host {
+			t.Errorf("ProductForPath(%s) = %+v, %v", want, p, ok)
+		}
 	}
 }

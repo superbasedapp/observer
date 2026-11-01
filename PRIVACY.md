@@ -1,12 +1,15 @@
 # Privacy
 
 SuperBased Observer is **a local Go binary that stores everything on
-your machine**. There is no telemetry, no analytics, no remote
-reporting, no "anonymized usage" beacon, no crash uploader. The
-project's authors cannot see what you ran, what you typed, or whether
-you're running observer at all. The binary you install from npm is
-the same binary published with SLSA provenance to the public GitHub
-release: what you install is what runs.
+your machine**. Today the default install sends us no usage
+statistics, analytics or crash reports, and it never sends your session
+content (prompts, code, responses, file contents) without your explicit
+consent. It needs no account. The project's authors cannot see what you
+ran or what you typed unless you choose to upload it. By default observer makes a few small requests of its own that
+carry none of your data; they are listed under "When observer DOES
+make a network call" below. The binary you install from npm is the same
+binary published with SLSA provenance to the public GitHub release:
+what you install is what runs.
 
 This document spells out exactly what observer touches and what it
 never touches.
@@ -14,14 +17,20 @@ never touches.
 ## TL;DR
 
 - **Local-only.** Observer's database, logs, and stash live under
-  `~/.observer/` (per-user, per-platform). Nothing leaves your machine
-  unless **you** explicitly turn on a feature that requires the network.
-- **No telemetry.** Zero. The watcher, hook handler, dashboard, MCP
-  server, and CLI never make an outbound network call on observer's
-  behalf; only the optional API proxy forwards **your** requests
-  unchanged to the AI provider you already use.
-- **No "anonymized" sharing.** There is no opt-out toggle because
-  there is no collection to opt out of.
+  `~/.observer/` (per-user, per-platform). Today none of it leaves your
+  machine unless **you** explicitly turn on a feature that sends it.
+- **Your content needs your consent.** Session content (prompts, code,
+  responses, file contents) never leaves your machine without your
+  explicit consent (enrolling a machine into your company's managed
+  org is one such consent; see "Org enrolment" below). The optional
+  API proxy forwards **your** requests
+  unchanged to the AI provider you already use. The few requests
+  observer makes on its own by default (a daily price-table download
+  and TLS warm-up at proxy start) carry none of your data.
+- **No usage statistics today.** The current default install sends us
+  no usage statistics, analytics or crash reports. The aggregate-share
+  rail (`observer aggregate enable`) is currently off by default and
+  sends nothing without your consent.
 - **No accounts required.** You can run observer offline, behind an
   air-gap, without ever signing in to anything.
 
@@ -79,40 +88,37 @@ Per the project's design spec (`superbased-final-spec-v2.md`):
 
 ## When observer DOES make a network call
 
-These are the **only** code paths in the binary that touch the network.
-Every one is gated behind explicit configuration; none are on by
-default for a fresh install.
+These are the main code paths in the binary that touch the network.
+The pricing feed and TLS warm-up are on by default and carry none of
+your data; the others are gated behind explicit configuration. Run
+`observer privacy` for a list derived from your loaded config.
 
-| Feature | When it talks to the network | What it sends | Opt-in via |
+| Feature | When it talks to the network | What it sends | How it is enabled |
 |---|---|---|---|
+| **Pricing feed** | Once every 24 hours on a standalone (not enrolled) node | A plain `GET` of the public, signed model price table from superbased.app; none of your data | On by default; turn off with `[pricing.feed] enabled = false` |
+| **TLS warm-up** | When the proxy starts | Bare `HEAD` requests to `[proxy].prewarm_targets` (default chatgpt.com and api.openai.com); none of your data | On by default; set by `[proxy].prewarm_targets` |
 | **API proxy** | When your AI client points `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL` at observer | **Your** API request, forwarded byte-identically to the upstream provider you chose (api.anthropic.com, chatgpt.com, openai.com, …) | `observer init --claude-code/--codex/--cursor` (writes the env-var hint into the AI client's config) |
 | **Message summary** | If `[messagesummary] enabled = true` | A subset of your conversation, to the LLM endpoint **you** configure (`base_url`, `model`, `api_key`) | TOML config; you provide the endpoint and key |
-| **Org enrolment** | If you ran `observer enroll <org-url>` | Aggregate per-day metrics (token totals, action counts, project hashes), and only the fields the org-server explicitly requests | `observer enroll` (explicit, prompts for org URL + token) |
+| **Org enrolment** | If this machine was enrolled with `observer enroll` | To your organization's own server. Individual enrolment: metadata, with content-bearing fields as hashes (raw only under your local `full_content` opt-in). Managed (company) enrolment: the full session record, content included. See "Org enrolment" below | `observer enroll` (explicit; needs the org URL and an enrolment token, link or org sign-in) |
 | **Antigravity gRPC fallback** | When parsing Antigravity sessions on macOS where keychain decrypt fails | Local IPC to a Google-installed gRPC socket, never the internet | Automatic; only fires on Antigravity sessions |
 
-If none of these are configured, observer makes **zero** outbound
-network calls. Verify with:
+Today, with the pricing feed and TLS warm-up turned off and none of the opt-in
+features configured, observer makes no outbound network calls of its
+own. Verify with:
 
 ```bash
 sudo lsof -p $(pgrep -f 'observer start') -i      # should show ONLY :8820/:8830/:8831 etc. on 127.0.0.1
 ```
 
-## How to verify "no telemetry" yourself
+## How to verify this yourself
 
 The codebase is open source. To audit:
 
 ```bash
-# 1. Confirm no HTTP client in the watcher / adapter / hook code paths
-grep -rE 'http\.(Get|Post|Client|NewRequest)' cmd/observer internal/adapter internal/watcher internal/hook internal/store
-# Returns zero. All outbound HTTP is in internal/proxy/ (forwarding), internal/orgclient/ (org enrolment, opt-in),
-# and internal/intelligence/summary/ (message-summary opt-in). The code index (internal/codeintel) is in-process
-# and makes no network calls.
+# 1. List the network paths your loaded config enables
+observer privacy
 
-# 2. Confirm no outbound DNS lookups from the binary
-strings $(which observer) | grep -Ei 'telemetry|analytics|metrics\.|amplitude|segment\.|posthog|datadog|sentry'
-# Returns zero matches.
-
-# 3. Run observer in a network-namespaced shell and confirm everything (parsing, DB, MCP, dashboard) still works
+# 2. Run observer in a network-namespaced shell and confirm everything (parsing, DB, MCP, dashboard) still works
 unshare -rn observer start --no-dashboard
 ```
 
@@ -138,25 +144,48 @@ observer **without** the proxy:
 
 ## Org enrolment (opt-in)
 
-Org enrolment (shipped in v1.7.2) lets organizations roll up
-**aggregate** metrics from per-user observers into an org-server
-dashboard. It is **opt-in** per user via `observer enroll <org-url>`.
+Org enrolment lets a team or company roll up activity from each
+developer's observer into your organization's **own** server. Nothing
+goes to that server until a machine is enrolled with `observer enroll`.
+Its endpoint is not pre-configured; there is no default destination,
+and the server belongs to your organization, not to us. What it receives depends on the kind of enrolment.
 
-What the org-server receives:
+**Individual enrolment: you opt in to content.**
 
-- Aggregate counts per day: total tokens, total actions, total cost
-  estimate, per-project hashes (NOT paths).
-- Capability hashes (which adapters fired), no content.
+- By default the node pushes metadata: per-session and per-day rows
+  such as token counts, costs, models, timings and action counts.
+  Content-bearing fields (command targets, file paths, project roots,
+  git remotes and branch names) ship only as sha256 hashes.
+- Raw values for those fields ship only if you set
+  `[org_client.share].full_content = true` in your own local
+  `~/.observer/config.toml`. The org admin has no remote switch for
+  that file.
 
-What it does NOT receive:
+**Managed (company) enrolment: full content.**
 
-- Per-request prompt bodies, file contents, command outputs.
-- Identifiable project names (only opaque hashes are sent).
-- Anything in real time; payload is a once-per-day rollup.
+Enrolling a machine into your company's managed org is the explicit
+consent for that machine's session content to go to that org. A
+managed node sends its full session record, content included (raw
+commands, assistant responses, file paths, project and git details),
+to your organization's own server.
 
-If you don't want to send aggregate data to your organization's rollup
-server, don't enroll. The org-server endpoint is not pre-configured;
-there is no default destination.
+- `observer enroll` writes `full_content = true` into the local config
+  for a managed enrolment (and `false` for an individual one). The
+  value comes from the enrolment itself, and you can read it in the
+  file.
+- A machine enrolled as managed before that default existed is raised
+  to full content by the org's signed `extract.managed` grant. It is
+  shown to you at consent, in `observer org status` and in
+  `observer org grant show`. It never silently rewrites your config, it
+  does nothing on an individual enrolment, and it is refused if its
+  signature, pinned key or generation does not verify.
+- The org can lower this again through its signed governance policy,
+  and that lowering wins.
+
+In both cases a single SQL seam in the node builds every pushed row,
+and an invariant test pins the content-bearing columns so a change is
+loud. If you don't want to send anything to an organization's server,
+don't enroll; `observer unenroll` stops it.
 
 ## Source-of-truth and verification
 

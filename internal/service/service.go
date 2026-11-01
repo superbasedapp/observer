@@ -1,6 +1,7 @@
-// Package service renders the systemd unit that supervises
-// `observer start` and builds the systemctl/journalctl argv that the
-// `observer service` command runs.
+// Package service renders the systemd unit (and, in launchd.go, the
+// launchd LaunchAgent) that supervises `observer start` and builds the
+// systemctl/journalctl/launchctl argv that the `observer service`
+// command runs.
 //
 // It is a pure-logic package per the CLAUDE.md module rules: string
 // rendering + argv construction only — no exec, no file I/O, no

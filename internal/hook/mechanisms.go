@@ -41,8 +41,22 @@ var registryMechanisms = map[integration.HookMechanism]bool{
 	integration.HookMuseSettings: true,
 	// T-378: Kimi Code's config.toml [[hooks]] tables (credential-file exception).
 	integration.HookKimiCodeTOML: true,
+	// gfiD (2026-10-15): Kiro CLI's agent JSON hooks + the V3 standalone file.
+	integration.HookKiroAgentJSON: true,
 	// Hook-parity Lane D: the one embedded plugin shim.
 	integration.HookPluginShimTS: true,
+	// The 2026-10-21 wave (register_wave1021*.go).
+	integration.HookIBMBobSettings:    true,
+	integration.HookCodeBuddySettings: true,
+	integration.HookDeepAgentsJSON:    true,
+	integration.HookDimCodeJSON:       true,
+	integration.HookDiracHookFiles:    true,
+	integration.HookAutohandConfig:    true,
+	integration.HookVTCodeTOML:        true,
+	integration.HookKimchiBashHook:    true,
+	// Surface-gap W-2a: Cortex Code's own hooks.json (register_cortex.go),
+	// switched off until live check LC18.
+	integration.HookCortexHooksJSON: true,
 }
 
 // RegistryWrites reports whether Registry.Register has a writer for the hook

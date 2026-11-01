@@ -233,7 +233,8 @@ type WrappedCommand struct {
 	// stands in for (the row's grounded BinaryNames).
 	Replaces BinaryNames
 	// Routes reports whether the wrapped form changes routing at all: a CLI
-	// row with a verified Proxy route, or a GUI row whose wrap injects
+	// row with a verified Proxy route that applies without an opt-in launcher
+	// flag (ProxyRoute.LaunchFlag), or a GUI row whose wrap injects
 	// environment. False means the wrap launches the same thing (capture
 	// still rides the product's own store) — a Settings UI must say so
 	// rather than imply metering.
@@ -249,6 +250,11 @@ type WrappedCommand struct {
 	// product unrouted on its own sign-in. A Settings UI must not show such a
 	// row as plainly routed.
 	RouteConditional bool
+	// RouteFlag is the opt-in launcher argument the CLI row's route needs
+	// (ProxyRoute.LaunchFlag), when it needs one: the wrapped form runs the
+	// bare verb, so Routes is false and a Settings UI can name the flag that
+	// would route it. "" otherwise.
+	RouteFlag string
 }
 
 // WrappedCommandFor resolves a registry tool key or GUI launch id to its
@@ -260,13 +266,19 @@ func WrappedCommandFor(id string) (WrappedCommand, bool) {
 		if !TerminalLaunchable(c) {
 			return WrappedCommand{}, false
 		}
+		// The wrapped form runs the bare verb, so a route that needs an
+		// opt-in launcher flag (ProxyRoute.LaunchFlag) does not apply to it.
+		routes := c.Proxy != nil && c.Proxy.LaunchFlag == ""
 		w := WrappedCommand{
 			ID:               id,
 			Kind:             LaunchKindTerminal,
 			Args:             []string{c.Handoff.Launch.Subcommand},
-			Routes:           c.Proxy != nil,
-			TrafficProven:    c.Proxy != nil,
-			RouteConditional: c.Proxy != nil && c.Proxy.Gate != nil,
+			Routes:           routes,
+			TrafficProven:    routes,
+			RouteConditional: routes && c.Proxy.Gate != nil,
+		}
+		if c.Proxy != nil {
+			w.RouteFlag = c.Proxy.LaunchFlag
 		}
 		if c.Binary != nil {
 			w.Replaces = c.Binary.Names

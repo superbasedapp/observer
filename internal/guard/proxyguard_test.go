@@ -9,6 +9,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/policy"
+	"github.com/marmutapp/superbased-observer/internal/testsupport/latencygate"
 )
 
 // proxyCfg returns a guardCfg with the [guard.proxy] defaults the
@@ -513,11 +514,9 @@ const scanProxyRequestTestCeiling = 50 * time.Millisecond
 // Skipped under `-short`; otherwise runs a few iterations and fails if
 // the mean per-call cost exceeds scanProxyRequestTestCeiling.
 func TestScanProxyRequest_LatencyRegression(t *testing.T) {
+	latencygate.Gate(t) // listed, and skipped under -short and in a loaded CI shard
 	if raceDetectorOn {
 		t.Skip("wall-clock latency ceiling is not measurable under the race detector; ci.yml's static go job runs this without -race")
-	}
-	if testing.Short() {
-		t.Skip("wall-clock latency assertion skipped under -short")
 	}
 	now := time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC)
 	const iterations = 5

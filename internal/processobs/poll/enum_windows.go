@@ -43,7 +43,13 @@ func platformEnumerate() ([]ProcInfo, error) {
 
 	var out []ProcInfo
 	for {
-		out = append(out, procInfoFromEntry(&entry))
+		// PID 0 is ToolHelp's "[System Process]" pseudo-entry (the idle
+		// process), not a process: it has no image, no start time and no
+		// key, and it crossed the process bridge as a malformed event
+		// (Windows 11 Pro rerun 2026-10-25, D5 group 8).
+		if entry.ProcessID != 0 {
+			out = append(out, procInfoFromEntry(&entry))
+		}
 		if err := windows.Process32Next(snap, &entry); err != nil {
 			break // ERROR_NO_MORE_FILES (or any error) ends the walk
 		}

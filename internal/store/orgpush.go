@@ -113,6 +113,34 @@ type ObsOrgProviders struct {
 	Egress func(ctx context.Context, cur orgcontract.ObsCursor, max int) (orgcontract.ObsEgressBatch, error) // T8
 }
 
+// SecurityOrgProviders is the security pillar's org wire seam (security plan
+// 7.4, lane SEC-E2), the ObsOrgProviders precedent: plain funcs the cmd layer
+// binds (cmd/observer/security_orgpush.go) only while the `security` module
+// is active, each returning orgcontract rows read through
+// internal/store/secorgrows.go, so this file names no sec_* table. The zero
+// value composes nothing, and the envelope stays byte-identical.
+type SecurityOrgProviders struct {
+	// Level resolves this push's security share level and whether the node
+	// holds the org dedupe key (ResolveSecurityShare). nil: no security row.
+	Level func(ctx context.Context, share ShareOptions) SecurityShare
+	// Posture composes the day's posture row over the projects inside scope
+	// (the push's project allow and deny lists); ok=false reports nothing.
+	Posture func(ctx context.Context, day string, scope SecurityScope) (row orgcontract.SecurityPostureRow, ok bool, err error)
+	// Findings reads the finding rows of the projects inside scope,
+	// unstripped, at most max.
+	Findings func(ctx context.Context, max int, scope SecurityScope) ([]orgcontract.SecurityFindingRow, error)
+	// ChangeRecords reads the AI change record rows of the projects inside
+	// scope, unstripped, at most max (lane SEC-F2A binds
+	// SelectChangeRecordRows while security.provenance is selected).
+	ChangeRecords func(ctx context.Context, max int, scope SecurityScope) ([]orgcontract.AIChangeRecordRow, error)
+	// ChangeRecordsLive reports whether the change record producer runs
+	// now (the provenance loop is up). While it reports false the family
+	// is skipped, not sent empty, so its snapshot gate is never committed
+	// on an empty family before the loop starts (audit finding F6). nil
+	// means always live.
+	ChangeRecordsLive func() bool
+}
+
 // PushCursor is the agent's per-table push position. Each field is the
 // highest row id (sessions: rowid) already accepted by the server. Rows above
 // it are candidates for the next batch.
@@ -237,6 +265,13 @@ type PushBatch struct {
 	// tool_account_detail-only node ships opaque account keys and never a
 	// developer's vendor e-mail. Windowed-recompute + upsert-idempotent.
 	SessionToolAccounts []orgcontract.SessionToolAccountRow
+	// SessionHookActivity is the per-session hook liveness wire (surface-gap
+	// DEC-5), attached only under ShareOptions.HookActivity and computed by
+	// store.SelectSessionHookActivity (which owns the node-local read; this
+	// file names that table nowhere). A content-level env class (the config
+	// dir hash) inside those rows carries the SECOND shipsRawContent() gate.
+	// Windowed-recompute + upsert-idempotent.
+	SessionHookActivity []orgcontract.HookActivitySessionRow
 	// SessionLOC / LOCDays are the Lines-of-Code aggregates (one row per
 	// session x project root, and one per day x project root). Unlike the
 	// session-scoped wires above they ride the DEFAULT metadata-only posture:
@@ -267,6 +302,18 @@ type PushBatch struct {
 	// through their owning loaders - this file names none of them.
 	// Snapshot-recompute + server-upsert-idempotent; no cursor effect.
 	CommitOwnership []orgcontract.CommitOwnershipRow
+	// DeliveryDays / PullRequests are the delivery wire (commit to PR to
+	// merge, D-689; docs/plans/commit-pr-merge-tracking-plan-2026-10-15.md
+	// 6.2). DeliveryDays are per (project root, day) COUNTS and ride the
+	// DEFAULT metadata posture from every node; PullRequests (repo slug,
+	// number, title, URL, hashed commit links) are composed ONLY under
+	// shipsRawContent(), decided at the call site. Composed by
+	// store.SelectDeliveryWireRows in deliverysummary.go, which reaches the
+	// node-local delivery tables only through their owning loaders - this
+	// file names none of them. Snapshot-recompute + server-upsert-idempotent;
+	// no cursor effect.
+	DeliveryDays []orgcontract.DeliveryDayRow
+	PullRequests []orgcontract.PullRequestRow
 	// UpdatePosture is the node's enum-only self-report of its own update
 	// state (enterprise-update-management plan §2.1, ruling R10). nil until
 	// cmd/observer wires the posture environment, so a node without the
@@ -301,6 +348,21 @@ type PushBatch struct {
 	// they do not affect the per-table cursors.
 	TerminalSummaries    []orgcontract.TerminalSummaryRow
 	RemoteAuditSummaries []orgcontract.RemoteAuditSummaryRow
+	// SandboxPosture + SandboxCapability are the OPTIONAL sandbox posture
+	// aggregate (sandbox plan v2 section 8.4), composed by
+	// composeSandboxPosture in sandboxposture.go under the terminal_detail
+	// tier and only while the sandbox module binds its capability seam.
+	SandboxPosture    []orgcontract.SandboxPostureRow
+	SandboxCapability *orgcontract.SandboxCapabilityRow
+	// SecurityPosture / SecurityFindings / AIChangeRecords are the OPTIONAL
+	// security pillar wire (security plan 7.4), composed by composeSecurity
+	// in secorgrows.go through the SecurityOrgProviders seam: only while the
+	// security module is active and the share level allows, with raw fields
+	// stripped unless shipsRawContent(). Snapshot-recompute + server-upsert
+	// idempotent; no cursor effect.
+	SecurityPosture  []orgcontract.SecurityPostureRow
+	SecurityFindings []orgcontract.SecurityFindingRow
+	AIChangeRecords  []orgcontract.AIChangeRecordRow
 	// MCPRelayActivity is the OPTIONAL Agent Access P4 HMAC-only daily
 	// aggregate of the node's MCP relay decisions (doc3 §9.5), composed by
 	// store.SelectMCPRelayActivity in mcprelaysummary.go - which reads the
@@ -458,11 +520,19 @@ func (b PushBatch) hasAggregates() bool {
 		len(b.GuardPins) > 0 || len(b.GuardApprovals) > 0 ||
 		len(b.TerminalSummaries) > 0 || len(b.RemoteAuditSummaries) > 0 ||
 		len(b.RoutingDetails) > 0 || len(b.LimitGauges) > 0 ||
-		len(b.MCPRelayActivity) > 0 || len(b.MCPInventory) > 0 ||
+		b.hasModuleAggregates() ||
 		len(b.ObsSummaries) > 0 ||
 		len(b.ObsEvalRuns) > 0 || len(b.ObsEndUserSpend) > 0 ||
 		len(b.ObsAdmissionPolicies) > 0 ||
 		b.hasSessionAggregates() || b.hasPostures()
+}
+
+// hasModuleAggregates is the optional-module half of hasAggregates (the MCP
+// relay activity and inventory, the sandbox posture), split out to keep
+// hasAggregates under the complexity bar.
+func (b PushBatch) hasModuleAggregates() bool {
+	return len(b.MCPRelayActivity) > 0 || len(b.MCPInventory) > 0 || len(b.SandboxPosture) > 0 ||
+		len(b.SecurityPosture) > 0 || len(b.SecurityFindings) > 0 || len(b.AIChangeRecords) > 0
 }
 
 // hasControl reports whether the batch carries control items (agent migration
@@ -508,8 +578,10 @@ func (b PushBatch) hasSessionAggregates() bool {
 		len(b.SessionCacheEvents) > 0 ||
 		len(b.SessionProcesses) > 0 || len(b.SessionNetworkEvents) > 0 ||
 		len(b.SessionTaskItems) > 0 || len(b.SessionTaskTransitions) > 0 ||
-		len(b.SessionToolAccounts) > 0 || len(b.SessionQuality) > 0 ||
-		len(b.CommitOwnership) > 0
+		len(b.SessionToolAccounts) > 0 || len(b.SessionHookActivity) > 0 ||
+		len(b.SessionQuality) > 0 ||
+		len(b.CommitOwnership) > 0 ||
+		len(b.DeliveryDays) > 0 || len(b.PullRequests) > 0
 }
 
 // Empty reports whether the batch carries nothing to push — no rows AND no
@@ -1186,6 +1258,15 @@ type ShareOptions struct {
 	// extract.tool_accounts authority. Reverses migration 111's node-local
 	// pin under this explicit tier.
 	ToolAccountDetail bool
+	// HookActivity ships the per-session hook liveness counts (surface-gap
+	// review OBS-7, decision DEC-5), composed by
+	// store.SelectSessionHookActivity, which owns the node-local read. A
+	// metadata tier: this flag alone ships counts, times and the coarse env
+	// classes; a content-level class (the CLAUDE_CONFIG_DIR hash)
+	// additionally requires shipsRawContent(). Default false; node-opt-in
+	// individual, org-raisable managed via extract.hook_activity or the
+	// umbrella.
+	HookActivity bool
 	// MCPActivity opts an INDIVIDUAL (non-org-enrolled) node's HMAC-only
 	// daily MCP relay aggregate (MCPRelayActivityRow) onto the wire - Agent
 	// Access ruling R8.30.b, [org_client.share].mcp_activity, default false.
@@ -1200,6 +1281,11 @@ type ShareOptions struct {
 	// store.SelectMCPRelayActivity, which owns the read; this file never
 	// names the relay tables.
 	MCPActivity bool
+	// Security is [org_client.share].security, the INDIVIDUAL node's security
+	// share level (security plan 7.4, Q7: default off, never remote). It is
+	// read only by the SecurityOrgProviders Level func the cmd layer binds,
+	// which on a MANAGED node follows the in-force pull instead.
+	Security string
 }
 
 // shipsRawContent reports whether raw content-bearing columns ship under these
@@ -1306,6 +1392,9 @@ func (s *Store) SelectUnpushedSince(ctx context.Context, cur PushCursor, maxByte
 	// budget.snapshotLimit via fitRows. See envelopeBudget.
 	budget := &envelopeBudget{max: maxBytes, snapshotLimit: maxBytes - pushEnvelopeBudgetReserve}
 	budgetHit := false
+	// A fresh compose: no snapshot family's staged page or fingerprint from
+	// an earlier, unaccepted compose may be promoted by this batch's commit.
+	s.snap.beginCompose()
 
 	// fits reports whether a row of the given size may be added: always true
 	// for the first row (forward progress), otherwise only within budget —
@@ -1908,6 +1997,28 @@ func (s *Store) SelectUnpushedSince(ctx context.Context, cur PushCursor, maxByte
 		batch.CommitOwnership = fitSnapshot(s, budget, snapFamCommitOwnership, co)
 	}
 
+	// Delivery (commit to PR to merge, D-689). The daily COUNTS ride the
+	// DEFAULT metadata posture like the commit-ownership ids above; the PR
+	// identity rows (repo slug, title, URL) are composed ONLY under
+	// shipsRawContent(), decided here by passing it into the composer. Both
+	// come from deliverysummary.go, which reads the node-local delivery tables
+	// only through their owning loaders.
+	if s.snapChanged(ctx, snapFamDelivery) {
+		since := time.Now().UTC().AddDate(0, 0, -deliveryOrgWindowDays)
+		dd, prs, err := s.SelectDeliveryWireRows(ctx, scope, since, share.shipsRawContent())
+		if err != nil {
+			return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: delivery: %w", err)
+		}
+		for i := range dd {
+			dd[i].OrgID, dd[i].UserEmail = orgID, userEmail
+		}
+		for i := range prs {
+			prs[i].OrgID, prs[i].UserEmail = orgID, userEmail
+		}
+		batch.DeliveryDays = fitSnapshot(s, budget, snapFamDelivery, dd)
+		batch.PullRequests = fitSnapshot(s, budget, snapFamDelivery, prs)
+	}
+
 	// Session task/todo checklist (W2) and vendor-login observations (W3) —
 	// docs/plans/node-session-detail-trickle-up-to-org-plan-2026-09-10.md.
 	// Each is attached only under its OWN tier flag, and each composes through
@@ -1952,6 +2063,20 @@ func (s *Store) SelectUnpushedSince(ctx context.Context, cur PushCursor, maxByte
 			ta[i].OrgID, ta[i].UserEmail = orgID, userEmail
 		}
 		batch.SessionToolAccounts = fitSnapshot(s, budget, snapFamSessionToolAccount, ta)
+	}
+
+	// Per-session hook liveness (surface-gap DEC-5): its OWN tier flag, the
+	// read in hookactivitysummary.go, and the config-dir hash behind the
+	// same shipsRawContent() second gate passed into the Select.
+	if share.HookActivity && s.snapChanged(ctx, snapFamSessionHookActivity) {
+		ha, err := s.SelectSessionHookActivity(ctx, share.shipsRawContent())
+		if err != nil {
+			return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: session hook activity: %w", err)
+		}
+		for i := range ha {
+			ha[i].OrgID, ha[i].UserEmail = orgID, userEmail
+		}
+		batch.SessionHookActivity = fitSnapshot(s, budget, snapFamSessionHookActivity, ha)
 	}
 
 	// The node's own update posture (enterprise-update-management plan §2.1).
@@ -2235,6 +2360,22 @@ func (s *Store) SelectUnpushedSince(ctx context.Context, cur PushCursor, maxByte
 			}
 			batch.RemoteAuditSummaries = fitSnapshot(s, budget, snapFamRemoteAuditSummary, rsums)
 		}
+
+		// The sandbox posture aggregate (sandbox plan v2 section 8.4) rides
+		// the same tier; composeSandboxPosture owns its read and composes
+		// nothing while the sandbox module is inactive.
+		days, capRow, err := s.composeSandboxPosture(ctx, budget, orgID, userEmail)
+		if err != nil {
+			return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: sandbox posture: %w", err)
+		}
+		batch.SandboxPosture, batch.SandboxCapability = days, capRow
+	}
+
+	// The security pillar wire (security plan 7.4): composeSecurity owns the
+	// sec_* reads behind the SecurityOrgProviders seam and composes nothing
+	// while the security module is inactive or the share level is off.
+	if err := s.composeSecurity(ctx, &batch, budget, orgID, userEmail, share, scope); err != nil {
+		return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: security: %w", err)
 	}
 
 	// Routing-detail aggregate (Arc 4 P5d) — attached only under the
@@ -2293,7 +2434,14 @@ func (s *Store) SelectUnpushedSince(ctx context.Context, cur PushCursor, maxByte
 	// in fitRows, so the selector reports that separately and the gate keeps
 	// the family dirty until the whole snapshot has actually shipped.
 	if share.shipsRawContent() && budget.remainingSnapshot() > 0 && s.snapChanged(ctx, snapFamSessionNetwork) {
-		sne, scanTruncated, err := s.selectSessionNetworkEventsBounded(ctx, budget.remainingSnapshot())
+		// Rows already accepted in this family's open paging cycle (or too
+		// large for any envelope) are skipped INSIDE the scan, so they do not
+		// spend its byte ceiling and the page moves forward each tick.
+		skip := func(r orgcontract.SessionNetworkEventRow) bool {
+			r.OrgID, r.UserEmail = orgID, userEmail
+			return snapSkipRow(s, budget, snapFamSessionNetwork, r)
+		}
+		sne, scanTruncated, err := s.selectSessionNetworkEventsBounded(ctx, budget.remainingSnapshot(), skip)
 		if err != nil {
 			return PushBatch{}, fmt.Errorf("store.SelectUnpushedSince: session network events: %w", err)
 		}
@@ -2303,6 +2451,9 @@ func (s *Store) SelectUnpushedSince(ctx context.Context, cur PushCursor, maxByte
 		s.snap.recomputed(snapFamSessionNetwork, !scanTruncated)
 		batch.SessionNetworkEvents = fitSnapshot(s, budget, snapFamSessionNetwork, sne)
 	}
+
+	// The oversized-row report (orgsnapoversize.go), for org status/doctor.
+	s.persistOrgPushOversized(ctx)
 
 	batch.EstBytes = budget.est
 	return batch, nil
@@ -3016,9 +3167,11 @@ func (b *envelopeBudget) remainingSnapshot() int64 { return b.snapshotLimit - b.
 // (network events, terminal runs, remote audit, benchmarks), key-ordered for the
 // grouped aggregates (day/model/session buckets). Truncation is never data loss:
 // every snapshot wire is a windowed or whole-snapshot recompute that the server
-// upserts by natural key, so a dropped tail is simply re-composed on the next
-// push tick. Only the six cursor wires carry unrepeatable progress, and they do
-// not use this path.
+// upserts by natural key. A bare fitRows caller (the ungated advisor and obs
+// tiers) re-composes the same prefix on the next tick; every GATED family goes
+// through fitSnapshot (orgsnapgate.go), which pages: the next tick skips the
+// rows the server already accepted, so the tail actually ships. Only the six
+// cursor wires carry unrepeatable progress, and they do not use this path.
 func fitRows[T any](b *envelopeBudget, rows []T) []T {
 	for i := range rows {
 		sz := jsonSize(rows[i])
@@ -3031,20 +3184,6 @@ func fitRows[T any](b *envelopeBudget, rows []T) []T {
 		b.est += sz
 	}
 	return rows
-}
-
-// fitSnapshot is fitRows plus the Track R2 gate bookkeeping: it records whether
-// the family composed COMPLETELY, so a wire whose tail the envelope budget cut
-// stays dirty and actually ships that tail on a later tick. Every gated
-// snapshot wire goes through this instead of bare fitRows; the ungated ones
-// (the advisor and obs provider tiers) keep using fitRows directly.
-//
-// See internal/store/orgsnapgate.go for why truncation must not count as
-// delivery.
-func fitSnapshot[T any](s *Store, b *envelopeBudget, fam snapFamily, rows []T) []T {
-	kept := fitRows(b, rows)
-	s.snap.recomputed(fam, len(kept) == len(rows))
-	return kept
 }
 
 // dropProcessMetricSamplesIfOverBudget clears the high-volume MetricSamplesJSON
@@ -3140,6 +3279,11 @@ var knownSurfaceHosts = map[string]bool{
 	"vscodium":        true,
 	"cursor":          true,
 	"cursor-remote":   true,
+	// The Windsurf and Kiro Remote server layouts (vscodehost, surface-gap
+	// IDE-1, 2026-10-28): fixed product tokens from that table, reviewed
+	// here like their vscode-remote / cursor-remote siblings.
+	"windsurf-remote": true,
+	"kiro-remote":     true,
 	"windsurf":        true,
 	"kiro":            true,
 	"qoder":           true,
@@ -3163,6 +3307,15 @@ var knownSurfaceHosts = map[string]bool{
 	"neovim": true,
 	"zed":    true,
 	"ide":    true,
+	// Hosts the registry's coding-surface rows name before any adapter
+	// stamps them (integration.CodingSurfaces, surface-gap lane
+	// w8-registry, 2026-10-28): Xcode 26.3+ Intelligence, Visual Studio,
+	// Eclipse and Emacs agent-shell. Fixed product tokens, reviewed here so
+	// the first producer that stamps one ships it verbatim.
+	"xcode":         true,
+	"visual-studio": true,
+	"eclipse":       true,
+	"emacs":         true,
 	// Claude Code (internal/adapter/claudecode): the CLI, Claude Desktop's
 	// own tab, and the Agent SDK tokens ("sdk-ts" ⇒ "ts"). An SDK token this
 	// list has not caught up with coarsens to "other".
@@ -3207,6 +3360,9 @@ var knownSurfaceHosts = map[string]bool{
 	"poolside-cli":     true,
 	"qoder-work":       true,
 	"vibe":             true,
+	// vtcode full-auto `auto-task-<n>` sessions (internal/adapter/vtcode,
+	// 2026-10-21): surface cli, host vtcode-auto. A fixed vendor token.
+	"vtcode-auto": true,
 }
 
 // surfaceHostForWire applies the closed vocabulary to one stored

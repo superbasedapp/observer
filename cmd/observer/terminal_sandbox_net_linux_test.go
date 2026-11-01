@@ -1,4 +1,4 @@
-//go:build linux && !sbo_omit_terminals_sandbox && !sbo_omit_terminals
+//go:build linux && !sbo_omit_terminals_sandbox && !sbo_omit_isolation && !sbo_omit_terminals
 
 package main
 
@@ -225,7 +225,8 @@ touch %[12]q && echo "RW toolstate"
 }
 
 // TestSandboxAllowToolConfigWritesLiftsOnlyExecState: the opt-in re-opens the
-// executed state but never the secrets.
+// tool's and the workspace's executed state but never the secrets, and
+// never the observer dir's own executed state.
 func TestSandboxAllowToolConfigWritesLiftsOnlyExecState(t *testing.T) {
 	home := t.TempDir()
 	observerDir := t.TempDir()
@@ -257,7 +258,6 @@ func TestSandboxAllowToolConfigWritesLiftsOnlyExecState(t *testing.T) {
 			t.Errorf("allow=%v: attach dir not hidden: %v", allow, got)
 		}
 		for _, p := range []string{
-			filepath.Join(rt.observerDir, "config.toml"),
 			filepath.Join(home, ".claude", "settings.json"),
 			filepath.Join(workspace, ".git", "config"),
 			filepath.Join(workspace, ".git", "hooks"),
@@ -266,6 +266,12 @@ func TestSandboxAllowToolConfigWritesLiftsOnlyExecState(t *testing.T) {
 			if protected == allow {
 				t.Errorf("allow=%v: %s protected=%v", allow, p, protected)
 			}
+		}
+		// The observer dir's executed state stays read-only either way:
+		// since lane sbx-p2 that dir is a tmpfs in the box and these
+		// read-only binds are how the inner launcher reads them.
+		if got[filepath.Join(rt.observerDir, "config.toml")] != sandbox.OverlayReadOnly {
+			t.Errorf("allow=%v: config.toml is not bound read-only: %v", allow, got)
 		}
 	}
 }
@@ -304,7 +310,8 @@ curl -sS -o /dev/null -w 'DIRECT %{http_code}\n' --noproxy '*' --max-time 5 http
 
 // TestBwrapIntegrationTeardownThroughHelpers extends the G12 teardown proof to
 // the helper chain (host helper -> bwrap -> guest helper -> inner): a group
-// SIGTERM reaps the run within 3s and leaves no orphaned inner process.
+// SIGTERM reaps the run and leaves no orphaned inner process. Both waits are
+// bounded by bwrapTeardownReapBound and return as soon as the condition holds.
 func TestBwrapIntegrationTeardownThroughHelpers(t *testing.T) {
 	bwrapUsableForTest(t)
 	if err := exec.Command("bwrap", "--ro-bind", "/", "/", "--unshare-net", "--", "true").Run(); err != nil {
@@ -334,15 +341,18 @@ func TestBwrapIntegrationTeardownThroughHelpers(t *testing.T) {
 	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM); err != nil {
 		t.Fatalf("kill -pgid: %v", err)
 	}
+	reapDeadline := time.Now().Add(bwrapTeardownReapBound)
 	select {
 	case <-done:
-	case <-time.After(3 * time.Second):
+	case <-time.After(bwrapTeardownReapBound):
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		t.Fatal("helper chain not reaped within 3s of SIGTERM to the group")
+		t.Fatalf("helper chain not reaped within %s of SIGTERM to the group", bwrapTeardownReapBound)
 	}
-	time.Sleep(200 * time.Millisecond)
-	if sleepMarkerRunning(marker) {
-		t.Fatal("inner process survived the teardown (orphaned)")
+	for sleepMarkerRunning(marker) {
+		if time.Now().After(reapDeadline) {
+			t.Fatal("inner process survived the teardown (orphaned)")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

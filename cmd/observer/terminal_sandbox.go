@@ -1,4 +1,4 @@
-//go:build !sbo_omit_terminals_sandbox && !sbo_omit_terminals
+//go:build !sbo_omit_terminals_sandbox && !sbo_omit_isolation && !sbo_omit_terminals
 
 package main
 
@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -24,11 +25,17 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/dashapi"
+	"github.com/marmutapp/superbased-observer/internal/extrun"
 	"github.com/marmutapp/superbased-observer/internal/integration"
-	"github.com/marmutapp/superbased-observer/internal/platform/crossmount"
+	"github.com/marmutapp/superbased-observer/internal/proxyroute"
 	"github.com/marmutapp/superbased-observer/internal/sandbox"
+	"github.com/marmutapp/superbased-observer/internal/sandboxbackend"
 	"github.com/marmutapp/superbased-observer/internal/sandboxnet"
+	"github.com/marmutapp/superbased-observer/internal/sandboxrelayd"
+	"github.com/marmutapp/superbased-observer/internal/sandboxselect"
+	vocab "github.com/marmutapp/superbased-observer/internal/sandboxvocab"
 	"github.com/marmutapp/superbased-observer/internal/scrub"
+	"github.com/marmutapp/superbased-observer/internal/termrun"
 	"github.com/marmutapp/superbased-observer/internal/termsvc"
 	"github.com/marmutapp/superbased-observer/internal/toolresolve"
 	"github.com/marmutapp/superbased-observer/internal/workspace"
@@ -126,6 +133,9 @@ type sandboxHolder struct {
 	stampMod time.Time
 	stampLen int64
 	stamped  bool
+	// managedGen is the managed sandbox overlay generation the runtime was
+	// built from (sandbox_managed.go), so a new managed body rebuilds it.
+	managedGen uint64
 }
 
 // newSandboxHolder builds the holder and performs its FIRST resolve, so a
@@ -151,6 +161,17 @@ func newSandboxHolder(cfg config.Config, configPath, observerDir, observerBin st
 	}
 	h.reload(cfg)
 	h.stampConfig()
+	for _, hook := range sandboxDaemonStartHooks {
+		hook(observerDir)
+	}
+	// A worktree run whose daemon stopped or crashed is ended at daemon
+	// start, under the same keep rules as a run's own end, not only at the
+	// next worktree launch (SBX-WORKTREE-SOURCE). It runs off the start path.
+	go sweepSandboxWorktrees(context.Background(), observerDir, h.managedRoot, time.Now().UTC(), logger)
+	// The protected-path placeholders of a host helper killed with SIGKILL
+	// (its own exit removes them otherwise) go at daemon start too, proven
+	// by the helper's ledger (Linux live re-check 2026-10-23, N3).
+	go sweepStaleSandboxPlaceholders(observerDir, logger)
 	return h
 }
 
@@ -160,15 +181,19 @@ func newSandboxHolder(cfg config.Config, configPath, observerDir, observerBin st
 // previous seam — an operator mid-edit should not lose a working sandbox to
 // a typo — and records the error so the probe reports it verbatim.
 func (h *sandboxHolder) reload(full config.Config) {
-	cfg := full.Terminal.Sandbox
+	cfg := effectiveSandboxConfig(full)
 	if !cfg.Enabled {
 		h.rt.Store(nil)
 		h.initErr.Store(nil)
+		releaseSandboxDrivers()
 		return
 	}
 	rt, err := newSandboxRuntime(cfg, full.Launch.Tools, h.observerDir, h.observerBin, h.logger)
 	if err == nil {
+		rt.inDaemon = true
 		rt.applyDaemonConfig(full)
+		org := effectiveSandboxOrgBinds(full)
+		rt.orgRWBinds, rt.orgSkipScan = org.rw, org.skipScan
 	}
 	if err != nil {
 		msg := err.Error()
@@ -207,6 +232,7 @@ func (h *sandboxHolder) refresh() {
 	}
 	h.mu.Lock()
 	changed := !h.stamped || !info.ModTime().Equal(h.stampMod) || info.Size() != h.stampLen
+	changed = sandboxManagedChanged(&h.managedGen) || changed
 	h.stampMod, h.stampLen, h.stamped = info.ModTime(), info.Size(), true
 	h.mu.Unlock()
 	if !changed {
@@ -327,11 +353,334 @@ type sandboxRuntime struct {
 	// trusted per-project policy dir); Rel is ABSOLUTE here, Dir marks the
 	// directory. May be empty.
 	guardPolicyPaths []sandbox.ProtectedPath
+	// providerHosts are the proxy's own configured upstream hosts, added to
+	// the egress gateway's model-provider block (section 7.3).
+	providerHosts []string
+	// proxyServing is whether this node serves the API proxy
+	// (proxyServingReason is empty), set by applyDaemonConfig. False until
+	// then, so a runtime that never saw the daemon config computes every
+	// launch unrouted (the conservative answer).
+	proxyServing bool
+	// inspectRoutes reads the tools' persisted proxy routes
+	// (proxyroute.InspectRoutes over the daemon's home); nil skips the
+	// persisted-elsewhere rule.
+	inspectRoutes func() []proxyroute.RouteStatus
+	// effectiveRoute reads the tool's effective route over the run's
+	// workspace (readEffectiveRoute, set by applyDaemonConfig); nil skips
+	// the effective-route rows (P-017 (a)).
+	effectiveRoute func(spec integration.Capability, proxyURL, dir string, args []string) effectiveRouteClass
+	// orgRWBinds are the write binds of cfg the in-force managed body set
+	// (sandboxManagedOrgRWBinds): each one's repository hooks and config
+	// are re-bound read-only (ruling P-054).
+	orgRWBinds []string
+	// orgSkipScan are the org write binds the organization asserts hold no
+	// repositories (node.skip_repo_scan, ruling P-060): the repository walk
+	// below each is skipped (sandboxOrgBindGitRows).
+	orgSkipScan []string
+
+	// unattached holds the managed workspace dir of each run Create made
+	// and Attach has not taken yet (run id -> <managedRoot>/<id>). Destroy
+	// removes such a workspace: no agent ever ran in it, so it holds none
+	// of the user's work (P-017 (f)).
+	unattached sync.Map
+
+	// drivers are the non-bwrap isolation drivers active on this node
+	// (sandbox plan v2 section 11.3), built by applyDaemonConfig from the
+	// drivers that registered themselves from their own build-tagged files
+	// (registerSandboxDriver); empty on a node that selects none, where
+	// every launch takes the bwrap path exactly as before.
+	drivers map[string]sandboxDriver
+	// inactiveDrivers are registered drivers whose component is not
+	// selected (backend id -> component id): listed as module_inactive and
+	// never probed.
+	inactiveDrivers map[string]string
+	// runDrivers maps a run id to the driver that created it, so the
+	// lifecycle operations of that run reach the same driver.
+	runDrivers sync.Map
+	// forceBackend is a backend the CLI named explicitly (never
+	// substituted, I1); empty for the selection's own choice.
+	forceBackend string
+	// inDaemon marks the daemon's own runtime (the holder's), the only one
+	// that may start daemon-lifetime driver work such as an orphan sweep;
+	// a CLI launch's runtime never does.
+	inDaemon bool
+
+	// worktreePinOnce guards worktreePinned, the org pin on
+	// allow_worktree_source read once per runtime (worktreeOrgPinned).
+	worktreePinOnce sync.Once
+	worktreePinned  bool
 
 	mu       sync.Mutex
 	cached   dashapi.SandboxAvailability
 	cachedAt time.Time
 	now      func() time.Time
+}
+
+// sandboxDriver is one isolation driver other than bwrap: the lifecycle
+// service of section 4.6 plus the probe that feeds the selection table.
+// probe must not dial, exec or start anything while the driver's backend is
+// not in [terminal.sandbox].backends (the opt-in rule of section 10.1).
+type sandboxDriver interface {
+	termsvc.SandboxLifecycle
+	// probe is this driver's selection input on this host.
+	probe(ctx context.Context) sandboxselect.Probe
+	// version is the version the last probe read, for the legacy fields.
+	version() string
+}
+
+// driverBackend is the backend row id d is registered under in r.drivers
+// ("" when it is not one of them).
+func (r *sandboxRuntime) driverBackend(d sandboxDriver) string {
+	for id, have := range r.drivers {
+		if have == d {
+			return id
+		}
+	}
+	return ""
+}
+
+// sandboxDriverReg is one registered driver: its backend row id, its
+// component id and how to build it over a runtime.
+type sandboxDriverReg struct {
+	backend   string
+	component string
+	build     func(r *sandboxRuntime, full config.Config) sandboxDriver
+	// relayOS is the operating system (a GOOS value) other than Linux on
+	// which the daemon serves the capture relay while this driver is
+	// selected (sandboxRelayOnOS); empty for a driver that runs on Linux
+	// only, where the relay is always served.
+	relayOS string
+	// release stops whatever the driver runs for the daemon's life (an
+	// orphan sweep) when the daemon's runtime no longer has the driver
+	// active; nil when it runs nothing.
+	release func()
+	// cliConsoleHost: the driver's box shows its output only through the
+	// standard handles its host helper inherits, so a CLI launch on a
+	// console window runs the helper on a pseudo console of the launcher's
+	// own (sandbox_cli_console.go, RERUN2 D1).
+	cliConsoleHost bool
+}
+
+// releaseSandboxDrivers releases every registered driver's daemon-lifetime
+// work (the sandbox was turned off).
+func releaseSandboxDrivers() {
+	for _, reg := range sandboxDriverRegs {
+		if reg.release != nil {
+			reg.release()
+		}
+	}
+}
+
+// sandboxDriverRegs is the driver registry. A driver's own build-tagged file
+// adds its row from init (registerSandboxDriver); its omit twin adds none,
+// so no core function ever names a driver (section 11.3).
+var sandboxDriverRegs = map[string]sandboxDriverReg{}
+
+// registerSandboxDriver adds a driver. It is called from init only.
+func registerSandboxDriver(reg sandboxDriverReg) { sandboxDriverRegs[reg.backend] = reg }
+
+// sandboxDaemonStartHooks run once when the daemon builds its sandbox
+// holder (newSandboxHolder), with the observer dir, whether or not the
+// sandbox, the driver or its probe is on: work that must never wait for a
+// selection or a passing probe (the microVM orphan sweep). Each must be
+// cheap and start its own goroutine for anything slow.
+var sandboxDaemonStartHooks []func(observerDir string)
+
+// sandboxDriversRebuildHooks run at the start of every driver rebuild, so a
+// driver family's process-wide state does not outlive the driver that set it
+// (a driver's build sets it again). Filled from init only.
+var sandboxDriversRebuildHooks []func()
+
+// buildSandboxDrivers builds the drivers whose component this node selects
+// (sandboxDriverSelected: the opt-in rule) and records the others.
+func (r *sandboxRuntime) buildSandboxDrivers(full config.Config) {
+	r.drivers, r.inactiveDrivers = nil, nil
+	for _, hook := range sandboxDriversRebuildHooks {
+		hook()
+	}
+	if len(sandboxDriverRegs) == 0 {
+		return
+	}
+	snap := componentSnapshotForConfig(full)
+	for id, reg := range sandboxDriverRegs {
+		if !sandboxDriverSelected(snap, reg.component) {
+			if r.inDaemon && reg.release != nil {
+				reg.release()
+			}
+			if r.inactiveDrivers == nil {
+				r.inactiveDrivers = map[string]string{}
+			}
+			r.inactiveDrivers[id] = reg.component
+			continue
+		}
+		if r.drivers == nil {
+			r.drivers = map[string]sandboxDriver{}
+		}
+		r.drivers[id] = reg.build(r, full)
+	}
+}
+
+// driverProbes are the selection inputs of the registered drivers: an
+// active driver's own probe, an inactive one's module_inactive. Nil when
+// none is registered.
+func (r *sandboxRuntime) driverProbes(ctx context.Context) map[string]sandboxselect.Probe {
+	if len(r.drivers) == 0 && len(r.inactiveDrivers) == 0 {
+		return nil
+	}
+	out := map[string]sandboxselect.Probe{}
+	for id, d := range r.drivers {
+		out[id] = d.probe(ctx)
+	}
+	for id, comp := range r.inactiveDrivers {
+		out[id] = sandboxselect.Probe{
+			Compiled: true, Verdict: verdictModuleInactive,
+			Reason: "the " + comp + " component is not selected on this node; select it in Settings > Components",
+		}
+	}
+	return out
+}
+
+// verdictModuleInactive is section 4.7's module_inactive.
+const verdictModuleInactive = "module_inactive"
+
+// sandboxPick is a launch's walk over the enabled backends.
+type sandboxPick struct {
+	// chosen is the row the launch takes ("" when none).
+	chosen string
+	// first is the first enabled row (for a refusal naming it).
+	first *dashapi.SandboxBackendAvail
+	// skipped is the first available row the automatic-choice rules
+	// dropped, with its drop (ruling P-062: a beta row).
+	skipped *dashapi.SandboxBackendAvail
+	drop    sandboxselect.Drop
+}
+
+// sandboxLaunchPick walks the enabled backends in preference order: the
+// first available row the launch can use wins, except that a launch that
+// names no backend (auto) skips a row the selection table's
+// automatic-choice rules drop (sandboxselect.AutoDrop: an explicit-only
+// row, or a row whose verification is documentation only, ruling P-062 as
+// clarified in P-067; a tested row outside its tested versions is still
+// taken). One table, no row named here.
+func sandboxLaunchPick(enabled []string, rows map[string]dashapi.SandboxBackendAvail, auto bool, usable func(id string) bool) sandboxPick {
+	var p sandboxPick
+	for _, id := range enabled {
+		b, ok := rows[id]
+		if !ok {
+			continue
+		}
+		if p.first == nil {
+			bb := b
+			p.first = &bb
+		}
+		if !b.Available || !usable(id) {
+			continue
+		}
+		if auto {
+			if row, ok := sandboxbackend.Get(id); ok {
+				if d, dropped := sandboxselect.AutoDrop(row, vocab.Verification(b.Verification)); dropped {
+					if p.skipped == nil {
+						bb := b
+						p.skipped, p.drop = &bb, d
+					}
+					continue
+				}
+			}
+		}
+		p.chosen = id
+		return p
+	}
+	return p
+}
+
+// betaRefusal is the refusal for a launch whose only available enabled
+// rows the automatic choice may not take, or nil when bwrap stays the
+// fallback (it is enabled and available: the legacy path, unchanged).
+func (p sandboxPick) betaRefusal(enabled []string, rows map[string]dashapi.SandboxBackendAvail) error {
+	if p.chosen != "" || p.skipped == nil {
+		return nil
+	}
+	if slices.Contains(enabled, sandboxbackend.BackendBwrap) && rows[sandboxbackend.BackendBwrap].Available {
+		return nil
+	}
+	return fmt.Errorf("terminal_sandbox: %s is available but not chosen (%s): %s", p.skipped.ID, p.drop.Verdict, p.drop.Reason)
+}
+
+// chosenDriver is the driver a launch uses, or nil for the bwrap path. With
+// no active driver among the enabled backends it is always nil, so a node
+// that lists only bwrap (every node before lane SBX-P3A) launches exactly as
+// before. Otherwise the first enabled backend whose row is available wins
+// (the selection table's auto walk, sandboxLaunchPick: a launch that names
+// no backend never takes a beta row, ruling P-062), an explicit CLI backend
+// is never substituted, and bwrap is the fallback only when it is itself
+// enabled.
+func (r *sandboxRuntime) chosenDriver(ctx context.Context, chosen string) (sandboxDriver, error) {
+	enabled := sandboxEnabledBackends(r.cfg)
+	// A backend the CLI named, else the one the New Terminal picker chose
+	// for this launch (lane SBX-P3B): either is never substituted.
+	force := r.forceBackend
+	if force == "" {
+		force = chosen
+	}
+	if force != "" {
+		if force == sandboxbackend.BackendBwrap {
+			return nil, nil
+		}
+		enabled = []string{force}
+	}
+	listed := false
+	for _, id := range enabled {
+		_, ok := r.drivers[id]
+		listed = listed || ok
+	}
+	if !listed {
+		if force != "" {
+			return nil, fmt.Errorf("terminal_sandbox: the %s backend has no active driver on this node", force)
+		}
+		return nil, nil
+	}
+	av := r.ProbeSandbox(ctx)
+	rows := map[string]dashapi.SandboxBackendAvail{}
+	for _, b := range av.Backends {
+		rows[b.ID] = b
+	}
+	p := sandboxLaunchPick(enabled, rows, force == "", r.launchUsable)
+	if p.chosen == sandboxbackend.BackendBwrap {
+		return nil, nil
+	}
+	if d, ok := r.drivers[p.chosen]; ok {
+		return d, nil
+	}
+	if err := p.betaRefusal(enabled, rows); err != nil {
+		return nil, err
+	}
+	if slices.Contains(enabled, sandboxbackend.BackendBwrap) {
+		return nil, nil
+	}
+	if first := p.first; first != nil {
+		return nil, fmt.Errorf("terminal_sandbox: %s is not available: %s (%s)", first.ID, first.Verdict, first.Reason)
+	}
+	return nil, fmt.Errorf("terminal_sandbox: no enabled sandbox backend is available")
+}
+
+// launchUsable reports whether a launch can take row id: bwrap's path or an
+// active driver.
+func (r *sandboxRuntime) launchUsable(id string) bool {
+	if id == sandboxbackend.BackendBwrap {
+		return true
+	}
+	_, ok := r.drivers[id]
+	return ok
+}
+
+// runDriver returns the driver that created run id, if any.
+func (r *sandboxRuntime) runDriver(id string) (sandboxDriver, bool) {
+	v, ok := r.runDrivers.Load(id)
+	if !ok {
+		return nil, false
+	}
+	d, ok := v.(sandboxDriver)
+	return d, ok
 }
 
 // newSandboxRuntime constructs the runtime, resolving (and creating) the
@@ -404,10 +753,16 @@ func (r *sandboxRuntime) applyDaemonConfig(full config.Config) {
 	if p := full.Proxy.Port; p > 0 && p <= 65535 {
 		r.proxyPort = p
 	}
+	r.providerHosts = proxyUpstreamHosts(full.Proxy)
+	r.proxyServing = proxyServingReason(full, componentSnapshotForConfig(full).Active("capture.proxy")) == ""
 	home, _ := os.UserHomeDir()
 	if resolved, err := filepath.EvalSymlinks(home); err == nil {
 		home = resolved
 	}
+	routeHome := home
+	r.inspectRoutes = func() []proxyroute.RouteStatus { return proxyroute.InspectRoutes(routeHome) }
+	r.effectiveRoute = readEffectiveRoute
+	r.buildSandboxDrivers(full)
 	r.guardPolicyPaths = nil
 	for _, gp := range []sandbox.ProtectedPath{
 		{Rel: full.Guard.Rules.UserPolicy},
@@ -416,6 +771,20 @@ func (r *sandboxRuntime) applyDaemonConfig(full config.Config) {
 		if abs := expandSandboxHome(gp.Rel, home); abs != "" {
 			r.guardPolicyPaths = append(r.guardPolicyPaths, sandbox.ProtectedPath{Rel: abs, Dir: gp.Dir})
 		}
+	}
+}
+
+// requireLiveProxy lowers proxyServing to false unless the proxy answers
+// its liveness probe now (P-017 (b)). The daemon path does not need it (the
+// daemon IS the proxy when its config says it serves); the CLI path runs
+// outside the daemon, so a config that says "serving" with no daemon
+// running is an unrouted launch, and its evidence must say so. live is
+// proxyServing (route_maintenance.go): the proxy's own /-/healthz answers
+// 200 and no update drain is in progress, so another program listening on
+// the port does not count.
+func (r *sandboxRuntime) requireLiveProxy(live func(port int) bool) {
+	if r.proxyServing && (live == nil || !live(r.proxyPort)) {
+		r.proxyServing = false
 	}
 }
 
@@ -467,6 +836,9 @@ func (r *sandboxRuntime) ProbeSandbox(ctx context.Context) dashapi.SandboxAvaila
 			DefaultOn: r.cfg.DefaultOn,
 			Sources:   r.sources(),
 			Tools:     r.tools(),
+			// The master switch off enables no backend: every row drops at S2.
+			Backends: sandboxBackendList(r.cfg, sandbox.Availability{}, nil, vocab.Tier(r.egress.Mode)),
+			Org:      sandboxOrgView(),
 		}
 	}
 
@@ -479,6 +851,11 @@ func (r *sandboxRuntime) ProbeSandbox(ctx context.Context) dashapi.SandboxAvaila
 	r.mu.Unlock()
 
 	av := sandbox.Probe(r.sandboxEnv(ctx))
+	drivers := r.driverProbes(ctx)
+	backends := sandboxBackendListWith(r.cfg, av, sourceIDs(r.sources()), vocab.Tier(r.egress.Mode), drivers)
+	av = reconcileLegacyProbe(av, backends)
+	av = r.preferDriverInLegacy(av, backends)
+	av = sandboxPlatformOverall(av, backends, sandboxHostKind())
 	out := dashapi.SandboxAvailability{
 		Available:      av.Available,
 		Verdict:        av.Verdict,
@@ -491,12 +868,66 @@ func (r *sandboxRuntime) ProbeSandbox(ctx context.Context) dashapi.SandboxAvaila
 		Sources:        r.sources(),
 		Tools:          r.tools(),
 	}
+	out.Backends = backends
+	out.Org = sandboxOrgView()
 
 	r.mu.Lock()
 	r.cached = out
 	r.cachedAt = r.now()
 	r.mu.Unlock()
 	return out
+}
+
+// preferDriverInLegacy makes the legacy top-level probe fields describe the
+// backend a launch would take when that is a driver (the first available
+// enabled backend, lane SBX-P3A), so a node that lists only oci-runc is not
+// shown "unavailable" because bwrap is missing. With no driver enabled (every
+// node before the lane) av is returned unchanged.
+func (r *sandboxRuntime) preferDriverInLegacy(av sandbox.Availability, backends []dashapi.SandboxBackendAvail) sandbox.Availability {
+	rows := map[string]dashapi.SandboxBackendAvail{}
+	for _, b := range backends {
+		rows[b.ID] = b
+	}
+	enabled := sandboxEnabledBackends(r.cfg)
+	if r.forceBackend != "" {
+		enabled = []string{r.forceBackend}
+	}
+	if len(r.drivers) == 0 {
+		return legacyWithinEnabled(av, enabled, rows)
+	}
+	// The same walk a launch takes (chosenDriver), so the legacy fields
+	// never call a beta row available for a launch that names no backend.
+	p := sandboxLaunchPick(enabled, rows, r.forceBackend == "", func(string) bool { return true })
+	if p.chosen != "" {
+		if _, isDriver := r.drivers[p.chosen]; !isDriver {
+			return av
+		}
+		return sandbox.Availability{Available: true, Verdict: sandbox.VerdictAvailable, Backend: p.chosen, BackendVersion: rows[p.chosen].Version}
+	}
+	if err := p.betaRefusal(enabled, rows); err != nil {
+		return sandbox.Availability{Available: false, Verdict: p.drop.Verdict, Reason: err.Error(), Backend: p.skipped.ID, BackendVersion: p.skipped.Version}
+	}
+	return legacyWithinEnabled(av, enabled, rows)
+}
+
+// legacyWithinEnabled keeps the legacy probe's answer (bwrap's) only while
+// bwrap is among the enabled backends: a launch never takes bwrap when it is
+// not listed (sandboxLocalFloor refuses it), so an available legacy answer
+// then gives way to the first listed row's own verdict, the refusal the
+// launch prints (Linux live re-check on the Docker sandbox 2026-10-23, N4:
+// `backends = ["process_lite"]` with no Landlock printed "Overall:
+// available" while `--observer-sandbox auto` refused). Nothing enabled (the
+// master switch off) keeps av.
+func legacyWithinEnabled(av sandbox.Availability, enabled []string, rows map[string]dashapi.SandboxBackendAvail) sandbox.Availability {
+	if !av.Available || len(enabled) == 0 || slices.Contains(enabled, sandboxbackend.BackendBwrap) {
+		return av
+	}
+	for _, id := range enabled {
+		if b, ok := rows[id]; ok && b.Verdict != "" {
+			return sandbox.Availability{Available: false, Verdict: b.Verdict, Reason: b.Reason, Backend: b.ID, BackendVersion: b.Version}
+		}
+	}
+	return sandbox.Availability{Available: false, Verdict: sandbox.VerdictBackendMissing, Reason: "no enabled sandbox backend is available (backends: " + strings.Join(enabled, ", ") + ")", Backend: enabled[0]}
 }
 
 // sandboxEnv builds the injected I/O surface for sandbox.Probe. LookBwrap
@@ -517,13 +948,14 @@ func (r *sandboxRuntime) sandboxEnv(ctx context.Context) sandbox.Env {
 			defer cancel()
 			//nolint:gosec // fixed, server-derived smoke argv; the binary
 			// path came from exec.LookPath, never client input.
-			return exec.CommandContext(cctx, resolve(),
-				"--ro-bind", "/", "/", "--unshare-pid", "--proc", "/proc", "--tmpfs", "/tmp", "--unshare-net", "--die-with-parent", "--", "true").Run()
+			return runBwrapCanary(exec.CommandContext(cctx, resolve(),
+				"--ro-bind", "/", "/", "--unshare-pid", "--proc", "/proc", "--tmpfs", "/tmp", "--unshare-net", "--die-with-parent", "--", "true"))
 		}
 	}
 	return sandbox.Env{
-		NetCanary: netCanary,
-		GOOS:      runtime.GOOS,
+		NetCanary:  netCanary,
+		GOOS:       runtime.GOOS,
+		ReadSysctl: readSysctl,
 		LookBwrap: func() (string, error) {
 			p, err := exec.LookPath("bwrap")
 			if err == nil {
@@ -544,10 +976,49 @@ func (r *sandboxRuntime) sandboxEnv(ctx context.Context) sandbox.Env {
 			defer cancel()
 			//nolint:gosec // fixed, server-derived smoke argv (plan §7); the
 			// binary path came from exec.LookPath, never client input.
-			return exec.CommandContext(cctx, resolve(),
-				"--ro-bind", "/", "/", "--unshare-pid", "--proc", "/proc", "--tmpfs", "/tmp", "--die-with-parent", "--", "true").Run()
+			return runBwrapCanary(exec.CommandContext(cctx, resolve(),
+				"--ro-bind", "/", "/", "--unshare-pid", "--proc", "/proc", "--tmpfs", "/tmp", "--die-with-parent", "--", "true"))
 		},
 	}
+}
+
+// runBwrapCanary runs a canary and keeps bwrap's stderr (bounded) in the
+// error, so sandbox.Probe can name why it failed instead of guessing
+// (live checks 2026-10-22).
+func runBwrapCanary(c *exec.Cmd) error {
+	var stderr boundedBuffer
+	c.Stderr = &stderr
+	if err := c.Run(); err != nil {
+		return &sandbox.CanaryFailure{Err: err, Stderr: stderr.String()}
+	}
+	return nil
+}
+
+// boundedBuffer keeps the first 4 KiB written to it.
+type boundedBuffer struct{ b []byte }
+
+func (w *boundedBuffer) Write(p []byte) (int, error) {
+	if room := 4096 - len(w.b); room > 0 {
+		if len(p) < room {
+			room = len(p)
+		}
+		w.b = append(w.b, p[:room]...)
+	}
+	return len(p), nil
+}
+
+func (w *boundedBuffer) String() string { return string(w.b) }
+
+// readSysctl reads a kernel sysctl by its dotted name from /proc/sys.
+func readSysctl(key string) (string, bool) {
+	if key == "" || strings.Contains(key, "/") || strings.Contains(key, "..") {
+		return "", false
+	}
+	b, err := os.ReadFile(filepath.Join("/proc/sys", strings.ReplaceAll(key, ".", "/"))) //nolint:gosec // G304: a fixed sysctl name from the probe's own table
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(string(b)), true
 }
 
 // sources reports per-workspace-source availability with honest reasons. live
@@ -562,11 +1033,9 @@ func (r *sandboxRuntime) sources() []dashapi.SandboxSourceAvail {
 	if !remote.Available {
 		remote.Reason = "allow_remote_clone is not set - the daemon would run `git clone <url>` with your ambient auth, so it is opt-in"
 	}
-	worktree := dashapi.SandboxSourceAvail{ID: string(workspace.SourceWorktree), Available: r.cfg.AllowWorktreeSource}
-	if !worktree.Available {
-		worktree.Reason = "allow_worktree_source is not set - a worktree needs the main repo's .git bound read-write and attributes the run to the main repo (off by default)"
-	}
-	return append(out, remote, worktree)
+	// The worktree row (lane SBX-WORKTREE-SOURCE): off by default, the
+	// org note when an org pin keeps it off, bwrap only.
+	return append(out, remote, r.worktreeSourceAvail())
 }
 
 // tools reports the per-tool sandbox-launchability map, keyed by tool name. A
@@ -593,7 +1062,54 @@ func (r *sandboxRuntime) tools() map[string]dashapi.SandboxToolAvail {
 		}
 		out[c.Tool] = dashapi.SandboxToolAvail{Available: false, Reason: reason}
 	}
+	// The plain shell is listed where an active driver runs one as its own
+	// launch (the microVM row; its first live run found the dashboard
+	// answering 400 "tool shell cannot be sandboxed", D2). The launch is
+	// still judged on the backend it resolves to (shellRefusal).
+	if len(r.shellHosts()) > 0 {
+		out[termsvc.ShellTool] = dashapi.SandboxToolAvail{Available: true}
+	}
 	return out
+}
+
+// sandboxShellHost is implemented by a driver whose sandbox runs a plain
+// shell as the launch itself (the microVM row: its guest image set carries
+// a shell and no agent tool). Every other backend runs named tools only.
+type sandboxShellHost interface {
+	hostsPlainShell() bool
+}
+
+// shellHosts are the backend ids of the active drivers that run a plain
+// shell, sorted.
+func (r *sandboxRuntime) shellHosts() []string {
+	var out []string
+	for id, d := range r.drivers {
+		if h, ok := d.(sandboxShellHost); ok && h.hostsPlainShell() {
+			out = append(out, id)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// shellRefusal refuses a plain shell on the backend a launch resolved to
+// (d, nil for bwrap) when that backend runs named tools only, naming the
+// backend and the ones that run a shell.
+func (r *sandboxRuntime) shellRefusal(d sandboxDriver) error {
+	if h, ok := d.(sandboxShellHost); ok && h.hostsPlainShell() {
+		return nil
+	}
+	backend := sandboxbackend.BackendBwrap
+	for id, dd := range r.drivers {
+		if d != nil && dd == d {
+			backend = id
+		}
+	}
+	hosts := "no active backend on this node runs one"
+	if ids := r.shellHosts(); len(ids) > 0 {
+		hosts = "choose " + strings.Join(ids, " or ") + ", or launch a tool"
+	}
+	return sandboxRefusalError{msg: fmt.Sprintf("terminal_sandbox: a plain shell is sandboxed only by a backend that runs one as its launch, and this launch resolved to %s, which runs named tools only; %s", backend, hosts)}
 }
 
 // ---- termsvc.Sandboxer ------------------------------------------------------
@@ -610,22 +1126,128 @@ func (r *sandboxRuntime) tools() map[string]dashapi.SandboxToolAvail {
 // prepend the resolved bwrap path → return {Dir, WrapArgv}. For the LIVE source
 // the workspace IS the project root (Dir=ProjectRoot, bound rw) — still wrapped.
 func (r *sandboxRuntime) Prepare(ctx context.Context, req termsvc.PrepareRequest) (termsvc.PrepareResult, error) {
+	res, err := termsvc.ComposePrepare(ctx, r, req)
+	if err == nil {
+		// The names the box gets beyond the OS table (WINFIX2 R-167).
+		res.EnvAllow = sandboxEnvAllowNames(req.Tool, r.cfg.PassEnv)
+		res.EnvPassed = append([]string(nil), r.cfg.PassEnv...)
+		res.AllowOSC52Clipboard = r.cfg.AllowOSC52Clipboard
+	}
+	return res, err
+}
+
+// ---- termsvc.SandboxLifecycle (sandbox plan v2 section 4.6) ------------------
+
+// Create is the first half of Prepare: it prepares the workspace and
+// computes the run's evidence and route, without composing any argv.
+func (r *sandboxRuntime) Create(ctx context.Context, req termsvc.PrepareRequest) (termsvc.CreateResult, error) {
+	// A driver other than bwrap, when the enabled backends name an active
+	// one (lane SBX-P3A); nil keeps the bwrap path below unchanged.
+	d, err := r.chosenDriver(ctx, req.Backend)
+	if err != nil {
+		return termsvc.CreateResult{}, err
+	}
+	if req.Tool == termsvc.ShellTool {
+		if err := r.shellRefusal(d); err != nil {
+			return termsvc.CreateResult{}, err
+		}
+	}
+	if d != nil {
+		// The worktree source runs only on bwrap: a launch that asks for it
+		// on a driver is refused here, before the driver asks its engine
+		// anything (lane LEFT-SBX; before, the container row's loader probe
+		// created a container first).
+		if src, _ := workspace.ParseSource(req.WorkspaceSource); src == workspace.SourceWorktree && r.cfg.AllowWorktreeSource {
+			return termsvc.CreateResult{}, fmt.Errorf("terminal_sandbox: %s", worktreeDriverReason(r.driverBackend(d)))
+		}
+		// A hosted row never gets a sign-in (lane BOXSIGNIN): it is never
+		// offered, and an explicit yes is refused by name.
+		if row, ok := sandboxbackend.Get(r.driverBackend(d)); ok && row.Iso.Location == vocab.LocationRemote {
+			if err := signInGate(req, r.signInDecision(req, false, true)); err != nil {
+				return termsvc.CreateResult{}, err
+			}
+		}
+		res, err := d.Create(ctx, req)
+		if err == nil {
+			r.runDrivers.Store(res.Run.ID, d)
+			// A driver that binds the tool's own state shares its sign-in
+			// with the box, said on every launch (operator ruling P-183).
+			if b, ok := d.(sandboxStateBinder); ok && b.bindsToolState() {
+				res.SignInShared = sandboxSignInSharedTool(req.Tool)
+			}
+		}
+		return res, err
+	}
+	// The local backend list and isolation floor (sandbox plan v2 section
+	// 10) are checked before any workspace is made.
+	if err := sandboxLocalFloor(launchFloorConfig(r.cfg, string(r.egress.Mode))); err != nil {
+		return termsvc.CreateResult{}, err
+	}
+	// The agent's own sandbox inside this layer (nesting rows N11 to N14).
+	if v, judged := sandboxNativeVerdict(req.Tool, vocab.Tier(r.egress.Mode)); judged {
+		if err := sandboxNativeRefusal(req.Tool, v); err != nil {
+			return termsvc.CreateResult{}, err
+		}
+	}
+	ws, err := r.prepareWorkspace(ctx, req)
+	if err != nil {
+		return termsvc.CreateResult{}, err
+	}
+
+	// The route this launch will actually get decides both the capture level
+	// and the provider block (audit finding P-006 (2)); it is computed once
+	// here and carried to Attach, so the two can never disagree.
+	routed, _ := r.launchRouted(req.Tool, ws.dir, req.ToolArgs)
+	return termsvc.CreateResult{
+		Run:         termsvc.SandboxRun{ID: ws.id, Tool: req.Tool, Dir: ws.dir, ProjectRoot: req.ProjectRoot, Copy: !ws.live},
+		Note:        fmt.Sprintf("sandbox: source=%s workspace=%s egress=%s", ws.src, ws.dir, r.egress.Mode),
+		Isolation:   r.runIsolation(req.Tool, routed),
+		ProxyRouted: routed,
+		// bubblewrap binds the tool's own state (operator ruling P-183).
+		SignInShared: sandboxSignInSharedTool(req.Tool),
+	}, nil
+}
+
+// preparedWorkspace is the workspace one launch runs in.
+type preparedWorkspace struct {
+	id   string
+	dir  string
+	src  workspace.Source
+	live bool
+}
+
+// prepareWorkspace parses the source, mints the run id and prepares the
+// workspace (host-side git for a managed copy), shared by every driver
+// (section 6: the sources do not depend on the backend). A managed
+// workspace it made is recorded as unattached until Attach takes it; a
+// failure removes what it made.
+func (r *sandboxRuntime) prepareWorkspace(ctx context.Context, req termsvc.PrepareRequest) (preparedWorkspace, error) {
 	source := strings.TrimSpace(req.WorkspaceSource)
 	if source == "" {
 		source = string(workspace.SourceLive)
 	}
 	src, err := workspace.ParseSource(source)
 	if err != nil {
-		return termsvc.PrepareResult{}, err
+		return preparedWorkspace{}, err
 	}
 
 	id, err := newWorkspaceID()
 	if err != nil {
-		return termsvc.PrepareResult{}, err
+		return preparedWorkspace{}, err
+	}
+
+	// A worktree's main repository is checked and its base read first
+	// (terminal_sandbox_worktree.go).
+	var startPoint string
+	if src == workspace.SourceWorktree {
+		if startPoint, err = r.worktreeBeforeAdd(ctx, req, id); err != nil {
+			return preparedWorkspace{}, err
+		}
 	}
 
 	plan, err := workspace.Plan(workspace.Request{
 		Source:              src,
+		StartPoint:          startPoint,
 		ProjectRoot:         req.ProjectRoot,
 		RemoteURL:           req.WorkspaceRemote,
 		Branch:              req.WorkspaceBranch,
@@ -636,7 +1258,7 @@ func (r *sandboxRuntime) Prepare(ctx context.Context, req termsvc.PrepareRequest
 		RemoteAllowedHosts:  r.cfg.RemoteAllowedHosts,
 	})
 	if err != nil {
-		return termsvc.PrepareResult{}, err
+		return preparedWorkspace{}, err
 	}
 
 	dest := plan.Dir
@@ -645,9 +1267,19 @@ func (r *sandboxRuntime) Prepare(ctx context.Context, req termsvc.PrepareRequest
 	if !live {
 		// Ensure <managedRoot>/<id> exists so git (and meta.json) can write into
 		// it, then run the git steps under the prep timeout.
-		if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
-			return termsvc.PrepareResult{}, fmt.Errorf("terminal_sandbox: create workspace dir: %w", err)
+		runDir := filepath.Dir(dest)
+		if err := os.MkdirAll(runDir, 0o700); err != nil {
+			return preparedWorkspace{}, fmt.Errorf("terminal_sandbox: create workspace dir: %w", err)
 		}
+		// A Create that fails after this point removes what it made, so a
+		// failed launch leaves nothing behind (P-017 (f)); runDir is
+		// <managedRoot>/<id>, minted fresh above.
+		created := false
+		defer func() {
+			if !created {
+				_ = os.RemoveAll(runDir) //nolint:gosec // G703: runDir is the freshly minted <managedRoot>/<id>
+			}
+		}()
 		prepCtx := ctx
 		if secs := r.cfg.PrepTimeoutSeconds; secs > 0 {
 			var cancel context.CancelFunc
@@ -656,11 +1288,11 @@ func (r *sandboxRuntime) Prepare(ctx context.Context, req termsvc.PrepareRequest
 		}
 		for _, step := range plan.Steps {
 			if err := r.runGitStep(prepCtx, step); err != nil {
-				return termsvc.PrepareResult{}, err
+				return preparedWorkspace{}, err
 			}
 		}
 		if err := r.writeMeta(dest, src, req, id); err != nil {
-			return termsvc.PrepareResult{}, err
+			return preparedWorkspace{}, err
 		}
 
 		// EvalSymlinks the created dest and require it strictly under the managed
@@ -668,24 +1300,189 @@ func (r *sandboxRuntime) Prepare(ctx context.Context, req termsvc.PrepareRequest
 		// point the bind (and the run's project root) outside the daemon's tree.
 		resolved, err := filepath.EvalSymlinks(dest)
 		if err != nil {
-			return termsvc.PrepareResult{}, fmt.Errorf("terminal_sandbox: resolve workspace path: %w", err)
+			return preparedWorkspace{}, fmt.Errorf("terminal_sandbox: resolve workspace path: %w", err)
 		}
 		if err := workspace.ValidateManagedWorkspace(resolved, r.managedRoot); err != nil {
-			return termsvc.PrepareResult{}, err
+			return preparedWorkspace{}, err
 		}
 		dest = resolved
+		r.unattached.Store(id, filepath.Dir(dest))
+		created = true
 	}
+	return preparedWorkspace{id: id, dir: dest, src: src, live: live}, nil
+}
 
-	wrapArgv, err := r.buildWrapArgv(req.Tool, dest, id)
+// Attach is the second half of Prepare: the bwrap argv prefix the PTY child
+// runs, composed from the same route fact Create computed the evidence from.
+func (r *sandboxRuntime) Attach(ctx context.Context, created termsvc.CreateResult) (termsvc.AttachResult, error) {
+	if d, ok := r.runDriver(created.Run.ID); ok {
+		return d.Attach(ctx, created)
+	}
+	// The run record is the host copy of the run's launch facts and relay
+	// secrets (lane sbx-p2); the host helper reads it, and removes it when
+	// the run ends.
+	if err := r.writeRunRecord(created.Run); err != nil {
+		return termsvc.AttachResult{}, err
+	}
+	wrapArgv, err := r.buildWrapArgv(created.Run.Tool, created.Run.Dir, created.Run.ID, created.ProxyRouted)
 	if err != nil {
-		return termsvc.PrepareResult{}, err
+		_ = sandboxrelayd.RemoveRun(r.observerDir, created.Run.ID)
+		return termsvc.AttachResult{}, err
 	}
+	r.unattached.Delete(created.Run.ID)
+	return termsvc.AttachResult{WrapArgv: wrapArgv}, nil
+}
 
-	return termsvc.PrepareResult{
-		Dir:      dest,
-		WrapArgv: wrapArgv,
-		Note:     fmt.Sprintf("sandbox: source=%s workspace=%s egress=%s", src, dest, r.egress.Mode),
-	}, nil
+// resolveSandboxBindPath resolves every symlink in a bind path for the
+// planner's relay bind check; a path that does not resolve is checked as
+// written.
+func resolveSandboxBindPath(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return p
+}
+
+// writeRunRecord writes the run's relay record: the facts the run's channel
+// supplies (tool, project, workspace, the roots a relayed payload path may
+// be read under, the workspace delivery) and two fresh secrets.
+func (r *sandboxRuntime) writeRunRecord(run termsvc.SandboxRun) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("terminal_sandbox: resolve home: %w", err)
+	}
+	if resolved, rerr := filepath.EvalSymlinks(home); rerr == nil {
+		home = resolved
+	}
+	spec, _ := integration.For(run.Tool)
+	roots := []string{run.Dir}
+	for _, rel := range spec.Sandbox.StateRW {
+		roots = append(roots, filepath.Join(home, rel))
+	}
+	delivery, copyPath := sandboxrelayd.DeliveryLive, ""
+	if run.Copy {
+		delivery, copyPath = sandboxrelayd.DeliveryCopy, run.Dir
+	}
+	project := run.ProjectRoot
+	if project == "" {
+		project = run.Dir
+	}
+	// The daemon's own config, so the host helper reads the hook
+	// registration the daemon wrote (relayHookProbe).
+	cfgPath, _ := config.ResolveGlobalPath(daemonConfigPath())
+	rec, err := sandboxrelayd.NewRunRecord(sandboxrelayd.RunRecord{
+		RunID: run.ID, Tool: run.Tool, ProjectRoot: project, WorkspaceDir: run.Dir,
+		Roots: roots, Delivery: delivery, CopyHostPath: copyPath, ConfigPath: cfgPath,
+	})
+	if err != nil {
+		return fmt.Errorf("terminal_sandbox: %w", err)
+	}
+	if err := sandboxrelayd.WriteRun(r.observerDir, rec); err != nil {
+		return fmt.Errorf("terminal_sandbox: %w", err)
+	}
+	return nil
+}
+
+// Resize is owned by the PTY: bwrap keeps the agent a direct child of the
+// daemon's PTY, so termsession's resize already reaches it.
+func (r *sandboxRuntime) Resize(ctx context.Context, run termsvc.SandboxRun, rows, cols uint16) (termsvc.LifecycleResult, error) {
+	if d, ok := r.runDriver(run.ID); ok {
+		return d.Resize(ctx, run, rows, cols)
+	}
+	return termsvc.LifecycleResult{Verdict: termsvc.VerdictPTYOwned, Detail: "bwrap: the terminal resize reaches the agent through the PTY"}, nil
+}
+
+// Signal is owned by the PTY for the same reason.
+func (r *sandboxRuntime) Signal(ctx context.Context, run termsvc.SandboxRun, sig string) (termsvc.LifecycleResult, error) {
+	if d, ok := r.runDriver(run.ID); ok {
+		return d.Signal(ctx, run, sig)
+	}
+	return termsvc.LifecycleResult{Verdict: termsvc.VerdictPTYOwned, Detail: "bwrap: signals reach the agent through the PTY and the host helper"}, nil
+}
+
+// Copy is not offered by bwrap: the workspace is a host directory bound into
+// the run, so files are reached on the host directly.
+func (r *sandboxRuntime) Copy(ctx context.Context, req termsvc.CopyRequest) (termsvc.LifecycleResult, error) {
+	if d, ok := r.runDriver(req.Run.ID); ok {
+		return d.Copy(ctx, req)
+	}
+	return termsvc.LifecycleResult{Verdict: termsvc.VerdictNotSupported, Detail: "bwrap: the workspace is a host directory; copy on the host"}, nil
+}
+
+// Checkpoint is not offered by bwrap.
+func (r *sandboxRuntime) Checkpoint(ctx context.Context, run termsvc.SandboxRun) (termsvc.LifecycleResult, error) {
+	if d, ok := r.runDriver(run.ID); ok {
+		return d.Checkpoint(ctx, run)
+	}
+	return termsvc.LifecycleResult{Verdict: termsvc.VerdictNotSupported, Detail: "bwrap: no checkpoint; the agent's native resume applies"}, nil
+}
+
+// Stop is owned by the PTY: ending the PTY child ends bwrap, and bwrap's
+// pid namespace takes every process of the run with it.
+func (r *sandboxRuntime) Stop(ctx context.Context, run termsvc.SandboxRun, grace time.Duration) (termsvc.LifecycleResult, error) {
+	if d, ok := r.runDriver(run.ID); ok {
+		return d.Stop(ctx, run, grace)
+	}
+	return termsvc.LifecycleResult{Verdict: termsvc.VerdictPTYOwned, Detail: "bwrap: stopping the terminal ends the run"}, nil
+}
+
+// Destroy releases what the run holds. The host helper removes the per-run
+// sockets and placeholders on exit, and a managed workspace an agent ran in
+// is the user's work, kept for `observer workspaces` to list and remove. A
+// managed workspace that Create made and Attach never took (a failed
+// launch) is removed, so a failed launch leaves nothing behind (P-017 (f)).
+func (r *sandboxRuntime) Destroy(ctx context.Context, run termsvc.SandboxRun) (termsvc.LifecycleResult, error) {
+	if d, ok := r.runDriver(run.ID); ok {
+		r.runDrivers.Delete(run.ID)
+		return d.Destroy(ctx, run)
+	}
+	return r.destroyBwrap(run)
+}
+
+// destroyBwrap is bwrap's Destroy, also the shared release of a run a
+// driver created on this runtime (its run record and unattached workspace).
+func (r *sandboxRuntime) destroyBwrap(run termsvc.SandboxRun) (termsvc.LifecycleResult, error) {
+	// A run record whose run never attached is released with it.
+	_ = sandboxrelayd.RemoveRun(r.observerDir, run.ID)
+	v, ok := r.unattached.LoadAndDelete(run.ID)
+	if !ok {
+		return termsvc.LifecycleResult{Verdict: termsvc.VerdictNothingToRelease, Detail: "bwrap: the host helper already released the run; managed workspaces are kept"}, nil
+	}
+	dir, _ := v.(string)
+	if err := workspace.ValidateManagedWorkspace(dir, r.managedRoot); err != nil {
+		return termsvc.LifecycleResult{}, fmt.Errorf("terminal_sandbox: refusing to remove an unattached workspace outside the managed root: %w", err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return termsvc.LifecycleResult{}, fmt.Errorf("terminal_sandbox: remove the unattached workspace: %w", err)
+	}
+	return termsvc.LifecycleResult{Verdict: termsvc.VerdictDone, Detail: "bwrap: removed the workspace of a launch that never started"}, nil
+}
+
+// runIsolation is the G19 evidence of a bwrap launch of tool (sandbox plan
+// v2 section 8.4): the planned class and tier, the computed capture level
+// and the rule that decided it, this host's verification, and the native
+// sandbox state the nesting rows established (left unrecorded for an
+// agent sandbox that is off by default).
+func (r *sandboxRuntime) runIsolation(tool string, routed bool) termrun.Isolation {
+	tier := vocab.Tier(r.egress.Mode)
+	capture := sandboxRunCapture(routed, tier, r.cfg.EffectiveProviderDirect())
+	row, _ := sandboxbackend.Get(sandboxbackend.BackendBwrap)
+	iso := termrun.Isolation{
+		Class:         string(row.Iso.Class),
+		Stack:         []string{row.ID},
+		EgressTier:    string(tier),
+		CaptureLevel:  string(capture.Level),
+		CaptureRule:   capture.Rule,
+		CaptureOrigin: string(vocab.OriginSandboxed),
+		KeyCustody:    string(vocab.CustodyHostBound),
+	}
+	if v, judged := sandboxNativeVerdict(tool, tier); judged {
+		iso.NativeSandboxState = string(sandboxselect.NativeStateFor(v))
+	}
+	if v, ok := row.VerificationOn(sandboxHostKind()); ok {
+		iso.Verification = string(v.Kind)
+	}
+	return iso
 }
 
 // buildWrapArgv resolves the bwrap Request for tool operating in workspaceRoot,
@@ -693,7 +1490,7 @@ func (r *sandboxRuntime) Prepare(ctx context.Context, req termsvc.PrepareRequest
 // prefix: [bwrapPath, <flags...>, "--"]. termsession.Spec.argv() prepends this
 // before [BinPath, Subcommand, ...ExtraArgs], yielding
 // `bwrap <flags...> -- observer <verb> ...` (D2 seam).
-func (r *sandboxRuntime) buildWrapArgv(tool, workspaceRoot, runID string) ([]string, error) {
+func (r *sandboxRuntime) buildWrapArgv(tool, workspaceRoot, runID string, routed bool) ([]string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("terminal_sandbox: resolve home: %w", err)
@@ -724,16 +1521,30 @@ func (r *sandboxRuntime) buildWrapArgv(tool, workspaceRoot, runID string) ([]str
 	}
 
 	netReq := sandbox.NetRequest{Egress: r.egress.Mode, ProxyPort: r.proxyPort, EgressAllowCIDRs: r.cfg.EgressAllowCIDRs}
-	if r.egress.ForwardProxy || r.egress.Gateway {
-		// Per-run socket dir in the HOST temp dir: invisible inside the
-		// sandbox (its /tmp is a private tmpfs) except where BuildPlan binds
-		// it read-only. The host helper creates it (refusing a pre-existing
-		// path) and removes it on exit. The random run id makes it
-		// unguessable.
-		netReq.HostSocketDir = filepath.Join(os.TempDir(), "observer-sbx-"+runID)
+	// The capture level of this run is computed (sandbox plan v2 section
+	// 4.4); when it is full only because the gateway guards it (rule C6),
+	// the gateway refuses the model-provider hosts and every literal IP for
+	// the run (section 7.3), so the agent's bound credential cannot be used
+	// outside the proxy.
+	if capture := sandboxRunCapture(routed, vocab.Tier(r.egress.Mode), r.cfg.EffectiveProviderDirect()); capture.ProviderBlock {
+		netReq.ProviderBlock = true
+		netReq.ProviderHosts = r.providerHosts
 	}
+	// Per-run socket dir in the HOST temp dir: invisible inside the sandbox
+	// (its /tmp is a private tmpfs) except where BuildPlan binds it
+	// read-only. The host helper creates it (refusing a pre-existing path)
+	// and removes it on exit. The random run id makes it unguessable. Since
+	// lane sbx-p2 every run has one: it holds the capture relay's socket and
+	// the box's launch record, whatever the tier forwards.
+	netReq.HostSocketDir = filepath.Join(os.TempDir(), "observer-sbx-"+runID)
 
-	overlays, err := r.overlays(home, workspaceRoot, spec.Sandbox)
+	overlays, pins, err := r.protection(home, workspaceRoot, spec.Sandbox)
+	if err != nil {
+		return nil, err
+	}
+	// A worktree run's binds into the main repository's .git folder
+	// (terminal_sandbox_worktree.go); nothing for any other source.
+	wt, err := r.worktreeBox(runID, workspaceRoot, r.rwRoots(home, workspaceRoot, spec.Sandbox))
 	if err != nil {
 		return nil, err
 	}
@@ -748,7 +1559,7 @@ func (r *sandboxRuntime) buildWrapArgv(tool, workspaceRoot, runID string) ([]str
 
 	plan, err := sandbox.BuildPlan(sandbox.Request{
 		Net:           netReq,
-		Overlays:      overlays,
+		Overlays:      append(overlays, wt.overlays...),
 		SocketSweeps:  sweeps,
 		HostMasks:     hostMasks,
 		HostMaskKeep:  hostMaskKeep(hostMasks),
@@ -762,8 +1573,11 @@ func (r *sandboxRuntime) buildWrapArgv(tool, workspaceRoot, runID string) ([]str
 		RuntimeLadder: sandboxRuntimeLadder,
 		MaskPaths:     r.maskPaths(),
 		HomeMode:      r.homeMode(),
-		ExtraRO:       r.cfg.ExtraROBinds,
-		ExtraRW:       r.cfg.ExtraRWBinds,
+		ExtraRO:       append(slices.Clip(r.cfg.ExtraROBinds), wt.ro...),
+		ExtraRW:       append(slices.Clip(r.cfg.ExtraRWBinds), wt.rw...),
+		Pins:          pins,
+		Relay:         sandbox.RelayRequest{RunID: runID, HostObserverDir: r.observerDir},
+		ResolvePath:   resolveSandboxBindPath,
 	})
 	if err != nil {
 		return nil, err
@@ -832,6 +1646,9 @@ var sandboxObserverExecState = []sandbox.ProtectedPath{
 	{Rel: "features-effective.json"},
 	{Rel: "governance-effective.json"},
 	{Rel: "governance-exceptions.json"},
+	// The daemon's MAC'd org lock (T-839 / T-844 / T-845): every config
+	// load floors [guard] from it and reads its verified governance copy.
+	{Rel: "guard-org-lock.json"},
 	{Rel: "policy-resource", Dir: true},
 	{Rel: "policy-state-seq"},
 }
@@ -857,6 +1674,23 @@ type protectedRow struct {
 // the launch (a symlink cannot be mounted read-only, and replacing it is
 // exactly the escape).
 func (r *sandboxRuntime) overlays(home, workspaceRoot string, spec integration.SandboxSpec) ([]sandbox.Overlay, error) {
+	ovs, _, err := r.protection(home, workspaceRoot, spec)
+	return ovs, err
+}
+
+// protection is overlays plus the pins the bwrap path binds onto
+// themselves (sandbox.Request.Pins): every repository folder and .git the
+// walk under an org write bind found, and a live workspace's own .git, and
+// inside each git dir the folders that hold a protected path
+// (sandboxGitDirParentPins), so
+// the box cannot rename a .git aside and plant a replacement under the
+// overlays (SBX-WORKTREE-SOURCE audit finding 4). A pin outside the
+// workspace and the extra write binds is dropped (it would make a
+// read-only path writable). The oci and Apple container drivers mount the
+// same pins onto themselves and the Seatbelt profile write-denies each at
+// its literal (lane SHR-FOLLOWUPS); the Landlock, MXC and hosted rows take
+// overlays only.
+func (r *sandboxRuntime) protection(home, workspaceRoot string, spec integration.SandboxSpec) ([]sandbox.Overlay, []string, error) {
 	var rows []protectedRow
 	for _, pp := range sandboxObserverSecrets {
 		kind := sandbox.OverlayHideFile
@@ -865,12 +1699,16 @@ func (r *sandboxRuntime) overlays(home, workspaceRoot string, spec integration.S
 		}
 		rows = append(rows, protectedRow{path: filepath.Join(r.observerDir, pp.Rel), kind: kind, dir: pp.Dir})
 	}
+	// The executed-state files under the observer dir are bound read-only
+	// whatever allow_tool_config_writes says: with the capture relay
+	// (lane sbx-p2) the observer dir is a tmpfs in the box, and these
+	// read-only binds are exactly what the inner launcher reads from it.
+	for _, pp := range sandboxObserverExecState {
+		rows = append(rows, protectedRow{path: filepath.Join(r.observerDir, pp.Rel), kind: sandbox.OverlayReadOnly, dir: pp.Dir})
+	}
 	if !r.cfg.AllowToolConfigWrites {
 		ro := func(p string, dir bool) {
 			rows = append(rows, protectedRow{path: p, kind: sandbox.OverlayReadOnly, dir: dir, remedy: remedyToolConfigWrites})
-		}
-		for _, pp := range sandboxObserverExecState {
-			ro(filepath.Join(r.observerDir, pp.Rel), pp.Dir)
 		}
 		for _, gp := range r.guardPolicyPaths {
 			ro(gp.Rel, gp.Dir)
@@ -885,6 +1723,28 @@ func (r *sandboxRuntime) overlays(home, workspaceRoot string, spec integration.S
 			ro(filepath.Join(workspaceRoot, pp.Rel), pp.Dir)
 		}
 	}
+	// The workspace repository's linked-worktree git dirs
+	// (.git/worktrees/<name>, ledger SBX-BE-21 residual, lane LEFT-SBX): a
+	// host git command in one of those worktrees reads that folder, so each
+	// gets the same rows as the .git itself, yielding to
+	// allow_tool_config_writes the same way, and is pinned below on a live
+	// workspace. A worktrees folder that cannot be listed refuses.
+	var wtPins []string
+	if fi, lerr := os.Lstat(filepath.Join(workspaceRoot, ".git")); lerr == nil && fi.IsDir() && !r.cfg.AllowToolConfigWrites {
+		wtRows, pins, err := sandboxLinkedWorktreeRows(filepath.Join(workspaceRoot, ".git"), remedyToolConfigWrites, nil)
+		if err != nil {
+			return nil, nil, err
+		}
+		rows = append(rows, wtRows...)
+		wtPins = pins
+	}
+	// An org-set write bind holding a repository: its hooks and config are
+	// read-only whatever allow_tool_config_writes says (ruling P-054).
+	orgRows, orgPins, err := sandboxOrgBindGitRows(r.orgRWBinds, r.orgSkipScan)
+	if err != nil {
+		return nil, nil, err
+	}
+	rows = append(rows, orgRows...)
 
 	rw := r.rwRoots(home, workspaceRoot, spec)
 	var out []sandbox.Overlay
@@ -892,7 +1752,7 @@ func (r *sandboxRuntime) overlays(home, workspaceRoot string, spec integration.S
 	for _, row := range rows {
 		o, ok, err := protectPath(row, rw)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if !ok || o.Path == "" || seen[o.Path] {
 			continue
@@ -900,14 +1760,71 @@ func (r *sandboxRuntime) overlays(home, workspaceRoot string, spec integration.S
 		seen[o.Path] = true
 		out = append(out, o)
 	}
-	return out, nil
+	return out, r.repoPins(workspaceRoot, orgPins, wtPins), nil
+}
+
+// repoPins is the pin list of one launch: the org-bind pins plus, for a
+// live-source workspace (outside the managed workspaces root), the
+// workspace's own .git directory or file and its linked-worktree git dirs
+// (wtPins, sandboxLinkedWorktreeRows). Only paths inside the workspace or
+// an extra write bind are kept, each once.
+func (r *sandboxRuntime) repoPins(workspaceRoot string, orgPins, wtPins []string) []string {
+	candidates := append([]string(nil), orgPins...)
+	if r.managedRoot == "" || !isWithinPath(workspaceRoot, r.managedRoot) {
+		dotGit := filepath.Join(workspaceRoot, ".git")
+		if fi, err := os.Lstat(dotGit); err == nil && (fi.IsDir() || fi.Mode().IsRegular()) {
+			candidates = append(candidates, dotGit)
+			if fi.IsDir() {
+				candidates = append(candidates, sandboxGitDirParentPins(dotGit)...)
+				candidates = append(candidates, wtPins...)
+			}
+		}
+	}
+	roots := append([]string{workspaceRoot}, r.cfg.ExtraRWBinds...)
+	var out []string
+	seen := map[string]bool{}
+	for _, p := range candidates {
+		p = filepath.Clean(p)
+		if seen[p] {
+			continue
+		}
+		within := false
+		for _, root := range roots {
+			within = within || (root != "" && isWithinPath(p, root))
+		}
+		if within {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// sandboxGitDirParentPins are the existing real folders between gitDir and
+// its protected execution-state paths (sandbox.GitDirExecParents: info,
+// objects, objects/info), parents first, to be pinned after gitDir itself.
+// Without them the box renames such a folder aside, the read-only overlay
+// inside moves with it, and a fresh folder takes the protected path (Linux
+// live re-check 3, D2). A missing folder is left out (its protected path's
+// topmost missing component is then a read-only placeholder), and so is a
+// symlink (the protect rows refuse it).
+func sandboxGitDirParentPins(gitDir string) []string {
+	var out []string
+	for _, p := range sandbox.GitDirExecParents(gitDir) {
+		if fi, err := os.Lstat(p); err == nil && fi.IsDir() && fi.Mode()&os.ModeSymlink == 0 {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // rwRoots lists the bind targets a sandboxed process can write through: the
 // observer dir, the workspace, the tool's writable state and the operator's
 // extra rw binds.
 func (r *sandboxRuntime) rwRoots(home, workspaceRoot string, spec integration.SandboxSpec) []string {
-	out := []string{r.observerDir, workspaceRoot}
+	// The observer dir is a tmpfs in the box (the capture relay, lane
+	// sbx-p2), so nothing a sandboxed process writes reaches it.
+	out := []string{workspaceRoot}
 	for _, rel := range spec.StateRW {
 		out = append(out, filepath.Join(home, rel))
 	}
@@ -1009,137 +1926,15 @@ func symlinkRefusal(path, remedy string) error {
 		"and a symlink cannot be mounted read-only. Replace the symlink with the file or directory it points to%s", path, remedy)
 }
 
-// withinAny reports whether p equals or lies under any root.
-func withinAny(p string, roots []string) bool {
-	p = filepath.Clean(p)
-	for _, r := range roots {
-		if r == "" {
-			continue
-		}
-		r = filepath.Clean(r)
-		if p == r || r == "/" || strings.HasPrefix(p, r+"/") {
-			return true
-		}
-	}
-	return false
-}
-
 // equalsAny reports whether p is exactly one of roots.
 func equalsAny(p string, roots []string) bool {
 	p = filepath.Clean(p)
 	for _, r := range roots {
-		if r != "" && filepath.Clean(r) == p {
+		if r != "" && pathSame(filepath.Clean(r), p, hostPathsFold) {
 			return true
 		}
 	}
 	return false
-}
-
-// hostSocketMasks resolves sandbox.HostSocketPaths for uid into hide_dir
-// overlays: each path resolved through symlinks, kept only when it exists and
-// is a directory (socket FILES are dropped by socketSweeps instead).
-func hostSocketMasks(uid int) ([]sandbox.Overlay, error) {
-	var out []sandbox.Overlay
-	seen := map[string]bool{}
-	for _, p := range sandbox.ExpandHostSocketPaths(uid) {
-		real, err := filepath.EvalSymlinks(p)
-		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
-				continue
-			}
-			return nil, fmt.Errorf("terminal_sandbox: cannot resolve host socket path %s: %w", p, err)
-		}
-		if seen[real] {
-			continue
-		}
-		fi, err := os.Stat(real)
-		if err != nil {
-			return nil, fmt.Errorf("terminal_sandbox: cannot inspect host socket path %s: %w", real, err)
-		}
-		if !fi.IsDir() {
-			continue
-		}
-		seen[real] = true
-		out = append(out, sandbox.Overlay{Path: real, Kind: sandbox.OverlayHideDir})
-	}
-	return out, nil
-}
-
-// socketSweeps lists each existing, non-symlink sandbox.SocketSweepDirs
-// directory with the entries to put back: directories and regular files are
-// re-bound, symlinks are recreated unless they resolve to a socket, FIFO or
-// device, and every socket, FIFO or device is dropped. An entry whose name
-// could not be passed to bwrap safely is dropped too (hidden, never an
-// error).
-func socketSweeps() ([]sandbox.DirRebuild, error) {
-	var out []sandbox.DirRebuild
-	for _, dir := range sandbox.SocketSweepDirs {
-		fi, err := os.Lstat(dir)
-		if err != nil || !fi.IsDir() {
-			continue
-		}
-		ents, err := os.ReadDir(dir)
-		if err != nil {
-			return nil, fmt.Errorf("terminal_sandbox: cannot list %s to drop its sockets: %w", dir, err)
-		}
-		d := sandbox.DirRebuild{Path: dir}
-		for _, e := range ents {
-			name := e.Name()
-			if badSweepName(name) {
-				continue
-			}
-			full := filepath.Join(dir, name)
-			lfi, err := os.Lstat(full)
-			if err != nil {
-				continue // vanished since the listing
-			}
-			switch mode := lfi.Mode(); {
-			case mode.IsDir(), mode.IsRegular():
-				d.Keep = append(d.Keep, sandbox.RebuildEntry{Name: name})
-			case mode&os.ModeSymlink != 0:
-				target, err := os.Readlink(full)
-				if err != nil || badSweepName(strings.ReplaceAll(target, "/", "x")) || strings.HasPrefix(target, "-") {
-					continue
-				}
-				if tfi, err := os.Stat(full); err == nil && tfi.Mode()&(os.ModeSocket|os.ModeNamedPipe|os.ModeDevice|os.ModeCharDevice) != 0 {
-					continue
-				}
-				d.Keep = append(d.Keep, sandbox.RebuildEntry{Name: name, Symlink: target})
-			}
-		}
-		out = append(out, d)
-	}
-	return out, nil
-}
-
-// badSweepName reports a directory entry name that is not a plain single
-// component safe to hand to bwrap.
-func badSweepName(name string) bool {
-	if name == "" || name == "." || name == ".." || strings.HasPrefix(name, "-") || strings.Contains(name, "/") {
-		return true
-	}
-	for _, r := range name {
-		if r <= ' ' || r == 0x7f {
-			return true
-		}
-	}
-	return false
-}
-
-// hostMaskKeep returns the files a host mask would hide that the sandboxed
-// process still needs read-only: today the resolver config, which WSL points
-// into /mnt/wsl.
-func hostMaskKeep(masks []sandbox.Overlay) []string {
-	real, err := filepath.EvalSymlinks("/etc/resolv.conf")
-	if err != nil {
-		return nil
-	}
-	for _, m := range masks {
-		if withinAny(real, []string{m.Path}) && real != m.Path {
-			return []string{real}
-		}
-	}
-	return nil
 }
 
 // toolBinDirs resolves the directories a tool's binary + its real (symlink)
@@ -1220,6 +2015,9 @@ func (r *sandboxRuntime) runGitStep(ctx context.Context, step workspace.Step) er
 	cmd := exec.CommandContext(ctx, step.Argv[0], step.Argv[1:]...)
 	cmd.Dir = step.Dir
 	cmd.Env = gitPrepEnv()
+	if step.Hardened {
+		cmd.Env = hardenedGitEnv(cmd.Env)
+	}
 	cmd.Stdin = nil
 	cmd.Stdout = io.Discard
 	var stderr bytes.Buffer
@@ -1289,6 +2087,23 @@ func gitPrepEnv() []string {
 	return append(out, "GIT_TERMINAL_PROMPT=0")
 }
 
+// hardenedGitEnv is env without any inherited GIT_* variable (a GIT_DIR,
+// GIT_INDEX_FILE or GIT_CONFIG_PARAMETERS of the daemon's own) plus the
+// extrun git hardening environment (no system or global config, no
+// fsmonitor, no hooks, no prompt, no LFS smudge): the environment of every
+// host git step of the worktree source (workspace.Step.Hardened,
+// SBX-WORKTREE-SOURCE audit finding 1).
+func hardenedGitEnv(env []string) []string {
+	out := make([]string, 0, len(env)+5)
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "GIT_") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, extrun.GitHardeningEnv(runtime.GOOS)...)
+}
+
 // tailStderr returns the last ~2 non-empty lines of a subprocess stderr,
 // scrubbed of secrets and capped at 512 bytes — the plan §7 error-tail shape.
 func tailStderr(s string) string {
@@ -1303,43 +2118,4 @@ func tailStderr(s string) string {
 		tail = tail[:512]
 	}
 	return tail
-}
-
-// foreignMountRoots returns the foreign-OS mount roots (`/mnt/<drive>`) derived
-// from crossmount's detected non-native homes, so A1 can `--tmpfs`-mask the
-// whole foreign drive `--ro-bind / /` would otherwise expose. Only homes whose
-// logical OS differs from the daemon's (e.g. Windows homes on a WSL host)
-// contribute; the native home is never masked. Deduped.
-func foreignMountRoots() []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, h := range crossmount.ExtraHomes() {
-		if h.OS == crossmount.OSLinux && runtime.GOOS == "linux" {
-			continue // a same-OS extra home is not a foreign mount
-		}
-		root := mntDriveRoot(h.Path)
-		if root == "" || seen[root] {
-			continue
-		}
-		seen[root] = true
-		out = append(out, root)
-	}
-	return out
-}
-
-// mntDriveRoot extracts the `/mnt/<drive>` prefix of a WSL foreign-home path
-// (e.g. "/mnt/c/Users/me" → "/mnt/c"), or "" when the path is not under /mnt.
-func mntDriveRoot(p string) string {
-	const prefix = "/mnt/"
-	if !strings.HasPrefix(p, prefix) {
-		return ""
-	}
-	rest := p[len(prefix):]
-	if slash := strings.IndexByte(rest, '/'); slash >= 0 {
-		rest = rest[:slash]
-	}
-	if rest == "" {
-		return ""
-	}
-	return prefix + rest
 }

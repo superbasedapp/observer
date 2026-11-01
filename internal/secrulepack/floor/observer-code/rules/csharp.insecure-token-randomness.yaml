@@ -1,0 +1,31 @@
+rules:
+  - id: csharp.insecure-token-randomness
+    languages: [csharp]
+    severity: WARNING
+    message: A secret value (a token, key, password or nonce) is made with System.Random, which is predictable; use RandomNumberGenerator.
+    metadata:
+      category: code_vuln
+      cwe: CWE-338
+    patterns:
+      - pattern-either:
+          - pattern: new Random().$NEXT(...)
+          - pattern: new Random($SEED).$NEXT(...)
+          - pattern: Random.Shared.$NEXT(...)
+          - pattern: (Random $R).$NEXT(...)
+      - pattern-either:
+          - patterns:
+              - pattern-inside: var $TOK = <... $EXPR ...>;
+              - metavariable-regex:
+                  metavariable: $TOK
+                  regex: (?i)^\w*(token|secret|nonce|otp|password|passwd|apikey|sessionid|salt|resetcode)\w*$
+          - patterns:
+              - pattern-inside: $T $TOK = <... $EXPR ...>;
+              - metavariable-regex:
+                  metavariable: $TOK
+                  regex: (?i)^\w*(token|secret|nonce|otp|password|passwd|apikey|sessionid|salt|resetcode)\w*$
+          - patterns:
+              - pattern-inside: |
+                  $RT $FN(...) { ... }
+              - metavariable-regex:
+                  metavariable: $FN
+                  regex: (?i)^\w*(token|secret|nonce|otp|password|passwd|apikey|sessionid|salt|resetcode)\w*$

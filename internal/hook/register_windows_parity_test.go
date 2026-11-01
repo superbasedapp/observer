@@ -483,7 +483,7 @@ func TestRegisterClaudeCodeWindowsReplacesNativeObserverEntry(t *testing.T) {
 			t.Errorf("event %s has %d groups, want exactly 1 (the bridge command): %v", event, len(got), got)
 			continue
 		}
-		want := "MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu-20.04 -- /home/u/superbased-observer/bin/observer hook claude-code " + hookEventArg(event)
+		want := "wsl.exe -d Ubuntu-20.04 -- //home/u/superbased-observer/bin/observer hook claude-code " + hookEventArg(event) + "; exit $LASTEXITCODE"
 		if got[0] != want {
 			t.Errorf("event %s cmd = %q, want %q", event, got[0], want)
 		}
@@ -882,8 +882,11 @@ func TestCodexNativeWindowsSameFileFlipFlop(t *testing.T) {
 		if res.Error == nil {
 			t.Fatalf("Register(codex) silently overwrote the existing bridge entries; result=%+v", res)
 		}
-		if !strings.Contains(res.Error.Error(), "non-observer") {
-			t.Errorf("error = %q, want it to mention 'non-observer' (an existing bridge entry must read as foreign to the NATIVE target)", res.Error)
+		// The NATIVE target still refuses the bridge entry (B4), and says
+		// it is Observer's own WSL bridge with the exact removal command
+		// (live proof 2026-10-21), not a "non-observer" hook.
+		if !strings.Contains(res.Error.Error(), "run through WSL") || !strings.Contains(res.Error.Error(), codexBridgeConflictCommand) {
+			t.Errorf("error = %q, want it to name Observer's WSL bridge and %q", res.Error, codexBridgeConflictCommand)
 		}
 		after, err := os.ReadFile(hooksPath)
 		if err != nil {

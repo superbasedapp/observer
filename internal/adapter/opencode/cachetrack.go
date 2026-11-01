@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/adapter/cacheobs"
 	"github.com/marmutapp/superbased-observer/internal/models"
@@ -94,12 +95,20 @@ func (a *Adapter) loadCacheObservations(ctx context.Context, db *sql.DB, sourceF
 		// whose own time_updated has crossed the cursor. This
 		// matches loadTokenEvents' cadence so observation + token
 		// emission stay in lockstep per message.
-		if meta.Role != "assistant" || m.TimeUpdate <= fromOffset {
+		if meta.Role != "assistant" {
 			continue
 		}
 		if meta.Tokens.Input == 0 && meta.Tokens.Output == 0 &&
 			meta.Tokens.Cache.Read == 0 && meta.Tokens.Cache.Write == 0 &&
 			meta.Tokens.Reasoning == 0 {
+			continue
+		}
+		if m.TimeUpdate <= fromOffset {
+			// T-930: an earlier parse already emitted this step. Close
+			// its delta without emitting, so the first new step carries
+			// only the blocks written since it, not the session's older
+			// blocks again (same contract as loadCacheObservationsV2).
+			_ = acc.Emit(sourceFile, m.SessionID, m.ID, "", time.Time{}, models.CacheUsage{}, false)
 			continue
 		}
 

@@ -215,6 +215,52 @@ var otlpExports = map[string]OTLPExport{
 		Origin: OTLPLocal, Signals: "logs", Grounding: "source",
 		Note: "feedback-gated: records leave only after the user submits /feedback; not usable for continuous capture",
 	},
+
+	// 2026-10-21 capture wave, audited 2026-10-22 against the installed
+	// Windows builds (bundle strings). No export was found in autohand 0.9.8
+	// (its telemetry is Autohand's own POST /v1/telemetry), dimcode 0.5.21,
+	// stakpak 0.3.88 or vtcode 0.180.2 (its [telemetry] table writes local
+	// trajectory and ATIF files only), so those four have no row. See
+	// docs/plans/native-console-wave-2026-10-21-phase0.md. The five rows
+	// below were live-grounded on WSL on 2026-10-22 (AP-131): the per-tool
+	// comparison against the capture adapters is docs/otlp-native-ingest.md.
+	// None of the five exports is a more accurate token source than its
+	// tool's own store, so no row lands tokens beside the transcript.
+	"ibm-bob": {
+		Origin: OTLPLocal, Signals: "traces", Mapped: true, Grounding: "live (bobshell 2.0.6, signed in)",
+		Enable:    "OTEL_EXPORTER_OTLP_ENDPOINT or OTEL_EXPORTER_OTLP_TRACES_ENDPOINT (an \"otel-external\" exporter beside IBM's own, which keeps exporting), or the OtelConfiguration enterprise policy (/etc/bob/policy.json, HKLM\\Software\\Policies\\IBM\\Bob, macOS com.ibm.bob), which wins over the env",
+		Protocols: "http/json (default), http/protobuf, grpc",
+		Note:      "maps tool calls only. The external exporter passes an attribute allow-list WITHOUT gen_ai.usage.*_tokens (live 2026-10-22): an LLM Generation span carries the tier alias (premium-ide), the call's cost in Bobcoins and its duration, so the export is not a Bob token source (AP-125 stays open). gen_ai.conversation.id is the bob.db task id. Prompts, responses and tool output are [REDACTED] unless OTEL_INCLUDE_* = 1",
+	},
+	"codebuddy": {
+		Origin: OTLPLocal, Signals: "traces", Mapped: true, Grounding: "live (codebuddy-code 2.171.0, mock model)",
+		Enable:    "CODEBUDDY_CODE_ENABLE_TELEMETRY=1 (CLAUDE_CODE_ENABLE_TELEMETRY is read as a fallback), OTEL_TRACES_EXPORTER=otlp, OTEL_EXPORTER_OTLP_ENDPOINT (/v1/traces appended) or OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, and OTEL_SEMCONV=agentlens for token and tool-call attributes; DISABLE_TELEMETRY=1 overrides",
+		Protocols: "http/json (observed)",
+		Note:      "service.name carries the version (CodeBuddy-CLI-<version>). Token counts are GROSS with no cache or reasoning split (the transcript has both), and reach span attributes only under OTEL_SEMCONV=agentlens, which also exports the full prompt text (never stored); the transcript owns tokens while the codebuddy adapter is enabled. Unique: time to first token. Metrics and logs are not exported",
+	},
+	"kimchi": {
+		Origin: OTLPLocal, Signals: "logs, metrics", Mapped: true, Grounding: "live (kimchi 1.17.0, mock model)",
+		Enable:    "on by default to Cast AI (api.cast.ai/ai-optimizer/v1beta/logs:ingest and metrics:ingest); telemetry.endpoint / telemetry.metricsEndpoint / telemetry.headers in ~/.config/kimchi/config.json redirect it (no env override); KIMCHI_TELEMETRY_ENABLED=0 or `kimchi config telemetry off` stops it unless the org policy forces it (kimchiUsageReporting FORCE_ON / FORCE_OFF)",
+		Protocols: "http/json",
+		Note:      "logs mapped, metrics not read. api_request is the transcript's own usage minus the reasoning count and the provider prefix, so the transcript owns tokens while the kimchi adapter is enabled; the row exists mainly so Claude Code's row no longer misreads kimchi's Claude-Code-named events. config.json holds the API key, and without telemetry.headers the CLI sends that key as a Bearer header to whatever endpoint is set",
+	},
+	"dirac": {
+		Origin: OTLPLocal, Signals: "logs, metrics", Grounding: "live (dirac-cli 0.5.23, signed in)",
+		Enable:    "CLINE_OTEL_TELEMETRY_ENABLED=true, CLINE_OTEL_LOGS_EXPORTER=otlp, CLINE_OTEL_METRICS_EXPORTER=otlp, CLINE_OTEL_EXPORTER_OTLP_ENDPOINT (the Cline names, inherited)",
+		Protocols: "grpc, http/json, http/protobuf",
+		Note:      "not mapped: task.tokens (event name in the log body) carries NET input, cache read and write and output but no reasoning count, keyed by the task ulid rather than the task id the adapter uses (only task.initialization carries both), and the last call's record was lost at process exit in the live run; the transcript's api_status records are a superset",
+	},
+	"deepagents-code": {
+		Origin: OTLPLocal, Signals: "traces", Grounding: "live (deepagents-code 0.1.87 with langsmith 0.14.11, mock model)",
+		Enable:    "LangSmith's OTel mode: LANGSMITH_TRACING=true with LANGSMITH_TRACING_MODE=otel (or the legacy LANGSMITH_OTEL_ENABLED + LANGSMITH_OTEL_ONLY), and OTEL_EXPORTER_OTLP_ENDPOINT (a base URL) or OTEL_EXPORTER_OTLP_TRACES_ENDPOINT; dcode turns tracing on only when LANGSMITH_API_KEY is set",
+		Protocols: "http/protobuf",
+		Note:      "not mapped: service.name is the generic \"langsmith\" that any LangSmith-traced application sends, so claiming it would take a hosted app's spans from Plane A; ChatOpenAI spans carry GROSS gen_ai.usage tokens with the cache and reasoning split only inside a JSON metadata string, the same usage_metadata the checkpoint store already gives the adapter",
+	},
+	"cortex-code": {
+		Origin: OTLPVendorCloud, Signals: "traces, logs", Grounding: "doc + source (cortex 1.2.18 bundle)",
+		Enable: "on by default; COCO_OTLP_TRACE_ENABLED=false and COCO_OTLP_LOG_ENABLED=false turn it off. No endpoint setting: the CLI asks its Snowflake account for the host (<rest>/observability/system/hostname) and posts there with the session's Snowflake auth",
+		Note:   "the local CLI sends it, but only to its Snowflake account, where it lands in SNOWFLAKE.LOCAL.AI_OBSERVABILITY_EVENTS (prompt and response included); readable org-side over SQL, never on a node",
+	},
 }
 
 // init folds the OTLP column into the registry rows. A key with no registry

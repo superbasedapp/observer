@@ -6,19 +6,20 @@ import (
 )
 
 // VSCodeBaseURLHint returns no-mutation, paste-into-the-UI instructions for
-// routing a VS Code AI extension (Cline / Roo Code / Kilo Code) through the
-// observer proxy via its "OpenAI Compatible" provider Base URL.
+// routing a legacy VS Code AI extension (the legacy Kilo Code extension,
+// pending IDE-9) through the observer proxy via its "OpenAI Compatible"
+// provider Base URL.
 //
-// This is a MANUAL route (RouteManual), not an auto-writer, and deliberately
-// so: these extensions store their provider/base-URL config in VS Code's
-// globalState (state.vscdb) + SecretStorage rather than a writable JSON file,
-// and writing state.vscdb while VS Code is running is unsafe — VS Code caches
-// globalState in memory and overwrites external edits on exit (grounded
-// 2026-06-27). So observer prints the exact settings for the operator to
-// paste into the extension's provider configuration instead.
+// It no longer applies to Cline (surface-gap IDE-8): current Cline builds
+// keep their settings in ~/.cline/data/globalState.json, not VS Code's
+// state.vscdb, and RegisterCline (cline.go) writes the route there. For the
+// extensions it still covers, the route is MANUAL (RouteManual): they store
+// their provider/base-URL config in VS Code's globalState (state.vscdb) +
+// SecretStorage rather than a writable JSON file, and writing state.vscdb
+// while VS Code is running is unsafe (VS Code caches globalState in memory
+// and overwrites external edits on exit, grounded 2026-06-27).
 //
-// tool is a human label ("Cline", "Roo Code", "Kilo Code"); port is the
-// observer proxy port.
+// tool is a human label ("Kilo Code"); port is the observer proxy port.
 func VSCodeBaseURLHint(port int, tool string) string {
 	if strings.TrimSpace(tool) == "" {
 		tool = "the extension"

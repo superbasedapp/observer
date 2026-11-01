@@ -837,3 +837,32 @@ func TestSetupCodexHooks_RejectsNonGET(t *testing.T) {
 		t.Errorf("status=%d want 405", rr.Code)
 	}
 }
+
+// TestSetupClaude_ExtensionOnlyIsNotAbsent (WINNODE2 16b): with no `claude`
+// on PATH but the Claude Code VS Code extension's install signal holding,
+// the snapshot says extension_ready (the header pill then reports the
+// route instead of "No Claude Code"); without the signal it stays
+// claude_not_installed.
+func TestSetupClaude_ExtensionOnlyIsNotAbsent(t *testing.T) {
+	withFakeClaudeHome(t, "")
+	t.Setenv("PATH", t.TempDir())
+	for _, tc := range []struct {
+		tools []string
+		want  string
+	}{
+		{[]string{"claude-code"}, "extension_ready"},
+		{[]string{"codex"}, "claude_not_installed"},
+		{nil, "claude_not_installed"},
+	} {
+		srv := newSetupServer(t, 8820)
+		tools := tc.tools
+		srv.opts.InstallSignalTools = func() []string { return tools }
+		rr := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/setup/claude", nil))
+		var got claudeSetupSnapshot
+		decodeJSON(t, rr, &got)
+		if got.Status != tc.want || got.EditorExtensionInstalled != (tc.want == "extension_ready") {
+			t.Errorf("signals %v: status %q extension=%v, want %q", tc.tools, got.Status, got.EditorExtensionInstalled, tc.want)
+		}
+	}
+}

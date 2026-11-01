@@ -1,5 +1,8 @@
 // Package dbtemplate is a TEST-ONLY drop-in for [db.Open] that pays the agent
-// migration chain once per test binary instead of once per test.
+// migration chain once instead of once per test. The template is shared
+// between test binaries through internal/db/templatecache (one file per
+// migration set in the OS temp directory, built at most once per machine
+// under a file lock), so a run of many binaries builds it once.
 //
 // Why it exists: [db.Open] applies every migration in
 // internal/db/migrations (125 files as of 2026-09-17) on every call. That is

@@ -796,7 +796,7 @@ func (g *Guard) scanBudget(es *engineSet, res *ProxyRequestResult, sessionID, ta
 		ev.Model = model[0]
 	}
 	bindingMismatch := false
-	if es.budgetBinding != "" || es.base.BudgetRequired() {
+	if es.budgetBinding != "" || es.base().BudgetRequired() {
 		current, state, hasLookup := g.budgetIdentity()
 		switch orgBudgetLiveness(hasLookup, state, current, es.budgetBinding, g.budgetConfig().FailClosed) {
 		case budgetLiveRetired, budgetLiveReplacedOpen:
@@ -823,7 +823,7 @@ func (g *Guard) scanBudget(es *engineSet, res *ProxyRequestResult, sessionID, ta
 		}
 	}
 	if !bindingMismatch {
-		g.stampBudgetIfRead(es, &ev, es.base.BudgetAdmissionRequiresFresh(), es.accountingContext(es.base.ManagedBudgetRequired()))
+		g.stampBudgetIfRead(es, &ev, es.base().BudgetAdmissionRequiresFresh(), es.accountingContext(es.base().ManagedBudgetRequired()))
 	}
 	// The all-zero early return below is the cheap "nothing to compare"
 	// shortcut, and it is exactly wrong for the one row that compares
@@ -836,13 +836,13 @@ func (g *Guard) scanBudget(es *engineSet, res *ProxyRequestResult, sessionID, ta
 	// node-wide stamps are all zero can still be over one. Leaving them out of
 	// this condition is precisely the bug the token stamps had — the early
 	// return swallowed the one comparison that would have fired.
-	if !bindingMismatch && !es.base.BudgetRequired() && budgetEventIsVacant(ev) {
+	if !bindingMismatch && !es.base().BudgetRequired() && budgetEventIsVacant(ev) {
 		return
 	}
 	var verdict policy.Verdict
 	var guardErr error
 	if bindingMismatch {
-		verdict = es.base.EvaluateMissingManagedBudget(ev)
+		verdict = es.base().EvaluateMissingManagedBudget(ev)
 	} else {
 		verdict, guardErr = g.evaluateBudgetWith(es, ev)
 	}
@@ -863,7 +863,7 @@ func (g *Guard) scanBudget(es *engineSet, res *ProxyRequestResult, sessionID, ta
 		}
 	}
 	var appr approvalOutcome
-	if !bindingMismatch && !es.base.BudgetRuleProtected(verdict.RuleID) {
+	if !bindingMismatch && !es.base().BudgetRuleProtected(verdict.RuleID) {
 		// Budget rules never take an org guard grant (grantEligible): a
 		// budget increase is its own grant type folded into the cap.
 		verdict, appr = g.applyApprovals(verdict, &ev, OrgGrantLaneProxy)

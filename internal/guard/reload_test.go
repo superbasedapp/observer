@@ -314,7 +314,7 @@ func (f *syncFS) set(path string, body []byte) {
 
 // TestGuardReloadOrgLayer_ConcurrentWithEvaluate (§3.4, the crux -race
 // gate): N goroutines hammer Evaluate (rootless AND project-scoped, to
-// exercise es.base AND es.projectEngines) plus Mode/RuleCount/
+// exercise es.base() AND es.projectEngines) plus Mode/RuleCount/
 // EffectiveRules/PolicyStates/CategoryFor, while M goroutines publish a
 // monotonically increasing org version and call ReloadOrgLayer. Under
 // -race this MUST fail if any lock-free org-derived read escapes the
@@ -359,7 +359,7 @@ func TestGuardReloadOrgLayer_ConcurrentWithEvaluate(t *testing.T) {
 					return
 				default:
 				}
-				g.Evaluate(shellEvent("echo onlyv1", ""))             // es.base
+				g.Evaluate(shellEvent("echo onlyv1", ""))             // es.base()
 				g.Evaluate(shellEvent("echo onlyv2", "/home/u/proj")) // es.projectEngines
 				_ = g.Mode()
 				_ = g.RuleCount()
