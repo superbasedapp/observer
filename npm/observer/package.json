@@ -1,6 +1,6 @@
 {
   "name": "@superbased/observer",
-  "version": "1.37.0",
+  "version": "1.37.1",
   "description": "Local-first AI coding agent observability: Claude Code token usage, Codex cost and Cursor spend across 50 adapters, provider-exact via a local proxy. No account needed.",
   "keywords": [
     "ai",
@@ -47,11 +47,11 @@
     "LICENSE"
   ],
   "optionalDependencies": {
-    "@superbased/observer-linux-x64": "1.37.0",
-    "@superbased/observer-linux-arm64": "1.37.0",
-    "@superbased/observer-darwin-x64": "1.37.0",
-    "@superbased/observer-darwin-arm64": "1.37.0",
-    "@superbased/observer-win32-x64": "1.37.0"
+    "@superbased/observer-linux-x64": "1.37.1",
+    "@superbased/observer-linux-arm64": "1.37.1",
+    "@superbased/observer-darwin-x64": "1.37.1",
+    "@superbased/observer-darwin-arm64": "1.37.1",
+    "@superbased/observer-win32-x64": "1.37.1"
   },
   "scripts": {
     "test": "node bin/observer.js --version",

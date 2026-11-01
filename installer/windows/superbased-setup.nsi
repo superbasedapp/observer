@@ -45,16 +45,28 @@ SetCompressor /SOLID lzma
   !error "pass -DVERSION_NUMERIC=<x.y.z.0> (four numbers, for the file properties)"
 !endif
 !ifndef PAYLOAD_DIR
-  !error "pass -DPAYLOAD_DIR=<dir holding observer.exe and observerw.exe>"
+  !error "pass -DPAYLOAD_DIR=<absolute dir holding observer.exe and observerw.exe>"
 !endif
 !ifndef OUTFILE
-  !error "pass -DOUTFILE=<path of the setup program to write>"
+  !error "pass -DOUTFILE=<absolute path of the setup program to write>"
 !endif
+; Compile-time paths (files makensis reads on the build host: the license,
+; the icon, the payload) use forward slashes: the release builds on Linux,
+; where a backslash is not a path separator, and makensis on Windows accepts
+; forward slashes too. The license and the icon are relative to THIS file's
+; folder, because makensis compiles from the script's own folder (unless
+; /NOCD is passed). ${__FILEDIR__} is not used: it is the folder as typed on
+; the command line, relative when the release passes
+; installer/windows/superbased-setup.nsi, so it would be applied twice
+; ("can't open file" on icon.ico was the v1.37.0 failure). PAYLOAD_DIR and
+; OUTFILE must be absolute for the same reason. Paths the installer uses at
+; run time ($INSTDIR, $PLUGINSDIR, $PROFILE, registry keys) run on Windows
+; and keep backslashes.
 !ifndef LICENSE_FILE
-  !define LICENSE_FILE "${__FILEDIR__}\..\..\LICENSE"
+  !define LICENSE_FILE "../../LICENSE"
 !endif
 !ifndef ICON_FILE
-  !define ICON_FILE "${__FILEDIR__}\..\..\icons\icon.ico"
+  !define ICON_FILE "../../icons/icon.ico"
 !endif
 
 !ifdef SIGN_COMMAND
@@ -126,8 +138,8 @@ Section "SuperBased Observer (required)" SecCore
   SectionIn RO
   InitPluginsDir
   SetOutPath "$PLUGINSDIR\payload"
-  File "/oname=observer.exe" "${PAYLOAD_DIR}\observer.exe"
-  File "/oname=observerw.exe" "${PAYLOAD_DIR}\observerw.exe"
+  File "/oname=observer.exe" "${PAYLOAD_DIR}/observer.exe"
+  File "/oname=observerw.exe" "${PAYLOAD_DIR}/observerw.exe"
 SectionEnd
 
 ; The three options are markers read by the install step below, so the Go

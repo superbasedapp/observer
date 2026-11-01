@@ -5,8 +5,8 @@
       "name": "archive",
       "dir": "internal/archivestore/migrations",
       "head": 2,
-      "ref": "v1.36.0",
-      "commit": "304072d1ea22ed68b85d3d7c85d7e351275d702d",
+      "ref": "v1.37.0",
+      "commit": "101a900f326b39fe391309b5b0540e8f35c7b3aa",
       "steps": [
         {
           "file": "001_archive_codeintel.sql",
@@ -22,8 +22,8 @@
       "name": "cloud",
       "dir": "internal/cloudserver/db/migrations",
       "head": 44,
-      "ref": "08a189924",
-      "commit": "08a189924ceac5ae0cc6ceea19c28734dd307f6e",
+      "ref": "v1.37.0",
+      "commit": "101a900f326b39fe391309b5b0540e8f35c7b3aa",
       "steps": [
         {
           "file": "0001_roles.sql",
@@ -207,8 +207,8 @@
       "name": "edge-wal",
       "dir": "internal/edge/wal/migrations",
       "head": 1,
-      "ref": "v1.36.0",
-      "commit": "304072d1ea22ed68b85d3d7c85d7e351275d702d",
+      "ref": "v1.37.0",
+      "commit": "101a900f326b39fe391309b5b0540e8f35c7b3aa",
       "steps": [
         {
           "file": "001_edge_wal.sql",
@@ -219,9 +219,9 @@
     {
       "name": "node",
       "dir": "internal/db/migrations",
-      "head": 161,
-      "ref": "v1.36.0",
-      "commit": "304072d1ea22ed68b85d3d7c85d7e351275d702d",
+      "head": 211,
+      "ref": "v1.37.0",
+      "commit": "101a900f326b39fe391309b5b0540e8f35c7b3aa",
       "steps": [
         {
           "file": "001_initial.sql",
@@ -866,15 +866,171 @@
         {
           "file": "161_update_state_distro.sql",
           "blob": "70745f012159a933b2ac2dd0f6caf6dbb43b15c0"
+        },
+        {
+          "file": "162_session_tool_version_last.sql",
+          "blob": "ad96f2890ab4646740374e7b6950ac11f8de9f1f"
+        },
+        {
+          "file": "163_plan_limits.sql",
+          "blob": "60a49a79ee61c7f01cf89c3ef52a986194504ce0"
+        },
+        {
+          "file": "164_commit_scan_health.sql",
+          "blob": "a40a45a7d75172da4e5297904990a36ac4256bf2"
+        },
+        {
+          "file": "165_project_commits_patch_fp.sql",
+          "blob": "422fc19691c7f9fea291de5492c8f45cd6707bdc"
+        },
+        {
+          "file": "166_project_remotes.sql",
+          "blob": "a28df9306bb6ac8bd19409a74199695ecf2ed7b1"
+        },
+        {
+          "file": "167_commit_landings.sql",
+          "blob": "7ef41bc9073ef6df4da0300a3634a4d682ebdfd3"
+        },
+        {
+          "file": "168_provider_links.sql",
+          "blob": "ff820cd98cfd191503060423b7f456602e374b44"
+        },
+        {
+          "file": "169_pull_requests.sql",
+          "blob": "113b2f22c9578580383c397c82c302eb6375bb27"
+        },
+        {
+          "file": "170_delivery_mirrors.sql",
+          "blob": "aa64fc57f1e413f2d4f12d93b9c66c9effc8a25e"
+        },
+        {
+          "file": "171_delivery_project_settings.sql",
+          "blob": "41f3f69dc8a45429c9cecc77ff7b80f74623de73"
+        },
+        {
+          "file": "172_delivery_branch_tips.sql",
+          "blob": "51835a9827409edb6c059f7aa1578350f788f783"
+        },
+        {
+          "file": "173_org_message_rail.sql",
+          "blob": "5594c36d063842faf47c485848bfec121942f9c1"
+        },
+        {
+          "file": "174_org_message_threads_local.sql",
+          "blob": "90476eff22c0d89abbaecbce749000cd66ce78f3"
+        },
+        {
+          "file": "175_org_messages_inbox.sql",
+          "blob": "c966292ab69053550dd656d617fdb149a4ab8127"
+        },
+        {
+          "file": "176_org_message_outbox.sql",
+          "blob": "40281bde51b1fc57506380f2ae9729354f1675f1"
+        },
+        {
+          "file": "177_security_findings.sql",
+          "blob": "3348f09c15547de93d2352b9ade70aa0842d1d23"
+        },
+        {
+          "file": "178_sec_config_baseline.sql",
+          "blob": "c0e702f08d780c79328e723141bbc454bfd85048"
+        },
+        {
+          "file": "179_terminal_run_isolation.sql",
+          "blob": "caa798d230e2861991a636835b31567144de908b"
+        },
+        {
+          "file": "180_sec_config_files.sql",
+          "blob": "fc56b18445b6295f8fdf54968d55db43738f6ce9"
+        },
+        {
+          "file": "181_terminal_run_evidence_producer.sql",
+          "blob": "cac867e09e999aff141cdc66c4d69f98f6625dc4"
+        },
+        {
+          "file": "182_sec_pkg_cache.sql",
+          "blob": "4bf7b72c6e399dcc9d691e7987aae2ab30088260"
+        },
+        {
+          "file": "183_sec_finding_exceptions.sql",
+          "blob": "d0b417c35f2f948434113a1aa21ab8b86abd310e"
+        },
+        {
+          "file": "184_sec_finding_sightings.sql",
+          "blob": "7667e1b7b3dcf778e0294dfeb300758ac7e209e5"
+        },
+        {
+          "file": "185_sec_finding_commits.sql",
+          "blob": "738c2cae82c3bea05c204ef91bf40aa7c81255c7"
+        },
+        {
+          "file": "186_terminal_run_capture_health.sql",
+          "blob": "445372af343578f4188e356e048d817dc9a2fe00"
+        },
+        {
+          "file": "187_managed_pull_cache.sql",
+          "blob": "5d83820fd50eee7c23c46a5e55bd18db175b60a1"
+        },
+        {
+          "file": "188_sec_finding_remotes.sql",
+          "blob": "3068078e6668c79c7a874284010d209af44db036"
+        },
+        {
+          "file": "189_sec_finding_feedback_sent.sql",
+          "blob": "d095548420f67b8170da3e642bae30c290e71f52"
+        },
+        {
+          "file": "190_org_project_mapping_index.sql",
+          "blob": "1241862448c1075c183d7ddf8651fcfbc21c22f0"
+        },
+        {
+          "file": "191_sec_change_records.sql",
+          "blob": "3e00519886dc0fa47574de77e21e8276af527bab"
+        },
+        {
+          "file": "192_sec_finding_run_id.sql",
+          "blob": "5697db813b8ca45caf93dd89fedc6f89be07fee9"
+        },
+        {
+          "file": "193_sec_finding_reflog_cap.sql",
+          "blob": "8e891e39e5ca451d3671df67f4441be4cd3dcaca"
+        },
+        {
+          "file": "194_sec_org_baseline_approvals.sql",
+          "blob": "79446cfc085edfbe8165f0db14860d9e9b1bf90f"
+        },
+        {
+          "file": "195_terminal_run_seal.sql",
+          "blob": "0dd495dc644e03e5cf3fb34bf2c08c32ac3d506f"
+        },
+        {
+          "file": "196_tooltax_action_type_backfill_2.sql",
+          "blob": "4c45472bcf6e00c71b9946c2b2c41f2075a889dc"
+        },
+        {
+          "file": "197_guard_action_anchor.sql",
+          "blob": "a93da512be91e10b9cddfd632c20dfcec1239bad"
+        },
+        {
+          "file": "198_hook_activity.sql",
+          "blob": "7235fbb7285ac2cd06796026b7bec3b9857fe1b6"
+        },
+        {
+          "file": "210_arena_candidate_permission_lane.sql",
+          "blob": "c2992256d1b6ebbdefb2913d958d3d211508c36e"
+        },
+        {
+          "file": "211_action_fk_child_indexes.sql",
+          "blob": "4825bd009c7f547ffb7f85af58828f9c6eecb323"
         }
       ]
     },
     {
       "name": "org-pg",
       "dir": "internal/orgserver/db/pgmigrations",
-      "head": 98,
-      "ref": "v1.36.0",
-      "commit": "304072d1ea22ed68b85d3d7c85d7e351275d702d",
+      "head": 140,
+      "ref": "v1.37.0",
+      "commit": "101a900f326b39fe391309b5b0540e8f35c7b3aa",
       "steps": [
         {
           "file": "0001_baseline.sql",
@@ -1267,15 +1423,151 @@
         {
           "file": "0098_org_signing_key_history.sql",
           "blob": "1c81625583a3a0b03f98353485087cf6fbd5235a"
+        },
+        {
+          "file": "0099_session_tool_version_last.sql",
+          "blob": "0f333c1e44cc047b4a6ccfd5579b76fd7db92538"
+        },
+        {
+          "file": "0100_actions_timestamp_cover_idx.sql",
+          "blob": "4e136f6a844a734a0b9b401ff41f264aa751484c"
+        },
+        {
+          "file": "0101_org_background_task.sql",
+          "blob": "92b148f4467233d7cb036fbd6b6e72a6bfcf4612"
+        },
+        {
+          "file": "0102_policy_state_guard_tamper.sql",
+          "blob": "de14a4757fb030d4a11cd860a4d8eb481d281e56"
+        },
+        {
+          "file": "0103_delivery.sql",
+          "blob": "309a568b09ecefe0a17305835ff02dc6699165c6"
+        },
+        {
+          "file": "0104_org_messages.sql",
+          "blob": "218710248ca5f5b07c12540bf7e6897a3888cd4e"
+        },
+        {
+          "file": "0105_org_member_access.sql",
+          "blob": "eeaa4f14fea53f1b251d3a6856ea12cde307b132"
+        },
+        {
+          "file": "0106_policy_state_guard_tamper_record.sql",
+          "blob": "ea0a8f2224f61c64d755e5300ac788396b58c350"
+        },
+        {
+          "file": "0107_terminal_run_isolation.sql",
+          "blob": "aed8b615c2e861aba2315c47423a604260b0a78c"
+        },
+        {
+          "file": "0108_org_member_access_provisioned_by.sql",
+          "blob": "e1494d25afa9eddba2096e614ed8d3ecf7a1da8f"
+        },
+        {
+          "file": "0109_terminal_run_evidence_producer.sql",
+          "blob": "461374ba26dca939cd50c636cab7fb71b904379c"
+        },
+        {
+          "file": "0110_sandbox_posture.sql",
+          "blob": "1f9a232707dc2ff25d13ff4c79d16d82a32b8bf7"
+        },
+        {
+          "file": "0111_managed_pull_issuance.sql",
+          "blob": "a1716d20a364fb6357332914261f23b2a753a1ab"
+        },
+        {
+          "file": "0112_sandbox_managed.sql",
+          "blob": "626e260cfa59c2b4e0113b70f22970b24d9c462c"
+        },
+        {
+          "file": "0113_security_managed.sql",
+          "blob": "78e3aa5a40fb5100262d462a5b1be2fdabe7a47d"
+        },
+        {
+          "file": "0114_project_audience.sql",
+          "blob": "84bb819135ec35e476583728fed550e9f48a3748"
+        },
+        {
+          "file": "0115_sandbox_managed_refused.sql",
+          "blob": "3b7bd999223d4d9a6e51ad837b2ed45462beed0c"
+        },
+        {
+          "file": "0116_security_org.sql",
+          "blob": "abce68e85038e71dfa076cfe4ed5702d5f3d57c9"
+        },
+        {
+          "file": "0117_security_relay.sql",
+          "blob": "f6ffa32ed8482ac484999335a3a6278e14a588a2"
+        },
+        {
+          "file": "0118_sessions_remote_hash_index.sql",
+          "blob": "29bc84a51a5b354e06815187e97b4f6ef7ccd9a0"
+        },
+        {
+          "file": "0119_policy_state_project_section_status.sql",
+          "blob": "f25a4714dc2961842778ccdbcc249ba697957a92"
+        },
+        {
+          "file": "0120_project_family_sections.sql",
+          "blob": "037b3423355590988306785684ef670808f661b6"
+        },
+        {
+          "file": "0121_security_fleet.sql",
+          "blob": "08a2e4cc5cec05f9347a37af035a9990c44f973e"
+        },
+        {
+          "file": "0122_security_visibility.sql",
+          "blob": "1341c1b018e9b3d15cba18bab9bf5931c83ea580"
+        },
+        {
+          "file": "0123_security_baselines.sql",
+          "blob": "4f9552f26f96b58566676fd19e87cc5349f997e0"
+        },
+        {
+          "file": "0124_security_ci.sql",
+          "blob": "4be1b349d29e98cec5e3e8fb7f4e9680f77f6a49"
+        },
+        {
+          "file": "0125_policy_state_family_truncated.sql",
+          "blob": "59471f6b272a4c95b971af1eb1b6b68c1eef8e72"
+        },
+        {
+          "file": "0126_security_bindings.sql",
+          "blob": "221b9b05cd65a8e1eb92d8c895a9042d2ad7251f"
+        },
+        {
+          "file": "0127_security_githubapp.sql",
+          "blob": "bf9c50024999a55ffbefaa5be128c4c2e002329f"
+        },
+        {
+          "file": "0128_native_console_cortex_kimchi.sql",
+          "blob": "6430bd20851c9667da7b2c26f11922ae706538fd"
+        },
+        {
+          "file": "0129_session_hook_activity.sql",
+          "blob": "2238672d39956d2f1f25a23dfd3d1ad99408cd65"
+        },
+        {
+          "file": "0130_session_hook_activity_user_tool_idx.sql",
+          "blob": "a9871208b96b2800998b2f001ad2f678674108bb"
+        },
+        {
+          "file": "0139_exec_seal_key_revoke.sql",
+          "blob": "d5b3f2f95a3aa32ac8761c5b06049341b71d472e"
+        },
+        {
+          "file": "0140_project_root_path_key.sql",
+          "blob": "c42246ed109237c808cb0d76c6b2235c21fbbbf6"
         }
       ]
     },
     {
       "name": "org-sqlite",
       "dir": "internal/orgserver/db/migrations",
-      "head": 231,
-      "ref": "v1.36.0",
-      "commit": "304072d1ea22ed68b85d3d7c85d7e351275d702d",
+      "head": 273,
+      "ref": "v1.37.0",
+      "commit": "101a900f326b39fe391309b5b0540e8f35c7b3aa",
       "steps": [
         {
           "file": "001_initial.sql",
@@ -2200,6 +2492,142 @@
         {
           "file": "231_org_signing_key_history.sql",
           "blob": "534177a8f8b46eac7eb8c8aee4f69f67095a20d0"
+        },
+        {
+          "file": "232_session_tool_version_last.sql",
+          "blob": "62c0bbb58ae00da5fd7d00f96705d21da4057d07"
+        },
+        {
+          "file": "233_actions_timestamp_cover_idx.sql",
+          "blob": "80df6c75f35fefce714768e471bb6b091bcee356"
+        },
+        {
+          "file": "234_org_background_task.sql",
+          "blob": "1483562ad7874791fc51da66dd234fd7f70e0a40"
+        },
+        {
+          "file": "235_policy_state_guard_tamper.sql",
+          "blob": "0a225532b2d3d6dfd3ba57493b4304fb7821ae69"
+        },
+        {
+          "file": "236_delivery.sql",
+          "blob": "cf135f84a1f2a5cd78d765dad5459d492e29c309"
+        },
+        {
+          "file": "237_org_messages.sql",
+          "blob": "1895db1f6b79c3ad41bfda41ff044d6d6bf0b6ba"
+        },
+        {
+          "file": "238_org_member_access.sql",
+          "blob": "41ade8dd81bd2da1d5236314a69c547705e15c05"
+        },
+        {
+          "file": "239_policy_state_guard_tamper_record.sql",
+          "blob": "b7347bbb4debcc7b1ba5821af6e71118f9f96ded"
+        },
+        {
+          "file": "240_terminal_run_isolation.sql",
+          "blob": "45aa4a2faf8f9979cddf6fe9e2446370e8336454"
+        },
+        {
+          "file": "241_org_member_access_provisioned_by.sql",
+          "blob": "5ee3084ddbb7d77f9b0d85368722bdb2a1cca9bd"
+        },
+        {
+          "file": "242_terminal_run_evidence_producer.sql",
+          "blob": "b179dacaa99033fc2b457610efea9d59da7eaf80"
+        },
+        {
+          "file": "243_sandbox_posture.sql",
+          "blob": "29fa1520ab362b947ea6d6e2301fd9f69777af44"
+        },
+        {
+          "file": "244_managed_pull_issuance.sql",
+          "blob": "0cc8b67448852236b86ee24f0084d552fb7fad08"
+        },
+        {
+          "file": "245_sandbox_managed.sql",
+          "blob": "2740afa9bdb74c4c66cc663ac0610d7c3835a6f4"
+        },
+        {
+          "file": "246_security_managed.sql",
+          "blob": "d103df917e553d62485c98a8a6c8174c1290596c"
+        },
+        {
+          "file": "247_project_audience.sql",
+          "blob": "1673833f9a6733c04e9c415acf9108154a39533c"
+        },
+        {
+          "file": "248_sandbox_managed_refused.sql",
+          "blob": "4bc8c6aec40337fe6e0853d9c0dbef7390deb38c"
+        },
+        {
+          "file": "249_security_org.sql",
+          "blob": "3ec2c3670d5cc47971387deffdc02dc0167b663e"
+        },
+        {
+          "file": "250_security_relay.sql",
+          "blob": "b74ed3f7adfea4c7bf5bd7c19155b20b41f2470c"
+        },
+        {
+          "file": "251_sessions_remote_hash_index.sql",
+          "blob": "56e42a914f715a98e94ba5a925da86ea7857ee10"
+        },
+        {
+          "file": "252_policy_state_project_section_status.sql",
+          "blob": "9313018e4fb29e70fd5406b392f87ccd8b57d40e"
+        },
+        {
+          "file": "253_project_family_sections.sql",
+          "blob": "9bb86293dd9b7e33527bab0ebfb4494ac1c0b923"
+        },
+        {
+          "file": "254_security_fleet.sql",
+          "blob": "2418b52669fdfdf560455112543e0a644fbe5d2e"
+        },
+        {
+          "file": "255_security_visibility.sql",
+          "blob": "ef6d03820af443eb94565431d323de6b0e9ed0ec"
+        },
+        {
+          "file": "256_security_baselines.sql",
+          "blob": "edd06b293ca2ee57ad33f8a1a7c647e58a424838"
+        },
+        {
+          "file": "257_security_ci.sql",
+          "blob": "3117faacdb40fa94eedf47dea40974d7de36a446"
+        },
+        {
+          "file": "258_policy_state_family_truncated.sql",
+          "blob": "52014e94a9e296a92657707ebb7fcfc6c41c02bb"
+        },
+        {
+          "file": "259_security_bindings.sql",
+          "blob": "b3388d0aa8b37ac2fd8ec5c885c291d6c5d8d1d4"
+        },
+        {
+          "file": "260_security_githubapp.sql",
+          "blob": "45b8a85ed281ec78f93a4c5c19758040f25aed91"
+        },
+        {
+          "file": "261_native_console_cortex_kimchi.sql",
+          "blob": "04efb4a39bda7e8cd82f10789148c800f64bca9b"
+        },
+        {
+          "file": "262_session_hook_activity.sql",
+          "blob": "c85f86ca4ba7c482dae4694b2b6ee4ebb90122f0"
+        },
+        {
+          "file": "263_session_hook_activity_user_tool_idx.sql",
+          "blob": "605e90377551536f671fb5b2db661c58024f3e04"
+        },
+        {
+          "file": "272_exec_seal_key_revoke.sql",
+          "blob": "5bcb0b67653210de639af3a3e9f6d101cb7ea964"
+        },
+        {
+          "file": "273_project_root_path_key.sql",
+          "blob": "5e60589d35e5e81639189bbbb736984d76d92f74"
         }
       ]
     }

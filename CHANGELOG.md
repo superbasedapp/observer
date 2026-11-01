@@ -4,6 +4,20 @@ All notable changes to SuperBased Observer are documented here.
 
 ## [Unreleased]
 
+## [1.37.1] - 2026-11-01
+
+Patch release on the `stable` channel. The program is the same as 1.37.0; this release exists
+because the 1.37.0 public GitHub release has no binaries.
+
+### Fixed
+
+- **The release builds the Windows setup program again.** The 1.37.0 release job could not build
+  `superbased-observer-setup-1.37.0-win32-x64.exe` (its script used Windows path separators, which
+  the Linux build host cannot read), and the public GitHub release depends on it, so 1.37.0 has no
+  public binaries: `install.sh`, `install.ps1` and the download page stayed on 1.36.0. 1.37.1 ships
+  them, with the setup program. npm, PyPI, the VS Code Marketplace and Open VSX did get 1.37.0;
+  moving from 1.37.0 to 1.37.1 changes no behaviour.
+
 ## [1.37.0] - 2026-11-01
 
 Stable release on the `stable` channel (npm dist-tags `latest` and `stable`, PyPI, the VS Code

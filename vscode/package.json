@@ -2,7 +2,7 @@
   "name": "superbased-observer",
   "displayName": "SuperBased",
   "description": "Local-first AI coding agent observability in your editor: Claude Code token usage, Codex cost and Cursor spend across 50 adapters, provider-exact via a local proxy. No account needed.",
-  "version": "1.37.0",
+  "version": "1.37.1",
   "publisher": "superbased",
   "license": "Apache-2.0",
   "author": "Santosh Kathira <contact@superbased.app>",
