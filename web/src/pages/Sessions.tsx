@@ -152,7 +152,10 @@ const SURFACE_FILTER_OPTIONS: ReadonlyArray<{ value: SurfaceKind | ""; label: st
 ];
 
 export function SessionsPage() {
-  const { win, customRange, tool, model, project, query: globalQuery } = useFilters();
+  const {
+    win, customRange, tool, model, project,
+    query: globalQuery, setQuery: setGlobalQuery,
+  } = useFilters();
   const winParams = windowParams(win, customRange);
   // CalendarView needs a plain day-count for its grid span; sub-day
   // windows round up to a day.
@@ -554,6 +557,10 @@ export function SessionsPage() {
   };
 
   const query = localQuery || globalQuery;
+  const clearQuery = () => {
+    setLocalQuery("");
+    setGlobalQuery("");
+  };
   const filtered = useMemo(() => {
     let out = rows;
     if (drawerCount > 0) out = applyFilters(out, filters);
@@ -742,6 +749,7 @@ export function SessionsPage() {
           <div className="flex flex-wrap items-center gap-2">
             <input
               type="search"
+              aria-label="Filter sessions by id or project"
               placeholder="filter by id, project…"
               value={localQuery}
               onChange={(e) => setLocalQuery(e.target.value)}
@@ -889,12 +897,16 @@ export function SessionsPage() {
           </div>
         }
       >
-        {(pickedDay ||
+        {(query ||
+          pickedDay ||
           drawerChips.length > 0 ||
           classificationChips.length > 0) && (
           <ActiveFilterChips
             className="mb-3"
             chips={[
+              ...(query
+                ? [{ label: `search: ${query}`, onClear: clearQuery }]
+                : []),
               ...(pickedDay
                 ? [
                     {
@@ -907,6 +919,7 @@ export function SessionsPage() {
               ...drawerChips,
             ]}
             onClearAll={() => {
+              clearQuery();
               setPickedDay(null);
               setFilters(EMPTY_FILTERS);
               setTagFilters([]);
@@ -943,7 +956,9 @@ export function SessionsPage() {
                   ? `No sessions on ${pickedDay}. Clear the day filter to see all sessions.`
                   : query
                     ? `No sessions match "${query}". Clear the search or widen filters.`
-                    : "No sessions in window. Set up your AI tools in Settings > Connected tools: each tool's Set up registers its hooks, MCP and proxy route, one confirm per write."
+                    : classificationChips.length > 0 || drawerChips.length > 0 || toolParam || modelParam || projectParam
+                      ? "No sessions match the active filters. Clear filters or widen the time window."
+                      : "No sessions in window. Set up your AI tools in Settings > Connected tools: each tool's Set up registers its hooks, MCP and proxy route, one confirm per write."
               }
               height={240}
             >
