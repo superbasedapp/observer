@@ -13,6 +13,22 @@ import (
 // card's "what the grant would do" (§2.4). The org renders it from the
 // proposal; nothing on the node parses it.
 func Describe(p Proposal, d Decision, who string, now time.Time) string {
+	return DescribeLabeled(p, d, who, now, Labels{})
+}
+
+// Labels are the human names the org resolves for the ids a grant carries, so
+// the approver reads "monthly, $2,000, alice@acme.example" and "Alice's Linux
+// computer" instead of a budget uuid and a 64-hex machine fingerprint. An
+// empty field falls back to the id (what Describe has always printed).
+type Labels struct {
+	// Budget names the budget a budget-increase grant raises.
+	Budget string
+	// Machine names the machine a machine-scoped grant is pinned to.
+	Machine string
+}
+
+// DescribeLabeled is Describe with resolved names for the budget and machine.
+func DescribeLabeled(p Proposal, d Decision, who string, now time.Time, labels Labels) string {
 	if who == "" {
 		who = p.UserID
 	}
@@ -22,13 +38,13 @@ func Describe(p Proposal, d Decision, who string, now time.Time) string {
 	case TypeGuardExemption:
 		parts = append(parts, p.RuleID)
 	case TypeBudgetIncrease:
-		parts = append(parts, budgetPhrase(p, d))
+		parts = append(parts, budgetPhrase(p, d, labels.Budget))
 	default:
 		parts = append(parts, strings.ToLower(t.Label)+" "+p.Target)
 	}
 	subject := "for " + who
 	if p.SubjectKind == orgcontract.AccessGrantSubjectMachine && p.MachineIdentity != "" {
-		subject += " on " + p.MachineIdentity
+		subject += " on " + firstLabel(labels.Machine, p.MachineIdentity)
 	} else {
 		subject += " on all of their machines"
 	}
@@ -70,7 +86,14 @@ func Describe(p Proposal, d Decision, who string, now time.Time) string {
 	return strings.Join(parts, ", ")
 }
 
-func budgetPhrase(p Proposal, d Decision) string {
+func firstLabel(label, fallback string) string {
+	if label != "" {
+		return label
+	}
+	return fallback
+}
+
+func budgetPhrase(p Proposal, d Decision, label string) string {
 	var b []string
 	if p.DeltaTokens > 0 {
 		b = append(b, fmt.Sprintf("+%d tokens (cap %d)", p.DeltaTokens, d.CapTokens))
@@ -79,7 +102,7 @@ func budgetPhrase(p Proposal, d Decision) string {
 		// no-bare-usd:allow (the org decision preview an admin approves; admins always see dollars)
 		b = append(b, fmt.Sprintf("+$%.2f (cap $%.2f)", p.DeltaUSD, d.CapUSD))
 	}
-	return "budget " + p.BudgetID + " " + strings.Join(b, " and ")
+	return "budget " + firstLabel(label, p.BudgetID) + " " + strings.Join(b, " and ")
 }
 
 // Budget periods, restated from orgcontract so callers need one import.

@@ -410,6 +410,9 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeletionRequest(w http.ResponseWriter, r *http.Request) {
 	p, _ := principalFrom(r.Context())
 	req, err := s.store.CreateDeletionRequest(r.Context(), p.AccountID, s.now())
+	if s.deletionRefused(w, r, p.AccountID, err) {
+		return
+	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", "could not record deletion request")
 		return

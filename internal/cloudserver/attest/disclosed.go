@@ -56,11 +56,11 @@ func (d DisclosedAttestor) Attest(_ context.Context, b Binding, now time.Time) (
 		res.Reason = ModeProviderRetentionDisclosed + ": route not bound to a resource (fail closed)"
 		return res, nil
 	}
-	want := strings.TrimSpace(d.AttestedResourceID)
-	if want == "" || b.ARMResourceID != want {
+	if !d.covers(b.ARMResourceID) {
 		res.Reason = ModeProviderRetentionDisclosed + ": resource not covered by the disclosure (fail closed)"
 		return res, nil
 	}
+	want := b.ARMResourceID
 	ver := strings.TrimSpace(d.PolicyVersion)
 	if ver == "" {
 		res.Reason = ModeProviderRetentionDisclosed + ": no policy version named (fail closed)"
@@ -74,6 +74,25 @@ func (d DisclosedAttestor) Attest(_ context.Context, b Binding, now time.Time) (
 	res.ContentLoggingValue = "not-disabled (" + ModeProviderRetentionDisclosed + "; policy v" + ver + ")"
 	res.Reason = DisclosedReason(ver, want, by)
 	return res, nil
+}
+
+// covers reports whether the disclosure names resource exactly.
+// AttestedResourceID may list several resources separated by commas (ruling
+// R-AI1: the free and paid tiers run two models, gpt-oss-20b and
+// gpt-oss-120b, each its own provider resource identity, under one
+// disclosure). Each entry is matched exactly after trimming; an empty entry
+// covers nothing. A resource identity never contains a comma, so a
+// single-resource value means what it always meant.
+func (d DisclosedAttestor) covers(resource string) bool {
+	if resource == "" {
+		return false
+	}
+	for _, want := range strings.Split(d.AttestedResourceID, ",") {
+		if w := strings.TrimSpace(want); w != "" && w == resource {
+			return true
+		}
+	}
+	return false
 }
 
 // DisclosedReason is the verdict text of a healthy disclosed attestation. It

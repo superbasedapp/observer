@@ -866,6 +866,11 @@ func TestOpenShellMaskPathsInsideABoundTree(t *testing.T) {
 		{name: "above a bound tree", cfg: []string{"/home/dev/src"}},
 		{name: "a link into the workspace", cfg: []string{"/home/dev/vault/keys"}, links: map[string]string{"/home/dev/vault": "/home/dev/src/app/vault"}, want: localKey, inside: "/home/dev/src/app"},
 		{name: "a foreign-OS mount inside the workspace", foreign: []string{"/home/dev/src/app/mnt"}, want: "foreign-OS mount", inside: "/home/dev/src/app"},
+		// The mount table's drives (SBX-BE-24) take the same rows: a drive
+		// no bind shows, or one above the workspace (a project on /mnt/d
+		// under the /mnt/d mask), is allowed.
+		{name: "mount-table drives outside every bound tree", foreign: []string{"/mnt/c", "/mnt/d"}},
+		{name: "a mount-table drive above the workspace", foreign: []string{"/home/dev/src"}},
 		{name: "a relative mask path", cfg: []string{"secrets"}, want: "not an absolute path"},
 	}
 	for _, tc := range cases {

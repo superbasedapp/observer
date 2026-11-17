@@ -431,6 +431,14 @@ func (s *Server) handleConfigSection(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// The org-lock gate (guard_orglocked_edits.go): a guard section save
+	// may not newly disable a rule the organization sets on this node.
+	if name == "guard" {
+		if problems := s.guardOrgLockedEdits(r.Context(), "disable", addedIDs(prev.Guard.Rules.Disable, cfg.Guard.Rules.Disable)); len(problems) > 0 {
+			writeOrgLockRefusal(w, problems)
+			return
+		}
+	}
 
 	// T2 credential guard (plan section 4.3 / P0-1). Two failure modes it
 	// closes, in the one place every caller-supplied section body lands:
@@ -1647,7 +1655,7 @@ func loadConfigForDashboard(path string) (config.Config, error) {
 	if path == "" {
 		return config.Default(), nil
 	}
-	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) { //nolint:gosec // G703: false positive; the daemon's own config path from its options, only stat'd to fall back to defaults
 		return config.Default(), nil
 	}
 	return config.Load(config.LoadOptions{GlobalPath: path})

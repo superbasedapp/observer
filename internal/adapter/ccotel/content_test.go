@@ -57,6 +57,41 @@ func TestParseContent_BodyFallbackAndEmptySkipped(t *testing.T) {
 	}
 }
 
+// TestParseContent_BodyEqualToEventNameIsNotContent pins the OTel-direct
+// spike's finding (docs/security.md OTELDIRECT-5): Claude Code sets every
+// event's body to the event name, so a record with no content attribute must
+// not become a content row holding that name. One case per name shape.
+func TestParseContent_BodyEqualToEventNameIsNotContent(t *testing.T) {
+	body := func(s string) *commonpb.AnyValue {
+		return &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: s}}
+	}
+	for _, c := range []struct {
+		name      string
+		eventName string
+		attrName  string
+		body      string
+		want      int
+	}{
+		{"prefixed typed name", "claude_code.tool_result", "", "claude_code.tool_result", 0},
+		{"bare typed name, prefixed body", "tool_result", "", "claude_code.tool_result", 0},
+		{"event.name attribute only", "", "tool_decision", "tool_decision", 0},
+		{"flag-less user prompt", "claude_code.user_prompt", "user_prompt", "claude_code.user_prompt", 0},
+		{"body padded with spaces", "claude_code.tool_result", "", "  claude_code.tool_result ", 0},
+		{"real body kept", "claude_code.user_prompt", "", "fix the retry handler", 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			attrs := []*commonpb.KeyValue{kv("session.id", sv("s1")), kv("request_id", sv("r1"))}
+			if c.attrName != "" {
+				attrs = append(attrs, kv("event.name", sv(c.attrName)))
+			}
+			rec := &logspb.LogRecord{EventName: c.eventName, Body: body(c.body), Attributes: attrs}
+			if got := len(ParseContent(export(nil, rec))); got != c.want {
+				t.Fatalf("content rows = %d, want %d", got, c.want)
+			}
+		})
+	}
+}
+
 func TestParseContent_EchoGuard(t *testing.T) {
 	rec := &logspb.LogRecord{
 		EventName:  "user_prompt",

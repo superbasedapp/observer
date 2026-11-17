@@ -3,7 +3,7 @@ package sandboxbackend
 import "github.com/marmutapp/superbased-observer/internal/sandboxvocab"
 
 // RegistryVersion moves with every enum or row-shape change.
-const RegistryVersion = 10
+const RegistryVersion = 11
 
 // Maturity says whether a row may be offered at all.
 type Maturity string
@@ -79,6 +79,27 @@ type Isolation struct {
 	// the filter is applied only while [terminal.sandbox].seccomp is on.
 	Seccomp       sandboxvocab.Seccomp
 	SeccompSource sandboxvocab.ClassSource
+	// OwnPIDNamespace: the layer runs the agent in a pid namespace of its
+	// own, so a process inside cannot name one outside it. Declared per row,
+	// never inferred; the zero value means not grounded. The strace opt-in
+	// ([terminal.sandbox].seccomp_allow_seize, lane ptrace) reads it as one
+	// of its two containment grounds.
+	OwnPIDNamespace bool
+	// MasksWorkspaceSecrets: the layer can hide the workspace's secret files
+	// (.env variants, key files, registry credentials) inside the box on
+	// request, through the pure planner's SecretMask option
+	// (internal/sandbox secretmask.go). Declared per row, never inferred;
+	// the zero value means the layer cannot, and a caller that wants the
+	// mask must fall back to a warning (a launch that asks a row without it
+	// is refused, never run unmasked in silence).
+	MasksWorkspaceSecrets bool
+}
+
+// CanMaskWorkspaceSecrets reports whether the layer can hide the workspace's
+// secret files on request: the one predicate a caller reads, never the
+// backend name.
+func (c Capability) CanMaskWorkspaceSecrets() bool {
+	return c.Iso.MasksWorkspaceSecrets
 }
 
 // FiltersWithObserverProfile reports whether the layer loads Observer's own
@@ -216,6 +237,11 @@ const (
 	// unix socket (Cloud Hypervisor's hybrid vsock: `CONNECT <port>\n`, then
 	// the relay mux's stream 2 with its resize control; lane SBX-P4).
 	TransportVsockUDS ByteTransport = "vsock_uds"
+	// TransportWebSocketStream: one vendor WebSocket per process carries the
+	// box PTY's output and, in the other direction, its input and resize
+	// frames, and re-attaches from a stream sequence (Docker Sandboxes'
+	// interact stream, subprotocol sandboxes.v1; lane SBX-DOCKER).
+	TransportWebSocketStream ByteTransport = "websocket_stream"
 )
 
 // RelayTransport is how the capture relay crosses the row's boundary

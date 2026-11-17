@@ -67,6 +67,8 @@ func TestHostedGuestReattachHeldDark(t *testing.T) {
 	}{
 		{sandboxremote.VendorModal, map[string]string{"MODAL_TOKEN_ID": "ak-fake", "MODAL_TOKEN_SECRET": "as-fake"}},
 		{sandboxremote.VendorVercel, map[string]string{"VERCEL_TOKEN": "vt-fake", "VERCEL_TEAM_ID": "team_fake", "VERCEL_PROJECT_ID": "prj_fake"}},
+		{sandboxremote.VendorInstaBox, map[string]string{"INSTABOX_API_KEY": "ibk-fake"}},
+		{sandboxremote.VendorDaytona, map[string]string{"DAYTONA_API_KEY": "dk-fake"}},
 	} {
 		v, _ := sandboxremote.VendorFor(tc.provider)
 		if v.GuestReattach || hostedGuestReattachOn(v) {
@@ -101,6 +103,8 @@ func TestHostedAdoptGuestRowsBehindTheFlag(t *testing.T) {
 	}{
 		{sandboxremote.VendorModal, map[string]string{"MODAL_TOKEN_ID": "ak-fake", "MODAL_TOKEN_SECRET": "as-fake"}},
 		{sandboxremote.VendorVercel, map[string]string{"VERCEL_TOKEN": "vt-fake", "VERCEL_TEAM_ID": "team_fake", "VERCEL_PROJECT_ID": "prj_fake"}},
+		{sandboxremote.VendorInstaBox, map[string]string{"INSTABOX_API_KEY": "ibk-fake"}},
+		{sandboxremote.VendorDaytona, map[string]string{"DAYTONA_API_KEY": "dk-fake"}},
 	} {
 		t.Run(tc.provider, func(t *testing.T) {
 			v, _ := sandboxremote.VendorFor(tc.provider)

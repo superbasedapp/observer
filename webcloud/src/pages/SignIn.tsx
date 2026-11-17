@@ -5,6 +5,7 @@ import { ApiError, getAuthConfig, getAuthModeHint, login } from "../api";
 import type { AuthConfig } from "../api";
 import { loadConsent } from "../consent";
 import { AuthShell } from "../components/AuthShell";
+import { routerPath, safeReturnTo } from "../lib/connectModel";
 import { Pill } from "@shared/primitives/Pill";
 import { Skeleton } from "@shared/primitives/Skeleton";
 import { InlineLoading } from "@shared/primitives/Spinner";
@@ -70,6 +71,21 @@ function Notice({
 // width and a taller hit area.
 const SIGN_IN_BUTTON = "h-10 w-full";
 
+/** SIGN_IN_TEXT is the page's copy (Getting started v2). index.html carries
+ * the same lines for a browser with JavaScript off. */
+export const SIGN_IN_TEXT = {
+  title: "Sign in to SuperBased",
+  lead: "An account gives you one dashboard across your machines, teams, and AI session titles (opt-in).",
+  newHere: "New here? The same button creates your account.",
+  sendsNothing: "Signing in alone sends nothing from your machine.",
+} as const;
+
+/** returnToHere reads the ?return_to= a guarded page sent the visitor with
+ * (connectModel.safeReturnTo: a /portal/ path only). */
+function returnToHere(): string | null {
+  return safeReturnTo(new URLSearchParams(window.location.search).get("return_to"));
+}
+
 export function SignIn() {
   const navigate = useNavigate();
   const [mode, setMode] = useState<SignInMode>("loading");
@@ -112,7 +128,8 @@ export function SignIn() {
   // contract and keeps the broker name; the label the developer reads does not.
   function onSingleSignOnClick() {
     setRedirecting(true);
-    window.location.assign("/portal/auth/workos/start");
+    const back = returnToHere();
+    window.location.assign("/portal/auth/workos/start" + (back ? "?return_to=" + encodeURIComponent(back) : ""));
   }
 
   async function onSubmit(e: FormEvent) {
@@ -130,7 +147,8 @@ export function SignIn() {
       // the consent screen and the app from it, and the login broadcast does
       // not deliver to the tab that sent it, so this tab has to fetch its own.
       await loadConsent();
-      navigate("/", { replace: true });
+      const back = returnToHere();
+      navigate(back ? routerPath(back) : "/", { replace: true });
     } catch (err) {
       if (err instanceof ApiError && err.status === 501) {
         setPending(err.message);
@@ -146,18 +164,9 @@ export function SignIn() {
 
   return (
     <AuthShell
-      title="Sign in to Cloud Intelligence"
+      title={SIGN_IN_TEXT.title}
       step="portal"
-      intro={
-        <p>
-          Review the sessions you upload with the{" "}
-          <code className="whitespace-nowrap rounded-1 bg-bg-3 px-1 py-0.5 font-mono text-[11.5px] text-fg-1">
-            observer cloud
-          </code>{" "}
-          CLI, and the suggested titles, tags and descriptions that come
-          back.
-        </p>
-      }
+      intro={<p>{SIGN_IN_TEXT.lead}</p>}
     >
       <div className="flex flex-col gap-3">
         {mode === "loading" && (
@@ -183,7 +192,7 @@ export function SignIn() {
               Browser sign-in is not enabled yet for this deployment. You
               can still sign in from your terminal with{" "}
               <code className="font-mono text-[11.5px] text-fg-0">
-                observer cloud login
+                observer connect
               </code>
               .
             </Notice>
@@ -206,8 +215,9 @@ export function SignIn() {
               {redirecting ? "Opening sign-in" : "Continue with your SuperBased account"}
             </Button>
             <p className="text-center text-[11.5px] leading-relaxed text-fg-3">
-              Single sign-on opens in this tab. Signing in uploads nothing
-              from your machine.
+              {SIGN_IN_TEXT.newHere}
+              <br />
+              {SIGN_IN_TEXT.sendsNothing}
             </p>
           </>
         )}

@@ -1232,6 +1232,18 @@ func (r *sandboxRuntime) createRun(ctx context.Context, req termsvc.PrepareReque
 	if err != nil {
 		return termsvc.CreateResult{}, err
 	}
+	// The opt-in workspace secret mask is built only by a row that declares
+	// it (bwrap); any other chosen row refuses the launch rather than run
+	// with the secrets visible (terminal_sandbox_secretmask.go).
+	if req.MaskWorkspaceSecrets {
+		backend := sandboxbackend.BackendBwrap
+		if d != nil {
+			backend = r.driverBackend(d)
+		}
+		if err := secretMaskRefusal(backend); err != nil {
+			return termsvc.CreateResult{}, err
+		}
+	}
 	if req.Tool == termsvc.ShellTool {
 		if err := r.shellRefusal(d); err != nil {
 			return termsvc.CreateResult{}, err
@@ -1290,6 +1302,8 @@ func (r *sandboxRuntime) createRun(ctx context.Context, req termsvc.PrepareReque
 		ProxyRouted: routed,
 		// bubblewrap binds the tool's own state (operator ruling P-183).
 		SignInShared: sandboxSignInSharedTool(req.Tool),
+		// Attach composes the argv, so the mask request rides the result.
+		MaskWorkspaceSecrets: req.MaskWorkspaceSecrets,
 	}, nil
 }
 
@@ -1409,13 +1423,15 @@ func (r *sandboxRuntime) Attach(ctx context.Context, created termsvc.CreateResul
 	if err := r.writeRunRecord(created.Run); err != nil {
 		return termsvc.AttachResult{}, err
 	}
-	wrapArgv, err := r.buildWrapArgv(created.Run.Tool, created.Run.Dir, created.Run.ID, created.ProxyRouted)
+	wrapArgv, mask, err := r.buildWrapArgvMasked(created.Run.Tool, created.Run.Dir, created.Run.ID, created.ProxyRouted, created.Isolation.Seccomp, created.MaskWorkspaceSecrets)
 	if err != nil {
 		_ = sandboxrelayd.RemoveRun(r.observerDir, created.Run.ID)
 		return termsvc.AttachResult{}, err
 	}
 	r.unattached.Delete(created.Run.ID)
-	return termsvc.AttachResult{WrapArgv: wrapArgv}, nil
+	outcome := secretMaskOutcome(mask)
+	r.logSecretMask(created.Run.ID, outcome)
+	return termsvc.AttachResult{WrapArgv: wrapArgv, SecretMask: outcome}, nil
 }
 
 // resolveSandboxBindPath resolves every symlink in a bind path for the
@@ -1611,11 +1627,23 @@ func (r *sandboxRuntime) runIsolation(tool string, routed bool) termrun.Isolatio
 // composes the plan via sandbox.BuildPlan, and returns the launch-ready wrapper
 // prefix: [bwrapPath, <flags...>, "--"]. termsession.Spec.argv() prepends this
 // before [BinPath, Subcommand, ...ExtraArgs], yielding
-// `bwrap <flags...> -- observer <verb> ...` (D2 seam).
-func (r *sandboxRuntime) buildWrapArgv(tool, workspaceRoot, runID string, routed bool) ([]string, error) {
+// `bwrap <flags...> -- observer <verb> ...` (D2 seam). seccompRun is the
+// run's recorded seccomp state (withSeccompRun), which names the profile
+// when the strace opt-in lifted PTRACE_SEIZE for it.
+func (r *sandboxRuntime) buildWrapArgv(tool, workspaceRoot, runID string, routed bool, seccompRun string) ([]string, error) {
+	wrap, _, err := r.buildWrapArgvMasked(tool, workspaceRoot, runID, routed, seccompRun, false)
+	return wrap, err
+}
+
+// buildWrapArgvMasked is buildWrapArgv with the opt-in workspace secret mask:
+// with maskSecrets false it composes exactly the argv buildWrapArgv always
+// did (a zero report); with it true the plan also hides the workspace's
+// secret files (sandbox.Request.SecretMask) and the report says what the
+// walk covered and could not cover.
+func (r *sandboxRuntime) buildWrapArgvMasked(tool, workspaceRoot, runID string, routed bool, seccompRun string, maskSecrets bool) ([]string, sandbox.SecretMaskReport, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil, fmt.Errorf("terminal_sandbox: resolve home: %w", err)
+		return nil, sandbox.SecretMaskReport{}, fmt.Errorf("terminal_sandbox: resolve home: %w", err)
 	}
 	if resolved, rerr := filepath.EvalSymlinks(home); rerr == nil {
 		home = resolved
@@ -1629,7 +1657,7 @@ func (r *sandboxRuntime) buildWrapArgv(tool, workspaceRoot, runID string, routed
 		if note == "" {
 			note = "no grounded sandbox state-dir row"
 		}
-		return nil, fmt.Errorf("terminal_sandbox: tool %q is not sandbox-launchable: %s", tool, note)
+		return nil, sandbox.SecretMaskReport{}, fmt.Errorf("terminal_sandbox: tool %q is not sandbox-launchable: %s", tool, note)
 	}
 
 	toolBinDirs := r.toolBinDirs(tool)
@@ -1639,7 +1667,7 @@ func (r *sandboxRuntime) buildWrapArgv(tool, workspaceRoot, runID string, routed
 
 	bwrapPath, err := exec.LookPath("bwrap")
 	if err != nil {
-		return nil, fmt.Errorf("terminal_sandbox: bwrap not found on PATH: %w", err)
+		return nil, sandbox.SecretMaskReport{}, fmt.Errorf("terminal_sandbox: bwrap not found on PATH: %w", err)
 	}
 
 	netReq := sandbox.NetRequest{Egress: r.egress.Mode, ProxyPort: r.proxyPort, EgressAllowCIDRs: r.cfg.EgressAllowCIDRs}
@@ -1662,28 +1690,34 @@ func (r *sandboxRuntime) buildWrapArgv(tool, workspaceRoot, runID string, routed
 
 	overlays, pins, err := r.protection(home, workspaceRoot, spec.Sandbox)
 	if err != nil {
-		return nil, err
+		return nil, sandbox.SecretMaskReport{}, err
 	}
 	// A worktree run's binds into the main repository's .git folder
 	// (terminal_sandbox_worktree.go); nothing for any other source.
 	wt, err := r.worktreeBox(runID, workspaceRoot, r.rwRoots(home, workspaceRoot, spec.Sandbox))
 	if err != nil {
-		return nil, err
+		return nil, sandbox.SecretMaskReport{}, err
 	}
 	hostMasks, err := hostSocketMasks(os.Getuid())
 	if err != nil {
-		return nil, err
+		return nil, sandbox.SecretMaskReport{}, err
 	}
 	sweeps, err := socketSweeps()
 	if err != nil {
-		return nil, err
+		return nil, sandbox.SecretMaskReport{}, err
 	}
 
 	// The seccomp filter (lane N2): bwrap reads it from the host helper.
 	bwrapRow, _ := sandboxbackend.Get(sandboxbackend.BackendBwrap)
-	seccomp, err := sandboxSeccompProfile(r.cfg, bwrapRow)
+	seccomp, err := sandboxSeccompProfile(r.cfg, bwrapRow, seccompRun)
 	if err != nil {
-		return nil, err
+		return nil, sandbox.SecretMaskReport{}, err
+	}
+	// The foreign-OS drives to hide (every Windows drive on WSL2); an
+	// unreadable mount table refuses the launch.
+	maskPaths, err := r.maskPaths()
+	if err != nil {
+		return nil, sandbox.SecretMaskReport{}, err
 	}
 	plan, err := sandbox.BuildPlan(sandbox.Request{
 		Net:           netReq,
@@ -1699,7 +1733,7 @@ func (r *sandboxRuntime) buildWrapArgv(tool, workspaceRoot, runID string, routed
 		StateRW:       spec.Sandbox.StateRW,
 		StateRO:       spec.Sandbox.StateRO,
 		RuntimeLadder: sandboxRuntimeLadder,
-		MaskPaths:     r.maskPaths(),
+		MaskPaths:     maskPaths,
 		HomeMode:      r.homeMode(),
 		ExtraRO:       append(slices.Clip(r.cfg.ExtraROBinds), wt.ro...),
 		ExtraRW:       append(slices.Clip(r.cfg.ExtraRWBinds), wt.rw...),
@@ -1707,9 +1741,11 @@ func (r *sandboxRuntime) buildWrapArgv(tool, workspaceRoot, runID string, routed
 		Relay:         sandbox.RelayRequest{RunID: runID, HostObserverDir: r.observerDir},
 		ResolvePath:   resolveSandboxBindPath,
 		Seccomp:       seccomp,
+		// nil (the argv is unchanged) unless this launch asked for it.
+		SecretMask: sandboxSecretMaskOption(maskSecrets),
 	})
 	if err != nil {
-		return nil, err
+		return nil, sandbox.SecretMaskReport{}, err
 	}
 
 	// Argv(inner) renders [flags..., "--", inner...]. We want the wrapper prefix
@@ -1719,7 +1755,7 @@ func (r *sandboxRuntime) buildWrapArgv(tool, workspaceRoot, runID string, routed
 	const sentinel = "OBSERVER_SANDBOX_INNER_SENTINEL"
 	composed := plan.Argv([]string{sentinel})
 	if len(composed) < 2 || composed[len(composed)-1] != sentinel {
-		return nil, fmt.Errorf("terminal_sandbox: bwrap plan composition failed")
+		return nil, sandbox.SecretMaskReport{}, fmt.Errorf("terminal_sandbox: bwrap plan composition failed")
 	}
 	flags := composed[:len(composed)-1] // [flags..., "--", (guest helper...)]
 	// A tier that forwards anything, or a launch with protected paths that do
@@ -1728,13 +1764,13 @@ func (r *sandboxRuntime) buildWrapArgv(tool, workspaceRoot, runID string, routed
 	// bwrap ...
 	host, err := plan.HostArgv(r.observerBin)
 	if err != nil {
-		return nil, err
+		return nil, sandbox.SecretMaskReport{}, err
 	}
 	wrap := make([]string, 0, len(host)+len(flags)+1)
 	wrap = append(wrap, host...)
 	wrap = append(wrap, bwrapPath)
 	wrap = append(wrap, flags...)
-	return wrap, nil
+	return wrap, plan.SecretMaskReport(), nil
 }
 
 // sandboxObserverSecrets are observer-dir entries a sandboxed process never
@@ -2112,7 +2148,11 @@ func (r *sandboxRuntime) toolBinDirs(tool string) []string {
 // otherwise leave readable) plus the operator's [terminal.sandbox].mask_paths.
 // Computed in cmd (crossmount knowledge) so the pure planner stays source-
 // agnostic. Deduped.
-func (r *sandboxRuntime) maskPaths() []string {
+//
+// It returns an error when the foreign-OS mounts cannot be determined
+// (foreignMountRoots fails closed): the launch is refused rather than run
+// with a drive possibly showing.
+func (r *sandboxRuntime) maskPaths() ([]string, error) {
 	seen := map[string]bool{}
 	var out []string
 	add := func(p string) {
@@ -2123,13 +2163,17 @@ func (r *sandboxRuntime) maskPaths() []string {
 		seen[p] = true
 		out = append(out, p)
 	}
-	for _, root := range foreignMountRoots() {
+	roots, err := foreignMountRoots()
+	if err != nil {
+		return nil, err
+	}
+	for _, root := range roots {
 		add(root)
 	}
 	for _, p := range r.cfg.MaskPaths {
 		add(p)
 	}
-	return out
+	return out, nil
 }
 
 // runGitStep execs one workspace.Step (a `git ...` invocation), capturing

@@ -244,6 +244,45 @@ export function simulateQuery(sel: RecipeSelection, hours: number, remove = fals
   return { hours, recipe: 1, ...previewQuery(sel, remove) };
 }
 
+/** ReplayProgress is the 202 body GET /api/guard/simulate?progress=1 answers
+ *  while a replay runs (dashboard guard_simulate_job.go): the run's counts so
+ *  the card can show how far it is instead of a bare disabled button. */
+export type ReplayProgress = {
+  running: true;
+  /** Waiting for a different replay on this machine to finish first. */
+  queued: boolean;
+  /** Captured actions in the window (0 until loaded). */
+  actions: number;
+  /** Action checks done and to do: every action once per policy compared. */
+  evaluated: number;
+  total: number;
+  elapsed_ms: number;
+};
+
+/** isReplayProgress tells a still-running poll answer from the result. */
+export function isReplayProgress(x: unknown): x is ReplayProgress {
+  return typeof x === "object" && x !== null && (x as { running?: unknown }).running === true;
+}
+
+/** REPLAY_POLL_MS is how often the card asks a running replay how far it is. */
+export const REPLAY_POLL_MS = 1000;
+
+/** replayProgressText is the line under the replay buttons while one runs. */
+export function replayProgressText(p: ReplayProgress): string {
+  const secs = Math.max(0, Math.round(p.elapsed_ms / 1000));
+  if (p.queued) return `Waiting for another replay on this machine to finish (${secs} s)...`;
+  if (p.actions <= 0 || p.total <= 0) return `Loading the captured actions (${secs} s)...`;
+  const done = Math.min(p.evaluated, p.total);
+  const pct = Math.floor((done / p.total) * 100);
+  const n = p.actions.toLocaleString("en-US");
+  let line = `Replaying ${n} actions: ${pct}% done (${secs} s)`;
+  if (done > 0 && done < p.total) {
+    const left = Math.ceil(((p.elapsed_ms / done) * (p.total - done)) / 1000);
+    line += `, about ${left} s left`;
+  }
+  return line + ".";
+}
+
 /** applyBody is POST /api/guard/recipes/apply's body. */
 export function applyBody(sel: RecipeSelection): { level: string; packs: string[]; scope: RecipeScope; project_root: string } {
   return {

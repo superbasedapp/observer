@@ -310,7 +310,7 @@ func Snapshot(ctx context.Context, root string) (Info, error) {
 // non-zero exit wraps the underlying error with %w (so timeout/cancellation
 // stays classifiable) and includes the trimmed stderr for context.
 func runGit(ctx context.Context, root string, args ...string) ([]byte, bool, error) {
-	return runGitCapped(ctx, root, maxOutputBytes, perCommandTimeout, nil, args...)
+	return runGitCapped(ctx, root, Program{}, maxOutputBytes, perCommandTimeout, nil, args...)
 }
 
 // RunReadOnly is runGit with a CALLER-CHOSEN stdout byte cap, exported so a
@@ -341,7 +341,7 @@ func RunReadOnlyTimeout(ctx context.Context, root string, maxBytes int, timeout 
 	if timeout <= 0 {
 		timeout = perCommandTimeout
 	}
-	return runGitCapped(ctx, root, maxBytes, timeout, nil, args...)
+	return runGitCapped(ctx, root, Program{}, maxBytes, timeout, nil, args...)
 }
 
 // RunReadOnlyEnv is RunReadOnlyTimeout with extra environment entries appended
@@ -354,7 +354,7 @@ func RunReadOnlyEnv(ctx context.Context, root string, maxBytes int, timeout time
 	if timeout <= 0 {
 		timeout = perCommandTimeout
 	}
-	return runGitCapped(ctx, root, maxBytes, timeout, append([]string(nil), extraEnv...), args...)
+	return runGitCapped(ctx, root, Program{}, maxBytes, timeout, append([]string(nil), extraEnv...), args...)
 }
 
 // RunReadOnlyNoLazyFetch is RunReadOnlyTimeout with GIT_NO_LAZY_FETCH=1
@@ -375,14 +375,30 @@ func RunReadOnlyNoLazyFetch(ctx context.Context, root string, maxBytes int, time
 	if timeout <= 0 {
 		timeout = perCommandTimeout
 	}
-	return runGitCapped(ctx, root, maxBytes, timeout, []string{noLazyFetchEnv}, args...)
+	return runGitCapped(ctx, root, Program{}, maxBytes, timeout, []string{noLazyFetchEnv}, args...)
+}
+
+// RunReadOnlyNoLazyFetchEnv is RunReadOnlyNoLazyFetch with extra
+// environment entries appended after the envelope's own (the commit quick
+// scan's GIT_DIR and GIT_WORK_TREE for a linked worktree whose `.git`
+// pointer this host's git cannot follow). Same envelope, same caps, same -c
+// overrides, and GIT_NO_LAZY_FETCH=1 always set.
+func RunReadOnlyNoLazyFetchEnv(ctx context.Context, root string, maxBytes int, timeout time.Duration, extraEnv []string, args ...string) ([]byte, bool, error) {
+	if maxBytes <= 0 {
+		maxBytes = maxOutputBytes
+	}
+	if timeout <= 0 {
+		timeout = perCommandTimeout
+	}
+	env := append(append([]string(nil), extraEnv...), noLazyFetchEnv)
+	return runGitCapped(ctx, root, Program{}, maxBytes, timeout, env, args...)
 }
 
 // runGitCapped is runGit's implementation, parameterized on the stdout/
 // stderr byte cap and the per-invocation timeout so runGit (fixed at
 // maxOutputBytes / perCommandTimeout) and RunReadOnly[Timeout]
 // (caller-chosen) share one envelope.
-func runGitCapped(ctx context.Context, root string, maxBytes int, timeout time.Duration, extraEnv []string, args ...string) ([]byte, bool, error) {
+func runGitCapped(ctx context.Context, root string, prog Program, maxBytes int, timeout time.Duration, extraEnv []string, args ...string) ([]byte, bool, error) {
 	if dir, refused := HostGitRefused(root); refused {
 		return nil, false, fmt.Errorf("%w (%s)", ErrHostGitRefused, dir)
 	}
@@ -400,8 +416,9 @@ func runGitCapped(ctx context.Context, root string, maxBytes int, timeout time.D
 	// log and show run gpg.program (or gpg.ssh.program) on every signed
 	// commit, which the daemon's commit scan reads every tick (RB1 sweep
 	// finding P3).
+	bin, dir := prog.binary(root)
 	full := []string{
-		"-C", root,
+		"-C", dir,
 		"--no-optional-locks",
 		"--no-pager",
 		"-c", "core.fsmonitor=false",
@@ -411,8 +428,16 @@ func runGitCapped(ctx context.Context, root string, maxBytes int, timeout time.D
 		"-c", "log.showSignature=false",
 	}
 	full = append(full, args...)
-	cmd := exec.CommandContext(cctx, "git", full...)
+	cmd := exec.CommandContext(cctx, bin, full...) //nolint:gosec // G204: bin is "git" or a git.exe internal/gitroute verified by its --version; argv is the envelope's fixed flags plus the caller's fixed subcommand
 	cmd.Env = append(append(os.Environ(), gitEnvOverrides...), extraEnv...)
+	if prog.Interop {
+		// A Windows program started through WSL interop sees only the
+		// variables WSLENV names: name exactly the envelope's own and the
+		// caller's, never this process's WSLENV, and start it in the
+		// repository so its working directory is a drive path.
+		cmd.Env = interopEnv(os.Environ(), append(interopEnvOverrides(), extraEnv...))
+		cmd.Dir = root
+	}
 	// Bound the time Wait blocks for I/O after the process exits or the context
 	// cancels, so a descendant holding the output pipes cannot keep Wait blocked
 	// forever (finding 6).
@@ -426,37 +451,55 @@ func runGitCapped(ctx context.Context, root string, maxBytes int, timeout time.D
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	if err := cmd.Run(); err != nil {
-		if errors.Is(err, exec.ErrNotFound) {
-			return nil, false, ErrGitUnavailable
+	if err := cmd.Start(); err != nil {
+		if prog.Path != "" {
+			// A named program that cannot start (interop off, the file
+			// gone, an exec format error) is unavailable, like a git
+			// missing from PATH, so a caller can tell it from git's own
+			// failure.
+			return nil, false, fmt.Errorf("%w: %s: %w", ErrGitUnavailable, prog.Path, err)
 		}
-		var execErr *exec.Error
-		if errors.As(err, &execErr) {
-			return nil, false, ErrGitUnavailable
-		}
-		// exitCode stays -1 (never a real git exit code) when the
-		// failure wasn't cmd.Run() itself reporting a plain non-zero
-		// exit (e.g. a context deadline) — IsNoCommitsError's `!= 0`
-		// check never mismatches that as a git-exit signal.
-		exitCode := -1
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			exitCode = exitErr.ExitCode()
-		}
-		ge := &GitError{
-			Args:     append([]string(nil), args...),
-			ExitCode: exitCode,
-			Stderr:   strings.TrimSpace(string(stderr.Bytes())),
-		}
-		// Our own deadline fired while the caller's context is still live:
-		// this is a timeout, not a cancellation.
-		if errors.Is(cctx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
-			ge.TimedOut = true
-			ge.Timeout = timeout
-		}
-		return nil, false, ge
+		return nil, false, gitFailure(ctx, cctx, err, stderr.Bytes(), timeout, args)
+	}
+	if err := cmd.Wait(); err != nil {
+		return nil, false, gitFailure(ctx, cctx, err, stderr.Bytes(), timeout, args)
 	}
 	return stdout.Bytes(), stdout.overflowed, nil
+}
+
+// gitFailure classifies one failed git run: a missing or unrunnable binary
+// is ErrGitUnavailable, anything else a *GitError carrying git's exit code
+// and stderr, TimedOut when the run's own deadline (cctx) fired while the
+// caller's context (ctx) was still live.
+func gitFailure(ctx, cctx context.Context, err error, stderr []byte, timeout time.Duration, args []string) error {
+	if errors.Is(err, exec.ErrNotFound) {
+		return ErrGitUnavailable
+	}
+	var execErr *exec.Error
+	if errors.As(err, &execErr) {
+		return ErrGitUnavailable
+	}
+	// exitCode stays -1 (never a real git exit code) when the failure
+	// wasn't a plain non-zero exit (e.g. a context deadline) -
+	// IsNoCommitsError's `!= 0` check never mismatches that as a git-exit
+	// signal.
+	exitCode := -1
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		exitCode = exitErr.ExitCode()
+	}
+	ge := &GitError{
+		Args:     append([]string(nil), args...),
+		ExitCode: exitCode,
+		Stderr:   strings.TrimSpace(string(stderr)),
+	}
+	// Our own deadline fired while the caller's context is still live:
+	// this is a timeout, not a cancellation.
+	if errors.Is(cctx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+		ge.TimedOut = true
+		ge.Timeout = timeout
+	}
+	return ge
 }
 
 // gitEnvOverrides is appended to the inherited environment of every git

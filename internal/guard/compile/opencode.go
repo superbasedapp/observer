@@ -280,7 +280,7 @@ func openCodeRows() []Translation {
 		},
 		{
 			RuleID: "R-179", Fidelity: FidelityApprox,
-			Note: "each scanner base maps to a pattern; the trailing-glob form misses a bare invocation with no arguments, so the match is approximate",
+			Note: "each scanner base maps to a pattern; the trailing-glob form misses a bare invocation with no arguments, so the match is approximate (hydra uses the pattern 'hydra *' so hydrate-style commands do not match)",
 			Entries: []Entry{
 				{Action: ActionAsk, Value: "nmap*"},
 				{Action: ActionAsk, Value: "masscan*"},
@@ -292,6 +292,14 @@ func openCodeRows() []Translation {
 				{Action: ActionAsk, Value: "nikto*"},
 				{Action: ActionAsk, Value: "nuclei*"},
 				{Action: ActionAsk, Value: "sqlmap*"},
+				{Action: ActionAsk, Value: "ffuf*"},
+				{Action: ActionAsk, Value: "gobuster*"},
+				{Action: ActionAsk, Value: "feroxbuster*"},
+				{Action: ActionAsk, Value: "hydra *"},
+				{Action: ActionAsk, Value: "wfuzz*"},
+				{Action: ActionAsk, Value: "zaproxy*"},
+				{Action: ActionAsk, Value: "zap.sh*"},
+				{Action: ActionAsk, Value: "zap-baseline.py*"},
 			},
 		},
 		{

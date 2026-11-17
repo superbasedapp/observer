@@ -19,9 +19,18 @@
 //
 // then reload the page. The Billing page has two further states reachable
 // via a `?billing=canceled` / `?billing=live` query flag — see the "Billing"
-// section below.
+// section below. The Teams pages (plan 07 M6.5) read devmockOrgs.ts, whose
+// registry covers an active, a waitlisted, a failed and a member-view team,
+// and the personal org (D-IND-8; see its ?personal=<state> flag there).
+//
+// The personal plane switch (D-IND-8) that /portal/api/session and
+// /portal/api/auth-config report is "serving" unless ?plane=retired is on
+// the first load or localStorage "sbci_devmock_plane" is "retired"; when
+// retired, the old pages (/sessions, /overview, ...) render the moved notice.
 
-type Mode = "populated" | "empty" | "signedout" | "consent";
+import { routeAccountDeletion, routeOrgs } from "./devmockOrgs";
+
+type Mode ="populated" | "empty" | "signedout" | "consent";
 
 function isMode(v: string | null): v is Mode {
   return (
@@ -242,25 +251,38 @@ function usageBody(m: Mode) {
         "At most 2 enrichment jobs run at once; the rest queue until a slot frees.",
     };
   }
+  // Populated is a plan v5 (R-AI1) token-budgeted account: the count caps
+  // read 0 and the token windows carry the allowance.
   return {
     feature: "session_enrichment",
     plan: "free",
     plan_label: "Signed-in Free",
-    plan_version: 3,
+    plan_version: 5,
     budget_pool: "shared-free",
     plan_overridden: false,
-    daily_used: 80,
-    daily_cap: 100,
-    monthly_used: 2160,
-    monthly_cap: 3000,
+    daily_used: 0,
+    daily_cap: 0,
+    monthly_used: 0,
+    monthly_cap: 0,
     concurrency_used: 1,
     concurrency_cap: 2,
+    budget_unit: "tokens" as const,
+    enrichment_tier: "free",
+    enrichment_tier_version: 1,
+    daily_tokens_used: 200000,
+    daily_token_budget: 250000,
+    daily_tokens_remaining: 50000,
+    monthly_tokens_used: 1240000,
+    monthly_token_budget: 3000000,
+    monthly_tokens_remaining: 1760000,
+    session_token_budget: 60000,
+    evidence_token_budget: 4000,
     warnings: [
       {
-        window: "daily",
-        level: "critical" as const,
-        used: 80,
-        cap: 100,
+        window: "daily_tokens",
+        level: "warn" as const,
+        used: 200000,
+        cap: 250000,
         used_fraction: 0.8,
       },
     ],
@@ -992,6 +1014,21 @@ function communityBody(m: Mode, search: string) {
   };
 }
 
+// planeFlag is the mocked personal_plane switch (see the header).
+function planeFlag(): "serving" | "retired" {
+  try {
+    if (new URLSearchParams(window.location.search).get("plane") === "retired") return "retired";
+  } catch {
+    /* fall through */
+  }
+  try {
+    if (localStorage.getItem("sbci_devmock_plane") === "retired") return "retired";
+  } catch {
+    /* fall through */
+  }
+  return "serving";
+}
+
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -1006,6 +1043,14 @@ async function route(
   search: string,
 ): Promise<Response | null> {
   const m = mode();
+
+  // Team orgs (plan 07 M6.5): list, create, slug check, detail, rename,
+  // billing and checkout per org (devmockOrgs.ts).
+  const orgRes = routeOrgs(path, method, init, search, m, json);
+  if (orgRes) return orgRes;
+  // The account deletion precheck and its blocked refusal (plan 07 M6.9).
+  const accountDeletionRes = routeAccountDeletion(path, method, m, json);
+  if (accountDeletionRes) return accountDeletionRes;
 
   // Community percentiles (W5). Exact metrics path before the base path.
   if (path === "/portal/api/community/metrics") {
@@ -1053,10 +1098,12 @@ async function route(
   }
 
   if (path === "/portal/api/session") {
-    return m === "signedout" ? json({ error: "not signed in" }, 401) : json(SESSION);
+    return m === "signedout"
+      ? json({ error: "not signed in" }, 401)
+      : json({ ...SESSION, personal_plane: planeFlag() });
   }
   if (path === "/portal/api/auth-config") {
-    return json({ auth_mode: "workos", workos_browser_enabled: true });
+    return json({ auth_mode: "workos", workos_browser_enabled: true, personal_plane: planeFlag() });
   }
   if (path === "/portal/auth/login" && method === "POST") {
     return json({

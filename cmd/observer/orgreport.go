@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/attachrule"
 	"github.com/marmutapp/superbased-observer/internal/budgetwarnfile"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/govern"
@@ -154,6 +155,9 @@ func printOrgStatus(out io.Writer, rep orgStatusReport) {
 		return
 	}
 	fmt.Fprintf(out, "Enrolled:         yes\n")
+	if line := enrolmentKindLine(rep.Tenancy); line != "" {
+		fmt.Fprintln(out, line)
+	}
 	fmt.Fprintf(out, "Organization:     %s (org_id %s)\n", st.OrgName, st.OrgID)
 	fmt.Fprintf(out, "User:             %s\n", st.UserEmail)
 	fmt.Fprintf(out, "Server:           %s\n", st.OrgServerURL)
@@ -220,6 +224,24 @@ func printOrgStatus(out io.Writer, rep orgStatusReport) {
 	for _, r := range rep.Oversized {
 		fmt.Fprintf(out, "Unshippable rows: %s\n", r.Summary())
 	}
+}
+
+// enrolmentKindLines is the "Kind:" line per enrolment kind (demo bug #3: the
+// status never printed it, so the kind had to be inferred from the share mode
+// and the guard lock line). The dashboard's top-bar chip says the same thing
+// (web/src/lib/enrolmentChip.ts).
+var enrolmentKindLines = map[string]string{
+	orgcontract.TenancyIndividual: "Kind:             individual - the organization can add guard floors and lower budget caps,\n" +
+		"                  but cannot switch settings on this machine for you",
+	orgcontract.TenancyManaged: "Kind:             organization-managed - the organization enforces what it holds authority\n" +
+		"                  for (guard policy, budgets, pinned settings) and receives content",
+}
+
+// enrolmentKindLine renders the kind collectOrgStatus resolved through
+// orgclient.NodeManaged; "" (an unresolved kind) prints nothing rather than a
+// guess.
+func enrolmentKindLine(tenancy string) string {
+	return enrolmentKindLines[tenancy]
 }
 
 // grantShowReport is `observer org grant show`.
@@ -540,6 +562,10 @@ type unenrolReport struct {
 	// (T-728); ConfigWarn is set when it could not be made.
 	ConfigEdit orgClientCfgEdit
 	ConfigWarn string
+	// Drain is what was sent to the organization before leaving, or left
+	// unsent with --drop-unsent (R3-78); DropRequested is that choice.
+	Drain         orgclient.DrainReport
+	DropRequested bool
 }
 
 // unenrolLocalSteps are the rows of the conferred -> retired table that this
@@ -647,7 +673,13 @@ func leaveRoutes(configPath string, apply bool) ([]proxyroute.LeaveRoute, error)
 }
 
 // performUnenrol leaves the organization and runs the symmetric cleanup.
-func performUnenrol(ctx context.Context, b orgBundle, configPath string) (unenrolReport, error) {
+//
+// R3-78: the rows still waiting for the organization are sent to it FIRST,
+// through the push path (orgclient.DrainBeforeLeave), because leaving removes
+// the credentials that could ever send them. When they cannot be sent the
+// leave is refused (*orgclient.UnsentRowsError, nothing changed) unless
+// dropUnsent is set.
+func performUnenrol(ctx context.Context, b orgBundle, configPath string, dropUnsent bool) (unenrolReport, error) {
 	st, err := b.client.Status(ctx)
 	if err != nil {
 		return unenrolReport{}, err
@@ -655,7 +687,16 @@ func performUnenrol(ctx context.Context, b orgBundle, configPath string) (unenro
 	if !st.Enrolled {
 		return unenrolReport{}, nil
 	}
-	rep := unenrolReport{WasEnrolled: true, OrgName: st.OrgName}
+	// M8.6: a machine company config locks to its organization cannot leave
+	// it (attachrule row 1); nothing is drained or retired.
+	if err := gateManagedAttach(ctx, b, attachrule.IntentDisconnect, ""); err != nil {
+		return unenrolReport{}, err
+	}
+	drain, err := b.client.DrainBeforeLeave(ctx, switchDrainOptions(&b.cfg, dropUnsent))
+	if err != nil {
+		return unenrolReport{}, err
+	}
+	rep := unenrolReport{WasEnrolled: true, OrgName: st.OrgName, Drain: drain, DropRequested: dropUnsent}
 	// ENFORCEMENT BEFORE IDENTITY (T-718): the local enforcement artifacts go
 	// first (unenrolLocalSteps), then the client's ordered walk.
 	//
@@ -700,7 +741,7 @@ func performUnenrol(ctx context.Context, b orgBundle, configPath string) (unenro
 	// Symmetric cleanup for the proxy routes the enrolment's --wire-clients
 	// step wrote (Claude Code's ANTHROPIC_BASE_URL, Codex's provider, ...):
 	// remove exactly those, and only while they are still what enrolment
-	// wrote. A route you, `observer init` or Settings > Setup set is kept;
+	// wrote. A route you, `observer init` or Settings > Connected tools set is kept;
 	// the record of who wrote it is made at write time (internal/routeprov),
 	// never guessed from the value. Best-effort: a failure here doesn't fail
 	// unenroll.
@@ -734,6 +775,12 @@ func printUnenrolReport(out io.Writer, rep unenrolReport) {
 	if !rep.WasEnrolled {
 		fmt.Fprintln(out, "Not enrolled; nothing to do.")
 		return
+	}
+	if note, warn := drainNote(rep.Drain, true, rep.DropRequested); note != "" {
+		if warn {
+			note = "Warning: " + note
+		}
+		fmt.Fprintln(out, note)
 	}
 	fmt.Fprintf(out, "Unenrolled from %s. Local credentials cleared.\n", rep.OrgName)
 	// Admin-controlled Plane B (spec §5.1): Unenroll deleted the enrolment

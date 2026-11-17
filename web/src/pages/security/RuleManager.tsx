@@ -45,6 +45,8 @@ import {
   withIntegrityOverrides,
 } from "./integrityLock";
 import { RuleEditor } from "./RuleEditor";
+import { orgLockNote, orgUnlockedIds } from "./orgLock";
+import { ruleSourceLabel } from "./ruleScope";
 
 // RuleManager — the structured guard-rule editor (spec §1/§6 Track B). Two
 // scopes:
@@ -296,7 +298,8 @@ export function RuleManager({
 
   // Integrity ids are left out of the picker (audit CF2-A1): the guard
   // refuses to disable them in any layer.
-  const disableOptions: EntityMultiPickerOption[] = guardDisableOptions(effectiveIds);
+  // Rules the organization sets here are left out too (orgLock.ts).
+  const disableOptions: EntityMultiPickerOption[] = guardDisableOptions(orgUnlockedIds(effectiveIds, ruleDefs));
   const ignoredDisables = integrityDisables(scope === "global" ? globalDisable : projectDisable);
 
   const activeDisable = scope === "global" ? globalDisable : projectDisable;
@@ -418,7 +421,7 @@ export function RuleManager({
                 )}
                 <p className="mt-1 text-[11px] text-fg-3">
                   {scope === "global"
-                    ? "Global disables are unconditional - prefer a scoped approval or an override first."
+                    ? "This list lives in this machine's own settings and is not sent to your organization. A rule your organization sets stays on whatever it says. Global disables are unconditional - prefer a scoped approval or an override first."
                     : "Project disables apply only to sessions rooted here, and can never remove an org-protected budget rule."}
                 </p>
               </div>
@@ -538,6 +541,10 @@ function OverrideRow({ r, onEdit, onRemove }: { r: GuardOverrideRow; onEdit: () 
   );
 }
 
+// EFFECTIVE_RULES_NOTE says where the Effective rules table's rules come from.
+export const EFFECTIVE_RULES_NOTE =
+  "Every rule this machine runs: the built-in rules, plus your organization's, your own and the project's rules. Source says which one sets each rule's decision; Built-in means it runs at its built-in decision.";
+
 // EffectiveRulesTable — the read side: every rule currently in effect
 // (builtins + user/project/trusted_project/org layers), with quick actions
 // that pre-fill the editor rather than mutating anything directly.
@@ -559,6 +566,7 @@ export function EffectiveRulesTable({
       <h4 className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.06em] text-fg-3">
         Effective rules ({ids.length})
       </h4>
+      <p className="mb-1.5 text-[11px] text-fg-3">{EFFECTIVE_RULES_NOTE}</p>
       {loading ? (
         <InlineLoading label="Loading rules" block />
       ) : (
@@ -576,15 +584,21 @@ export function EffectiveRulesTable({
           {ids.map((id) => {
             const defs = ruleDefs.get(id) ?? [];
             const source = defs[0]?.source ?? "builtin";
+            const lock = orgLockNote(defs);
             return (
               <tr key={id} className="border-b border-line-1/60 last:border-0">
                 <td className="py-1.5 pr-3">
                   <RuleCell id={id} category={defs[0]?.category} defs={defs} />
                 </td>
                 <td className="py-1.5 pr-3">
-                  <Pill variant={source === "builtin" ? "neutral" : "accent"}>{source}</Pill>
+                  <Pill variant={source === "builtin" ? "neutral" : "accent"}>{ruleSourceLabel(defs)}</Pill>
                 </td>
                 <td className="py-1.5 text-right">
+                  {lock ? (
+                    <span className="px-2 text-[11px] text-fg-3" title={lock.title}>
+                      {lock.note}
+                    </span>
+                  ) : (
                   <span className="inline-flex items-center gap-1">
                     <Button size="sm" variant="ghost" onClick={() => onOverride(id)}>
                       Override
@@ -599,6 +613,7 @@ export function EffectiveRulesTable({
                       </span>
                     )}
                   </span>
+                  )}
                 </td>
               </tr>
             );

@@ -214,3 +214,141 @@ func (s *Store) fixEditedTargets(ctx context.Context, sessionID string) ([]strin
 	}
 	return out, rows.Err()
 }
+
+// FixEditFacts are what file_changes proves about one file's edits in one
+// session (security coverage gaps plan item 6): whether every write or edit
+// action of the session on the file is covered by an AI row that only added
+// lines, and whether any of them was a whole-file write.
+type FixEditFacts struct {
+	// Actions are the session's successful write and edit actions on the
+	// file.
+	Actions int
+	// Additive are those actions with a file_changes row for this file
+	// that is actor 'ai' at high confidence, with no unknown, deleted or
+	// modified line, no overwrite and no deletion.
+	Additive int
+	// WholeWrite: at least one action was a whole-file write.
+	WholeWrite bool
+	// FirstEditAt is the session's first write or edit of the file.
+	FirstEditAt time.Time
+}
+
+// AdditiveOnly reports whether every action is proven additive. Zero
+// actions prove nothing (never vacuously true).
+func (f FixEditFacts) AdditiveOnly() bool { return f.Actions > 0 && f.Additive == f.Actions }
+
+// LoadFixEditFacts returns FixEditFacts for each project-relative path in
+// rels, for one session. A path with no action is absent from the map.
+func (s *Store) LoadFixEditFacts(ctx context.Context, root, sessionID string, rels []string) (map[string]FixEditFacts, error) {
+	out := map[string]FixEditFacts{}
+	if sessionID == "" || len(rels) == 0 {
+		return out, nil
+	}
+	if len(rels) > 64 {
+		rels = rels[:64]
+	}
+	byHash := make(map[string]string, len(rels))
+	for _, r := range rels {
+		if h := loc.PathHash(root, r); h != "" {
+			byHash[h] = r
+		}
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT a.id, COALESCE(a.target, ''), a.action_type, a.timestamp
+		FROM actions a
+		WHERE a.session_id = ? AND a.success = 1 AND a.action_type IN (?, ?)
+		ORDER BY a.id LIMIT 2000`, sessionID, models.ActionWriteFile, models.ActionEditFile)
+	if err != nil {
+		return nil, fmt.Errorf("store.LoadFixEditFacts: actions: %w", err)
+	}
+	type act struct {
+		id   int64
+		rel  string
+		hash string
+		kind string
+		at   time.Time
+	}
+	var acts []act
+	for rows.Next() {
+		var a act
+		var target, ts string
+		if err := rows.Scan(&a.id, &target, &a.kind, &ts); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("store.LoadFixEditFacts: scan: %w", err)
+		}
+		a.hash = loc.PathHash(root, target)
+		rel, ok := byHash[a.hash]
+		if !ok {
+			continue
+		}
+		a.rel, a.at = rel, parseLOCTime(ts)
+		acts = append(acts, a)
+	}
+	_ = rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store.LoadFixEditFacts: %w", err)
+	}
+	for _, a := range acts {
+		f := out[a.rel]
+		f.Actions++
+		if a.kind == models.ActionWriteFile {
+			f.WholeWrite = true
+		}
+		if !a.at.IsZero() && (f.FirstEditAt.IsZero() || a.at.Before(f.FirstEditAt)) {
+			f.FirstEditAt = a.at
+		}
+		var n int
+		if err := s.db.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM file_changes
+			WHERE action_id = ? AND file_path_hash = ? AND actor = ? AND actor_confidence = 'high'
+			  AND unknown = 0 AND deleted_code = 0 AND modified_code = 0 AND deleted_comment = 0
+			  AND overwrite = 0 AND deleted_file = 0`, a.id, a.hash, LOCActorAI).Scan(&n); err != nil {
+			return nil, fmt.Errorf("store.LoadFixEditFacts: changes: %w", err)
+		}
+		var bad int
+		if err := s.db.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM file_changes
+			WHERE action_id = ? AND file_path_hash = ? AND NOT (actor = ? AND actor_confidence = 'high'
+			  AND unknown = 0 AND deleted_code = 0 AND modified_code = 0 AND deleted_comment = 0
+			  AND overwrite = 0 AND deleted_file = 0)`, a.id, a.hash, LOCActorAI).Scan(&bad); err != nil {
+			return nil, fmt.Errorf("store.LoadFixEditFacts: changes: %w", err)
+		}
+		if n > 0 && bad == 0 {
+			f.Additive++
+		}
+		out[a.rel] = f
+	}
+	return out, nil
+}
+
+// SessionAgentEdits returns one session's successful file writes and edits
+// with their stored (scrubbed) tool input, oldest first, at most limit
+// (the item 6 tampering check reads the session's own test edits).
+func (s *Store) SessionAgentEdits(ctx context.Context, sessionID string, limit int) ([]AgentEdit, error) {
+	if sessionID == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 512
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT a.id, a.session_id, COALESCE(a.target, ''), COALESCE(substr(a.raw_tool_input, 1, ?), ''), a.timestamp
+		FROM actions a
+		WHERE a.session_id = ? AND a.success = 1 AND a.action_type IN (?, ?)
+		ORDER BY a.id LIMIT ?`, maxAgentEditInput, sessionID, models.ActionWriteFile, models.ActionEditFile, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store.SessionAgentEdits: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []AgentEdit
+	for rows.Next() {
+		var e AgentEdit
+		var ts string
+		if err := rows.Scan(&e.ID, &e.SessionID, &e.Target, &e.RawInput, &ts); err != nil {
+			return nil, fmt.Errorf("store.SessionAgentEdits: scan: %w", err)
+		}
+		e.At = parseLOCTime(ts)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}

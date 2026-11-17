@@ -33,7 +33,10 @@ func newGrantPlanCmd() *cobra.Command {
 		Long: "Assign an entitlement plan to an account.\n\n" +
 			"Upgrades take effect immediately; downgrades are deferred to the next\n" +
 			"monthly cycle boundary (ruling R4). This is entitlement plumbing only —\n" +
-			"no payment is taken and none is implied.",
+			"no payment is taken and none is implied.\n\n" +
+			"`grant-plan org` grants a plan to one org (W15-D13) and\n" +
+			"`grant-plan team-orgs` sets an account's team org cap (W15-D12);\n" +
+			"see grantplan_org.go.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
 			accountID := strings.TrimSpace(account)
@@ -72,6 +75,14 @@ func newGrantPlanCmd() *cobra.Command {
 				accountID, res.Plan.Name, res.Plan.Version, res.Plan.Label,
 				res.PreviousPlan.Name, res.PreviousPlan.Version,
 				timing, res.EffectiveFrom.UTC().Format(time.RFC3339))
+			if res.Plan.TokenBudgeted() {
+				// Plan v5 (R-AI1): the count caps are inert under a tier and
+				// read 0; the budget is the tier's tokens (`observer-cloud tier show`).
+				fmt.Fprintf(cmd.OutOrStdout(),
+					"  token budgets: enrichment tier %q (see `observer-cloud tier show`), concurrency %d; budget pool %q\n",
+					res.Plan.EnrichmentTier, res.Plan.ConcurrencyCap, res.Plan.BudgetPool)
+				return nil
+			}
 			fmt.Fprintf(cmd.OutOrStdout(),
 				"  caps: %d/day, %d/month, concurrency %d; budget pool %q\n",
 				res.Plan.DailyCap, res.Plan.MonthlyCap, res.Plan.ConcurrencyCap, res.Plan.BudgetPool)
@@ -84,5 +95,6 @@ func newGrantPlanCmd() *cobra.Command {
 		"plan version to pin (default 0 = the highest published version of that name)")
 	cmd.Flags().StringVar(&effective, "effective-from", "",
 		"RFC3339 instant the assignment starts (default: as soon as R4 allows)")
+	cmd.AddCommand(newGrantPlanOrgCmd(), newGrantPlanTeamOrgsCmd())
 	return cmd
 }

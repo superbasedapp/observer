@@ -30,6 +30,8 @@ func Run(ctx context.Context, req depscan.ChildRequest, log io.Writer) depscan.C
 			return resp
 		}
 		return runOS(ctx, req, log, childGOOS(req))
+	case depscan.KindSBOM:
+		return runSBOM(ctx, req)
 	default:
 		resp.Error = fmt.Sprintf("unknown request kind %q", req.Kind)
 		return resp

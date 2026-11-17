@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -199,14 +200,29 @@ func newProfileAssignCmd() *cobra.Command {
 // a live WSL daemon IS reachable from Windows-host test runs).
 var pokeReload = pokeConfigReload
 
-// pokeConfigReload asks a locally running daemon (dashboard on the
-// default port) to re-read config for its hot-reloadable consumers —
-// the P2.5 profile router. Best-effort: a short timeout, false on any
-// failure, and false when the dashboard answered but no hook is wired
-// (standalone `observer dashboard` with no proxy in-process).
+// pokeConfigReload asks the locally running daemon of the default config's
+// database to re-read config for its hot-reloadable consumers — the P2.5
+// profile router. Best-effort: a short timeout, false on any failure, false
+// when the dashboard answered but no hook is wired (standalone `observer
+// dashboard` with no proxy in-process), and false when the daemon that
+// answers serves another database (daemon_handoff.go, L-125): it would
+// reload its own config, and the CLI would report a reload that did not
+// happen for this one.
 func pokeConfigReload() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), daemonHandoffProbeTimeout+500*time.Millisecond)
+	defer cancel()
+	target := resolveDaemonHandoff(ctx, "")
+	if !target.Use {
+		return false
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target.Base+"/api/config/reload", nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	target.setDBIdentity(req)
 	client := &http.Client{Timeout: 500 * time.Millisecond}
-	resp, err := client.Post("http://127.0.0.1:8081/api/config/reload", "application/json", nil)
+	resp, err := client.Do(req) //nolint:gosec // G704: this node's own dashboard address from its config or listen record
 	if err != nil {
 		return false
 	}

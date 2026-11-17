@@ -9,6 +9,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/extrun"
 	"github.com/marmutapp/superbased-observer/internal/secscan"
+	"github.com/marmutapp/superbased-observer/internal/secscan/depscan"
 )
 
 // security_scan_osv_omit.go stands in for security_scan_osv.go in a build
@@ -18,7 +19,9 @@ import (
 // errOSVNotInBuild is the answer of the osv-scanner verbs in this build.
 var errOSVNotInBuild = errors.New("security.scan.osv is not in this build")
 
-func depsOSVDriver(*extrun.Runner, string, map[string]string, string) secscan.Driver { return nil }
+func depsOSVDriver(*extrun.Runner, string, map[string]string, string, func(string, string, []depscan.Package)) secscan.Driver {
+	return nil
+}
 
 func newSecurityScanInstallCmd() *cobra.Command {
 	return &cobra.Command{Use: "install-osv-scanner", Hidden: true, RunE: func(*cobra.Command, []string) error {

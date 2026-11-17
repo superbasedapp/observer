@@ -432,7 +432,7 @@ func (d *landlockDriver) compose(created termsvc.CreateResult, abi int) ([]strin
 	}
 	// The seccomp filter (lane N2): the exec step loads it, the host
 	// helper reads it back on the held step before it releases the gate.
-	seccomp, err := sandboxSeccompProfile(r.cfg, landlockRow())
+	seccomp, err := sandboxSeccompProfile(r.cfg, landlockRow(), created.Isolation.Seccomp)
 	if err != nil {
 		return nil, err
 	}

@@ -248,7 +248,7 @@ func Effective(org Fallbacks, managed bool) Fallbacks {
 
 // renderComment is written as the table's first line, INSIDE the table, so
 // Strip removes it together with the table.
-const renderComment = "# Organization guard fallbacks (Policies > Guard > Fallbacks in the admin dashboard)."
+const renderComment = "# Organization guard fallbacks (Policies > Guard > When a safeguard can't run in the admin dashboard)."
 
 // Render emits the `[fallbacks]` table for f: only the non-default keys, in
 // Settings order. Empty when f is all defaults, so an org that never changes

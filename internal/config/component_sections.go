@@ -138,6 +138,14 @@ var componentSections = []componentSection{
 		reset:     func(c *Config) { c.Security.Scanning = Default().Security.Scanning },
 	},
 	{
+		// [security.assessments] (docs/plans/security-assessments-module-plan-2026-11-13.md
+		// section 13.3): the module root's own keys.
+		component: "security",
+		section:   "security.assessments",
+		validate:  func(c *Config) error { return validateSecurityAssessments(c.Security.Assessments) },
+		reset:     func(c *Config) { c.Security.Assessments = Default().Security.Assessments },
+	},
+	{
 		component: "security.trust",
 		section:   "security.trust",
 		validate:  func(c *Config) error { return validateSecurityTrust(c.Security.Trust) },
@@ -183,6 +191,14 @@ var componentSections = []componentSection{
 		section:   "security.scan.image",
 		validate:  func(c *Config) error { return validateSecurityImage(c.Security.Scan.Image) },
 		reset:     func(c *Config) { c.Security.Scan.Image = SecurityImageScanConfig{} },
+	},
+	{
+		// The licence policy (security coverage gaps plan section 5): read
+		// with the dependency scan, so security.deps owns it.
+		component: "security.deps",
+		section:   "security.licenses",
+		validate:  func(c *Config) error { return validateSecurityLicenses(c.Security.Licenses) },
+		reset:     func(c *Config) { c.Security.Licenses = DefaultSecurityLicensesConfig() },
 	},
 	{
 		component: "security.scan.kics",

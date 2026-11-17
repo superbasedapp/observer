@@ -1,0 +1,1 @@
+{"error": {"code": "quota_exceeded", "message": "too many requests at once", "requestId": "req_1", "retryable": true, "operationId": null, "retryAfterSeconds": 1, "docs_url": "https://instabox.sh/docs/errors#quota-exceeded"}}

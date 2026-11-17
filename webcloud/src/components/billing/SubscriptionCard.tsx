@@ -2,7 +2,8 @@ import { DefinitionList, DefinitionRow } from "@shared/primitives/DefinitionList
 import { CopyOnClick } from "@shared/primitives/CopyOnClick";
 import { Pill } from "@shared/primitives/Pill";
 import { fmtDateTime, fmtShortId } from "@shared/lib/format";
-import type { BillingSubscription } from "../../api";
+import type { BillingSubscription, PortalSession } from "../../api";
+import { BillingPortalButton } from "./BillingPortalButton";
 import { dateWithRelative, statusMeta } from "./util";
 import { Button } from "@shared/primitives/Button";
 import { Card } from "@shared/primitives/Card";
@@ -16,9 +17,13 @@ import { Receipt } from "lucide-react";
 export function SubscriptionCard({
   sub,
   showResubscribeOffer,
+  onPortal,
 }: {
   sub: BillingSubscription;
   showResubscribeOffer: boolean;
+  /** Mints the Paddle customer portal session (wave 17); omitted when the
+   * deployment cannot open one. */
+  onPortal?: () => Promise<PortalSession>;
 }) {
   const meta = statusMeta(sub.status);
   const dateLine = subscriptionDateLine(sub);
@@ -36,6 +41,9 @@ export function SubscriptionCard({
       <DefinitionList>
         <DefinitionRow label="Plan" value={`${sub.plan_name} (v${sub.plan_version})`} />
         {dateLine && <DefinitionRow label={dateLine.label} value={dateLine.value} />}
+        {sub.status === "past_due" && sub.past_due_since && (
+          <DefinitionRow label="Payment due since" value={dateWithRelative(sub.past_due_since)} />
+        )}
         {sub.status === "canceled" && sub.canceled_at && (
           <DefinitionRow label="Canceled on" value={fmtDateTime(sub.canceled_at)} />
         )}
@@ -62,6 +70,11 @@ export function SubscriptionCard({
       </DefinitionList>
 
       {!showResubscribeOffer && <ManagementSection sub={sub} />}
+      {onPortal && (
+        <div className="mt-3">
+          <BillingPortalButton open={onPortal} />
+        </div>
+      )}
     </Card>
   );
 }

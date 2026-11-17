@@ -4,6 +4,7 @@ package managedconfig
 
 import (
 	"errors"
+	"strings"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -51,6 +52,24 @@ func probeOS() Probe {
 				return p
 			}
 			v.HaveVersion, v.CatalogVersion = true, n64
+		case "OrgURL", "AttachMethod":
+			s, typ, err := k.GetStringValue(n)
+			if err != nil || typ != registry.SZ {
+				p.FailedCheck = "registry_" + strings.ToLower(n) + "_not_sz"
+				return p
+			}
+			if n == "OrgURL" {
+				v.HaveOrgURL, v.OrgURL = true, s
+			} else {
+				v.HaveAttachMethod, v.AttachMethod = true, s
+			}
+		case "Locked":
+			n64, typ, err := k.GetIntegerValue(n)
+			if err != nil || typ != registry.DWORD {
+				p.FailedCheck = "registry_locked_not_dword"
+				return p
+			}
+			v.HaveLocked, v.Locked = true, n64
 		default:
 			v.Unknown = append(v.Unknown, n)
 		}

@@ -46,7 +46,7 @@ type DisclosureEntry = VocabEntry & { disclosure: Disclosure };
 //                                  corpus, beyond serving your own results.
 // Ties keep the contract's canonical order.
 export const CONSENT_PURPOSE: Readonly<Record<string, DisclosureEntry>> = {
-  account_device_operations: { tone: "neutral", label: "Account and devices", disclosure: 1 },
+  account_device_operations: { tone: "neutral", label: "Account and machines", disclosure: 1 },
   structural_activity_insights: { tone: "neutral", label: "Session structure", disclosure: 2 },
   community_cohort_benchmarking: { tone: "neutral", label: "Cohort benchmarking", disclosure: 2 },
   bounded_context_enrichment: { tone: "neutral", label: "Context excerpts", disclosure: 3 },

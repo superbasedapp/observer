@@ -66,6 +66,14 @@ type Approver struct {
 	// key, which is the one case a super-admin may approve their own request
 	// (D-086, audited self_approved=true).
 	OnlyKeyHolder bool
+	// OnlyTierApprover is true when no OTHER member could decide a decision
+	// that needs a super-admin: the org's one designated super-admin (the
+	// designation is a singleton), or, before one is designated, an admin
+	// who is the only key holder. Without it a request that needs a
+	// super-admin deadlocks on a super-admin's own account as soon as any
+	// other admin exists (the other admin holds the key but not the tier;
+	// operator report 2026-11-12).
+	OnlyTierApprover bool
 }
 
 // RuleFacts are what the org knows about the rule a guard exemption names.
@@ -98,6 +106,13 @@ type Facts struct {
 	// Target is what the org knows about a tool / model / feature grant's
 	// target (decideTarget, target.go).
 	Target TargetFacts
+	// Held are the grantee's grants in force right now (cover.go). A
+	// proposal one of them already covers is refused: it would change
+	// nothing, and the approver is pointed at the grant that exists.
+	Held []Held
+	// SupersedesID is the grant an extension replaces (0 otherwise); it
+	// never counts as covering its own extension.
+	SupersedesID int64
 }
 
 // MaxBudgetFallback bounds a budget increase whose period end is unknown.
@@ -175,6 +190,7 @@ type decideStage func(d *Decision, t RequestType, p Proposal, f Facts, s Setting
 
 var decideStages = []decideStage{
 	decideTier, decideApprover, decideSubject, decidePayload, decideTarget, decideWindow, decideUses, decideBudget, decideLockOverride,
+	decideAlreadyGranted,
 }
 
 // Decide applies every grant rule to a proposal: who may approve it, whether
@@ -236,7 +252,7 @@ func decideApprover(d *Decision, t RequestType, p Proposal, f Facts, _ Settings)
 		})
 		return
 	}
-	if f.Approver.SuperAdmin && f.Approver.OnlyKeyHolder {
+	if f.Approver.SuperAdmin && (f.Approver.OnlyKeyHolder || (d.Tier == TierSuperAdmin && f.Approver.OnlyTierApprover)) {
 		d.SelfApproved = true
 		d.Warnings = append(d.Warnings, "you are approving an exception for yourself; this is recorded as a self-approval")
 		return
@@ -316,10 +332,13 @@ func decideWindow(d *Decision, t RequestType, p Proposal, f Facts, s Settings) {
 	switch {
 	case !d.ExpiresAt.After(d.StartsAt):
 		d.Problems = append(d.Problems, Problem{Field: "expires_at", Code: CodeOutOfRange, Message: "the grant must end after it starts"})
-	case t.Max == MaxFixed && d.ExpiresAt.Sub(d.StartsAt) > s.MaxFor(t):
+	case t.Max == MaxFixed && d.ExpiresAt.Sub(d.StartsAt) > s.MaxFor(t) && !f.Approver.SuperAdmin:
+		// A type's maximum window (and an org's lowered one) binds every
+		// approver but the super-admin, who may set any expiry (operator
+		// ruling 2026-11-13: the super-admin has full freedom here).
 		d.Problems = append(d.Problems, Problem{
 			Field: "expires_at", Code: CodeOutOfRange,
-			Message: fmt.Sprintf("a %s may last at most %s; longer means perpetual (super-admin)", strings.ToLower(t.Label), HumanDuration(s.MaxFor(t))),
+			Message: fmt.Sprintf("a %s may last at most %s unless a super-admin approves it", strings.ToLower(t.Label), HumanDuration(s.MaxFor(t))),
 		})
 	case t.Max == MaxBudgetPeriod:
 		end := budgetPeriodBound(d.StartsAt, f)
@@ -374,6 +393,19 @@ func decideLockOverride(d *Decision, t RequestType, _ Proposal, f Facts, s Setti
 	}
 	locked := f.Rule.Locked || !f.Rule.Known
 	d.LockOverride = locked && (f.Approver.SuperAdmin || s.LockedRuleApprover == ApproverPolicyWriter)
+}
+
+// decideAlreadyGranted refuses a proposal a grant in force already covers
+// (cover.go). It runs after decideWindow, whose resolved expiry it compares,
+// and only for a proposal that is otherwise sound, so the approver reads the
+// real problem first.
+func decideAlreadyGranted(d *Decision, _ RequestType, p Proposal, f Facts, _ Settings) {
+	if len(d.Problems) > 0 || len(f.Held) == 0 {
+		return
+	}
+	if h, ok := CoveredBy(AskFromProposal(p, *d, f.SupersedesID), f.Held); ok {
+		d.Problems = append(d.Problems, AlreadyGrantedProblem(h, true))
+	}
 }
 
 // decideBudget resolves a budget increase to its absolute cap now (D-085).

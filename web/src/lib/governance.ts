@@ -5,11 +5,12 @@
 // that property IS the solo-node guarantee: nothing in this file may
 // change behavior unless a node has actually been enrolled and granted
 // dashboard.visibility authority.
-import { useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import { useApi, type ApiState } from "./useApi";
 import { setConcealedRoutes } from "./concealedRoutes";
 import { NAV_ITEMS, type NavGroup } from "./nav";
 import type { PageTabs } from "./nodePageTabs";
+import { NODE_TAB_ROUTES } from "./pageTabRoutes";
 import { hiddenTabIds, withVisibleTabs } from "./tabVisibility";
 import type { VocabEntry } from "@shared/lib/vocabEntry";
 import {
@@ -17,11 +18,14 @@ import {
   governancePosture,
   hiddenNavIds,
   hiddenSettingsIds,
+  hrefGate,
   readOnlyNavIds,
   orgDisplayLabel,
   readOnlySettingsIds,
   type DashboardVisibility,
   type GovernancePosture,
+  type HrefGateTables,
+  type LinkGate,
 } from "./visibility";
 
 export type GovernanceState =
@@ -268,6 +272,24 @@ export function useGovernanceVisibility(): GovernanceVisibility {
     posture,
     reload: st.reload,
   };
+}
+
+// HREF_GATE_TABLES: the nav and tabbed-page tables useHrefGate maps an
+// address with. Module-level so the hook's callback identity follows only
+// the posture.
+const HREF_GATE_TABLES: HrefGateTables = { navPaths: NAV_ITEMS, tabRoutes: NODE_TAB_ROUTES };
+
+/**
+ * useHrefGate returns how a link to an address renders on this machine
+ * (lib/visibility.ts hrefGate: "shown", "managed" or "unresolved"), over the
+ * same filtering posture the route guard, nav and Settings rail read. Every
+ * link to a page, Settings section or tab an organization may hide goes
+ * through it (components/GatedLink.tsx), so a link is never offered to a
+ * place this machine does not show (CG-20/CG-21).
+ */
+export function useHrefGate(): (href: string) => LinkGate {
+  const { gov, posture } = useGovernanceVisibility();
+  return useCallback((href: string) => hrefGate(href, gov, posture, HREF_GATE_TABLES), [gov, posture]);
 }
 
 // usePageTabs is a tabbed page's tab table on THIS machine: `tabs` without the

@@ -3,7 +3,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -72,7 +71,7 @@ func TestCredFoldRunSession(t *testing.T) {
 	live := true
 	credLocalHelperLive(t, &live)
 	credFoldClaims(t, map[string]bool{"run-fold\x00native-1": true, "run-other\x00native-2": true, "run-fold\x00host-resumed": false})
-	var logs bytes.Buffer
+	var logs syncBuffer // the default logger is process-wide: a relay goroutine from another test may write it (L-4)
 	oldLog := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 	t.Cleanup(func() { slog.SetDefault(oldLog) })
@@ -216,7 +215,7 @@ func TestE2ELocalRunTurnFoldsOntoItsSession(t *testing.T) {
 // sessions logs at most credFoldMismatchCap lines and one suppression line
 // for its run, and the run's state goes when the relay ends the run.
 func TestCredFoldMismatchLogBounded(t *testing.T) {
-	var logs bytes.Buffer
+	var logs syncBuffer // the default logger is process-wide: a relay goroutine from another test may write it (L-4)
 	oldLog := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 	t.Cleanup(func() { slog.SetDefault(oldLog) })

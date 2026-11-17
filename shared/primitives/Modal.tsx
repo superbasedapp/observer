@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import clsx from "clsx";
 import { X, type LucideIcon } from "lucide-react";
 import { Icon } from "./Icon";
@@ -130,7 +131,7 @@ export function Modal({
   // track grew to fit a 440px/520px card, so the card's `maxWidth: 100%`
   // resolved against the oversized track and the dialog ran off the right
   // edge of a phone-width window (375px).
-  return (
+  const dialog = (
     <div
       className={clsx(
         "fixed inset-0 grid grid-cols-[minmax(0,1fr)] place-items-center",
@@ -198,4 +199,14 @@ export function Modal({
       </div>
     </div>
   );
+  // Rendered into document.body. A `position: fixed` overlay is placed
+  // against its nearest TRANSFORMED ancestor, not the viewport, and every
+  // route's page wrapper runs a transform animation as it enters
+  // (PageTransition's sb-page-enter). A dialog a page opened while it was
+  // still entering - the budget banner's "Ask for a budget increase" opening
+  // the Requests form - was centred in the page column, right of the
+  // viewport's centre, then jumped when the animation ended (demo bug #18).
+  // Server rendering (the component tests) has no document and renders the
+  // dialog in place.
+  return typeof document === "undefined" ? dialog : createPortal(dialog, document.body);
 }

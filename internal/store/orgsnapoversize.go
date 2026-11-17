@@ -36,10 +36,18 @@ type OrgPushOversizedRow struct {
 	BudgetBytes  int64  `json:"budget_bytes"`
 	// LastSeen is when the daemon last met a new oversized row (RFC 3339).
 	LastSeen string `json:"last_seen"`
+	// Cut is true for an envelope section whose tail rows were dropped, or a
+	// cursor row whose text was cut (or that was skipped), to fit the push
+	// envelope; false for a snapshot row that cannot ship at all.
+	Cut bool `json:"cut,omitempty"`
 }
 
 // Summary is the one-line operator rendering.
 func (r OrgPushOversizedRow) Summary() string {
+	if r.Cut {
+		return fmt.Sprintf("%s: %d row(s) cut to fit the %d-byte push budget (needed %d bytes, last %s); raise [org_client] max_push_bytes to ship them whole",
+			r.Family, r.Rows, r.BudgetBytes, r.LargestBytes, r.LastSeen)
+	}
 	return fmt.Sprintf("%s: %d row(s) larger than the %d-byte snapshot budget (largest %d bytes, last %s); raise [org_client] max_push_bytes to ship them",
 		r.Family, r.Rows, r.BudgetBytes, r.LargestBytes, r.LastSeen)
 }
@@ -82,7 +90,7 @@ func (s *Store) persistOrgPushOversized(ctx context.Context) {
 		case !o.ticked:
 			continue
 		case o.rows > 0:
-			next := OrgPushOversizedRow{Family: name, Rows: o.rows, LargestBytes: o.largest, BudgetBytes: o.budget, LastSeen: now}
+			next := OrgPushOversizedRow{Family: name, Rows: o.rows, LargestBytes: o.largest, BudgetBytes: o.budget, LastSeen: now, Cut: o.cut}
 			if had && !o.complete {
 				next.Rows = max(next.Rows, prev.Rows)
 				next.LargestBytes = max(next.LargestBytes, prev.LargestBytes)

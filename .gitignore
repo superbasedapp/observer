@@ -73,6 +73,10 @@ webcloud/*.log
 # ever be a source of drift.
 website/model-prices/
 website/tokenomics/
+# The one-command connect wrappers, staged from scripts/ at website build time
+# (scripts/website-stage-connect.sh). One source: scripts/connect.{sh,ps1}.
+website/connect.sh
+website/connect.ps1
 model-pricing/web/node_modules/
 model-pricing/web/out/
 
@@ -314,6 +318,16 @@ model-pricing/scripts/extract-cache/
 /tools/adapterparitygen/
 # The shipped-migrations record generator: records private lineages from git.
 /tools/shippedmiggen/
+# The parallel test runner: maintainer tooling for the private CI selection.
+/tools/testrunner/
+# Managed-SaaS structural checks: their tests read the private org server.
+/tools/migcheck/
+/tools/orgstateinv/
+/tools/structcheck/
+# The Track E gate driver: hosted-SaaS operations tooling.
+/tools/gatedriver/
+# The hosted service's canary prober (imports the private org server).
+/tools/canaryprobe/
 # Private CI + release pipelines. ci.yml stays (it is the public
 # contributor gate); ci-private.yml holds the five jobs whose inputs are
 # private-only paths.
@@ -330,6 +344,9 @@ model-pricing/scripts/extract-cache/
 /scripts/ci/release-dispatch.sh
 /scripts/ci/release-dispatch-paths.tsv
 /tests/invariant/release_dispatch_test.go
+# The gate attestation's private half (L-139).
+/scripts/ci/publish-gate-attestation.sh
+/scripts/ci/gate-coverage.tsv
 # The org-plane half of the copilot harness walkthrough. Its Phase-1
 # sibling (examples/copilot-harness/README.md) stays public.
 /examples/copilot-harness/README-orgplane.md

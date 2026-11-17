@@ -347,6 +347,7 @@ export type ConfigKeyPath =
   "terminal.sandbox.sign_in_seed_tools" |
   "terminal.sandbox.allow_osc52_clipboard" |
   "terminal.sandbox.seccomp" |
+  "terminal.sandbox.seccomp_allow_seize" |
   "terminal.sandbox.backends" |
   "terminal.sandbox.min_isolation" |
   "terminal.sandbox.oci.allow_rootful" |
@@ -390,8 +391,23 @@ export type ConfigKeyPath =
   "terminal.sandbox.hosted.vercel.box_binary" |
   "terminal.sandbox.hosted.vercel.endpoint" |
   "terminal.sandbox.hosted.vercel.endpoint_spki_sha256" |
+  "terminal.sandbox.hosted.docker.region" |
+  "terminal.sandbox.hosted.docker.template" |
+  "terminal.sandbox.hosted.docker.box_binary" |
+  "terminal.sandbox.hosted.docker.endpoint" |
+  "terminal.sandbox.hosted.docker.endpoint_spki_sha256" |
   "terminal.sandbox.hosted.openshell-org.laptop_relay" |
   "terminal.sandbox.hosted.openshell-org.hold_on_end" |
+  "terminal.sandbox.hosted.instabox.region" |
+  "terminal.sandbox.hosted.instabox.template" |
+  "terminal.sandbox.hosted.instabox.box_binary" |
+  "terminal.sandbox.hosted.instabox.endpoint" |
+  "terminal.sandbox.hosted.instabox.endpoint_spki_sha256" |
+  "terminal.sandbox.hosted.daytona.region" |
+  "terminal.sandbox.hosted.daytona.template" |
+  "terminal.sandbox.hosted.daytona.box_binary" |
+  "terminal.sandbox.hosted.daytona.endpoint" |
+  "terminal.sandbox.hosted.daytona.endpoint_spki_sha256" |
   "terminal.sandbox.readopt.bound_minutes" |
   "terminal.sandbox.readopt.checkpoint_cap_mib" |
   "terminal.sandbox.wslc.path" |
@@ -444,6 +460,7 @@ export type ConfigKeyPath =
   "shell_wrap.windows.shim_dir" |
   "shell_wrap.org_maintain" |
   "shell_wrap.org_applied" |
+  "workspace.default_dir" |
   "security.retention.days" |
   "security.deps.online" |
   "security.deps.install_wait_ms" |
@@ -451,6 +468,7 @@ export type ConfigKeyPath =
   "security.deps.index_download" |
   "security.deps.unknown_action" |
   "security.deps.online_unknown_action" |
+  "security.deps.provenance" |
   "security.deps.db_source" |
   "security.deps.db_fallback_upstream" |
   "security.deps.match" |
@@ -496,6 +514,43 @@ export type ConfigKeyPath =
   "security.reach.go.source_memory_mib" |
   "security.reach.go.source_timeout_seconds" |
   "security.reach.go.source_max_modules" |
+  "security.assessments.relax_pentest_local" |
+  "security.assessments.relax_red_team_local" |
+  "security.assessments.scoped_approval" |
+  "security.assessments.max_network_tier" |
+  "security.assessments.relaxation_scope" |
+  "security.assessments.relaxation_max_minutes" |
+  "security.assessments.report_to_org" |
+  "security.assessments.time_box_threat_model_minutes" |
+  "security.assessments.time_box_pentest_local_minutes" |
+  "security.assessments.time_box_red_team_local_minutes" |
+  "security.assessments.time_box_action" |
+  "security.assessments.boundary_audit" |
+  "security.assessments.evidence_retention_days" |
+  "security.assessments.rerun_dedup" |
+  "security.assessments.findings_cap" |
+  "security.assessments.import_min_band" |
+  "security.assessments.prompt_selfcheck" |
+  "security.assessments.report_validation_to_org" |
+  "security.assessments.tm_frameworks" |
+  "security.assessments.tm_method_extras" |
+  "security.assessments.pt_categories" |
+  "security.assessments.ref_match_window_lines" |
+  "security.assessments.model_max_mib" |
+  "security.assessments.ref_budget_files" |
+  "security.assessments.ref_budget_mib" |
+  "security.assessments.ref_budget_seconds" |
+  "security.assessments.grounding" |
+  "security.assessments.workspace_secret_mode" |
+  "security.assessments.pentest_request_budget" |
+  "security.assessments.pentest_pace_rps" |
+  "security.assessments.probe_helper" |
+  "security.assessments.display_redaction" |
+  "security.assessments.diagram_max_nodes" |
+  "security.assessments.diagram_label_chars" |
+  "security.licenses.deny" |
+  "security.licenses.allow" |
+  "security.licenses.unknown" |
   "messages.toast" |
   "messages.vscode" |
   "messages.statusline" |

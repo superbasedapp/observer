@@ -1,5 +1,6 @@
 import { Fragment, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
+import { GatedLink } from "@/components/GatedLink";
 import {
   ChartShell,
   EmptyState,
@@ -841,9 +842,9 @@ export function RoutingPage() {
               <>
                 Routing is opt-in and advise-first - preview the value first (the Overview tab, while routing is
                 off), enable advise in{" "}
-                <Link to="/settings?section=routing" className="text-accent hover:underline">
+                <GatedLink to="/settings?section=routing" managed="Settings > Routing (managed by your organization)" className="text-accent hover:underline">
                   Settings &gt; Routing
-                </Link>
+                </GatedLink>
                 , route traffic through the proxy, then watch decisions land here (
                 <code className="rounded-1 bg-bg-3 px-1">observer routing advise</code> for the CLI view).
               </>

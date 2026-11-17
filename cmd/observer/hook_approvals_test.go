@@ -186,3 +186,39 @@ func mustApprovalActive(t *testing.T, st *store.Store, ctx context.Context, rule
 	}
 	return ok
 }
+
+// TestHookApprovalCoverLookup: the hook's richer lookup answers exactly as the
+// plain one does (grant, no grant, missing, unreadable and unmigrated
+// databases) and names the covering approval and its grantor (plan section
+// 13.7).
+func TestHookApprovalCoverLookup(t *testing.T) {
+	_, dbPath := approvalHookNode(t)
+	grantApproval(t, dbPath, store.GuardApprovalRow{RuleID: "R-179", Scope: "session", SessionID: "s1", GrantedBy: "assessment:3fa9c2d17b0e4a56"})
+	garbage := filepath.Join(t.TempDir(), "garbage.db")
+	writeFileT(t, garbage, strings.Repeat("not a database ", 100))
+	empty := filepath.Join(t.TempDir(), "empty.db")
+	writeFileT(t, empty, "")
+	cases := []struct {
+		name    string
+		path    string
+		rule    string
+		session string
+		want    guard.ApprovalCover
+		wantErr bool
+	}{
+		{"grant found names the grantor", dbPath, "R-179", "s1", guard.ApprovalCover{Found: true, ID: 1, GrantedBy: "assessment:3fa9c2d17b0e4a56"}, false},
+		{"no grant for this session", dbPath, "R-179", "s2", guard.ApprovalCover{}, false},
+		{"no grant for this rule", dbPath, "R-170", "s1", guard.ApprovalCover{}, false},
+		{"missing database: no grants, no error", filepath.Join(t.TempDir(), "absent.db"), "R-179", "s1", guard.ApprovalCover{}, false},
+		{"not a database: an error", garbage, "R-179", "s1", guard.ApprovalCover{}, true},
+		{"unmigrated database: no grants, no error", empty, "R-179", "s1", guard.ApprovalCover{}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := hookApprovalCoverLookup(tc.path, 500*time.Millisecond)(tc.rule, tc.session, "")
+			if got != tc.want || (err != nil) != tc.wantErr {
+				t.Fatalf("lookup = (%+v, %v), want (%+v, err=%v)", got, err, tc.want, tc.wantErr)
+			}
+		})
+	}
+}

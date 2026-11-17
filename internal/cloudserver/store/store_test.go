@@ -66,15 +66,36 @@ func makeAccount(t *testing.T, s *store.Store) string {
 // entitlements is the operator-grant escape hatch layered over the account's
 // plan, and overrides_plan is what activates it). Tests use it to isolate one
 // window by raising the others far out of the way.
+//
+// The override caps COUNT enrichments, which only a count plan enforces since
+// ruling R-AI1 moved the default free plan (v5) to token budgets, so the
+// account is first pinned to free v4, the last count plan (pinCountPlan).
 func setEntitlement(t *testing.T, pool *pgxpool.Pool, accountID string, daily, monthly, concurrency int) {
 	t.Helper()
 	ctx := context.Background()
+	pinCountPlan(t, pool, accountID)
 	_, err := pool.Exec(ctx,
 		`UPDATE entitlements SET daily_cap=$2, monthly_cap=$3, concurrency_cap=$4, overrides_plan=true
 		  WHERE account_id=$1::uuid AND feature='session_enrichment'`,
 		accountID, daily, monthly, concurrency)
 	if err != nil {
 		t.Fatalf("setEntitlement: %v", err)
+	}
+}
+
+// pinCountPlan assigns free v4 (the last plan with enrichment COUNT caps)
+// from the start of time, for a test of the count mechanics. It writes the
+// row directly so it never depends on AssignPlan's timing rules, and is a
+// no-op when the account already holds an assignment.
+func pinCountPlan(t *testing.T, pool *pgxpool.Pool, accountID string) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO account_plans (account_id, plan_id, effective_from, source)
+		 SELECT $1::uuid, p.plan_id, '2000-01-01T00:00:00Z', 'beta_manual'
+		   FROM plans p WHERE p.name = 'free' AND p.version = 4
+		    AND NOT EXISTS (SELECT 1 FROM account_plans WHERE account_id = $1::uuid)`,
+		accountID); err != nil {
+		t.Fatalf("pinCountPlan: %v", err)
 	}
 }
 
@@ -599,10 +620,25 @@ func TestWithSystemClearsHostileTenantGUC(t *testing.T) {
 	defer single.Close()
 	s := store.New(single)
 
-	// Poison the one pooled connection with a SESSION-level tenant GUC.
+	// Poison the one pooled connection with a SESSION-level tenant context:
+	// a VALID token for the victim under this store's own key (a bare id has
+	// been no context at all since migration 0067), so only the clear stands
+	// between WithSystem and the victim's rows. The precondition proves the
+	// poison is live.
 	victim := "00000000-0000-0000-0000-000000000001"
-	if _, err := single.Exec(ctx, `SET sbci.account_id = '`+victim+`'`); err != nil {
+	token, err := s.AccountContextTokenForTest(victim)
+	if err != nil {
+		t.Fatalf("mint the victim's token: %v", err)
+	}
+	if err := s.VerifyTenantContext(ctx); err != nil { // installs the store's key
+		t.Fatalf("VerifyTenantContext: %v", err)
+	}
+	if _, err := single.Exec(ctx, `SELECT set_config('sbci.account_id', $1, false)`, token); err != nil {
 		t.Fatalf("poison GUC: %v", err)
+	}
+	var poisoned string
+	if err := single.QueryRow(ctx, `SELECT coalesce(sbci_current_account()::text, '')`).Scan(&poisoned); err != nil || poisoned != victim {
+		t.Fatalf("precondition: the poisoned session reads as %q, %v; want %s", poisoned, err, victim)
 	}
 
 	var noTenant bool

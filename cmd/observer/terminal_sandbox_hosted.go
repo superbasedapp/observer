@@ -627,6 +627,13 @@ var hostedVendorConfigTable = []hostedVendorConfigRow{
 	{sandboxremote.VendorE2B, func(c config.TerminalSandboxHostedConfig) config.TerminalSandboxHostedProviderConfig { return c.E2B }},
 	{sandboxremote.VendorModal, func(c config.TerminalSandboxHostedConfig) config.TerminalSandboxHostedProviderConfig { return c.Modal }},
 	{sandboxremote.VendorVercel, func(c config.TerminalSandboxHostedConfig) config.TerminalSandboxHostedProviderConfig { return c.Vercel }},
+	{sandboxremote.VendorDockerSandboxes, func(c config.TerminalSandboxHostedConfig) config.TerminalSandboxHostedProviderConfig { return c.Docker }},
+	{sandboxremote.VendorInstaBox, func(c config.TerminalSandboxHostedConfig) config.TerminalSandboxHostedProviderConfig {
+		return c.InstaBox
+	}},
+	{sandboxremote.VendorDaytona, func(c config.TerminalSandboxHostedConfig) config.TerminalSandboxHostedProviderConfig {
+		return c.Daytona
+	}},
 }
 
 // hostedVendorConfigRow is one row of hostedVendorConfigTable; a driver

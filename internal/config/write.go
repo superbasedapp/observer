@@ -49,6 +49,14 @@ func writeTOMLAtomic(path string, doc any) error {
 // text-rewrite path) so backup + atomicity semantics can't drift
 // between the two (CLAUDE.md #4 — one write owner).
 func writeBytesAtomic(path string, data []byte) error {
+	return writeBytesAtomicBackup(path, data, path+".bak")
+}
+
+// writeBytesAtomicBackup is writeBytesAtomic with the prior file copied to
+// bakPath instead of path+".bak", for a writer whose backup must not
+// overwrite the one another writer of the same start just made (the
+// managed-node disable strip, guardrulesstrip.go).
+func writeBytesAtomicBackup(path string, data []byte, bakPath string) error {
 	// FU-118: a test binary writes a config only under the test temp dir.
 	if err := testwriteguard.Check("write", path); err != nil {
 		return err
@@ -64,7 +72,7 @@ func writeBytesAtomic(path string, data []byte) error {
 		// a byte-for-byte copy of that file, so it must carry the same
 		// owner-only mode; a world-readable .bak beside an owner-only original
 		// is a credential disclosure to every local account.
-		if err := os.WriteFile(path+".bak", existing, 0o600); err != nil { //nolint:gosec // G703: the operator's own config path
+		if err := os.WriteFile(bakPath, existing, 0o600); err != nil { //nolint:gosec // G703: the operator's own config path
 			return fmt.Errorf("write .bak: %w", err)
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {

@@ -83,6 +83,11 @@ type proxyParsedBody struct {
 	// to decode).
 	latestUserText   string
 	latestUserTextOK bool
+	// generated is the newest exchange's model and tool content
+	// (promptturn.Turn.Generated), from the same decode. Empty for a
+	// shape parseProxyBody does not cover (scanPrompt classifies those
+	// itself).
+	generated string
 }
 
 // parseProxyBody dispatches on the wire shape — a body-format branch
@@ -269,7 +274,7 @@ func parseAnthropicProxyBody(body []byte) proxyParsedBody {
 		}
 		appendAnthropicSegments(&out, msgs[i].Content, toolNames)
 	}
-	out.latestUserText, out.latestUserTextOK = latestUserTextFromAnthropicMessages(msgs)
+	out.setTurn(promptturn.FromAnthropicMessages(msgs))
 	return out
 }
 
@@ -396,7 +401,7 @@ func parseOpenAIChatSegments(out *proxyParsedBody, rawMsgs []json.RawMessage) {
 			out.addUserText(text)
 		}
 	}
-	out.latestUserText, out.latestUserTextOK = latestUserTextFromChatMessages(msgs)
+	out.setTurn(promptturn.FromChatMessages(msgs))
 }
 
 // openAIResponsesItem is the minimal Responses-API input-item shape (owned
@@ -447,7 +452,7 @@ func parseOpenAIResponsesSegments(out *proxyParsedBody, rawItems []json.RawMessa
 			out.addUserText(text)
 		}
 	}
-	out.latestUserText, out.latestUserTextOK = latestUserTextFromResponsesItems(items)
+	out.setTurn(promptturn.FromResponsesItems(items))
 }
 
 // flattenResponsesContent flattens a Responses-API content array
@@ -562,7 +567,17 @@ func boundSegment(s string) string {
 // field-missing PROMPT (once one is found) is
 // scrub.DetectPromptFindings' / policy.Event's own concern downstream.
 func extractLatestUserPromptText(provider string, body []byte) (text string, ok bool) {
-	return promptTurnText(promptturn.ClassifyProvider(provider, body))
+	text, ok, _ = classifyPromptTurn(provider, body)
+	return text, ok
+}
+
+// classifyPromptTurn is extractLatestUserPromptText plus the newest
+// exchange's generated content (promptturn.Turn.Generated), which the
+// prompt lane notes even when there is no prompt to judge.
+func classifyPromptTurn(provider string, body []byte) (text string, ok bool, generated string) {
+	t := promptturn.ClassifyProvider(provider, body)
+	text, ok = promptTurnText(t)
+	return text, ok, t.Generated
 }
 
 // promptTurnText maps a promptturn classification onto the prompt
@@ -574,26 +589,18 @@ func promptTurnText(t promptturn.Turn) (string, bool) {
 	return t.Text, true
 }
 
-// latestUserTextFromAnthropicMessages classifies an ALREADY-DECODED
-// Messages-API slice (F6, phase-3b review: parseAnthropicProxyBody
-// reuses the decode the §8.4 segment walk performed).
-func latestUserTextFromAnthropicMessages(msgs []anthropicMessage) (string, bool) {
-	return promptTurnText(promptturn.FromAnthropicMessages(msgs))
-}
-
-// latestUserTextFromChatMessages classifies an ALREADY-DECODED Chat
-// Completions slice (F6). F3 (phase-3b review): a role:"tool" message
-// after the last user message is a mid-tool-loop continuation, never
+// setTurn records a promptturn classification of an ALREADY-DECODED
+// message/item slice on the parsed view (F6, phase-3b review: the parse
+// functions reuse the decode the §8.4 segment walk performed): the
+// prompt lane's (text, ok) pair and the newest exchange's generated
+// content (promptturn.Turn.Generated), which scanPrompt notes so a value
+// the conversation already carried is never judged as typed. F3
+// (phase-3b review): a role:"tool" message or a function_call_output
+// after the newest user turn is a mid-tool-loop continuation, never
 // re-scanned.
-func latestUserTextFromChatMessages(msgs []openAIChatMessage) (string, bool) {
-	return promptTurnText(promptturn.FromChatMessages(msgs))
-}
-
-// latestUserTextFromResponsesItems classifies an ALREADY-DECODED
-// Responses-API item slice (F6; F3's continuation rule for
-// function_call_output).
-func latestUserTextFromResponsesItems(items []openAIResponsesItem) (string, bool) {
-	return promptTurnText(promptturn.FromResponsesItems(items))
+func (out *proxyParsedBody) setTurn(t promptturn.Turn) {
+	out.latestUserText, out.latestUserTextOK = promptTurnText(t)
+	out.generated = t.Generated
 }
 
 // geminiRequestContentPart / geminiRequestContent are the minimal

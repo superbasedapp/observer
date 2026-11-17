@@ -41,13 +41,18 @@ const (
 	// CodeUpstream: the org server answered with an error this node cannot
 	// classify more precisely.
 	CodeUpstream Code = "upstream_error"
+	// CodeUnsentRows: switching organizations (or leaving) was refused
+	// because rows captured for the current organization could not be sent
+	// to it first (R3-78). Nothing changed; the request may be repeated with
+	// the explicit drop choice.
+	CodeUnsentRows Code = "unsent_rows"
 )
 
 // AllCodes lists every failure code, for the tables that must cover each one.
 var AllCodes = []Code{
 	CodeInvalidInput, CodeUnreachable, CodeNotOrgServer, CodeTokenRejected,
 	CodeMemberNotActive, CodeIdPUnavailable, CodeNotEnrolled, CodeGone,
-	CodeStale, CodeUpstream,
+	CodeStale, CodeUpstream, CodeUnsentRows,
 }
 
 // Failure is a classified enrolment failure. Message is one plain sentence a

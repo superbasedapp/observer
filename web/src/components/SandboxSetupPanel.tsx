@@ -20,16 +20,36 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { Copy, ExternalLink, SquareTerminal } from "lucide-react";
-import { Button, ConfirmButton, Pill } from "@/components/primitives";
+import { CircleHelp, Copy, KeyRound, SquareTerminal } from "lucide-react";
+import { Button, ComboChip, ConfirmButton, Pill } from "@/components/primitives";
 import { ApiError, fetchJSON } from "@/lib/api";
 import { TERMINALS_SANDBOX_BACKENDS_HASH } from "@/lib/nodePageTabs";
+import { HostedKeyFields } from "@/components/SandboxHostedStatus";
+import { hostedConnectReady } from "@/lib/sandboxParity";
+import { useProjectRootOptions } from "@/lib/usePickerSources";
+import { useApi } from "@/lib/useApi";
 import {
+  CONSENT_FOLDER_NOTE,
+  DEFAULT_WORKSPACE_PATH,
+  WORKSPACE_OPTION_LABEL,
+  consentDefault,
+  type DefaultWorkspaceView,
+} from "@/lib/defaultWorkspace";
+import {
+  CREDENTIAL_FORM_NOTE,
+  CREDENTIAL_STORE_LABEL,
+  CREDENTIAL_STORED_NOTE,
   NO_TOKEN_MSG,
+  SETUP_HELP_LABEL,
   afterNote,
+  consentFolderFor,
   consentLine,
+  consentNeedsFolder,
+  credentialErrorSentence,
+  credentialFields,
+  credentialGuideNote,
+  credentialRunFields,
   defaultSetupBackend,
-  docsHref,
   elevatedGuideHint,
   manageActions,
   maybeWaitingForInput,
@@ -40,11 +60,13 @@ import {
   planInFlight,
   recordView,
   setupErrorSentence,
+  setupHelpId,
   setupSettleReprobe,
   setupRoutesAbsent,
   stateChip,
   stepButtonLabel,
   stepButtonRuns,
+  stepCopyText,
   summaryFromPlan,
   summaryOptionLabel,
   unknownStepHint,
@@ -238,7 +260,10 @@ export function SandboxSetupPanel(props: SandboxSetupPanelProps & SandboxSetupPa
 
   if (absent) return null;
 
-  async function run(step: SandboxSetupStep, action: SandboxSetupAction) {
+  // fields is a credential step's typed values: sent once in the run
+  // request body and never kept, shown or put in an error here.
+  // fromFile is the project a consent step is for (sent as from_file).
+  async function run(step: SandboxSetupStep, action: SandboxSetupAction, fields?: Record<string, string>, fromFile?: string) {
     if (!plan || busy) return;
     setBusy(`${action}:${step.prereq}`);
     setErr(null);
@@ -254,6 +279,8 @@ export function SandboxSetupPanel(props: SandboxSetupPanelProps & SandboxSetupPa
         action,
         fingerprint: plan.fingerprint,
         ...(action !== "undo" && step.consent ? { consent: step.consent } : {}),
+        ...(fields ? { fields } : {}),
+        ...(fromFile ? { from_file: fromFile } : {}),
       };
       const r = await fetchJSON<SandboxSetupStarted>(`/api/terminal/sandbox/setup/${enc(plan.backend)}/run`, undefined, {
         method: "POST",
@@ -270,12 +297,13 @@ export function SandboxSetupPanel(props: SandboxSetupPanelProps & SandboxSetupPa
       } else {
         setPlanNonce((n) => n + 1);
       }
+      if (fields) setNote(CREDENTIAL_STORED_NOTE);
     } catch (e) {
       if (e instanceof ApiError) {
         const parsed = parseSetupError(e.body);
         // 409 plan_changed: show the fresh plan and ask again.
         if (parsed.code === "plan_changed" && parsed.plan) setPlan(parsed.plan);
-        setErr(setupErrorSentence(e.status, e.body));
+        setErr(fields ? credentialErrorSentence(e.status, e.body) : setupErrorSentence(e.status, e.body));
       } else {
         setErr(setupErrorSentence(0, ""));
       }
@@ -399,7 +427,8 @@ export function SandboxSetupPanel(props: SandboxSetupPanelProps & SandboxSetupPa
                 busy={busy}
                 now={now}
                 op={op && op.step === s.prereq ? op : null}
-                onRun={(a) => run(s, a)}
+                onRun={(a, fromFile) => run(s, a, undefined, fromFile)}
+                onStoreKey={(values) => run(s, "run", values)}
                 onCopy={copy}
                 onOpenTerminal={(h) => onTerminal(h, `${plan.label} setup: ${s.label}`)}
               />
@@ -430,6 +459,7 @@ function StepRow({
   now,
   op,
   onRun,
+  onStoreKey,
   onCopy,
   onOpenTerminal,
 }: {
@@ -439,23 +469,33 @@ function StepRow({
   busy: string | null;
   now: number;
   op: (SandboxSetupOp & { step: string }) | null;
-  onRun: (a: SandboxSetupAction) => void;
+  onRun: (a: SandboxSetupAction, fromFile?: string) => void;
+  onStoreKey: StoreKeyFn;
   onCopy: (text: string) => void;
   onOpenTerminal: (handle: string) => void;
 }) {
   const chip = stateChip(step.state);
   const label = stepButtonLabel(step);
   const runs = stepButtonRuns(step);
+  const copyText = stepCopyText(step);
   const settled = step.state === "done" || step.state === "not_applicable";
-  const showPrimary = !!label && !settled && (runs ? step.can_run : !!step.display);
+  const showPrimary = !!label && !settled && (runs ? step.can_run : !!copyText);
+  const keyFields = credentialFields(step);
   const rec = step.record;
   const recView = rec ? recordView(rec, step.state === "done") : null;
   const waiting = maybeWaitingForInput(rec, now);
-  const docs = docsHref(step.docs);
+  const helpId = setupHelpId(step);
   const after = afterNote(step.after);
-  const hint = elevatedGuideHint(step) ?? unknownStepHint(step);
+  const hint = credentialGuideNote(step) ?? elevatedGuideHint(step) ?? unknownStepHint(step);
   const progress = op ? opProgress(op.done_bytes, op.total_bytes) : null;
   const actions = compact ? [] : manageActions(step);
+  // A consent is for one project: the setup terminal starts in the home
+  // directory, which is never uploaded, so the step asks which project first.
+  // A Repair or Update of a consent step runs the consent screen again, so
+  // it asks too and sends the pick (consentFolderFor).
+  const needsProject = step.channel === "hosted_consent" && !settled;
+  const showsProject = consentNeedsFolder(step, settled, actions);
+  const [project, setProject] = useState("");
   return (
     <li data-step={step.prereq} className={isNext ? "rounded-2 border border-accent/40 p-1.5" : "rounded-2 border border-line-2 p-1.5"}>
       <div className="flex flex-wrap items-center gap-2">
@@ -464,22 +504,40 @@ function StepRow({
         </Pill>
         <span className="font-medium text-fg-1">{step.label}</span>
       </div>
-      {step.display && <code className="mt-0.5 block whitespace-pre-wrap break-all font-mono text-fg-2">{step.display}</code>}
+      {step.display &&
+        (step.display_is_command ? (
+          <code className="mt-0.5 block whitespace-pre-wrap break-all font-mono text-fg-2">{step.display}</code>
+        ) : (
+          <p className="mt-0.5 text-fg-2">{step.display}</p>
+        ))}
+      {step.class === "guide" && step.command && (
+        <code className="mt-0.5 block whitespace-pre-wrap break-all font-mono text-fg-2" data-testid="sandbox-setup-command">
+          {step.command}
+        </code>
+      )}
       {step.reason && <p className="mt-0.5 text-fg-3">{step.reason}</p>}
       {/* Disclosures and the download consent come BEFORE the button. */}
       {step.disclosure && <p className="mt-0.5 text-warn">Before you run it: {step.disclosure}</p>}
       {step.consent && <p className="mt-0.5 text-fg-2">{consentLine(step.consent)}</p>}
       {after && <p className="mt-0.5 text-fg-3">{after}</p>}
       {hint && <p className="mt-0.5 text-fg-3">{hint}</p>}
+      {showsProject && <ConsentProject value={project} onChange={setProject} />}
+      {keyFields && <KeyForm prereq={step.prereq} label={step.label} names={keyFields} primary={isNext} busy={busy} onStore={onStoreKey} />}
       {(showPrimary || actions.length > 0 || (rec?.terminal_handle && step.state === "in_flight")) && (
         <div className="mt-1 flex flex-wrap items-center gap-2">
           {showPrimary &&
             (runs ? (
-              <Button size="sm" variant={isNext ? "primary" : "secondary"} onClick={() => onRun("run")} loading={busy === `run:${step.prereq}`} disabled={!!busy}>
+              <Button
+                size="sm"
+                variant={isNext ? "primary" : "secondary"}
+                onClick={() => onRun("run", consentFolderFor(step, "run", project))}
+                loading={busy === `run:${step.prereq}`}
+                disabled={!!busy || (needsProject && !project)}
+              >
                 {label}
               </Button>
             ) : (
-              <Button size="sm" variant="secondary" iconLeft={Copy} onClick={() => onCopy(step.display ?? "")}>
+              <Button size="sm" variant="secondary" iconLeft={Copy} onClick={() => onCopy(copyText ?? "")}>
                 {label}
               </Button>
             ))}
@@ -503,7 +561,14 @@ function StepRow({
                 {a.label}
               </ConfirmButton>
             ) : (
-              <Button key={a.action} size="sm" variant="secondary" onClick={() => onRun(a.action)} loading={busy === `${a.action}:${step.prereq}`} disabled={!!busy}>
+              <Button
+                key={a.action}
+                size="sm"
+                variant="secondary"
+                onClick={() => onRun(a.action, consentFolderFor(step, a.action, project))}
+                loading={busy === `${a.action}:${step.prereq}`}
+                disabled={!!busy}
+              >
                 {a.label}
               </Button>
             ),
@@ -532,11 +597,123 @@ function StepRow({
           {recView.remedy ? ` ${recView.remedy}` : ""}
         </p>
       )}
-      {docs && (
-        <a href={docs} target="_blank" rel="noreferrer" className="mt-0.5 inline-flex items-center gap-1 text-accent hover:underline">
-          Read how this step works <ExternalLink size={11} aria-hidden />
-        </a>
-      )}
+      {/* Opens the dashboard's own help drawer at this step's entry: App.tsx's
+          delegated data-help-id listener, the path every HelpInd takes. */}
+      <button type="button" data-help-id={helpId} data-testid="sandbox-setup-help" className="mt-0.5 inline-flex items-center gap-1 text-accent hover:underline">
+        <CircleHelp size={11} aria-hidden /> {SETUP_HELP_LABEL}
+      </button>
     </li>
+  );
+}
+
+/**
+ * ConsentProject picks the folder a consent step is for: Observer's default
+ * workspace first (a scratch folder that is not a project, GET
+ * /api/workspace/default), then the projects this machine has seen (the
+ * Hosted sandboxes card's own list).
+ */
+function ConsentProject({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const roots = useProjectRootOptions(true);
+  const ws = useApi<DefaultWorkspaceView>(DEFAULT_WORKSPACE_PATH);
+  const workspace = consentDefault(ws.data);
+  // Start on the default workspace, once, so a consent never defaults to a
+  // real project; with no usable workspace the person picks. The consent
+  // screen still lists what would leave before anything is agreed.
+  const defaulted = useRef(false);
+  useEffect(() => {
+    if (defaulted.current || value || !workspace) return;
+    defaulted.current = true;
+    onChange(workspace);
+  }, [value, workspace, onChange]);
+  const projects = roots.options.filter((o) => o.id !== workspace);
+  const shown = value === workspace && workspace ? `${WORKSPACE_OPTION_LABEL} (${value})` : value || "Pick a folder";
+  return (
+    <div className="mt-1 space-y-1" data-testid="sandbox-setup-consent-project">
+      <span id="sandbox-setup-consent-project" className="block text-fg-2">
+        Folder the consent is for
+      </span>
+      <ComboChip
+        label="Folder the consent is for"
+        labelledBy="sandbox-setup-consent-project"
+        hideTriggerLabel
+        fullWidth
+        value={value}
+        onChange={onChange}
+        options={[
+          { value: "", label: <span>Pick a folder</span>, searchable: "" },
+          ...(workspace
+            ? [
+                {
+                  value: workspace,
+                  label: (
+                    <span>
+                      {WORKSPACE_OPTION_LABEL} <span className="font-mono text-fg-3">{workspace}</span>
+                    </span>
+                  ),
+                  searchable: `${WORKSPACE_OPTION_LABEL} ${workspace}`,
+                },
+              ]
+            : []),
+          ...projects.map((o) => ({ value: o.id, label: <span className="font-mono">{o.label}</span>, searchable: o.label })),
+        ]}
+        buttonValueRender={() => <span className="font-mono">{shown}</span>}
+      />
+      <span className="block text-fg-3">{CONSENT_FOLDER_NOTE}</span>
+    </div>
+  );
+}
+
+/** StoreKeyFn hands a key step's typed values to the run request. */
+type StoreKeyFn = (values: Record<string, string>) => void;
+
+/**
+ * KeyForm is a key step's input: the Hosted sandboxes card's own key
+ * fields (one per value the provider needs, masked for a secret, never
+ * pre-filled). Pressing the button hands the values to the run request and
+ * clears every field first, so nothing typed stays on the page; the daemon
+ * stores them in the keychain and never sends them back.
+ */
+function KeyForm({
+  prereq,
+  label,
+  names,
+  primary,
+  busy,
+  onStore,
+}: {
+  prereq: string;
+  label: string;
+  names: string[];
+  primary: boolean;
+  busy: string | null;
+  onStore: StoreKeyFn;
+}) {
+  const [draft, setDraft] = useState<Record<string, string>>({});
+  const ready = hostedConnectReady(names, draft);
+  return (
+    <form
+      className="mt-1 space-y-1.5"
+      aria-label={label}
+      data-testid="sandbox-setup-key-form"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!ready || busy) return;
+        const values = credentialRunFields(names, draft);
+        setDraft({});
+        onStore(values);
+      }}
+    >
+      <HostedKeyFields
+        names={names}
+        values={draft}
+        disabled={!!busy}
+        onChange={(name, v) => setDraft((cur) => ({ ...cur, [name]: v }))}
+        className="w-full rounded-2 border border-line-2 bg-bg-0 px-2 py-1 font-mono text-[12px] text-fg-1"
+      />
+      <p className="text-fg-3">{CREDENTIAL_FORM_NOTE}</p>
+      <Button type="submit" size="sm" variant={primary ? "primary" : "secondary"} iconLeft={KeyRound} loading={busy === `run:${prereq}`} disabled={!!busy || !ready}>
+        {CREDENTIAL_STORE_LABEL}
+      </Button>
+    </form>
   );
 }

@@ -83,6 +83,9 @@ type Env struct {
 	HomeDir string
 	// GOOS and GOARCH select the Platforms cells.
 	GOOS, GOARCH string
+	// InventorySink receives every parsed scan's package inventory (the
+	// project SBOM's source), with the driver id; nil keeps it nowhere.
+	InventorySink func(root, driver string, pkgs []depscan.Package)
 }
 
 // Driver is the subprocess driver.
@@ -191,6 +194,9 @@ func (d *Driver) Scan(ctx context.Context, t secscan.Target) (secscan.Result, er
 	if err != nil {
 		in.Failed, in.RunReason = true, depscan.ReasonEngineFailed
 		return depdriver.Result(in), nil
+	}
+	if d.env.InventorySink != nil && t.CheckoutRoot == "" {
+		d.env.InventorySink(t.ProjectRoot, depscan.OSVID, resp.Packages)
 	}
 	resp.Extractors = append(resp.Extractors, facts.failures()...)
 	resp.Gaps = append(resp.Gaps, MissingDatabaseGaps(facts.missing, resp.Packages)...)

@@ -90,7 +90,7 @@ func TestStorageScrubContextAndProseStayBare(t *testing.T) {
 	}{
 		{"assignment consumes a typed value", "token: " + storageParitySamples["github_pat_fine"], "github_pat_11"},
 		{"classic PAT assignment", "token: " + storageParitySamples["github_pat"], "ghp_"},
-		{"short bearer prose", "use Bearer token auth here", "Bearer token"},
+		{"short bearer value", "use Bearer abc123 here", "abc123"},
 		{"json key", `{"password": "hunter2hunter2"}`, "hunter2"},
 	}
 	for _, tc := range cases {

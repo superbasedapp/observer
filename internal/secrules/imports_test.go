@@ -16,6 +16,6 @@ func TestNoForbiddenImports(t *testing.T) {
 			"github.com/marmutapp/superbased-observer/internal/store",
 			"github.com/marmutapp/superbased-observer/internal/guard",
 		},
-		Reason: "internal/secrules is pure rule tables over injected facts; the guard core imports nothing from the pillar and the pillar's rules import no guard runtime",
+		Reason: "internal/secrules is pure rule tables over injected facts; the pillar's rules import no guard runtime (guard reads the full static pack only to lint the org layer, internal/guard/orgpack.go, and is otherwise handed the active pack by the cmd layer)",
 	})
 }

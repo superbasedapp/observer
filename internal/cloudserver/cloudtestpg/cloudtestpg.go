@@ -28,6 +28,13 @@ import (
 // EnvVar is the environment variable naming the admin DSN of the test Postgres.
 const EnvVar = "SBCI_TEST_PG_DSN"
 
+// RequiredEnvVar, set to "1", turns a missing DSN from a skip into a failure.
+// The ops gate's bootstrap sets it with the DSN for every live-PostgreSQL
+// unit, so a suite whose DSN did not arrive fails loudly instead of passing
+// by skipping (L-139: the cloud suites skipped on every gate until
+// 2026-11-17, and only GitHub's org-postgres run executed them).
+const RequiredEnvVar = "SBCI_TEST_PG_REQUIRED"
+
 // migrateSerial is a fast, process-local gate that serializes migrations run by
 // this test binary's own parallel subtests before they reach the network lock —
 // so same-process contention costs a mutex, not an admin round trip.
@@ -59,6 +66,9 @@ const harnessMigrateLockKey int64 = 0x5B_C1_03_11 // "sbci-0311", one past the p
 func RequireDSN(t *testing.T) string {
 	t.Helper()
 	dsn := os.Getenv(EnvVar)
+	if dsn == "" && os.Getenv(RequiredEnvVar) == "1" {
+		t.Fatalf("%s=1 but %s is empty: this run provides PostgreSQL, so the suite must not skip", RequiredEnvVar, EnvVar)
+	}
 	if dsn == "" {
 		t.Skipf("SKIP (no Postgres): set %s to run this suite, e.g. "+
 			"%s=postgres://postgres:sbci@127.0.0.1:15544/postgres?sslmode=disable "+

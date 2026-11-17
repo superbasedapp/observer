@@ -1,4 +1,4 @@
-// launchToolPaths is the pure model behind Settings > Terminal > "Launch binary
+// launchToolPaths is the pure model behind Settings > Session attach > "Launch binary
 // paths" (LaunchToolPathsCard.tsx): the [launch.tools.<tool>].path overrides
 // that make `observer <tool>` run a specific program instead of resolving one.
 // It owns the row view, the client-side path checks (mirroring the daemon's

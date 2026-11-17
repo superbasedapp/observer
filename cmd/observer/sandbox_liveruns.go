@@ -403,36 +403,78 @@ const liveRunsDaemonTimeout = 5 * time.Second
 // newDaemonLiveRunsClient talks to the running daemon's dashboard: the
 // address the daemon recorded beside its database (dashboard_listen_record.go,
 // so a --dashboard-addr or every-interface bind is found), else the address
-// the config at configPath ("" = the default lookup) resolves to.
+// the config at configPath ("" = the default lookup) resolves to. Only a
+// daemon serving that config's database is asked (L-125): any other one is
+// no daemon for this question, so its runs are never reported or ended here.
 var newDaemonLiveRunsClient = func(configPath string) daemonLiveRunsClient {
-	return httpLiveRunsClient("http://" + daemonDashboardAddr(configPath) + "/api/admin/restart")
+	return handoffLiveRunsClient(func(ctx context.Context) daemonTarget {
+		return resolveDaemonHandoff(ctx, configPath)
+	})
+}
+
+// handoffLiveRunsClient resolves the daemon through resolve before each
+// call and talks only to one the handoff table accepts.
+func handoffLiveRunsClient(resolve func(ctx context.Context) daemonTarget) daemonLiveRunsClient {
+	return daemonLiveRunsClient{
+		query: func(ctx context.Context) (daemonLiveRunsReport, error) {
+			t := resolve(ctx)
+			if !t.Use {
+				return daemonLiveRunsReport{}, nil // no daemon serves this database
+			}
+			return httpLiveRunsClientFor(t.Base+"/api/admin/restart", t.DBIdentity).query(ctx)
+		},
+		end: func(ctx context.Context) (int, error) {
+			t := resolve(ctx)
+			if !t.Use {
+				return 0, fmt.Errorf("no daemon serving this database answered at %s: %s", strings.TrimPrefix(t.Base, "http://"), t.Reason)
+			}
+			return httpLiveRunsClientFor(t.Base+"/api/admin/restart", t.DBIdentity).end(ctx)
+		},
+	}
 }
 
 // daemonDashboardAddr is the dialable address of the running daemon's
 // dashboard: the address the daemon recorded beside its database, else the
 // one the config at configPath ("" = the default lookup) resolves to.
+//
+// The address alone never proves the daemon serves this config's database
+// (with no record it is the default port, which another HOME's daemon may
+// hold): a caller that hands the daemon work resolves it through
+// resolveDaemonHandoff (daemon_handoff.go, L-125).
 func daemonDashboardAddr(configPath string) string {
-	addr := "127.0.0.1:8081"
 	if cfg, err := config.Load(config.LoadOptions{GlobalPath: configPath}); err == nil {
-		addr = resolveDashboardAddr("", cfg.Dashboard.Addr, addr)
-		if rec, ok := readDashboardListenRecord(cfg.Observer.DBPath); ok {
-			addr = rec.Addr
-		}
-	} else {
-		addr = resolveDashboardAddr("", "", addr)
+		return daemonDashboardAddrFor(cfg)
+	}
+	return dialableDashboardAddr(resolveDashboardAddr("", "", "127.0.0.1:8081"))
+}
+
+// daemonDashboardAddrFor is daemonDashboardAddr for an already loaded cfg.
+func daemonDashboardAddrFor(cfg config.Config) string {
+	addr := resolveDashboardAddr("", cfg.Dashboard.Addr, "127.0.0.1:8081")
+	if rec, ok := readDashboardListenRecord(cfg.Observer.DBPath); ok {
+		addr = rec.Addr
 	}
 	return dialableDashboardAddr(addr)
 }
 
 // httpLiveRunsClient is the loopback client over the restart route.
 func httpLiveRunsClient(url string) daemonLiveRunsClient {
+	return httpLiveRunsClientFor(url, "")
+}
+
+// httpLiveRunsClientFor is httpLiveRunsClient naming this CLI's database
+// (dbIdentity, "" = none) on every request, so a daemon serving another one
+// refuses it (L-125).
+func httpLiveRunsClientFor(url, dbIdentity string) daemonLiveRunsClient {
 	client := &http.Client{Timeout: liveRunsDaemonTimeout}
+	target := daemonTarget{DBIdentity: dbIdentity}
 	return daemonLiveRunsClient{
 		query: func(ctx context.Context) (daemonLiveRunsReport, error) {
 			req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 			if err != nil {
 				return daemonLiveRunsReport{}, err
 			}
+			target.setDBIdentity(req)
 			resp, err := client.Do(req)
 			if err != nil {
 				if isConnRefused(err) {
@@ -460,11 +502,15 @@ func httpLiveRunsClient(url string) daemonLiveRunsClient {
 				return 0, err
 			}
 			req.Header.Set("Content-Type", "application/json")
+			target.setDBIdentity(req)
 			resp, err := client.Do(req)
 			if err != nil {
 				return 0, fmt.Errorf("the daemon did not answer: %w", err)
 			}
 			defer func() { _ = resp.Body.Close() }()
+			if isDBIdentityRefusal(resp, dbIdentity) {
+				return 0, fmt.Errorf("the daemon at %s serves another database; its sandboxed runs were not ended", req.URL.Host)
+			}
 			var body struct {
 				Ended int    `json:"ended_sandboxed_runs"`
 				Error string `json:"error"`

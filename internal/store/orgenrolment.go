@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
@@ -27,6 +28,13 @@ type Enrolment struct {
 	// here from the enrol response and read everywhere else; the empty string
 	// is treated as "individual".
 	Tenancy string
+	// DisplayName and OnlineURL are the connection's name and online
+	// dashboard address as `observer connect` learnt them from the cloud's
+	// approval (agent migration 255). Read-only here: WriteEnrolment clears
+	// them and SetEnrolmentConnection writes them. OnlineURL is for a button,
+	// never for CLI text.
+	DisplayName string
+	OnlineURL   string
 }
 
 // IsManaged reports whether this enrolment opted into Enterprise-Managed
@@ -58,7 +66,9 @@ func (s *Store) WriteEnrolment(ctx context.Context, e Enrolment) error {
 		   user_email     = excluded.user_email,
 		   enrolled_at    = excluded.enrolled_at,
 		   bearer_key_id  = excluded.bearer_key_id,
-		   tenancy        = excluded.tenancy`,
+		   tenancy        = excluded.tenancy,
+		   display_name   = '',
+		   online_url     = ''`,
 		e.OrgID, e.OrgName, e.OrgServerURL, e.UserID, e.UserEmail, e.EnrolledAt, e.BearerKeyID, e.Tenancy)
 	if err != nil {
 		return fmt.Errorf("store.WriteEnrolment: %w", err)
@@ -96,9 +106,11 @@ func (s *Store) LoadEnrolment(ctx context.Context) (*Enrolment, error) {
 func loadEnrolment(ctx context.Context, q querier) (*Enrolment, error) {
 	var e Enrolment
 	err := q.QueryRowContext(ctx,
-		`SELECT org_id, org_name, org_server_url, user_id, user_email, enrolled_at, bearer_key_id, tenancy
+		`SELECT org_id, org_name, org_server_url, user_id, user_email, enrolled_at, bearer_key_id, tenancy,
+		        display_name, online_url
 		   FROM org_enrolment WHERE id = 1`).
-		Scan(&e.OrgID, &e.OrgName, &e.OrgServerURL, &e.UserID, &e.UserEmail, &e.EnrolledAt, &e.BearerKeyID, &e.Tenancy)
+		Scan(&e.OrgID, &e.OrgName, &e.OrgServerURL, &e.UserID, &e.UserEmail, &e.EnrolledAt, &e.BearerKeyID, &e.Tenancy,
+			&e.DisplayName, &e.OnlineURL)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -109,6 +121,25 @@ func loadEnrolment(ctx context.Context, q querier) (*Enrolment, error) {
 		e.Tenancy = orgcontract.TenancyIndividual
 	}
 	return &e, nil
+}
+
+// SetEnrolmentConnection records the connection's display name and online
+// address on the enrolment in force (agent migration 255), only when that
+// enrolment is still for orgID: a connect that lost a race to another
+// enrolment writes nothing. It reports whether it wrote. The one writer of
+// the two columns besides WriteEnrolment, which clears them.
+func (s *Store) SetEnrolmentConnection(ctx context.Context, orgID, displayName, onlineURL string) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE org_enrolment SET display_name = ?, online_url = ? WHERE id = 1 AND org_id = ?`,
+		strings.TrimSpace(displayName), strings.TrimSpace(onlineURL), orgID)
+	if err != nil {
+		return false, fmt.Errorf("store.SetEnrolmentConnection: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("store.SetEnrolmentConnection: rows: %w", err)
+	}
+	return n == 1, nil
 }
 
 // DeleteEnrolment removes the org_enrolment row (used by `observer unenroll`)

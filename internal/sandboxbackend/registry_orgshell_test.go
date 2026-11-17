@@ -57,7 +57,7 @@ func TestOpenShellOrgRow(t *testing.T) {
 // TestOrgHostedRowLeavesHostedRowAlone: the wrapper does not change the
 // three vendor rows' shape (they keep phase P7 and the paid tier).
 func TestOrgHostedRowLeavesHostedRowAlone(t *testing.T) {
-	for _, id := range []string{BackendE2B, BackendModal, BackendVercelSandbox} {
+	for _, id := range []string{BackendE2B, BackendModal, BackendVercelSandbox, BackendDockerSandboxes, BackendInstaBox, BackendDaytona} {
 		c, _ := Get(id)
 		if c.Phase != "P7" || !slices.Contains(c.Discloses, DisclosePaidTier) || c.Net.Enforcer != EnforcerProvider {
 			t.Errorf("%s changed: %+v", id, c)

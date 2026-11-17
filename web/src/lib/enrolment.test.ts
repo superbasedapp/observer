@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  apiErrorCode,
   apiErrorMessage,
   canSubmit,
   checkCode,
@@ -18,6 +19,7 @@ import {
   pushCadenceLine,
   resyncLine,
   shareModeLabel,
+  UNSENT_ROWS,
   tenancyLabel,
   type EnrolOutcome,
   type EnrolmentOverview,
@@ -76,6 +78,30 @@ test("enrolBody never sends a field the method does not use", () => {
   const f = { orgUrl: " https://o.example ", token: " a.b ", link: " https://o.example/enrol/a.b " };
   assert.deepEqual(enrolBody({ ...f, method: "code" }), { method: "code", org_url: "https://o.example", token: "a.b" });
   assert.deepEqual(enrolBody({ ...f, method: "link" }), { method: "link", link: "https://o.example/enrol/a.b" });
+});
+
+test("enrolBody adds drop_unsent only for the explicit Switch anyway (R3-78)", () => {
+  const f = { orgUrl: "https://o.example", token: "a.b", link: "https://o.example/enrol/a.b" };
+  assert.equal("drop_unsent" in enrolBody({ ...f, method: "code" }), false);
+  assert.deepEqual(enrolBody({ ...f, method: "code" }, true), {
+    method: "code",
+    org_url: "https://o.example",
+    token: "a.b",
+    drop_unsent: true,
+  });
+  assert.deepEqual(enrolBody({ ...f, method: "link" }, true), {
+    method: "link",
+    link: "https://o.example/enrol/a.b",
+    drop_unsent: true,
+  });
+});
+
+test("apiErrorCode reads the classified code, or nothing", () => {
+  assert.equal(apiErrorCode({ body: '{"error":"unsent_rows","message":"Not switched: 6 rows"}' }), UNSENT_ROWS);
+  assert.equal(apiErrorCode({ body: '{"message":"no code"}' }), "");
+  assert.equal(apiErrorCode({ body: "plain failure" }), "");
+  assert.equal(apiErrorCode(new Error("boom")), "");
+  assert.equal(apiErrorCode(null), "");
 });
 
 test("apiErrorMessage prefers the server sentence", () => {

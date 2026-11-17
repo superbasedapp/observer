@@ -117,6 +117,10 @@ func newDashboardCmd() *cobra.Command {
 				// Code security "Scan now" (security_scan_now.go): one manual run of a
 				// selected scanner on one project, the same run its CLI verb starts.
 				SecurityScanNow: securityScanNowDash(resolvedConfigPath, database),
+				// DAST card (security_dast_dashboard.go) and Projects tab SBOM
+				// export (security_sbom_dashboard.go), security coverage gaps plan.
+				SecurityDAST:        securityDASTDash(resolvedConfigPath, database),
+				SecurityProjectSBOM: securityProjectSBOMDash(resolvedConfigPath),
 				// Code rules card (security_opengrep_dash.go): the guided
 				// install with its size consent (lane SEC-G2).
 				Opengrep: opengrepDash(resolvedConfigPath, database),
@@ -234,6 +238,8 @@ func newDashboardCmd() *cobra.Command {
 				// Settings > Enrolment management; no push loop runs in this
 				// process, so an enrolment's outcome says a daemon start is needed.
 				EnrolManager: enrolManagerFor(resolvedConfigPath, false, ngov),
+				// Plan 07 M8.4: the front door's one sentence (connect.go).
+				ConnectStatus: connectStatusSeam(database),
 				// Settings > Components and the route guard (modular packaging
 				// P1, lane MP-DASH): the same service `observer start` wires.
 				Components:         dashboardComponents(resolvedConfigPath, database),
@@ -256,6 +262,10 @@ func newDashboardCmd() *cobra.Command {
 				// session-link resolver from termsvc. Nil when the launch
 				// manager is absent → cockpit 404s.
 				SessionResolver: sessionResolver(launchMgr),
+				// The agent-run security assessments' relaxations read the guard's own
+				// lock and decision per rule and project (fail closed when unreadable).
+				RuleRelaxation:     dashboardRuleRelaxation(resolvedConfigPath, database),
+				SandboxGatewayPort: sandboxGatewayPortFunc(),
 				// Remote-access substrate (plan §4). Nil unless [remote] is
 				// enabled AND a pairing secret is provisioned — so a
 				// non-loopback bind stays fail-closed until Phase 2 exposure.

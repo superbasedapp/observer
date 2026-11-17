@@ -18,7 +18,7 @@ import (
 func TestOpenShellRunScanIsQuietOutsideTheReaper(t *testing.T) {
 	stateDir := t.TempDir()
 	writeRunDir(t, stateDir, "run-mismatch-001", []byte(`{"version":`+strconv.Itoa(openShellPlanVersion)+`,"run_id":"run-other-000002"}`), time.Hour)
-	var buf strings.Builder
+	var buf syncBuffer // the default logger is process-wide: a relay goroutine from another test may write it (L-4)
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 	t.Cleanup(func() { slog.SetDefault(prev) })

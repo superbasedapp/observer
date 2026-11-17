@@ -55,6 +55,7 @@ func newGuardCmd() *cobra.Command {
 	cmd.AddCommand(newGuardExportCmd())
 	cmd.AddCommand(newGuardReportCmd())
 	cmd.AddCommand(newGuardPromptCmd())
+	cmd.AddCommand(newGuardEventsCmd())
 	cmd.AddCommand(newGuardRecipeCmd())
 	registerGuardEnforceCmds(cmd)
 	return cmd
@@ -102,7 +103,7 @@ func newGuardStatusCmd() *cobra.Command {
 			}
 			fmt.Fprintf(out, "Strict:       %v (fail-%s on guard internal error)\n",
 				cfg.Guard.Strict, map[bool]string{true: "closed", false: "open"}[cfg.Guard.Strict])
-			fmt.Fprintf(out, "Rules:        %d active rows\n", g.RuleCount())
+			fmt.Fprintln(out, guardRulesStatusLine(g.RuleIDCount(), g.RuleCount()))
 			fmt.Fprintf(out, "Taint:        %s (decay %d turns)\n", onOff(cfg.Guard.Taint.Enabled), cfg.Guard.Taint.DecayTurns)
 			fmt.Fprintf(out, "Alerts:       desktop=%s min_severity=%s\n", onOff(cfg.Guard.Alerts.Desktop), cfg.Guard.Alerts.MinSeverity)
 			// D-672: the managed-node floor and the org bundle state are
@@ -205,6 +206,11 @@ func newGuardStatusCmd() *cobra.Command {
 				}
 				fmt.Fprintf(out, "  %-12s %s\n", line.label+":", formatCounts(line.m))
 			}
+			if sum.Total > 0 {
+				// CG-18: the verdicts no session view shows are listed by
+				// the CLI, since the Security page may be hidden here.
+				fmt.Fprintln(out, "  list:        `observer guard events` (--session-less for the ones no session shows)")
+			}
 
 			report, err := s.VerifyGuardChain(cmd.Context())
 			if err != nil {
@@ -234,33 +240,42 @@ func enforcedByOrgSuffix(n int) string {
 	return fmt.Sprintf(" (%d by your organization's policy)", n)
 }
 
-// newGuardRulesCmd implements `observer guard rules [--effective]
-// [--json]`: the built-in catalog, or this install's effective table
-// (overrides applied, user rules included, disabled rules removed).
+// newGuardRulesCmd implements `observer guard rules [--catalog]
+// [--json|--markdown]`: this install's effective listing by default
+// (guard.Guard.RuleListing, the same list GET /api/guard/rules serves and
+// the dashboard's Security > Rules tab shows: overrides applied, disabled
+// rules removed, the user and org layers' rules with their source, the
+// org's project-scoped rules labelled with their project), or the built-in
+// catalog with --catalog. --markdown always renders the built-in catalog
+// (docs/guard-rules.md).
 func newGuardRulesCmd() *cobra.Command {
 	var (
 		configPath string
 		effective  bool
+		catalog    bool
 		jsonOut    bool
 		markdown   bool
 	)
 	cmd := &cobra.Command{
 		Use:   "rules",
-		Short: "List the built-in rule catalog (or this install's effective table)",
+		Short: "List this install's effective rules (or the built-in catalog with --catalog)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			out := cmd.OutOrStdout()
+			if markdown {
+				_, err := io.WriteString(out, renderRuleCatalogMarkdown(policy.Catalog()))
+				return err
+			}
+			if catalog && effective {
+				return fmt.Errorf("--catalog and --effective are exclusive")
+			}
 			infos := policy.Catalog()
-			if effective {
+			if !catalog {
 				_, g, err := buildCLIGuard(configPath)
 				if err != nil {
 					return err
 				}
-				infos = g.EffectiveRules()
-			}
-			if markdown {
-				_, err := io.WriteString(out, renderRuleCatalogMarkdown(infos))
-				return err
+				infos = g.RuleListing()
 			}
 			if jsonOut {
 				type row struct {
@@ -270,6 +285,7 @@ func newGuardRulesCmd() *cobra.Command {
 					Observe  string `json:"observe"`
 					Enforce  string `json:"enforce"`
 					Source   string `json:"source"`
+					Project  string `json:"project,omitempty"`
 					Enforced bool   `json:"enforced,omitempty"`
 					Doc      string `json:"doc"`
 				}
@@ -278,32 +294,43 @@ func newGuardRulesCmd() *cobra.Command {
 					rows = append(rows, row{
 						ID: r.ID, Category: string(r.Category), Severity: r.Severity.String(),
 						Observe: r.Observe.String(), Enforce: r.Enforce.String(),
-						Source: r.Source, Enforced: r.Enforced, Doc: r.Doc,
+						Source: r.Source, Project: r.Project, Enforced: r.Enforced, Doc: r.Doc,
 					})
 				}
 				enc := json.NewEncoder(out)
 				enc.SetIndent("", "  ")
 				return enc.Encode(rows)
 			}
-			fmt.Fprintf(out, "%-7s %-12s %-9s %-9s %-9s %-8s %s\n",
-				"ID", "CATEGORY", "SEVERITY", "OBSERVE", "ENFORCE", "SOURCE", "DOC")
+			fmt.Fprintf(out, "%-7s %-12s %-9s %-9s %-9s %-8s %-14s %s\n",
+				"ID", "CATEGORY", "SEVERITY", "OBSERVE", "ENFORCE", "SOURCE", "SCOPE", "DOC")
 			for _, r := range infos {
 				enforce := r.Enforce.String()
 				if r.Enforced {
 					enforce += "!"
 				}
-				fmt.Fprintf(out, "%-7s %-12s %-9s %-9s %-9s %-8s %s\n",
-					r.ID, r.Category, r.Severity, r.Observe, enforce, r.Source, r.Doc)
+				fmt.Fprintf(out, "%-7s %-12s %-9s %-9s %-9s %-8s %-14s %s\n",
+					r.ID, r.Category, r.Severity, r.Observe, enforce, r.Source, ruleScopeText(r.Project), r.Doc)
 			}
 			fmt.Fprintln(out, "\n('!' = per-rule enforced even in observe mode)")
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml")
-	cmd.Flags().BoolVar(&effective, "effective", false, "show THIS install's effective table (user layer + overrides applied) instead of the built-in catalog")
+	cmd.Flags().BoolVar(&catalog, "catalog", false, "show the built-in rule catalog instead of THIS install's effective rules")
+	cmd.Flags().BoolVar(&effective, "effective", false, "show THIS install's effective rules (the default; kept for scripts that pass it)")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit JSON")
 	cmd.Flags().BoolVar(&markdown, "markdown", false, "emit the docs/guard-rules.md catalog markdown (regenerate with `observer guard rules --markdown > docs/guard-rules.md`)")
 	return cmd
+}
+
+// ruleScopeText is the SCOPE column of `observer guard rules`: "all" for a
+// rule in force on every project, "project <id>" for an org rule scoped to
+// one organization project.
+func ruleScopeText(project string) string {
+	if project == "" {
+		return "all"
+	}
+	return "project " + project
 }
 
 // shellDialectNote is the catalog's note on which shell a command is read
@@ -910,6 +937,18 @@ func newGuardRelinkGapsCmd() *cobra.Command {
 	return cmd
 }
 
+// guardRulesStatusLine is the status "Rules:" line. It leads with the count
+// of distinct rules - the number the dashboard's Rules tab shows - and names
+// the row count beside it, since one rule can own several rows (demo bug #12:
+// the tab said 81 and this line said "131 active rows", and nothing said they
+// counted different things).
+func guardRulesStatusLine(rules, rows int) string {
+	if rows == rules {
+		return fmt.Sprintf("Rules:        %d active rules", rules)
+	}
+	return fmt.Sprintf("Rules:        %d active rules (%d rule rows: a rule can match several event kinds)", rules, rows)
+}
+
 // expandUserPolicyPath expands a leading ~/ against home (the same
 // convention guard.New applies).
 func expandUserPolicyPath(p, home string) string {
@@ -962,7 +1001,7 @@ func orgBudgetCLILine(ctx context.Context, cfg config.Config, database *sql.DB) 
 	// A3). Appended rather than folded into the composed posture because the
 	// posture answers "is a cap in force" and this answers "in whose dollars";
 	// it prints nothing at all when this process could not measure it.
-	line += budgetPricingCoverageLine(cliBudgetPricingCoverage(ctx, cfg, database))
+	line += budgetPricingCoverageLine(cliBudgetPricingCoverage(ctx, cfg, database, granted))
 	cached, err := store.New(database).LoadOrgBudget(ctx)
 	if err != nil || !cached.Have {
 		// No verified body persisted (or the read itself failed): the line's
@@ -988,8 +1027,17 @@ func rewriteCachedBudgetFetchState(line string, cached store.OrgBudgetCache) str
 	if !cached.FetchedAt.IsZero() {
 		at = cached.FetchedAt.UTC().Format(time.RFC3339)
 	}
-	replacement := fmt.Sprintf("fetch_state=cached (CLI read verified body v%d persisted at %s; daemon fetch state unavailable here)",
-		cached.Version, at)
+	// Demo bug #4: before any budget existed this read "body v0 persisted at
+	// 2026-09-20 ...", which looked like a stale fetch. A signed empty body
+	// is the org saying "no budget applies to you"; say that, and give the
+	// last time the org confirmed it (fetched_at now moves on every 304,
+	// store.TouchOrgBudgetConfirmed).
+	what := fmt.Sprintf("verified body v%d", cached.Version)
+	if cached.Body.Empty() {
+		what = fmt.Sprintf("no org budgets (signed empty body v%d)", cached.Version)
+	}
+	replacement := fmt.Sprintf("fetch_state=cached (%s, last confirmed by the org at %s; the daemon's live fetch state is not visible to this CLI)",
+		what, at)
 	line = strings.Replace(line, fetchMarker, replacement, 1)
 	line = strings.Replace(line, "last_fetch_ok=false", "last_fetch_ok=unknown_to_cli", 1)
 	return strings.Replace(line, "last_fetch_ok=true", "last_fetch_ok=unknown_to_cli", 1)

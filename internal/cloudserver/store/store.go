@@ -20,11 +20,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/deletionjournal"
+	"github.com/marmutapp/superbased-observer/internal/tenantctx"
 )
 
 // Role is the non-login Postgres role a Store's transactions assume via
@@ -52,12 +54,14 @@ const (
 	RoleAggregator Role = "sbci_aggregator"
 )
 
-// valid reports whether r is one of the three constructable roles. RoleAggregator
+// valid reports whether r is one of the four constructable roles. RoleAggregator
 // is intentionally excluded: it is reachable only through WithAggregator, never
-// as a Store's standing appRole.
+// as a Store's standing appRole. RoleStaff is constructable for the staff
+// process only (staff.go): its every transaction then runs as sbci_staff,
+// which reaches the staff tables and nothing else.
 func (r Role) valid() bool {
 	switch r {
-	case RoleApp, RoleAPI, RoleWorker:
+	case RoleApp, RoleAPI, RoleWorker, RoleStaff:
 		return true
 	default:
 		return false
@@ -76,6 +80,8 @@ func (r Role) setLocalRoleSQL() string {
 		return `SET LOCAL ROLE sbci_worker`
 	case RoleAggregator:
 		return `SET LOCAL ROLE sbci_aggregator`
+	case RoleStaff:
+		return `SET LOCAL ROLE sbci_staff`
 	case RoleApp:
 		return `SET LOCAL ROLE sbci_app`
 	default:
@@ -100,25 +106,35 @@ type Store struct {
 	// until SetPaddlePriceMap wires the deploy config, so every activation
 	// fail-closes as unknown-price until real pri_* ids are provisioned.
 	paddlePrices map[string]PaddlePlan
+	// paddlePastDueGrace is the dunning window of the account path (FR-9);
+	// zero means DefaultPaddlePastDueGrace. Set by SetPaddlePastDueGrace.
+	paddlePastDueGrace time.Duration
 	// spendCeilings maps a budget pool to its USD ceilings (T-946). Every
 	// Store starts with DefaultSpendCeilings, so a process that never calls
 	// SetSpendCeilings still bounds the Free pool.
 	spendCeilings map[string]SpendCeiling
+	// tenant signs the per-transaction tenant context (tenantctx.go). New
+	// gives every Store a process-random key; SetTenantContextKey replaces it
+	// with the deployment's key.
+	tenant *tenantContext
+	// txRetry retries a whole transaction on a deadlock or serialization
+	// failure (CLOUD-LOCK-1). The zero value uses the real clock.
+	txRetry txRetrier
 }
 
 // New returns a Store over pool bound to the default sbci_app role, with the
-// default (process-random) evidence encryptor.
+// default (process-random) evidence encryptor and tenant context key.
 func New(pool *pgxpool.Pool) *Store {
-	return &Store{pool: pool, enc: newDefaultEncryptor(), appRole: RoleApp, spendCeilings: DefaultSpendCeilings()}
+	return &Store{pool: pool, enc: newDefaultEncryptor(), appRole: RoleApp, spendCeilings: DefaultSpendCeilings(), tenant: newAutoTenantContext()}
 }
 
 // NewForRole returns a Store whose transactions assume role (E2 / W6rs). role
-// MUST be one of RoleApp, RoleAPI, RoleWorker; any other value is rejected so a
-// mis-wired process fails loudly at construction rather than emitting an
-// unexpected SET ROLE.
+// MUST be one of RoleApp, RoleAPI, RoleWorker, RoleStaff; any other value is
+// rejected so a mis-wired process fails loudly at construction rather than
+// emitting an unexpected SET ROLE.
 func NewForRole(pool *pgxpool.Pool, role Role) (*Store, error) {
 	if !role.valid() {
-		return nil, fmt.Errorf("cloudserver/store.NewForRole: invalid role %q (want sbci_app, sbci_api, or sbci_worker)", role)
+		return nil, fmt.Errorf("cloudserver/store.NewForRole: invalid role %q (want sbci_app, sbci_api, sbci_worker, or sbci_staff)", role)
 	}
 	s := New(pool)
 	s.appRole = role
@@ -150,14 +166,16 @@ func (s *Store) Pool() *pgxpool.Pool { return s.pool }
 var ErrNotFound = errors.New("cloudserver/store: not found")
 
 // WithAccount runs fn inside a transaction scoped to account: it drops to the
-// store's application role and sets the sbci.account_id GUC (both SET LOCAL, so both reset
-// when the transaction ends, whether it commits, rolls back, or the connection
-// is returned to the pool). fn's error rolls the transaction back.
+// store's application role and sets the account's tenant context, a MAC'd
+// token (internal/tenantctx, kind account) in the sbci.account_id setting
+// that sbci_current_account() verifies (migration 0067). Both are SET LOCAL,
+// so both reset when the transaction ends, whether it commits, rolls back, or
+// the connection is returned to the pool. fn's error rolls the transaction
+// back.
 //
-// accountID must be a well-formed UUID string; it is cast to uuid by the GUC's
-// consumers (the RLS policies). An empty accountID is rejected so a caller can
-// never accidentally open a tenant transaction with a missing-context (which
-// would silently match no rows).
+// accountID must be a UUID (SetAccountContext). An empty accountID is
+// rejected so a caller can never accidentally open a tenant transaction with
+// a missing context (which would silently match no rows).
 func (s *Store) WithAccount(ctx context.Context, accountID string, fn func(ctx context.Context, tx pgx.Tx) error) error {
 	if accountID == "" {
 		return errors.New("cloudserver/store.WithAccount: empty accountID")
@@ -166,8 +184,7 @@ func (s *Store) WithAccount(ctx context.Context, accountID string, fn func(ctx c
 		if _, err := tx.Exec(ctx, s.appRole.setLocalRoleSQL()); err != nil {
 			return fmt.Errorf("cloudserver/store.WithAccount: set role: %w", err)
 		}
-		// set_config(..., is_local=true) so the setting is transaction-scoped.
-		if _, err := tx.Exec(ctx, `SELECT set_config('sbci.account_id', $1, true)`, accountID); err != nil {
+		if err := s.SetAccountContext(ctx, tx, accountID); err != nil {
 			return fmt.Errorf("cloudserver/store.WithAccount: set tenant: %w", err)
 		}
 		return fn(ctx, tx)
@@ -177,7 +194,7 @@ func (s *Store) WithAccount(ctx context.Context, accountID string, fn func(ctx c
 // WithSystem runs fn as the store's application role WITHOUT any tenant context
 // — for the system/control-plane tables (accounts, nonces, route registry, kill
 // switches, budget, audit) and the SECURITY DEFINER bootstrap functions. It
-// deliberately does NOT set sbci.account_id, so any RLS-protected table touched
+// deliberately does NOT set a tenant context, so any RLS-protected table touched
 // here matches no rows (missing-context-deny) — a guard against accidentally
 // reaching tenant data on the system path.
 func (s *Store) WithSystem(ctx context.Context, fn func(ctx context.Context, tx pgx.Tx) error) error {
@@ -192,7 +209,7 @@ func (s *Store) WithSystem(ctx context.Context, fn func(ctx context.Context, tx 
 		// instead of the promised missing-context deny. set_config(..., true) is
 		// transaction-scoped, so it overrides a lingering session value for the
 		// life of this tx and resets when the tx ends.
-		if _, err := tx.Exec(ctx, `SELECT set_config('sbci.account_id', '', true)`); err != nil {
+		if _, err := tx.Exec(ctx, tenantctx.KindAccount.ClearLocalSQL()); err != nil {
 			return fmt.Errorf("cloudserver/store.WithSystem: clear tenant: %w", err)
 		}
 		var noTenant bool
@@ -225,7 +242,7 @@ func (s *Store) WithAggregator(ctx context.Context, fn func(ctx context.Context,
 		}
 		// Transaction-scoped clear of any lingering session-level tenant GUC
 		// (same fail-closed guard as WithSystem, FB2).
-		if _, err := tx.Exec(ctx, `SELECT set_config('sbci.account_id', '', true)`); err != nil {
+		if _, err := tx.Exec(ctx, tenantctx.KindAccount.ClearLocalSQL()); err != nil {
 			return fmt.Errorf("cloudserver/store.WithAggregator: clear tenant: %w", err)
 		}
 		var noTenant bool
@@ -239,7 +256,15 @@ func (s *Store) WithAggregator(ctx context.Context, fn func(ctx context.Context,
 	})
 }
 
+// inTx is the store's one transaction primitive. Before it begins, a Store on
+// the process-random tenant key installs that key once (ensureTenantKey; on
+// its own connection, so a one-connection pool cannot deadlock), so every
+// transaction that sets a tenant context can rely on the database holding the
+// key.
 func (s *Store) inTx(ctx context.Context, fn func(ctx context.Context, tx pgx.Tx) error) error {
+	if err := s.ensureTenantKey(ctx); err != nil {
+		return err
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("cloudserver/store: begin: %w", err)

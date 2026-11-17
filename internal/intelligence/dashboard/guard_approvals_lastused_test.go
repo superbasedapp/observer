@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -96,7 +97,8 @@ func TestAPIGuardApprovalsLastUsed(t *testing.T) {
 }
 
 // TestAPIGuardEventsProjectRootHash: each verdict row carries its session's
-// project anchor, hashed the way a project grant stores it, never the path.
+// project anchor, hashed the way a project grant stores it, never the path;
+// a row that recorded the gate's project (GRANT-20) carries that one.
 func TestAPIGuardEventsProjectRootHash(t *testing.T) {
 	t.Parallel()
 	s, _ := newTestServer(t)
@@ -118,6 +120,12 @@ func TestAPIGuardEventsProjectRootHash(t *testing.T) {
 	if _, err := st.InsertGuardEvents(ctx, []store.GuardEventRow{
 		{TS: now.Add(-time.Minute), SessionID: "ph1", RuleID: "S-793", Decision: "ask", Enforced: true, Source: "pack:security"},
 		{TS: now.Add(-time.Minute), SessionID: "nobody", RuleID: "S-793", Decision: "ask", Enforced: true, Source: "pack:security"},
+		// GRANT-20: a row that recorded the gate's project (agent 253) carries
+		// that one, not its session's.
+		{
+			TS: now.Add(-time.Minute), SessionID: "gated", RuleID: "S-793", Decision: "ask", Enforced: true, Source: "pack:security",
+			ProjectRootHash: guard.HashProjectRoot("/r/other-repo"), ProjectRoot: "/r/other-repo",
+		},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -138,6 +146,12 @@ func TestAPIGuardEventsProjectRootHash(t *testing.T) {
 	}
 	if got["ph1"] != guard.HashProjectRoot(stored) {
 		t.Errorf("ph1 project_root_hash = %q, want %q", got["ph1"], guard.HashProjectRoot(stored))
+	}
+	if got["gated"] != guard.HashProjectRoot("/r/other-repo") {
+		t.Errorf("gated project_root_hash = %q, want the recorded gate project's", got["gated"])
+	}
+	if strings.Contains(rec.Body.String(), "/r/other-repo") {
+		t.Error("the events API carries the raw recorded project root")
 	}
 	if got["nobody"] != "" {
 		t.Errorf("an unknown session carries project_root_hash %q, want empty", got["nobody"])

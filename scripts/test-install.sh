@@ -23,7 +23,10 @@
 # npm-style symlink that must not be replaced, and in-place upgrades over a
 # systemd unit (stood in for by OBSERVER_INSTALL_TEST_SYSTEMD; the stub logs
 # the `observer service upgrade` the installer hands the restart to), and
-# the macOS 13 floor (a sw_vers fixture via OBSERVER_INSTALL_TEST_SW_VERS).
+# the macOS 13 floor (a sw_vers fixture via OBSERVER_INSTALL_TEST_SW_VERS),
+# and --connect (Getting started v2): connect before the service starts, the
+# hooks-only wiring when there is no service, the edition and team checks,
+# and scripts/connect.sh verifying install.sh through the signed SHA256SUMS.
 #
 # Usage: scripts/test-install.sh
 #        INSTALL_SCRIPT=/path/to/install.sh scripts/test-install.sh
@@ -107,6 +110,7 @@ run() {
   if [[ -n "${FAKE_UNINSTALL_FAIL:-}" ]]; then extra+=("FAKE_UNINSTALL_FAIL=$FAKE_UNINSTALL_FAIL"); fi
   if [[ -n "${OBSERVER_INSTALL_TEST_SYSTEMD:-}" ]]; then extra+=("OBSERVER_INSTALL_TEST_SYSTEMD=$OBSERVER_INSTALL_TEST_SYSTEMD"); fi
   if [[ -n "${OBSERVER_INSTALL_TEST_SW_VERS:-}" ]]; then extra+=("OBSERVER_INSTALL_TEST_SW_VERS=$OBSERVER_INSTALL_TEST_SW_VERS"); fi
+  if [[ -n "${SBO_CONNECT_TEAM:-}" ]]; then extra+=("SBO_CONNECT_TEAM=$SBO_CONNECT_TEAM"); fi
   # A fixture /proc with no daemon (U4): a test never reads this host's
   # real processes.
   mkdir -p "$T/noproc"
@@ -236,12 +240,13 @@ else
 fi
 
 # 15d. the managed next step and the uninstall hint name the real commands
-#      (T-746: rc.2 printed `observer org enroll` / `observer org unenroll`).
+#      (T-746: rc.2 printed `observer org enroll` / `observer org unenroll`;
+#      Getting started v2 names `observer connect` / `observer disconnect`).
 run "$T/h15d" --from-dir "$T/rel" --prefix "$T/p15d" --edition managed --no-service
-if [[ $rc -eq 0 ]] && has "observer enroll --link" && ! has "observer org "; then ok "managed next step names observer enroll --link"
+if [[ $rc -eq 0 ]] && has "observer connect <server>" && ! has "observer org " && ! has "observer enroll"; then ok "managed next step names observer connect <server>"
 else bad "managed next step (rc=$rc)"; cat "$T/out"; fi
 run "$T/h15d" --uninstall --prefix "$T/p15d" --dry-run
-if [[ $rc -eq 0 ]] && has "leave it first: observer unenroll"; then ok "uninstall names observer unenroll"
+if [[ $rc -eq 0 ]] && has "disconnect it first: observer disconnect"; then ok "uninstall names observer disconnect"
 else bad "uninstall leave hint (rc=$rc)"; cat "$T/out"; fi
 
 # 15c. next steps never claim a proxy for the minimal edition (T-744).
@@ -430,6 +435,74 @@ for v in 13.0 15.1; do
     ok "macOS $v is accepted"
   else bad "macOS $v floor (rc=$rc)"; cat "$T/out"; fi
 done
+
+# 24. --connect <team> (Getting started v2): the default edition is
+# developer, `observer connect <team>` runs before the service is installed
+# (so the daemon starts connected), and the two dashboard lines close it.
+line_of() { grep -n -- "$1" "$2" | head -n 1 | cut -d: -f1; }
+OBSERVER_INSTALL_TEST_SYSTEMD=1 OBSERVER_INSTALL_TEST_NO_OPEN=1 run "$T/h24" --from-dir "$T/rel" --prefix "$T/p24" --connect acme
+log="$T/h24/observer-calls.log"
+c=$(line_of '^connect acme --wire-clients=false$' "$log"); si=$(line_of '^service install --now$' "$log")
+if [[ $rc -eq 0 ]] && has "developer edition" && [[ -n "$c" && -n "$si" && "$c" -lt "$si" ]] \
+  && grep -qx 'components add integration.service --yes' "$log" && has "Local dashboard http://127.0.0.1:8081" \
+  && has "Online dashboard https://cloud.superbased.app" && has "Undo any time: observer disconnect"; then
+  ok "--connect acme: developer edition, connect before the service, dashboard lines"
+else bad "--connect acme (rc=$rc)"; cat "$T/out"; cat "$log" 2>/dev/null; fi
+
+# 25. --connect with no service manager: hooks are wired the way `observer
+# start` wires them (init without MCP or proxy routes), and the person is
+# told to start Observer. The team comes from SBO_CONNECT_TEAM.
+if [[ "$OS" == linux && ! -d /run/systemd/system ]]; then
+  SBO_CONNECT_TEAM=acme run "$T/h25" --from-dir "$T/rel" --prefix "$T/p25" --connect
+  log="$T/h25/observer-calls.log"
+  if [[ $rc -eq 0 ]] && grep -qx 'connect acme --wire-clients=false' "$log" && grep -qx 'init --skip-mcp --skip-proxy-route' "$log" \
+    && ! grep -q '^service install' "$log" && has "Start Observer: observer start"; then
+    ok "--connect without systemd: hooks-only wiring, team from SBO_CONNECT_TEAM"
+  else bad "--connect without systemd (rc=$rc)"; cat "$T/out"; cat "$log" 2>/dev/null; fi
+else
+  skp "--connect without systemd: this host runs systemd"
+fi
+
+# 26. --connect refuses an edition without sign-in, a bad team name and
+# --uninstall, before anything is installed.
+run "$T/h26a" --from-dir "$T/rel" --prefix "$T/p26a" --connect --edition minimal
+if [[ $rc -ne 0 ]] && has "needs the developer or full edition" && [[ ! -e "$T/p26a" ]]; then ok "--connect refuses the minimal edition"
+else bad "--connect minimal (rc=$rc)"; cat "$T/out"; fi
+run "$T/h26b" --from-dir "$T/rel" --prefix "$T/p26b" --connect Bad_Team
+if [[ $rc -ne 0 ]] && has "is not a team name" && [[ ! -e "$T/p26b" ]]; then ok "--connect refuses a bad team name"
+else bad "--connect bad team (rc=$rc)"; cat "$T/out"; fi
+run "$T/h26c" --prefix "$T/p26c" --connect --uninstall
+if [[ $rc -ne 0 ]] && has "does not go with --uninstall"; then ok "--connect refuses --uninstall"
+else bad "--connect --uninstall (rc=$rc)"; cat "$T/out"; fi
+
+# 27. scripts/connect.sh: install.sh is checked against the signed
+# SHA256SUMS before it runs; a changed install.sh is refused.
+CONNECT_SCRIPT="${CONNECT_SCRIPT:-${REPO_ROOT}/scripts/connect.sh}"
+rm -rf "$T/c"; cp -R "$T/rel" "$T/c"; cp "$SCRIPT" "$T/c/install.sh"
+printf '%s  %s\n' "$(sha256 "$T/c/install.sh")" install.sh >>"$T/c/SHA256SUMS"
+if (cd "$REPO_ROOT" && "${VS[@]}" sign -key "$KEY" -allow-unpinned-key "$T/c/SHA256SUMS" >/dev/null 2>&1) && [[ -f "$T/c/SHA256SUMS.sig" ]]; then
+  crun() { # crun <home> <dir> -- connect.sh args...
+    local home="$1" dir="$2"; shift 2
+    mkdir -p "$home" "$T/noproc"
+    env -i PATH="$PATH" HOME="$home" TMPDIR="$T" OBSERVER_INSTALL_TEST_VENDOR_KEY="$PUB" OBSERVER_INSTALL_TEST_PROC="$T/noproc" \
+      OBSERVER_INSTALL_TEST_NO_OPEN=1 SBO_CONNECT_FROM_DIR="$dir" sh "$CONNECT_SCRIPT" "$@" >"$T/out" 2>&1 </dev/null
+    rc=$?
+  }
+  crun "$T/h27a" "$T/c" acme --prefix "$T/p27a"
+  if [[ $rc -eq 0 ]] && { has "signature ok" || has "no Ed25519 verifier"; } && grep -qx 'connect acme --wire-clients=false' "$T/h27a/observer-calls.log"; then
+    ok "connect.sh verifies install.sh and runs it with --connect <team>"
+  else bad "connect.sh (rc=$rc)"; cat "$T/out"; fi
+  rm -rf "$T/c2"; cp -R "$T/c" "$T/c2"; printf '\n# changed\n' >>"$T/c2/install.sh"
+  crun "$T/h27b" "$T/c2" --prefix "$T/p27b"
+  if [[ $rc -ne 0 ]] && has "does not match SHA256SUMS" && [[ ! -e "$T/p27b" ]]; then ok "connect.sh refuses a changed install.sh"
+  else bad "connect.sh changed install.sh (rc=$rc)"; cat "$T/out"; fi
+  rm -rf "$T/c3"; cp -R "$T/c" "$T/c3"; printf 'x' | dd of="$T/c3/SHA256SUMS.sig" bs=1 seek=5 conv=notrunc 2>/dev/null
+  crun "$T/h27c" "$T/c3" --prefix "$T/p27c"
+  if { [[ $rc -ne 0 ]] && has "does not verify against the vendor key"; } || has "no Ed25519 verifier"; then ok "connect.sh refuses a bad SHA256SUMS signature (when a verifier is present)"
+  else bad "connect.sh bad signature (rc=$rc)"; cat "$T/out"; fi
+else
+  bad "could not sign the fixture SHA256SUMS"
+fi
 
 echo
 echo "install.sh: $pass passed, $fail failed, $skip skipped"

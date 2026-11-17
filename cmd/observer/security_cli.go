@@ -162,6 +162,10 @@ func newSecurityCmd() *cobra.Command {
 	mergeSecurityScanCmds(cmd)
 	// AI change records (component security.provenance, lane sec-f2a).
 	cmd.AddCommand(securityProvenanceSubcommands()...)
+	// Agent-run security assessments: the self-check a model run's agent runs
+	// on its own assessment.json (built with the module, no component of its
+	// own).
+	cmd.AddCommand(securityAssessSubcommands()...)
 	return cmd
 }
 

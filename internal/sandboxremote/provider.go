@@ -66,7 +66,8 @@ type BoxInfo struct {
 	// Running is false once the vendor reports the box stopped.
 	Running bool
 	Labels  map[string]string
-	// Extra carries vendor identifiers other than the id (never a secret).
+	// Extra carries vendor identifiers other than the id, and vendor state
+	// words such as status and a redacted failure (never a secret).
 	Extra    map[string]string
 	Deadline time.Time
 	// EnvdToken is a per-box access secret the vendor returned (E2B); the

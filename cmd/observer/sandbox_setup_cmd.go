@@ -384,7 +384,7 @@ func sandboxSetupRunCmd(deps sandboxSetupCmdDeps, cfg func() string) *cobra.Comm
 	}
 	c.Flags().StringVar(&step, "step", "", "run this one step (a prerequisite id from `observer sandbox setup status <backend>`)")
 	c.Flags().BoolVar(&yes, "yes", false, "answer yes to each step's question (never to a password prompt)")
-	c.Flags().StringVar(&fromFile, "from-file", "", "a download step: use this file already on the machine (checked against the pinned sha256 and size)")
+	c.Flags().StringVar(&fromFile, "from-file", "", "a download step: use this file already on the machine (checked against the pinned sha256 and size); a hosted consent step: the folder the consent is for (default: the Observer default workspace, when it is set up)")
 	return sandboxSetupSub(c)
 }
 

@@ -68,7 +68,7 @@ func TestPopulatedMigration42To43MovesAssignmentsToV4(t *testing.T) {
 	insertAssignment(ctx, t, pool, withHistory, plusV2, histFrom, &histUntil)
 	insertAssignment(ctx, t, pool, withHistory, freeV3, started, nil)
 
-	if err := Migrate(ctx, pool); err != nil {
+	if err := migratePrefix(ctx, pool, 43); err != nil {
 		t.Fatalf("migrate 42 -> head over populated account_plans: %v", err)
 	}
 	checkV4Catalogue(ctx, t, pool)
@@ -134,7 +134,7 @@ func TestPopulatedMigration38ToHeadInOneTransactionLandsOnV4(t *testing.T) {
 	acct := newAccount(ctx, t, pool)
 	insertAssignment(ctx, t, pool, acct, planID(ctx, t, pool, "plus_beta", 1), time.Now().UTC().Add(-48*time.Hour), nil)
 
-	if err := Migrate(ctx, pool); err != nil {
+	if err := migratePrefix(ctx, pool, 43); err != nil {
 		t.Fatalf("migrate 38 -> head in one transaction: %v", err)
 	}
 	if name, version := inForcePlan(ctx, t, pool, acct); name != "plus_beta" || version != 4 {

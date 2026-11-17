@@ -205,7 +205,7 @@ func TestPollerAdoptsUnchangedLayerItNeverInstalled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		runPolicyResourcePoller(ctx, cfg, oc, nil, nil, nil, nf, nil, slog.Default())
+		runPolicyResourcePoller(ctx, cfg, "", oc, nil, nil, nil, nf, nil, slog.Default())
 		close(done)
 	}()
 	defer func() {

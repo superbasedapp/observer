@@ -242,7 +242,7 @@ func TestP305LeaveRemovesTheBudgetAdmission(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	lv, err := d.Leave(ctx)
+	lv, err := d.Leave(ctx, dashapi.SwitchOptions{})
 	if err != nil || !lv.WasEnrolled {
 		t.Fatalf("Leave = (%+v, %v)", lv, err)
 	}

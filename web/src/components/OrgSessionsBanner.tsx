@@ -8,11 +8,11 @@ import type { OrgSessionsBanner } from "@/lib/orgIntel";
 // changes consent.
 export function OrgSessionsBannerView({ banner }: { banner: OrgSessionsBanner }) {
   return (
-    <section className="rounded-3 border border-line-2 bg-bg-2 px-4 py-3" aria-label="Org enrichment">
+    <section className="rounded-3 border border-line-2 bg-bg-2 px-4 py-3" aria-label="Team AI summaries">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-[12px] font-semibold text-fg-1">{banner.title}</h3>
         <Link to={banner.link} className="text-[11px] font-medium text-accent hover:text-accent-strong">
-          Org enrichment settings
+          Team AI summaries settings
         </Link>
       </div>
       <p className="mt-1 text-[11.5px] leading-relaxed text-fg-3">{banner.text}</p>

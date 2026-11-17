@@ -20,6 +20,7 @@ import { BaselinesTab } from "./codesecurity/BaselinesTab";
 import { ScanDialog } from "./codesecurity/ScanDialog";
 import { ScanProgressBar } from "./codesecurity/ScanProgressBar";
 import { useSecurityScan, type SecurityScan } from "./codesecurity/useSecurityScan";
+import { FIX_ATTEMPTS_PATH } from "@/lib/securityFix";
 
 // Code security (the security pillar's module root, component `security`;
 // security pillar plan sections 4.10 and 6.3). Guard keeps its own Security
@@ -142,6 +143,8 @@ export function CodeSecurityPage() {
     // The coverage a finished scan recorded (read by Overview, Projects and
     // Coverage): refetched where shown, dropped otherwise.
     apiCache.invalidate(COVERAGE_PATH);
+    // A rescan decides whether a fix attempt's findings cleared.
+    apiCache.invalidate(FIX_ATTEMPTS_PATH);
   }, [reloadStatus, reloadIssues]);
   const scan = useSecurityScan(onScanFinished);
 
@@ -200,7 +203,7 @@ export function CodeSecurityPage() {
         {visited.overview && <OverviewTab status={status} scan={scan} onOpenScan={() => openScan()} onOpenTab={setTab} />}
       </TabPanel>
       <TabPanel id="findings" active={tab} idPrefix="code-security">
-        {visited.findings && <FindingsTab status={status} />}
+        {visited.findings && <FindingsTab status={status} scan={scan} />}
       </TabPanel>
       <TabPanel id="projects" active={tab} idPrefix="code-security">
         {visited.projects && (

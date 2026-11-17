@@ -54,3 +54,29 @@ func TestEvidenceSettingsFor(t *testing.T) {
 		t.Fatalf("structural = %+v", structural)
 	}
 }
+
+// TestSweepSince pins the background sweep window: max age only. The
+// enrolment-start floor (fix lane B6) is gone; the org a session belongs to
+// is decided by sessions.authority_org_key in the candidates query
+// (store.TestSwitchOrgNeverShipsPriorRows).
+func TestSweepSince(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	week := 7 * 24 * time.Hour
+	cases := []struct {
+		name   string
+		maxAge time.Duration
+		want   time.Time
+	}{
+		{"a week back", week, now.Add(-week)},
+		{"a zero max age is now", 0, now},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := SweepSince(now, tc.maxAge); !got.Equal(tc.want) {
+				t.Errorf("SweepSince = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

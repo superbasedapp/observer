@@ -69,6 +69,8 @@ var snapNaturalKeys = map[reflect.Type][]string{
 	reflect.TypeFor[orgcontract.GuardPinRow]():         {"PinKey"},
 	reflect.TypeFor[orgcontract.GuardApprovalRow]():    {"ApprovalKey"},
 	reflect.TypeFor[orgcontract.SandboxPostureRow]():   {"Day", "IsolationClass", "CaptureLevel", "CaptureOrigin", "Verification", "NativeSandboxState", "KeyCustody"},
+	// The sandbox egress refusal counts (audit CG-15), ingest/sandboxegress.go.
+	reflect.TypeFor[orgcontract.SandboxEgressRefusalDayRow](): {"Day", "Tier", "Rule"},
 	// Security pillar, secorg.go.
 	reflect.TypeFor[orgcontract.SecurityPostureRow](): {"Day"},
 	reflect.TypeFor[orgcontract.SecurityFindingRow](): {"FindingRef"},

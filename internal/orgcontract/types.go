@@ -20,6 +20,29 @@ type EnrollRequest struct {
 	// without DisallowUnknownFields and ignores it, and an older node sends
 	// none, so the server never offers it a field it would fail to verify.
 	Capabilities []string `json:"capabilities,omitempty"`
+
+	// AttachGrant is the one-step attach grant (internal/attachgrant) the
+	// SuperBased cloud handed this machine when its owner clicked Connect
+	// for this dashboard (Getting started v2). It replaces OneTimeToken: a
+	// request carries one or the other. omitempty both ways: an older server
+	// ignores it (and then refuses the request for its missing token, which
+	// the node reads as "this server takes no grant"), and an older node
+	// never sends it.
+	AttachGrant string `json:"attach_grant,omitempty"`
+	// AttachProof is the device proof that rides with AttachGrant: the
+	// device key the connect request was made with, and its signature over
+	// the grant and AgentPublicKey (attachgrant.ProofMessage). A copied
+	// grant without the device key is useless.
+	AttachProof *AttachProof `json:"attach_proof,omitempty"`
+}
+
+// AttachProof is the wire shape of attachgrant.Proof (orgcontract does not
+// import the grant package; the server converts).
+type AttachProof struct {
+	// DevicePublicKey is the raw 32-byte Ed25519 device key, base64url.
+	DevicePublicKey string `json:"device_public_key"`
+	// Signature is the device key's Ed25519 signature, base64url.
+	Signature string `json:"signature"`
 }
 
 // EnrollResponse is the 200 body of POST /api/agent/enroll. The bearer is
@@ -886,6 +909,12 @@ type PushEnvelope struct {
 	// directions.
 	SandboxPosture    []SandboxPostureRow   `json:"sandbox_posture,omitempty"`
 	SandboxCapability *SandboxCapabilityRow `json:"sandbox_capability,omitempty"`
+	// SandboxEgressRefusals is the OPTIONAL per-day egress refusal count by
+	// tier and closed rule (audit CG-15, decision D-11), sent only by a
+	// MANAGED node. Enums and counts only; no host, port, path or run. See
+	// sandboxegress.go. Optional both directions: an old agent omits it, an
+	// old server ignores the key.
+	SandboxEgressRefusals []SandboxEgressRefusalDayRow `json:"sandbox_egress_refusals,omitempty"`
 	// SecurityPosture / SecurityFindings / AIChangeRecords are the OPTIONAL
 	// security pillar wire (security plan 7.4, lane SEC-E2), composed through
 	// the SecurityOrgProviders seam only while the security module is active
@@ -2737,6 +2766,35 @@ type LocalGuardPosture struct {
 	// AllowListCount is how many [guard.prompt].allow patterns are
 	// configured. The count only: the pattern text never travels.
 	AllowListCount int `json:"allow_list_count"`
+
+	// RuleChanges is the gen9 field (localrules.go): every rule change the
+	// machine makes for itself, in its config's `[guard.rules] disable`
+	// list, its user policy file, a project policy file or the trusted
+	// per-project layer, with whether the machine runs it. Ids, closed
+	// enums and project identity hashes only. A gen8 server 400s it
+	// (DisallowUnknownFields), which the node's generation ladder probes
+	// for. Nil = no local change, or a node that predates the field.
+	RuleChanges []LocalRuleChange `json:"rule_changes,omitempty"`
+	// RuleChangesTruncated (gen9) says the node cut RuleChanges to
+	// MaxLocalRuleChanges, or left out a change whose rule id is not
+	// reportable, so the list is partial.
+	RuleChangesTruncated bool `json:"rule_changes_truncated,omitempty"`
+	// RemovedDisables (gen9) is the `[guard.rules] disable` ids the daemon
+	// removed from this managed machine's config file at its last start,
+	// because the organization manages those rules and did not allow a local
+	// change to them; RemovedDisablesAt is when (RFC3339). Empty when the
+	// daemon removed nothing.
+	RemovedDisables   []string `json:"removed_disables,omitempty"`
+	RemovedDisablesAt string   `json:"removed_disables_at,omitempty"`
+	// Inputs (gen9) summarises the guard engine inputs the machine sets for
+	// itself (boundary, network, database, proxy, taint and MCP settings)
+	// as shapes, counts, enums and bools (LocalGuardInputs). Nil = not
+	// reported (an individual node, or one that predates the field).
+	Inputs *LocalGuardInputs `json:"inputs,omitempty"`
+	// Node (gen9) summarises the node-local settings that shape policy and
+	// enforcement outside the rule layers (LocalNodePosture). Nil = not
+	// reported.
+	Node *LocalNodePosture `json:"node,omitempty"`
 }
 
 // Local guard weakening keys: the closed vocabulary of a LocalGuardPosture
@@ -2749,6 +2807,15 @@ const (
 	LocalGuardKeyPromptMode    = "guard.prompt.mode"
 	LocalGuardKeyDetectors     = "guard.prompt.detectors"
 	LocalGuardKeyAllow         = "guard.prompt.allow"
+	// LocalGuardKeyRules (gen9): the machine relaxes or disables a rule for
+	// itself (LocalGuardPosture.RuleChanges with Loosens), applied or not.
+	LocalGuardKeyRules = "guard.rules"
+	// LocalGuardKeyInputs (gen9): a guard engine input is weaker than the
+	// shipped default (LocalGuardInputWeakenings names which).
+	LocalGuardKeyInputs = "guard.inputs"
+	// LocalGuardKeyNode (gen9): a node setting is weaker than the shipped
+	// default (LocalNodeWeakenings names which).
+	LocalGuardKeyNode = "node.settings"
 )
 
 // localGuardPromptRank orders the prompt-guard modes from weakest to
@@ -2816,6 +2883,9 @@ func LocalGuardWeakenings(p *LocalGuardPosture, pinned map[string]string) []stri
 		{LocalGuardKeyPromptMode, localGuardPromptRank[p.PromptMode] < localGuardPromptRank[localGuardPromptFloor]},
 		{LocalGuardKeyDetectors, weakDetector},
 		{LocalGuardKeyAllow, p.AllowListCount > 0},
+		{LocalGuardKeyRules, len(LocalRuleLoosenings(p)) > 0},
+		{LocalGuardKeyInputs, len(LocalGuardInputWeakenings(p.Inputs)) > 0},
+		{LocalGuardKeyNode, len(LocalNodeWeakenings(p.Node)) > 0},
 	}
 	var out []string
 	for _, c := range checks {

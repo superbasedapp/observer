@@ -162,7 +162,7 @@ func runSandboxCLI(ctx context.Context, req sandboxCLIRequest, stderr io.Writer)
 		return fail(sandboxCLIUnavailable, "the Sandboxes and VMs component is not active; turn it on in Settings > Components")
 	}
 	if !cfg.Terminal.Sandbox.Enabled {
-		return fail(sandboxCLIUnavailable, "[terminal.sandbox].enabled is false; turn sandboxed terminals on in Settings > Terminal")
+		return fail(sandboxCLIUnavailable, "[terminal.sandbox].enabled is false; turn sandboxed terminals on in Terminals > Settings > Sandbox isolation")
 	}
 	// The organization's isolation floors (gateway_modes, allowed_backends,
 	// min_isolation and the rest) are judged here as in the daemon: this
@@ -352,6 +352,9 @@ func runSandboxCLIStart(ctx context.Context, l sandboxCLILaunch) int {
 		req.Verb, backend, iso.Class, iso.EgressTier, sandboxselect.CaptureLabel(sandboxselect.CaptureResult{
 			Level: vocab.CaptureLevel(iso.CaptureLevel), GatewayGuarded: iso.CaptureRule == "C6" && iso.CaptureLevel == string(vocab.CaptureFull),
 		}), sandboxCLIPassEnvLabel(cfg.Terminal.Sandbox.PassEnv)+sandboxCLIOSC52Label(cfg.Terminal.Sandbox.AllowOSC52Clipboard)+sandboxCLISeccompLabel(iso.Seccomp))
+	if msg := sandboxCLISeizeRefusal(cfg.Terminal.Sandbox, iso.Seccomp, iso.Stack); msg != "" {
+		fmt.Fprintf(stderr, "observer %s: %s\n", req.Verb, msg)
+	}
 	// The agent's own sandbox: the same rule the dashboard launch applies
 	// (termsvc, lane SBX-P3D), from the same recorded state, so the CLI and
 	// the dashboard give the same argv.

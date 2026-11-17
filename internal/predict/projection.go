@@ -640,108 +640,35 @@ type BudgetInput struct {
 	Message   MessageCost
 }
 
-// ProjectBudget computes the stat set of one budget.
+// ProjectBudget computes the stat set of one budget: the cap-only half
+// (budgetCore, shared with the org Budgets page through ProjectBudgetCap)
+// with the node's captured usage layered on top: the token and dollar burn
+// of that usage, sessions, trend, token mix, top contributors, the other
+// unit's estimate, prompts left and the confidence level.
 func ProjectBudget(in BudgetInput) Projection {
 	w := in.Window
-	b := BudgetBounds(w, in.Now)
-	p := Projection{
-		Kind: "budget", Key: w.Key, State: b.State, Unit: w.Unit, TokenDef: TokensInputOutput,
-		Origin: w.Origin, Scope: w.Scope, Enforcement: w.Enforcement, Subject: w.Subject,
-		Cap: w.Cap, Spent: w.Spent,
+	used := Summarize(in.Rows, TokensInputOutput)
+	usdPerTok := 0.0
+	if used.Tokens > 0 && used.CostUSD > 0 && !used.Unpriced {
+		usdPerTok = used.CostUSD / float64(used.Tokens)
 	}
-	if w.TimezoneAssumed {
-		p.addNote(NoteTimezoneAssumed)
-	}
-	if w.OtherMachines {
-		p.addNote(NoteOtherMachines)
-	}
+	p, hours := budgetCore(in.Now, w, usdPerTok, used.Unpriced)
 	if w.Cap <= 0 {
 		return p
 	}
-	used := math.Max(0, w.Spent/w.Cap)
-	p.UsedFrac = f64(used)
-	p.UsedFracEst = f64(used)
-	left := math.Max(0, 1-used)
-	p.LeftFrac = f64(left)
-	if b.State != StateSession {
-		p.placeWindow(b, in.Now)
-		if b.State == StateRolling {
-			p.ResetsAtUnix = nil
-			p.SecondsToReset = nil
-		}
-	}
-
-	p.Used = Summarize(in.Rows, TokensInputOutput)
-	if p.Used.Unpriced {
-		p.addNote(NoteUnpriced)
-	}
+	p.Used = used
+	b := BudgetBounds(w, in.Now)
 	if b.State != StateSession {
 		p.fillShared(in.Rows, in.Previous, b, in.SessionID, in.Now, TokensInputOutput)
 	}
-
-	// What is left: exact in the cap's own unit, an estimate in the other
-	// (through the captured usage's dollars per token).
-	leftUnit := math.Max(0, w.Cap-w.Spent)
-	usdPerTok := 0.0
-	if p.Used.Tokens > 0 && p.Used.CostUSD > 0 && !p.Used.Unpriced {
-		usdPerTok = p.Used.CostUSD / float64(p.Used.Tokens)
-	}
-	switch w.Unit {
-	case "tokens":
-		p.LeftTokens = f64(math.Round(leftUnit))
-		if usdPerTok > 0 {
-			p.LeftUSD = f64(round6(leftUnit * usdPerTok))
-			p.LeftUSDIsEstimate = true
-		}
-	default:
-		p.LeftUSD = f64(round6(leftUnit))
-		if usdPerTok > 0 {
-			p.LeftTokens = f64(math.Round(leftUnit / usdPerTok))
-			p.LeftTokensIsEstimate = true
-		}
-	}
-
-	elapsed := in.Now.Sub(w.Start)
-	switch {
-	case used >= 1:
-		p.RunOut = &RunOut{Exhausted: true}
-		p.addNote(NoteExhausted)
-	case b.State == StateSession:
-		// No time window: only what is left, in prompts.
-	case elapsed < minBasis || w.Spent <= 0:
-		p.addNote(NoteNotEnoughData)
-	default:
-		hours := elapsed.Hours()
-		if b.State == StateRolling && b.Length > 0 {
-			// A rolling window's spend is averaged over the whole window.
-			hours = math.Min(hours, b.Length.Hours())
-		}
-		p.Burn = &Burn{
-			FracPerHour: used / hours, FracPerDay: used / hours * 24,
-			TokensPerHour: float64(p.Used.Tokens) / hours, TokensPerDay: float64(p.Used.Tokens) / hours * 24,
-			USDPerHour: p.Used.CostUSD / hours, USDPerDay: p.Used.CostUSD / hours * 24,
-			BasisHours: round1(hours),
-		}
-		capT, capU := budgetCapacities(w, usdPerTok)
-		if b.State == StateLive {
-			p.pace(used, b, in.Now)
-			p.RunOut = runOut(used, p.Burn.FracPerHour, w.Reset, in.Now, capT, capU)
-		} else if b.Length > 0 {
-			// Rolling: no reset. The even rate that keeps the rolling sum
-			// at the cap is the cap over the window.
-			days := b.Length.Hours() / 24
-			ro := &RunOut{SafePerDayFrac: f64(1 / days), SafePerHourFrac: f64(1 / b.Length.Hours())}
-			if capT != nil {
-				ro.SafePerDayTokens = f64(*capT / days)
-			}
-			if capU != nil {
-				ro.SafePerDayUSD = f64(round6(*capU / days))
-			}
-			p.RunOut = ro
-		}
+	if p.Burn != nil && hours > 0 {
+		// The node's token and dollar rates are its captured usage's, on the
+		// same basis hours as the share of the cap.
+		p.Burn.TokensPerHour, p.Burn.TokensPerDay = float64(used.Tokens)/hours, float64(used.Tokens)/hours*24
+		p.Burn.USDPerHour, p.Burn.USDPerDay = used.CostUSD/hours, used.CostUSD/hours*24
 	}
 	p.leftInUnits(in.Message, TokensInputOutput)
-	p.Confidence = confidenceOf(p, elapsed, b.Length)
+	p.Confidence = confidenceOf(p, in.Now.Sub(w.Start), b.Length)
 	return p
 }
 

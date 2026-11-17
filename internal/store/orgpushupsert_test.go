@@ -402,8 +402,10 @@ func TestPushChangeTriggersAt141ThenUpgrade(t *testing.T) {
 				t.Fatalf("add post-141 push column: %v", err)
 			}
 			// Same for sessions.execution_location / vendor_session_ref
-			// (agent migration 240, cloud-agents arc).
-			for _, col := range []string{"execution_location", "vendor_session_ref"} {
+			// (agent migration 240, cloud-agents arc), and for
+			// authority_org_key (agent migration 250), which UpsertSession
+			// stamps and the push reads (D-43).
+			for _, col := range []string{"execution_location", "vendor_session_ref", "authority_org_key"} {
 				if _, err := sqlDB.Exec(`ALTER TABLE sessions ADD COLUMN ` + col + ` TEXT`); err != nil {
 					t.Fatalf("add post-141 push column: %v", err)
 				}
@@ -453,7 +455,7 @@ func TestPushChangeTriggersAt141ThenUpgrade(t *testing.T) {
 			if _, err := sqlDB.Exec(`ALTER TABLE sessions DROP COLUMN tool_version_last`); err != nil {
 				t.Fatalf("drop post-141 push column: %v", err)
 			}
-			for _, col := range []string{"execution_location", "vendor_session_ref"} {
+			for _, col := range []string{"execution_location", "vendor_session_ref", "authority_org_key"} {
 				if _, err := sqlDB.Exec(`ALTER TABLE sessions DROP COLUMN ` + col); err != nil {
 					t.Fatalf("drop post-141 push column: %v", err)
 				}

@@ -224,18 +224,43 @@ func serverRows() []Component {
 			Note:          "Off by default ([openshell].enabled in the server config) and inert when off: no route, no listener, no goroutine. Without it (-tags sbo_omit_org_openshell) its routes answer not_in_image and a config that enables it refuses the boot.",
 		},
 		{
+			// The managed sandbox pull's org half (sandbox plan v2 section
+			// 8.2, lane SBX-P1C): the authoring API under /api/org/sandbox
+			// and the node's signed pull GET /api/agent/sandbox. A row of its
+			// own since wave 17 lane pooled-sandbox (plan 07), so the
+			// availability envelope and the entitlements catalog can switch
+			// it per org on a pooled host; before, its routes were core and
+			// could not be refused. In both images and stable, so a single-org
+			// server and the pooled floor serve it exactly as before. The
+			// longer /api/agent/sandbox/openshell prefix stays org.openshell's.
+			ID: "org.sandbox", Class: ClassServer, Binary: BinaryOrg,
+			Title:     "Managed sandboxes (org)",
+			About:     "The org half of managed sandboxed terminals: the admin's managed sandbox settings and per-node overrides, the fleet's seccomp and egress-refusal posture, and the signed managed pull that delivers the settings to managed nodes holding enforce.sandbox.",
+			Levels:    l2Done,
+			Routes:    []string{"/api/org/sandbox", "/api/agent/sandbox"},
+			Packages:  []string{"internal/orgserver/sandboxmanaged"},
+			Stability: StabilityStable,
+			Reach:     ReachOf(StabilityStable),
+			Images:    img(ImageIn, ImageIn),
+			Note:      "Inert until the org's super admin publishes a body: an org that never authors one serves its nodes nothing (the pull's 404 not_supported). On a pooled host staff switch it per org with the availability envelope (reach off, named or cohort); every plan includes it.",
+		},
+		{
 			// Security pillar Phase E (security plan 4.2, lane SEC-E): "off
 			// until configured". E1 builds the server half of the
 			// security.scanning family compiler (its pair file
 			// internal/policyfam/family_securityscanning.go) and the
 			// GET /api/agent/security managed pull's body provider and admin
 			// API, mounted only while [security].enabled. Ingest, fleet views,
-			// alerts and exports join in the later E lanes.
+			// alerts and exports join in the later E lanes. Baselines, people,
+			// dedupe-key and switch joined the routes in wave 17 (lane
+			// pooled-security): before, they were core-owned, so the
+			// availability envelope and the entitlements could not turn them
+			// off for an organization with the rest of the module.
 			ID: "org.security", Class: ClassServer, Binary: BinaryOrg,
 			Title:     "Code security (org)",
 			About:     "The org half of the Code security module: the security.scanning floors family and the enforce.security managed pull that switches security parts on for managed nodes.",
 			Levels:    l1Done,
-			Routes:    []string{"/api/org/security/managed", "/api/org/security/manifests", "/api/org/security/findings", "/api/org/security/rollup", "/api/org/security/coverage", "/api/org/security/exceptions", "/api/org/security/settings", "/api/org/security/export"},
+			Routes:    []string{"/api/org/security/managed", "/api/org/security/manifests", "/api/org/security/findings", "/api/org/security/rollup", "/api/org/security/coverage", "/api/org/security/exceptions", "/api/org/security/settings", "/api/org/security/export", "/api/org/security/baselines", "/api/org/security/people", "/api/org/security/dedupe-key", "/api/org/security/switch"},
 			Packages:  []string{"internal/orgserver/secmanaged", "internal/orgserver/secmanifests", "internal/policyfam/securityscanning", "internal/orgserver/secorg"},
 			Ledger:    []string{"SECP-10"},
 			Stability: StabilityPreview,
@@ -355,6 +380,26 @@ func serverRows() []Component {
 		pollerRow("org.pollers.cortex", "Snowflake Cortex Code usage poller", "Reads the Cortex Code usage views in the customer's Snowflake account over the SQL API.", "internal/orgserver/cortexanalytics"),
 		pollerRow("org.pollers.kimchi", "Cast AI usage poller (Kimchi)", "Polls the Cast AI billing model usage report (org-wide, Kimchi among it).", "internal/orgserver/kimchianalytics"),
 		{
+			// Wave 17 lane pooled-integrations: the catalog capability of the
+			// Integrations and vendor-exports admin surfaces, so staff can open
+			// or close them per platform (availability envelope, host deny
+			// list). In the full image and active by default in single mode,
+			// so a full-image server is unchanged; out of the core image like
+			// every module but org.core and org.oidc (Q11), so a core-image
+			// server no longer serves these pages (wave 17 handback, for the
+			// lead). Its route guard (L2) is the switch;
+			// the vendor runner and the legacy pollers keep their own config
+			// switches ([vendor_connections], the pollers' rows).
+			ID: "org.vendorconn", Class: ClassServer, Binary: BinaryOrg,
+			Title:     "Vendor connections",
+			About:     "The Integrations and Vendor exports admin pages: vendor API accounts, sealed credentials, connections, spend comparisons and approvals, control-write proposals and the vendor feed settings.",
+			Levels:    l2Done,
+			Routes:    []string{"/api/org/integrations", "/api/org/vendor-exports"},
+			Reach:     ReachOf(StabilityPreview),
+			Stability: StabilityPreview,
+			Images:    img(ImageIn, ImageOut),
+		},
+		{
 			ID: "org.email", Class: ClassServer, Binary: BinaryOrg,
 			Title: "Org email",
 			About: "Sends org notification email over a configured SMTP server.",
@@ -439,6 +484,73 @@ func serverRows() []Component {
 			Surface:   Surface{OSIntegration: []string{"generated MDM artifacts (applied by the admin, never by Observer)"}},
 			Stability: StabilityStable,
 			Images:    img(ImageIn, ImageOut),
+		},
+		// Wave 17 lane pooled-coding (managed SaaS plan 07): three team
+		// features that were org.core, so nothing could switch them. Each is
+		// L2 (its routes are refused by the component guard when it is
+		// inactive for the org; nothing compiles out), stable, on in the full
+		// image and off in the core image (which is org.core and org.oidc
+		// only, Q11; a core-image server turns one on with [components].add,
+		// it is compiled in). The stable reach keeps it on in pooled SaaS.
+		// Staff narrow it platform-wide or per org through the availability
+		// envelope; an org admin turns it off for the org (internal/
+		// orgserver/orgchoice). Their background loops are not gated here: a
+		// coding job queued before a switch-off still runs on a single-org
+		// server (the route that queues one is refused).
+		{
+			ID: "org.coding", Class: ClassServer, Binary: BinaryOrg,
+			Title:         "Coding intelligence",
+			About:         "The coding-agent intelligence admin surface: its configuration, capture coverage, datasets, tagging jobs, annotations and the prompt-judge authoring tools.",
+			Levels:        l2Done,
+			Routes:        []string{"/api/org/coding"},
+			Packages:      []string{"internal/orgserver/codingintel", "internal/orgserver/codingdataset", "internal/orgserver/codingannot"},
+			DirectModules: []string{"github.com/google/uuid"},
+			Stability:     StabilityStable,
+			Images:        img(ImageIn, ImageOut),
+			Reach:         ReachOf(StabilityStable),
+		},
+		{
+			ID: "org.agent-config", Class: ClassServer, Binary: BinaryOrg,
+			Title:     "AI tool policy",
+			About:     "The org's AI tool settings policy: documents for the org, a team or a member, their lint and history, the effective preview and the fleet's drift board. The MDM artifacts are org.managed-settings.",
+			Levels:    l2Done,
+			Routes:    []string{"/api/org/agent-config"},
+			Packages:  []string{"internal/orgserver/agentconfigstore"},
+			Stability: StabilityStable,
+			Images:    img(ImageIn, ImageOut),
+			Reach:     ReachOf(StabilityStable),
+		},
+		{
+			ID: "org.entities", Class: ClassServer, Binary: BinaryOrg,
+			Title:         "Entity graph",
+			About:         "The org's entity graph: services, deployments, prompts and incidents, and the edges between them.",
+			Levels:        l2Done,
+			Routes:        []string{"/api/org/entities"},
+			Packages:      []string{"internal/orgserver/entitygraph"},
+			DirectModules: []string{"github.com/google/uuid"},
+			Stability:     StabilityStable,
+			Images:        img(ImageIn, ImageOut),
+			Reach:         ReachOf(StabilityStable),
+		},
+		// Wave 17 lane pooled-obs: the Plane A datasets and evals admin
+		// surface, which was org.core, so nothing could switch it. L2, stable,
+		// the coding lane's shape (off in the core image, Q11; on in full and
+		// in pooled SaaS). It owns only the four route prefixes that moved
+		// onto the seam with it; the explorer and alert routes under
+		// /api/org/obs stay org.core. The pooled engines job that drains its
+		// queues is not gated here: a job or run queued before a switch-off
+		// still runs (the routes that queue one are refused).
+		{
+			ID: "org.obs.evals", Class: ClassServer, Binary: BinaryOrg,
+			Title:         "Plane A datasets and evals",
+			About:         "The hosted-app datasets, LLM tagging, analysis and experiment jobs, eval runs and eval schedules.",
+			Levels:        l2Done,
+			Routes:        []string{"/api/org/obs/datasets", "/api/org/obs/llm-jobs", "/api/org/obs/eval-runs", "/api/org/obs/eval-schedules"},
+			Packages:      []string{"internal/orgserver/dataset", "internal/orgserver/llmjob", "internal/orgserver/orgeval"},
+			DirectModules: []string{"github.com/google/uuid"},
+			Stability:     StabilityStable,
+			Images:        img(ImageIn, ImageOut),
+			Reach:         ReachOf(StabilityStable),
 		},
 		{
 			ID: "edge", Class: ClassServer, Binary: BinaryEdge,

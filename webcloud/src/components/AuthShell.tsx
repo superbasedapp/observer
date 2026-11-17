@@ -19,9 +19,9 @@ export type AuthStep = "device" | "preview" | "portal";
 // sessions stay on the device, the `observer cloud` preview is the exact
 // bytes an upload would send, and results come back to this portal.
 const AUTH_STEPS: readonly { id: AuthStep; icon: LucideIcon; label: string; line: string }[] = [
-  { id: "device", icon: MonitorSmartphone, label: "Your device", line: "Sessions stay local" },
-  { id: "preview", icon: Eye, label: "Preview", line: "See exactly what is sent" },
-  { id: "portal", icon: LayoutDashboard, label: "Portal", line: "Results come back here" },
+  { id: "device", icon: MonitorSmartphone, label: "Your machine", line: "Observer runs there" },
+  { id: "preview", icon: Eye, label: "Approve", line: "You choose what is sent" },
+  { id: "portal", icon: LayoutDashboard, label: "Dashboard", line: "One place for every machine" },
 ];
 
 // TRUST_ROW: the portal's one privacy promise ("Nothing leaves your machine
@@ -29,7 +29,7 @@ const AUTH_STEPS: readonly { id: AuthStep; icon: LucideIcon; label: string; line
 // claim here that the promise itself does not already make.
 const TRUST_ROW: readonly { icon: LucideIcon; label: string }[] = [
   { icon: ShieldCheck, label: "Stays on your machine" },
-  { icon: Eye, label: "You preview it" },
+  { icon: Eye, label: "You see what is sent" },
   { icon: Lock, label: "You approve it" },
 ];
 
@@ -37,7 +37,7 @@ const TRUST_ROW: readonly { icon: LucideIcon; label: string }[] = [
  *  the step this screen is (aria-current="step"). */
 export function StepStrip({ current }: { current?: AuthStep }) {
   return (
-    <ol aria-label="How Cloud Intelligence works" className="auth-steps">
+    <ol aria-label="How SuperBased works" className="auth-steps">
       {AUTH_STEPS.map((s, i) => {
         const on = s.id === current;
         return (
@@ -80,7 +80,7 @@ export function TrustRow() {
         ))}
       </ul>
       <p className="text-[11.5px] leading-relaxed text-fg-3">
-        Nothing leaves your machine until you preview it and approve it.{" "}
+        Nothing leaves your machine until you approve it.{" "}
         <a
           className="text-fg-2 underline decoration-line-3 underline-offset-2 transition-colors hover:text-fg-0"
           href="https://superbased.app/privacy"

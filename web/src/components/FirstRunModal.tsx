@@ -27,7 +27,6 @@ import {
   closeMarksSeen,
   firstRunView,
   toolBadge,
-  markClosedThisVisit,
   progressRatio,
   seenRequestInit,
   shouldPoll,
@@ -45,20 +44,12 @@ import {
 // pure half (view model, the open/close store, the seen POST) is
 // lib/firstRun.ts.
 //
-// Closing mid-capture hides it for this visit only, so the next visit shows
-// the outcome; closing after the capture finished, or "Don't show this
-// again", records it as seen on the daemon (beside its database), so every
-// browser agrees. Reopen it from the command palette or Settings, Connected
-// tools. The first-visit product tour waits until this is closed
-// (components/tour/TourProvider.tsx reads the same store).
-
-function visitStorage(): Storage | null {
-  try {
-    return typeof window === "undefined" ? null : window.sessionStorage;
-  } catch {
-    return null;
-  }
-}
+// Getting started v2: it no longer opens by itself (the Overview Get
+// started panel is the first-run surface); it opens from the command
+// palette, the Tools coverage view or Settings > Connected tools. Closing it
+// after the capture finished still records it as seen on the daemon
+// (beside its database). The first-visit product tour waits while it is
+// open (components/tour/TourProvider.tsx reads the same store).
 
 async function postSeen(seen: boolean, minted?: string): Promise<boolean> {
   try {
@@ -84,15 +75,7 @@ export function FirstRunModal({ open }: { open: boolean }) {
   const close = useCallback(() => {
     if (closeMarksSeen(data) && !data?.seen) {
       void postSeen(true, data?.confirm_token);
-    } else {
-      markClosedThisVisit(visitStorage());
     }
-    closeFirstRun();
-  }, [data]);
-
-  const dontShowAgain = useCallback(() => {
-    markClosedThisVisit(visitStorage());
-    void postSeen(true, data?.confirm_token);
     closeFirstRun();
   }, [data]);
 
@@ -116,11 +99,6 @@ export function FirstRunModal({ open }: { open: boolean }) {
       fullOnPhone
       footer={
         <>
-          {data && !data.seen && (
-            <Button variant="ghost" size="sm" onClick={dontShowAgain} className="mr-auto">
-              Don't show this again
-            </Button>
-          )}
           <Button variant="secondary" size="sm" iconLeft={Plug} onClick={openTools}>
             Connected tools
           </Button>

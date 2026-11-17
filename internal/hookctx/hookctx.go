@@ -344,7 +344,7 @@ var fillSteps = []fillStep{
 			})
 			if err != nil {
 				c.issue(StepQuickScan, err)
-				res = QuickScanResult{Verdict: QuickScanUnknown}
+				res = QuickScanFailure(err)
 			}
 			c.QuickScan = &res
 		},

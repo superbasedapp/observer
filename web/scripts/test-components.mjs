@@ -1,5 +1,6 @@
 // test-components.mjs runs the component tests (src/components/*.test.tsx,
-// src/components/security/*.test.tsx and src/pages/security/*.test.tsx)
+// src/components/security/*.test.tsx, src/components/secassess/*.test.tsx
+// and src/pages/security/*.test.tsx)
 // under node's own test runner (lane sbx-p2b: the dialog's web tests). Node
 // strips TypeScript types but does not transform JSX, so each test file is
 // bundled first with esbuild (the copy vite itself depends on) into
@@ -20,7 +21,7 @@ const src = path.join(web, "src", "components");
 const out = path.join(web, "node_modules", ".cache", "component-tests");
 
 // The component directories holding tests (one level, no recursion).
-const testDirs = [src, path.join(src, "security"), path.join(web, "src", "pages", "security")];
+const testDirs = [src, path.join(src, "security"), path.join(src, "secassess"), path.join(web, "src", "pages", "security")];
 const entries = testDirs.flatMap((d) =>
   readdirSync(d)
     .filter((f) => f.endsWith(".test.tsx"))

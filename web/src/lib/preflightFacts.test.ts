@@ -17,12 +17,12 @@ const cases: Array<{ name: string; over: Partial<ToolPreflight>; want: string[] 
   {
     name: "stale config override",
     over: { config_override: "missing", verdict: "not_found" },
-    want: ["Nothing is at the binary path set for this tool. Change or remove it in Settings > Terminal (Launch binary paths)."],
+    want: ["Nothing is at the binary path set for this tool. Change or remove it in Settings > Session attach (Launch binary paths)."],
   },
   {
     name: "config override used",
     over: { config_override: "used" },
-    want: ["Uses the binary path set in Settings > Terminal (Launch binary paths)."],
+    want: ["Uses the binary path set in Settings > Session attach (Launch binary paths)."],
   },
   {
     name: "missing interpreter",

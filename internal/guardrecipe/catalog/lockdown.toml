@@ -18,7 +18,7 @@ prompt_mode = "block"
 extends = "strict"
 inputs = ["guard.network.allow_hosts"]
 advice = [
-  "Run agents in a sandboxed terminal (Settings > Terminal > Sandbox): these rules judge the hosts a command line names, the sandbox holds every connection to the allow list.",
+  "Run agents in a sandboxed terminal (Terminals > Settings > Sandbox isolation): these rules judge the hosts a command line names, the sandbox holds every connection to the allow list.",
   "List the hosts agents may reach in [guard.network] allow_hosts (Settings > Guard > Network). With the list empty every non-loopback host is refused.",
 ]
 

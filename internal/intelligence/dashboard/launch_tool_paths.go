@@ -13,7 +13,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/integration"
 )
 
-// The "Launch binary paths" card on Settings > Terminal (plan
+// The "Launch binary paths" card on Settings > Session attach (plan
 // docs/plans/dashboard-cli-parity-plan-2026-11-06.md, section 9). Before it the
 // New Terminal preflight said "[launch.tools.<tool>].path is set, but nothing
 // is there" with no dashboard control: launch.tools is a compound table the

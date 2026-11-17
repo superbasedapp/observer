@@ -183,7 +183,7 @@ func (s Scanner) Scan(text, path string, lim Limits) Result {
 			if s.Identify != nil {
 				h.Identity = s.Identify(f.Type, f.Value)
 			}
-			if !f.Certain || f.Type == "entropy" {
+			if !f.Certain || f.Type == "entropy" || codeShapedAssignment(f.Type, f.Value, path) {
 				h.Confidence = ConfidenceLow
 			}
 			res.Hits = append(res.Hits, h)
@@ -281,4 +281,102 @@ func knownExample(f scrub.TypedFinding) bool {
 		return true
 	}
 	return false
+}
+
+// assignmentTypes are the scrub detectors that match "<keyword> = value" or
+// "<keyword>: value" by the key alone. In source code the key is often a
+// field or variable name that only contains the keyword (a struct field
+// listing the environment variable names a credential is read from), and
+// the value is code, not a secret.
+var assignmentTypes = map[string]bool{"secret_assignment": true, "api_key_assignment": true}
+
+// codeValueExts are the source-code file extensions where an assignment's
+// value can be code. Env files, shell scripts, config and data files are
+// absent on purpose: there an unquoted value is the secret itself.
+var codeValueExts = map[string]bool{
+	".go": true, ".ts": true, ".tsx": true, ".js": true, ".jsx": true, ".mjs": true, ".cjs": true,
+	".py": true, ".rs": true, ".java": true, ".kt": true, ".cs": true, ".rb": true, ".swift": true,
+	".c": true, ".h": true, ".cc": true, ".cpp": true, ".hpp": true, ".php": true, ".scala": true,
+}
+
+// codeValueShapes are the value shapes that are code, not a secret, tried in
+// order (S-721 false positive, 2026-11-11). A quoted string literal matches
+// none of them, so `token: "sk-live-..."` stays a high-confidence hit.
+var codeValueShapes = []struct {
+	name  string
+	match func(v codeValue) bool
+}{
+	// A composite literal or reference: []string{"X_TOKEN"}, {..}, &cfg, *p.
+	{"composite", func(v codeValue) bool { return strings.ContainsAny(v.text[:1], "[{&*") }},
+	// A call or an index: envNames(), os.Getenv("X"), cfg.Keys["k"].
+	{"call_or_index", func(v codeValue) bool {
+		n := identPrefixLen(v.text)
+		return n > 0 && n < len(v.text) && (v.text[n] == '(' || v.text[n] == '[')
+	}},
+	// A bare identifier or selector with no digit, that either ends an
+	// expression (a struct field value followed by a comma) or is dotted
+	// (cfg.Token). Digits are excluded and a lone word needs the delimiter,
+	// so an unquoted alphanumeric secret (a hex key written after the
+	// keyword in a comment) is never mistaken for a name.
+	{"identifier", func(v codeValue) bool {
+		if identPrefixLen(v.text) != len(v.text) || strings.ContainsAny(v.text, "0123456789") {
+			return false
+		}
+		return v.delimited || strings.Contains(v.text, ".")
+	}},
+}
+
+// codeValue is an assignment's value as the shapes see it: the text without
+// a trailing expression delimiter, and whether one was there.
+type codeValue struct {
+	text      string
+	delimited bool
+}
+
+// codeShapedAssignment reports whether a keyword-assignment hit in a source
+// file has a code-shaped value, which lowers it to low confidence: still
+// recorded, never blocking.
+func codeShapedAssignment(typ, value, path string) bool {
+	if !assignmentTypes[typ] || !codeValueExts[strings.ToLower(pathExt(path))] {
+		return false
+	}
+	raw := strings.TrimSpace(value)
+	v := codeValue{text: strings.TrimRight(raw, ",;)")}
+	v.delimited = len(v.text) < len(raw)
+	if v.text == "" {
+		return false
+	}
+	for _, s := range codeValueShapes {
+		if s.match(v) {
+			return true
+		}
+	}
+	return false
+}
+
+// identPrefixLen is the length of the leading identifier-or-selector run of
+// v (letters, digits, '_' and '.', starting with a letter or '_'); 0 when v
+// does not start with one.
+func identPrefixLen(v string) int {
+	for i, r := range v {
+		switch {
+		case r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z'):
+		case i > 0 && ((r >= '0' && r <= '9') || r == '.'):
+		default:
+			return i
+		}
+	}
+	return len(v)
+}
+
+// pathExt returns the extension of the last path element, accepting both
+// slash forms (hook paths may be Windows paths).
+func pathExt(p string) string {
+	if i := strings.LastIndexAny(p, `/\`); i >= 0 {
+		p = p[i+1:]
+	}
+	if i := strings.LastIndexByte(p, '.'); i > 0 {
+		return p[i:]
+	}
+	return ""
 }

@@ -58,10 +58,14 @@ type Notice struct {
 
 // Window mirrors budgetwarn.WindowStatus on disk.
 type Window struct {
-	Window      string  `json:"window"`
-	Unit        string  `json:"unit"`
-	Subject     string  `json:"subject,omitempty"` // "tool:<id>" / "model:<id>"; empty = whole caller
-	Period      string  `json:"period"`
+	Window  string `json:"window"`
+	Unit    string `json:"unit"`
+	Subject string `json:"subject,omitempty"` // "tool:<id>" / "model:<id>"; empty = whole caller
+	Period  string `json:"period"`
+	// Timezone is the IANA zone Period is named in (the cap's own calendar),
+	// written as "UTC" for a UTC cap. Empty means a file from a daemon that
+	// predates the field: a reader then has to assume UTC and say so.
+	Timezone    string  `json:"timezone,omitempty"`
 	Cap         float64 `json:"cap"`
 	Spent       float64 `json:"spent"`
 	Ratio       float64 `json:"ratio"`

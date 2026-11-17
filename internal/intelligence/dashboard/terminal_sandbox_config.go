@@ -125,6 +125,15 @@ type terminalSandboxHostedPayload struct {
 	E2B      hostedProviderPayload `json:"e2b"`
 	Modal    hostedProviderPayload `json:"modal"`
 	Vercel   hostedProviderPayload `json:"vercel"`
+	// Docker (lane SBX-DOCKER) is a pointer so a client that predates the
+	// table keeps the saved value.
+	Docker *hostedProviderPayload `json:"docker,omitempty"`
+	// InstaBox is a pointer so a client that predates the row keeps the
+	// saved table.
+	InstaBox *hostedProviderPayload `json:"instabox,omitempty"`
+	// Daytona (a hosted row) is a pointer so a client that predates
+	// it keeps the saved table.
+	Daytona *hostedProviderPayload `json:"daytona,omitempty"`
 }
 
 // hostedProviderPayload is one provider's table.
@@ -145,6 +154,35 @@ func hostedProviderToPayload(c config.TerminalSandboxHostedProviderConfig) hoste
 
 // keepHostedEndpoints puts the saved endpoint keys back on a provider table
 // whose payload omitted them (a client that predates them).
+// keepHostedOnPut carries the saved hosted table over what a PUT body leaves
+// out: the always-sent provider tables keep the saved endpoints the client
+// cannot see, an optional provider table that is absent (a client that
+// predates its row) keeps the saved one, and an absent db_export keeps the
+// saved value.
+func keepHostedOnPut(next *config.TerminalSandboxHostedConfig, body *terminalSandboxHostedPayload, saved config.TerminalSandboxHostedConfig) {
+	keepHostedEndpoints(&next.E2B, body.E2B, saved.E2B)
+	keepHostedEndpoints(&next.Modal, body.Modal, saved.Modal)
+	keepHostedEndpoints(&next.Vercel, body.Vercel, saved.Vercel)
+	for _, o := range []struct {
+		dst   *config.TerminalSandboxHostedProviderConfig
+		sent  *hostedProviderPayload
+		saved config.TerminalSandboxHostedProviderConfig
+	}{
+		{&next.Docker, body.Docker, saved.Docker},
+		{&next.InstaBox, body.InstaBox, saved.InstaBox},
+		{&next.Daytona, body.Daytona, saved.Daytona},
+	} {
+		if o.sent == nil {
+			*o.dst = o.saved
+			continue
+		}
+		keepHostedEndpoints(o.dst, *o.sent, o.saved)
+	}
+	if body.DBExport == nil {
+		next.DBExport = saved.DBExport
+	}
+}
+
 func keepHostedEndpoints(next *config.TerminalSandboxHostedProviderConfig, sent hostedProviderPayload, saved config.TerminalSandboxHostedProviderConfig) {
 	if sent.Endpoint == nil {
 		next.Endpoint = saved.Endpoint
@@ -368,13 +406,7 @@ func (s *Server) handleTerminalSandboxConfigPut(w http.ResponseWriter, r *http.R
 			if body.Hosted == nil {
 				next.Hosted = cfg.Terminal.Sandbox.Hosted
 			} else {
-				saved := cfg.Terminal.Sandbox.Hosted
-				keepHostedEndpoints(&next.Hosted.E2B, body.Hosted.E2B, saved.E2B)
-				keepHostedEndpoints(&next.Hosted.Modal, body.Hosted.Modal, saved.Modal)
-				keepHostedEndpoints(&next.Hosted.Vercel, body.Hosted.Vercel, saved.Vercel)
-				if body.Hosted.DBExport == nil {
-					next.Hosted.DBExport = saved.DBExport
-				}
+				keepHostedOnPut(&next.Hosted, body.Hosted, cfg.Terminal.Sandbox.Hosted)
 			}
 			if body.VendorForcedNative == nil {
 				next.VendorForcedNative = cfg.Terminal.Sandbox.VendorForcedNative
@@ -498,6 +530,9 @@ func sandboxConfigPayload(c config.TerminalSandboxConfig) terminalSandboxConfigP
 			CheckpointMinutes: c.Hosted.CheckpointMinutes, MaxRunMinutes: c.Hosted.MaxRunMinutes, DailyBoxMinutes: c.Hosted.DailyBoxMinutes,
 			DBExport: &dbExport,
 			E2B:      hostedProviderToPayload(c.Hosted.E2B), Modal: hostedProviderToPayload(c.Hosted.Modal), Vercel: hostedProviderToPayload(c.Hosted.Vercel),
+			Docker:   hostedProviderPayloadPtr(c.Hosted.Docker),
+			InstaBox: hostedProviderPayloadPtr(c.Hosted.InstaBox),
+			Daytona:  hostedProviderPayloadPtr(c.Hosted.Daytona),
 		},
 	}
 }
@@ -513,6 +548,10 @@ func sandboxConfigPayload(c config.TerminalSandboxConfig) terminalSandboxConfigP
 // the allow_elevated toggle never turns it off (P-254).
 func keepUnsentSandboxBlocks(next *config.TerminalSandboxConfig, saved config.TerminalSandboxConfig, sentSetup bool) {
 	next.ProviderDirect = saved.ProviderDirect
+	// The strace switch has its own route (POST
+	// /api/terminal/sandbox/ptrace-seize, lane ptrace); this save never
+	// writes it, whatever the body says.
+	next.SeccompAllowSeize = saved.SeccompAllowSeize
 	if !sentSetup {
 		next.Setup = saved.Setup
 	}
@@ -699,13 +738,33 @@ func normalizedSandboxHostedConfig(h *terminalSandboxHostedPayload) config.Termi
 		}
 		return out
 	}
-	return config.TerminalSandboxHostedConfig{
+	out := config.TerminalSandboxHostedConfig{
 		MinSessionMinutes: h.MinSessionMinutes, KeyCustody: strings.TrimSpace(h.KeyCustody),
 		MemoryImages: strings.TrimSpace(h.MemoryImages), CheckpointMinutes: h.CheckpointMinutes,
 		MaxRunMinutes: h.MaxRunMinutes, DailyBoxMinutes: h.DailyBoxMinutes,
 		DBExport: h.DBExport != nil && *h.DBExport,
 		E2B:      trim(h.E2B), Modal: trim(h.Modal), Vercel: trim(h.Vercel),
+		Docker:   trimHostedProvider(h.Docker, trim),
+		InstaBox: trimHostedProvider(h.InstaBox, trim),
+		Daytona:  trimHostedProvider(h.Daytona, trim),
 	}
+	return out
+}
+
+// trimHostedProvider is trim over an optional table (the zero table when
+// the client sent none; the saved one is kept by the caller).
+func trimHostedProvider(p *hostedProviderPayload, trim func(hostedProviderPayload) config.TerminalSandboxHostedProviderConfig) config.TerminalSandboxHostedProviderConfig {
+	if p == nil {
+		return config.TerminalSandboxHostedProviderConfig{}
+	}
+	return trim(*p)
+}
+
+// hostedProviderPayloadPtr is hostedProviderToPayload as a pointer (a table
+// the payload carries optionally).
+func hostedProviderPayloadPtr(c config.TerminalSandboxHostedProviderConfig) *hostedProviderPayload {
+	p := hostedProviderToPayload(c)
+	return &p
 }
 
 func cleanStringList(in []string) []string {

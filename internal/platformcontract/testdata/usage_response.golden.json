@@ -1,0 +1,15 @@
+{
+  "day": "2026-11-12",
+  "tenants": [
+    {
+      "tenant_id": "org_1",
+      "active_seat_member_ids": [
+        "m1",
+        "m2"
+      ],
+      "machine_identities": 1,
+      "sessions": 40,
+      "members": 5
+    }
+  ]
+}

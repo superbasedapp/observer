@@ -23,7 +23,7 @@ import (
 )
 
 // orgEmptyURLPollTimeout bounds how long runOrgEmptyURLTestNode waits for a
-// settled signal (the "org push disabled" notice, or a hit against the fake
+// settled signal (the "team push disabled" notice, or a hit against the fake
 // org server) before giving up and treating "neither happened yet" as the
 // answer. It replaces a fixed sleep: the two positive-signal cases usually
 // resolve in well under a second (PushIntervalSeconds=1), while the two
@@ -76,7 +76,7 @@ func TestWaitForTCPListenerReportsTimeout(t *testing.T) {
 }
 
 // waitForOrgClientSignal polls getOutput and hits until either the
-// "org push disabled" startup notice appears in the captured output or the
+// "team push disabled" startup notice appears in the captured output or the
 // fake org server records at least one hit, or timeout elapses — whichever
 // comes first. All four truth-table cases in this file resolve on one of
 // those two signals (or, for the two negative cases, exhaust the timeout
@@ -87,7 +87,7 @@ func waitForOrgClientSignal(getOutput func() string, hits *atomic.Int64, timeout
 		if hits.Load() > 0 {
 			return
 		}
-		if strings.Contains(getOutput(), "org push disabled") {
+		if strings.Contains(getOutput(), "team push disabled") {
 			return
 		}
 		if time.Now().After(deadline) {
@@ -275,13 +275,13 @@ func runOrgEmptyURLTestNode(t *testing.T, useConfigURL, seedRow, expectSignal bo
 // orgClientShouldStart's truth table: [org_client].enabled = true, a
 // blank config org_server_url, and NO persisted org_enrolment row — a
 // genuinely never-enrolled node. This is the ONLY shape that should
-// print the "not enrolled" startup notice and start no org loop at all
+// print the "not connected" startup notice and start no org loop at all
 // (no keychain probe, no HTTP, org_push_log stays empty).
 func TestStartupSkipsOrgClientWhenNeverEnrolled(t *testing.T) {
 	requireComponents(t, "org.client")
 	res := runOrgEmptyURLTestNode(t, false /* useConfigURL */, false /* seedRow */, true /* expectSignal */)
 
-	const wantLine = "org push disabled: [org_client].enabled = true but org_server_url is empty and no enrolment record was found (not enrolled)"
+	const wantLine = "team push disabled: [org_client].enabled = true but org_server_url is empty and no saved connection was found (not connected)"
 	if !strings.Contains(res.output, wantLine) {
 		t.Errorf("output missing the org-disabled startup notice.\nwant substring: %q\ngot:\n%s", wantLine, res.output)
 	}
@@ -310,7 +310,7 @@ func TestStartupUsesPersistedEnrolmentWhenConfigURLBlank(t *testing.T) {
 	requireComponents(t, "org.client")
 	res := runOrgEmptyURLTestNode(t, false /* useConfigURL */, true /* seedRow */, true /* expectSignal */)
 
-	if strings.Contains(res.output, "org push disabled") {
+	if strings.Contains(res.output, "team push disabled") {
 		t.Errorf("output wrongly disabled org push for an enrolled node whose config org_server_url is blank:\n%s", res.output)
 	}
 	if res.hits == 0 {
@@ -326,7 +326,7 @@ func TestStartupRunsNormallyWithConfigURLAndRow(t *testing.T) {
 	requireComponents(t, "org.client")
 	res := runOrgEmptyURLTestNode(t, true /* useConfigURL */, true /* seedRow */, true /* expectSignal */)
 
-	if strings.Contains(res.output, "org push disabled") {
+	if strings.Contains(res.output, "team push disabled") {
 		t.Errorf("output wrongly disabled org push for a fully-configured enrolled node:\n%s", res.output)
 	}
 	if res.hits == 0 {
@@ -340,7 +340,7 @@ func TestStartupRunsNormallyWithConfigURLAndRow(t *testing.T) {
 // operator has written the [org_client] block but never run `observer
 // enroll`). orgClientShouldStart returns true here (ConfiguredServerURL()
 // short-circuits before the row check), so the org client IS constructed
-// and no "org push disabled" notice fires.
+// and no "team push disabled" notice fires.
 //
 // Empirically verified against this exact harness (2026-09-07): despite
 // orgClientShouldStart's own doc comment claiming this cell's loops "dial
@@ -356,7 +356,7 @@ func TestStartupRunsNormallyWithConfigURLAndRow(t *testing.T) {
 func TestStartupConstructsOrgClientWithConfigURLButNoRow(t *testing.T) {
 	res := runOrgEmptyURLTestNode(t, true /* useConfigURL */, false /* seedRow */, false /* expectSignal */)
 
-	if strings.Contains(res.output, "org push disabled") {
+	if strings.Contains(res.output, "team push disabled") {
 		t.Errorf("output wrongly disabled org push for a config-URL-configured node (orgClientShouldStart must return true here):\n%s", res.output)
 	}
 	if res.hits != 0 {

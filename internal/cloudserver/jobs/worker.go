@@ -93,7 +93,15 @@ type ExecResult struct {
 	// result (an invalid output). The worker adds it to the job's budget pool
 	// spend (T-946); an accepted result carries its cost in its provenance.
 	CostUSD float64
-	Detail  string
+	// FailKind says how a failed attempt ended (#16): the worker books the pool
+	// spend through BookedSpendUSD. Empty = a legacy executor; CostUSD > 0 is
+	// then treated as known usage.
+	FailKind FailKind
+	// CostKnown marks CostUSD as provider-reported usage even when it is zero.
+	CostKnown bool
+	// EstimateUSD is the pre-dispatch estimate booked when usage is unknown.
+	EstimateUSD float64
+	Detail      string
 	// TitleFallback is set on an accepted result whose title the deterministic
 	// fallback supplied because the model returned none (T-967). The worker's
 	// per-job log line carries it, so the rate can be counted.
@@ -375,6 +383,11 @@ func (w *Worker) processOnce(ctx context.Context, now time.Time, run *jobRun) (O
 			run.titleFallback = res.TitleFallback
 		}
 		if res.Terminal {
+			// A terminal failure after a dispatched call (persistence violation)
+			// still reached the provider: count it before the reservation closes.
+			if err := w.bookFailedAttempt(ctx, lj, res, clock()); err != nil {
+				return Outcome{}, err
+			}
 			return w.fail(ctx, lj, res.TerminalReason, clock())
 		}
 		// FA1/FA2/FA7: the dispatch-seam gate found the job no longer admissible —
@@ -398,10 +411,8 @@ func (w *Worker) processOnce(ctx context.Context, now time.Time, run *jobRun) (O
 				res.TokensIn, res.TokensOut, lj.RouteVersion, attempt, `{"scope":"attempt","detail":"`+jsonSafe(res.Detail)+`"}`); err != nil {
 				return Outcome{}, fmt.Errorf("record attempt: %w", err)
 			}
-			if res.CostUSD > 0 {
-				if err := w.store.AddReservationSpend(ctx, lj.AccountID, lj.ReservationID, res.CostUSD, clock()); err != nil {
-					return Outcome{}, fmt.Errorf("record attempt spend: %w", err)
-				}
+			if err := w.bookFailedAttempt(ctx, lj, res, clock()); err != nil {
+				return Outcome{}, err
 			}
 		}
 	}
@@ -534,6 +545,24 @@ func (w *Worker) revalidate(ctx context.Context, lj *store.LeasedJob, now time.T
 	}
 
 	return route, apiKey, "", nil
+}
+
+// bookFailedAttempt adds a failed attempt's spend to the pool windows by the
+// BookedSpendUSD rule table. Only the USD pool ceiling is touched; the
+// per-account token budget stays accepted-only (R-AI1 2).
+func (w *Worker) bookFailedAttempt(ctx context.Context, lj *store.LeasedJob, res ExecResult, now time.Time) error {
+	kind := res.FailKind
+	if kind == "" && res.Outcome == ExecInvalidOutput {
+		kind = FailInvalidOutput
+	}
+	usd := BookedSpendUSD(kind, res.CostKnown || res.CostUSD > 0, res.CostUSD, res.EstimateUSD)
+	if usd <= 0 {
+		return nil
+	}
+	if err := w.store.AddReservationSpend(ctx, lj.AccountID, lj.ReservationID, usd, now); err != nil {
+		return fmt.Errorf("record attempt spend: %w", err)
+	}
+	return nil
 }
 
 func (w *Worker) park(ctx context.Context, lj *store.LeasedJob, reason string, now time.Time) (Outcome, error) {

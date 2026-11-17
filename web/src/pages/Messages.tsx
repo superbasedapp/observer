@@ -39,6 +39,7 @@ import {
   Tooltip,
 } from "@/components/primitives";
 import { navIcon } from "@/lib/nav";
+import { useHrefGate } from "@/lib/governance";
 import { ApiError, fetchJSON } from "@/lib/api";
 import { apiCache, useApi } from "@/lib/useApi";
 import { fmtClock, fmtDateTime, fmtRelative } from "@/lib/format";
@@ -731,10 +732,14 @@ function MessageBlock({ m }: { m: InboxMessage }) {
 }
 
 function AttachmentCards({ list, onRemove }: { list: MessageAttachment[]; onRemove?: (a: MessageAttachment) => void }) {
+  // A card whose page this machine hides (Security on a managed node, CG-21)
+  // renders without a link instead of opening the managed notice.
+  const gate = useHrefGate();
+  const hidden = (href: string) => gate(href) === "managed";
   return (
     <div className="mt-2.5 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
       {list.map((a) => {
-        const v = attachmentView(a);
+        const v = attachmentView(a, hidden);
         const body = (
           <>
             <span className="grid h-7 w-7 shrink-0 place-items-center rounded-2 bg-accent-soft text-accent">
@@ -757,6 +762,14 @@ function AttachmentCards({ list, onRemove }: { list: MessageAttachment[]; onRemo
             >
               <Icon icon={X} size={11} />
             </button>
+          </div>
+        ) : v.to == null ? (
+          <div
+            key={`${a.type}:${a.ref}`}
+            data-testid="attachment-managed"
+            className="flex items-center gap-2.5 rounded-2 border border-line-2 bg-bg-2 px-2.5 py-2"
+          >
+            {body}
           </div>
         ) : (
           <Link

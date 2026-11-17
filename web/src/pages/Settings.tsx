@@ -41,6 +41,7 @@ import { ETWCapturerCard } from "./settings/ETWCapturerCard";
 import { ProcessCaptureEstimateCard } from "./settings/ProcessCaptureEstimateCard";
 import { ShellWrapCard } from "./settings/ShellWrapCard";
 import { LaunchToolPathsCard } from "./settings/LaunchToolPathsCard";
+import { DefaultWorkspaceCard } from "./settings/DefaultWorkspaceCard";
 import { RoutingShapesCards } from "./settings/RoutingShapesCards";
 import { StatuslineCard } from "./settings/StatuslineCard"; // cli-parity L2
 import { StartAtLoginCard } from "./settings/StartAtLoginCard"; // cli-parity L2
@@ -50,10 +51,9 @@ import { ToolProfilesCard } from "./settings/ToolProfilesCard";
 import { ProjectProfilesCard } from "./settings/ProjectProfilesCard";
 import { RepriceCard } from "./settings/RepriceCard";
 import { ConnectedToolsSection } from "./settings/ConnectedToolsSection";
-import { CloudIntelligenceSection } from "./settings/CloudIntelligenceSection";
 import { OrgIntelSection } from "./settings/OrgIntelSection";
 import { OrgDigestsCard } from "@/components/OrgDigestsCard";
-import { EnrolmentSection } from "./settings/EnrolmentSection";
+import { AccountSection } from "./settings/AccountSection";
 import { HealthSection } from "./settings/HealthSection";
 import { StorageSection } from "./settings/StorageSection";
 import { ChartState } from "@/components/ChartState";
@@ -119,6 +119,7 @@ import {
   type Governance,
 } from "@/lib/governance";
 import { settingsOfferedWhileUnresolved } from "@/lib/visibility";
+import { ManagedNotice } from "@/components/ManagedNotice";
 import { fmtDateTime, fmtInt, fmtUSD } from "@/lib/format";
 import type {
   BackfillJob,
@@ -204,7 +205,21 @@ type SectionDef = {
     whenModified: string;
     behavior: string;
   };
+  // mergedInto: the section now renders inside another one and has no rail
+  // row of its own (Getting started v2 folded Cloud Intelligence into
+  // Account). Its id stays, for governance and old links (SECTION_ALIASES).
+  mergedInto?: SectionId;
 };
+
+// SECTION_ALIASES maps a requested `?section=` to the section that renders
+// it: "account" is the user-facing name of the enrolment section, and the
+// old Cloud Intelligence links land on Account, where it lives now.
+const SECTION_ALIASES: Record<string, SectionId> = { account: "enrolment", cloud: "enrolment" };
+
+function resolveSectionAlias(requested: string | null): string | null {
+  if (requested == null) return null;
+  return SECTION_ALIASES[requested] ?? requested;
+}
 
 const SECTIONS: SectionDef[] = [
   {
@@ -284,25 +299,26 @@ const SECTIONS: SectionDef[] = [
   },
   {
     id: "enrolment",
-    label: "Enrolment",
+    label: "Account",
     group: "edit",
     status: "soft",
     icon: Users,
     about: {
       summary:
-        "Teams & Org Visibility. Enrol this machine in your organization's SuperBased server (enrolment code, link, or sign-in with your organization account), accept or decline the organization's governance request, see what is shared and push now, or leave. An individual enrolment shares counts, costs, timings and hashes unless you opt in to more; an organization-managed enrolment shares full content.",
+        "Your SuperBased account and where this machine is connected. Sign in and connect this machine to see it in your personal dashboard or your team's online dashboard; what is sent is either Summary only (counts, costs and timings) or Full detail (prompts, responses and file paths, which team admins can read). AI summaries, the optional online names, tags and summaries for your sessions, live here too. Everything works on this machine without an account.",
       whenModified:
-        "Joining, re-joining or leaving an organization. Everything here is also available from the CLI (`observer enroll`, `observer org status`, `observer org push-status`, `observer org push-now`, `observer org backfill`, `observer org resync`, `observer org grant show`, `observer unenroll`) and runs the same code.",
+        "Signing in, connecting this machine or disconnecting it, checking what is sent and when it was last sent, or turning AI summaries on. A self-hosted server is under the Advanced disclosure. The same actions are `observer connect` and `observer status` in a terminal.",
       behavior:
-        "Enrolling checks the server is reachable before the one-time code is spent, writes the default [org_client] block to config.toml, and stores the credential in the OS keychain (or a 0600 file). A daemon that started before enrolment needs a restart to run its push loop; Push now works either way. Leaving deletes the local enrolment + credentials immediately; nothing already shared with the server is deleted.",
+        "Sign in and connect opens an approval page in your browser, where you choose where to connect and see what will be sent before anything is sent. Disconnecting stops sending at once; what was already sent stays with that dashboard. A daemon that started before connecting needs a restart to send on its own schedule; Push now works either way.",
     },
   },
   {
     id: "cloud",
-    label: "Cloud Intelligence",
+    label: "AI summaries",
     group: "edit",
     status: "soft",
     icon: Cloud,
+    mergedInto: "enrolment",
     about: {
       summary:
         "Optional signed-in personal enrichment (Signed-in Free). The Cloud account card at the top is where you sign in and out - the daemon itself never touches the network: Sign in runs the same consent-gated `observer cloud login` you would type, as a subprocess, and the credential stays in the local keychain. The card also carries the two egress preferences (auto-sync, auto-enrich). Below it: consent receipts, the send outbox by state, and any synced enrichment results. Deployment knobs (client id, base URL, callback port) live under an Advanced fold - most people never touch them.",
@@ -314,15 +330,15 @@ const SECTIONS: SectionDef[] = [
   },
   {
     id: "intel",
-    label: "Org enrichment",
+    label: "Team AI summaries",
     group: "edit",
     status: "hot",
     icon: CloudCog,
     about: {
       summary:
-        "Cloud Intelligence run by the organization this machine is enrolled with, on the organization's own server and model: whether it is on, which provider and model, what evidence it sees, and your consent. On an organization-managed machine this is a notice; on an individual enrolment nothing is sent until you accept.",
+        "AI summaries run by the team this machine is connected to, on the team's own server and model: whether they are on, which provider and model, what evidence they see, and your consent. On a team-managed machine this is a notice; on an individual connection nothing is sent until you accept.",
       whenModified:
-        "Reviewing what your organization runs, accepting its terms (or new terms after it widened them), or withdrawing. The same actions are `observer intel status`, `observer intel accept` and `observer intel disable`.",
+        "Reviewing what your team runs, accepting its terms (or new terms after it widened them), or withdrawing. The same actions are `observer intel status`, `observer intel accept` and `observer intel disable`.",
       behavior:
         "Accept records exactly the terms shown (their digest is checked, so a text that changed since it was shown is refused), turns `[intelligence].org_enrichment` on and tells the organization's server. Withdraw records the withdrawal, turns the key off and removes results cached under the old consent. When the organization requires this consent, the alternative is leaving the organization (Settings, Enrolment). Takes effect on the next sync, no restart.",
     },
@@ -695,7 +711,7 @@ export function SettingsPage() {
   // banner. Mirrors the sessions?session=<id> convention: URL is the
   // source of truth, local state derives from it.
   const [searchParams, setSearchParams] = useSearchParams();
-  const requested = searchParams.get("section");
+  const requested = resolveSectionAlias(searchParams.get("section"));
   // Governed nodes may have Settings sub-sections hidden or locked
   // read-only by their organization. gov.data is {active: false, ...} on an
   // ordinary solo node, and every isSettingsHidden/isSettingsReadOnly call
@@ -710,6 +726,7 @@ export function SettingsPage() {
   const absent = new Set(absentSettingsSections(useComponentState().data?.view));
   const visibleSections = SECTIONS.filter(
     (s) =>
+      !s.mergedInto &&
       !absent.has(s.id) &&
       (posture === "ready" ? !isSettingsHidden(gov.data, s.id) : settingsOfferedWhileUnresolved(s.id)),
   );
@@ -717,6 +734,18 @@ export function SettingsPage() {
   const active: SectionId = visibleSections.some((s) => s.id === requested)
     ? (requested as SectionId)
     : fallback;
+  // A link to a section the organization hid on this machine says so with
+  // the notice a hidden page gets, instead of silently opening the first
+  // shown section (CG-20). Only a KNOWN posture can say "hidden"; until then
+  // the rail fails closed as above.
+  const hiddenRequest: SectionId | null =
+    posture === "ready" &&
+    requested != null &&
+    !absent.has(requested) &&
+    SECTIONS.some((s) => s.id === requested) &&
+    isSettingsHidden(gov.data, requested)
+      ? (requested as SectionId)
+      : null;
   const setActive = (id: SectionId) => {
     setSearchParams(id === "pricing" ? {} : { section: id }, { replace: true });
   };
@@ -762,7 +791,7 @@ export function SettingsPage() {
             </span>
           </Link>
           <SettingsRail
-            active={active}
+            active={hiddenRequest ?? active}
             onChange={setActive}
             sections={visibleSections}
             gov={gov.data}
@@ -791,72 +820,85 @@ export function SettingsPage() {
         </aside>
 
         <main className="min-w-0 p-4 sm:p-6 lg:overflow-y-auto">
-          {posture === "unavailable" && (
-            <ReadOnlyBanner className="mb-4">
-              The dashboard could not read which settings are available on this machine, so only
-              Enrolment and Organization are shown.
-            </ReadOnlyBanner>
+          {hiddenRequest ? (
+            <ManagedNotice gov={gov.data} settingsId={hiddenRequest} />
+          ) : (
+            <>
+              {posture === "unavailable" && (
+                <ReadOnlyBanner className="mb-4">
+                  The dashboard could not read which settings are available on this machine, so only
+                  Enrolment and Organization are shown.
+                </ReadOnlyBanner>
+              )}
+              {readOnly && (
+                <ReadOnlyBanner className="mb-4">
+                  Managed by {governedOrgLabel(gov.data)} - changes to this section cannot be saved from
+                  this machine.
+                </ReadOnlyBanner>
+              )}
+              {active === "pricing" && (
+                <PricingSection
+                  config={config.data}
+                  loading={config.loading}
+                  error={config.error}
+                  denied={config.denied}
+                  deniedPermission={config.deniedPermission}
+                  onReload={config.reload}
+                  readOnly={readOnly}
+                />
+              )}
+              {active === "pricing" && <RepriceCard />}
+              {active === "backfill" && <BackfillSection />}
+              {active === "tools" && <ConnectedToolsSection icon={sectionIcon("tools")} />}
+              {active === "tools" && <StatuslineCard readOnly={readOnly} />}
+              {active === "health" && <HealthSection icon={sectionIcon("health")} />}
+              {active === "health" && <StartAtLoginCard readOnly={readOnly} />}
+              {active === "storage" && <StorageSection icon={sectionIcon("storage")} />}
+              {active === "enrolment" && (
+                <AccountSection
+                  icon={sectionIcon("enrolment")}
+                  aiSummaries={
+                    !absent.has("cloud") && (posture === "ready" ? !isSettingsHidden(gov.data, "cloud") : false)
+                  }
+                  aiSummariesReadOnly={isSettingsReadOnly(gov.data, "cloud")}
+                />
+              )}
+              {active === "intel" && <OrgIntelSection icon={sectionIcon("intel")} readOnly={readOnly} />}
+              {active === "intel" && <OrgDigestsCard icon={sectionIcon("intel")} />}
+              {active === "intelligence" && (
+                <IntelligenceSection
+                  config={config.data}
+                  schema={schema.data}
+                  loading={config.loading}
+                  error={config.error}
+                  denied={config.denied}
+                  deniedPermission={config.deniedPermission}
+                  onReload={config.reload}
+                  readOnly={readOnly}
+                />
+              )}
+              {active !== "pricing" &&
+                active !== "backfill" &&
+                active !== "tools" &&
+                active !== "health" &&
+                active !== "storage" &&
+                active !== "enrolment" &&
+                active !== "cloud" &&
+                active !== "intel" &&
+                active !== "intelligence" && (
+                  <SectionView
+                    section={active}
+                    config={config.data}
+                    schema={schema.data}
+                    onReload={config.reload}
+                    readOnly={readOnly}
+                  />
+                )}
+            </>
           )}
-          {readOnly && (
-            <ReadOnlyBanner className="mb-4">
-              Managed by {governedOrgLabel(gov.data)} - changes to this section cannot be saved from
-              this machine.
-            </ReadOnlyBanner>
-          )}
-          {active === "pricing" && (
-            <PricingSection
-              config={config.data}
-              loading={config.loading}
-              error={config.error}
-              denied={config.denied}
-              deniedPermission={config.deniedPermission}
-              onReload={config.reload}
-              readOnly={readOnly}
-            />
-          )}
-          {active === "pricing" && <RepriceCard />}
-          {active === "backfill" && <BackfillSection />}
-          {active === "tools" && <ConnectedToolsSection icon={sectionIcon("tools")} />}
-          {active === "tools" && <StatuslineCard readOnly={readOnly} />}
-          {active === "health" && <HealthSection icon={sectionIcon("health")} />}
-          {active === "health" && <StartAtLoginCard readOnly={readOnly} />}
-          {active === "storage" && <StorageSection icon={sectionIcon("storage")} />}
-          {active === "enrolment" && <EnrolmentSection icon={sectionIcon("enrolment")} />}
-          {active === "cloud" && <CloudIntelligenceSection icon={sectionIcon("cloud")} readOnly={readOnly} />}
-          {active === "intel" && <OrgIntelSection icon={sectionIcon("intel")} readOnly={readOnly} />}
-          {active === "intel" && <OrgDigestsCard icon={sectionIcon("intel")} />}
-          {active === "intelligence" && (
-            <IntelligenceSection
-              config={config.data}
-              schema={schema.data}
-              loading={config.loading}
-              error={config.error}
-              denied={config.denied}
-              deniedPermission={config.deniedPermission}
-              onReload={config.reload}
-              readOnly={readOnly}
-            />
-          )}
-          {active !== "pricing" &&
-            active !== "backfill" &&
-            active !== "tools" &&
-            active !== "health" &&
-            active !== "storage" &&
-            active !== "enrolment" &&
-            active !== "cloud" &&
-            active !== "intel" &&
-            active !== "intelligence" && (
-              <SectionView
-                section={active}
-                config={config.data}
-                schema={schema.data}
-                onReload={config.reload}
-                readOnly={readOnly}
-              />
-            )}
         </main>
 
-        {helpOpen && <AboutSectionRail def={def} />}
+        {helpOpen && !hiddenRequest && <AboutSectionRail def={def} />}
       </div>
     </div>
   );
@@ -2370,6 +2412,7 @@ function SectionView({
               <>
                 <ShellWrapCard readOnly={readOnly} />
                 <LaunchToolPathsCard readOnly={readOnly} />
+                <DefaultWorkspaceCard readOnly={readOnly} />
               </>
             ) : section === "browser" ? (
               <BrowserCaptureCard readOnly={readOnly} />

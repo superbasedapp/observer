@@ -85,6 +85,10 @@ var sandboxSettingsInventory = map[string]adminHome{
 	// F-020 A13). Its org home (a nodegov pin and a posture axis) is
 	// tracker F-002, left to a later lane.
 	"seccomp": {Owed: "F-002: a node.governance pin and a sandboxselect posture axis, a later lane"},
+	// The strace switch (lane ptrace, PT-96): it widens what a box may do
+	// (PTRACE_SEIZE), so an organization can never raise it, and it is set
+	// only from the dashboard on this machine.
+	"seccomp_allow_seize": {Local: "the developer's own choice to let sandboxed runs trace processes they start; it widens a box, so an org can neither pin nor raise it"},
 	// The container driver's block (lane SBX-P3A) has its own inventory.
 	"oci": {Nested: "sandboxOCISettingsInventory"},
 	// The macOS drivers' blocks (lane SBX-P5) have their own inventories
@@ -158,6 +162,13 @@ func TestSandboxSettingsInventory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the card: %v", err)
 	}
+	// The card's strace switch is its own component, mounted in the card,
+	// because it saves through its own route (lane ptrace).
+	seize, err := os.ReadFile(filepath.Join("..", "..", "web", "src", "components", "SandboxStraceSeizeToggle.tsx"))
+	if err != nil {
+		t.Fatalf("read the strace switch: %v", err)
+	}
+	card = append(card, seize...)
 	typ := reflect.TypeOf(config.TerminalSandboxConfig{})
 	seen := map[string]bool{}
 	for i := 0; i < typ.NumField(); i++ {

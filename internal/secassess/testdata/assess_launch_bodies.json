@@ -1,0 +1,49 @@
+{
+  "pentest_local": {
+    "assessment": "pentest_local",
+    "project_root_hash": "h1",
+    "run_id": "20261114-ab12cd",
+    "target": "http://localhost:3000/",
+    "confirm_target": "http://localhost:3000/",
+    "tool": "claude-code"
+  },
+  "red_team_local": {
+    "assessment": "red_team_local",
+    "project_root_hash": "h1",
+    "run_id": "20261114-ab12cd",
+    "target": "http://localhost:3000/",
+    "confirm_target": "http://localhost:3000/",
+    "tool": "claude-code"
+  },
+  "pentest_local_model_chosen": {
+    "assessment": "pentest_local",
+    "project_root_hash": "h1",
+    "run_id": "20261114-ab12cd",
+    "target": "http://localhost:3000/",
+    "confirm_target": "http://localhost:3000/",
+    "tool": "claude-code",
+    "model": "sonnet"
+  },
+  "red_team_local_objective": {
+    "assessment": "red_team_local",
+    "project_root_hash": "h1",
+    "run_id": "20261114-ab12cd",
+    "target": "http://localhost:3000/",
+    "confirm_target": "http://localhost:3000/",
+    "objective": "Read another user's entries without signing in as them.",
+    "tool": "claude-code"
+  },
+  "pentest_retest": {
+    "assessment": "pentest_retest",
+    "project_root_hash": "h1",
+    "run_id": "20261114-ab12cd",
+    "target": "http://localhost:3000/",
+    "confirm_target": "http://localhost:3000/",
+    "of_run": "20261113-ef34ab",
+    "finding_ids": [
+      "F-1",
+      "F-5"
+    ],
+    "tool": "claude-code"
+  }
+}

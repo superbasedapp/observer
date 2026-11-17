@@ -121,3 +121,9 @@ func withSandboxTier(env []string, h sandbox.HostArgs) []string {
 	}
 	return out
 }
+
+// sandboxGatewayPortFunc is the dashboard's dashapi.Options.SandboxGatewayPort:
+// the in-box egress gateway's port for a proxy port, owned by internal/sandbox
+// so the dashboard package never imports it (the isolation component's L1
+// boundary). The security assessments' E5 rule refuses that port as a target.
+func sandboxGatewayPortFunc() func(int) int { return sandbox.GatewayPort }

@@ -3,7 +3,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"log/slog"
 	"net/http"
@@ -87,7 +86,7 @@ func TestCredKeyListUnreadable(t *testing.T) {
 	}
 	live := true
 	credLocalHelperLive(t, &live)
-	var logs bytes.Buffer
+	var logs syncBuffer // the default logger is process-wide: a relay goroutine from another test may write it (L-4)
 	oldLog := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 	t.Cleanup(func() { slog.SetDefault(oldLog) })

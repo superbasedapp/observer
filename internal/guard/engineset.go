@@ -741,7 +741,7 @@ func (g *Guard) buildProjectEngineWith(es *engineSet, projectRoot, checkout stri
 	// worktree's file) is dropped with an issue naming the file and the
 	// rule, so it can never fail the whole build (audit finding 1, lane
 	// shr-worktree2).
-	targets := inRepoOverrideTargets(g.packRules, effectiveConfigDisable(org, g.cfg.Rules.Disable), org, es.userLayer, trusted, inRepoFiles)
+	targets := inRepoOverrideTargets(g.packRules, effectiveConfigDisable(org, g.configDisable()), org, es.userLayer, trusted, inRepoFiles)
 	for i := range inRepoFiles {
 		var issues []string
 		inRepoFiles[i], issues = dropUnloadedInRepoOverrides(inRepoFiles[i], inRepoStates[i].Path, targets)

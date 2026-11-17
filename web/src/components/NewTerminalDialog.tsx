@@ -98,6 +98,16 @@ import {
 } from "@/components/LaunchPolicyInline";
 import { folderNeedsAllow, isPermittedRoot, stepHoldsStart } from "@/lib/launchPolicyStep";
 import {
+  taskLaunchRequest,
+  taskPasteText,
+  taskPickerItems,
+  type NewTerminalTask,
+  type TaskLaunchResponse,
+} from "@/lib/terminalTask";
+import { writeClipboard } from "@/lib/clipboard";
+import { TaskPromptBlock } from "@/components/TaskPromptBlock";
+import { HelpInd } from "@/components/HelpInd";
+import {
   Button,
   ComboChip,
   type ComboOption,
@@ -265,6 +275,10 @@ function shortenPath(p: string): string {
 // (Allow this folder, Turn on fresh-agent launch) has a change open.
 const POLICY_STEP_PENDING = "Save or cancel the config change above first";
 
+// TASK_FOLDER_PENDING is Start's tip in task mode while the task's project
+// folder is not allow-listed yet (the inline step above allows it).
+const TASK_FOLDER_PENDING = "Allow the project folder above first";
+
 // NewTerminalDialog is the F1 "New terminal" affordance: start a FRESH agent
 // (no --continue-from) in the embedded web terminal. The tool picker is
 // populated from GET /api/terminal/sessions (launchable_tools — the capability
@@ -345,6 +359,21 @@ type Props = {
   initialLaunchSwitches?: { fresh: boolean; shell: boolean };
   resumedAfterInstall?: boolean;
   /**
+   * Task mode (fix findings with an agent, lib/terminalTask.ts): the
+   * project folder is fixed to task.projectRoot, the picker lists terminal
+   * agents only (no IDE or desktop rows, no Shell, no SSH system) with each
+   * row's seed label, and Start posts to task.launchPath with the task's
+   * fields plus the agent choice. Absent: the dialog is unchanged.
+   */
+  task?: NewTerminalTask;
+  /**
+   * Task mode only: docks a started terminal WITHOUT closing the dialog,
+   * so an agent that was not started on the task can still have it copied
+   * from here. Absent: the dialog calls onLaunched and shows the task in a
+   * toast instead.
+   */
+  onTaskStarted?: (handle: string, tool: string, hasProjectRoot?: boolean) => void;
+  /**
    * Called with the minted handle + tool once a fresh launch succeeds. The
    * third arg (review finding 8) reports whether the launch was given a project
    * root, so the dock enables Files/Git without a reload. The fourth arg is
@@ -375,6 +404,8 @@ export function NewTerminalDialog({
   initialSetupPlan,
   initialLaunchSwitches,
   resumedAfterInstall = false,
+  task,
+  onTaskStarted,
 }: Props) {
   const [tools, setTools] = useState<string[]>([]);
   // Per-tool annotations from the SAME GET /api/terminal/sessions reply
@@ -413,6 +444,12 @@ export function NewTerminalDialog({
   // An inline launch-policy step that is confirming, reviewing or saving its
   // change holds Start until it ends (lib/launchPolicyStep.ts stepHoldsStart).
   const [policyStepBusy, setPolicyStepBusy] = useState(false);
+  // Task mode: whether the sessions meta (the allow-list) has answered, so
+  // the task folder's "Allow this folder" step does not flash before it;
+  // and the task text kept for copying after a launch that was not started
+  // on it.
+  const [metaLoaded, setMetaLoaded] = useState(false);
+  const [taskPaste, setTaskPaste] = useState<string | null>(null);
   // refreshAllowedRoots re-reads the canonical allow-list after the inline
   // "Allow this folder" step saved it (the server canonicalizes the path).
   function refreshAllowedRoots() {
@@ -575,6 +612,7 @@ export function NewTerminalDialog({
         setShellEnabled(d.shell_enabled ?? false);
         setFreshEnabled(d.fresh_enabled);
         setWindowsPathsToWSL(d.windows_paths_to_wsl === true);
+        setMetaLoaded(true);
       })
       .catch((e) => {
         // DI-05: this route carries the whole picker. Swallowing its failure
@@ -825,9 +863,11 @@ export function NewTerminalDialog({
   // Custom escape hatch is chosen, otherwise the selected project root ("" ==
   // let the launcher use the agent's own default cwd). Validation is unchanged
   // — the server still canonicalizes it against [terminal.launch].allowed_project_roots.
+  // Task mode fixes the folder to the task's project.
+  const taskRoot = task?.projectRoot;
   const effectiveRoot = useMemo(
-    () => (rootSel === CUSTOM_ROOT ? customRoot.trim() : rootSel.trim()),
-    [rootSel, customRoot],
+    () => (taskRoot != null ? taskRoot.trim() : rootSel === CUSTOM_ROOT ? customRoot.trim() : rootSel.trim()),
+    [taskRoot, rootSel, customRoot],
   );
 
   // Repository trust chip (security Phase B, component security.trust): the
@@ -966,19 +1006,22 @@ export function NewTerminalDialog({
   // vocabulary) and their ComboChip rendering. Each annotation is its own
   // field — name, kind badge, status badge, host list — instead of one long
   // native <option> string, so nothing can render wider than the dialog.
-  const pickerItems = useMemo(
-    () =>
-      buildToolPickerItems({
-        tools,
-        toolInfo,
-        gui: guiLaunchables,
-        shellEnabled,
-        shellTool: SHELL_TOOL,
-        labelFor: (id) => toolMeta(id).label,
-        unlaunchable,
-      }),
-    [tools, toolInfo, guiLaunchables, shellEnabled, unlaunchable],
-  );
+  // Task mode lists terminal agents only, each with its seed label (whether
+  // the task is typed in on start or has to be pasted).
+  const taskSeeds = task?.seeds;
+  const taskAllowedTools = task?.allowedTools;
+  const pickerItems = useMemo(() => {
+    const items = buildToolPickerItems({
+      tools,
+      toolInfo,
+      gui: guiLaunchables,
+      shellEnabled,
+      shellTool: SHELL_TOOL,
+      labelFor: (id) => toolMeta(id).label,
+      unlaunchable,
+    });
+    return taskSeeds ? taskPickerItems(items, taskSeeds, taskAllowedTools) : items;
+  }, [tools, toolInfo, guiLaunchables, shellEnabled, unlaunchable, taskSeeds, taskAllowedTools]);
   const pickerItemFor = useMemo(
     () => new Map(pickerItems.map((i) => [i.value, i])),
     [pickerItems],
@@ -1042,6 +1085,9 @@ export function NewTerminalDialog({
   // A typed absolute folder the allow-list does not cover gets the inline
   // "Allow this folder" step (R4): the launch would be refused otherwise.
   const customFolderNeedsAllow = folderNeedsAllow(customRoot, allowedRoots, savedRoots);
+  // Task mode: the task's folder is not allow-listed yet (the server enforces
+  // allowed_project_roots), so the inline step offers to allow it.
+  const taskFolderNeedsAllow = task != null && metaLoaded && folderNeedsAllow(task.projectRoot, allowedRoots, savedRoots);
   // Honest reason placed on every disabled option so hovering explains the block.
   const blockedTitle = noAllowList
     ? "No project folders are allow-listed - add one in Terminals > Settings > Folder Selection"
@@ -1125,7 +1171,11 @@ export function NewTerminalDialog({
   const sandboxSourceUnavailable = startBlock.sourceUnavailable;
   const sandboxBranchProblem =
     sandboxOn && !sandboxCheckboxDisabled ? worktreeBranchProblem(workspaceSource, workspaceBranch) : null;
-  const sandboxBlocksStart = startBlock.blocks || sandboxBranchProblem !== null;
+  // A task whose route chooses the sandbox itself (a security assessment,
+  // lib/terminalTask.ts serverSandbox): the dialog's own sandbox controls are
+  // hidden and never block Start, and no sandbox fields are sent.
+  const sandboxManaged = !!task?.serverSandbox;
+  const sandboxBlocksStart = !sandboxManaged && (startBlock.blocks || sandboxBranchProblem !== null);
   const sandboxBranch = branchField(workspaceSource);
 
   // sshMode is the ONE predicate the rest of the dialog branches on. Everything
@@ -1138,7 +1188,8 @@ export function NewTerminalDialog({
   // visible by default, not hidden behind enabled/profile state. Whether the
   // picker itself is USABLE is a separate question, answered by
   // sshSystemDisabledReason below.
-  const showSystemPicker = sshProbed;
+  // Task mode runs on this machine only.
+  const showSystemPicker = sshProbed && !task;
   const sshSystemReason = sshSystemDisabledReason(sshEnabled, sshProfiles.length);
   const sshSystemDisabled = sshSystemReason !== null;
   const selectedSSH = sshProfiles.find((p) => p.name === sshProfile) ?? null;
@@ -1256,15 +1307,58 @@ export function NewTerminalDialog({
       // and fail-CLOSES; this is a UX hint, not authorization.
       // The row chosen in the Isolation picker (a beta row too) is sent as
       // `backend`; "Automatic" sends none (sandboxLaunchFields, B4).
-      const sandboxFields = sandboxLaunchFields({
-        sandboxOn,
-        isolationChoice,
-        workspaceSource,
-        workspaceRemote,
-        workspaceBranch,
-        branchApplies: sandboxBranch !== null,
-        signInSeed,
-      });
+      const sandboxFields = sandboxManaged
+        ? {}
+        : sandboxLaunchFields({
+            sandboxOn,
+            isolationChoice,
+            workspaceSource,
+            workspaceRemote,
+            workspaceBranch,
+            branchApplies: sandboxBranch !== null,
+            signInSeed,
+          });
+      // Task mode posts the task's fields plus the agent choice to the
+      // task's own route (lib/terminalTask.ts); the route derives the
+      // folder, so project_root is never sent.
+      if (task) {
+        const t = task;
+        const headers = t.confirmToken
+          ? { "Content-Type": "application/json", "X-Observer-Confirm": t.confirmToken }
+          : await localConfirmHeaders();
+        const req = taskLaunchRequest(t, { tool, model: modelSel || undefined, ...sandboxFields });
+        const out = await postLaunchAskingSignIn(() =>
+          fetchJSON<TaskLaunchResponse>(req.path, undefined, { method: "POST", headers, body: req.body }),
+        );
+        if ("consent" in out) {
+          setSignInConsent(out.consent);
+          setErr(null);
+          return;
+        }
+        const r = out.started;
+        t.onStarted?.(r);
+        const paste = taskPasteText(r);
+        if (paste !== null && onTaskStarted) {
+          // The terminal opens bare: dock it and keep the dialog on the
+          // task text so it can be copied into the terminal.
+          onTaskStarted(r.token, r.tool || tool, r.has_project_root);
+          setTaskPaste(paste);
+          return;
+        }
+        if (paste !== null) {
+          // No in-dialog step to keep: copy it now and say so.
+          void writeClipboard(paste).then((w) =>
+            pushToast(
+              w === "failed"
+                ? "The agent opened without the task and it could not be copied. Open the task again to copy it."
+                : "The agent opened without the task. It is on the clipboard: paste it into the terminal.",
+              w === "failed" ? "warn" : "info",
+            ),
+          );
+        }
+        onLaunched(r.token, r.tool || tool, r.has_project_root);
+        return;
+      }
       // A launch that can copy the tool's sign-in answers with the question
       // instead (lane BOXSIGNIN): the inline step asks, its answer submits
       // again.
@@ -1293,6 +1387,12 @@ export function NewTerminalDialog({
         setErr(null);
         return;
       }
+      // A task may have its own words for a refusal of its route.
+      const own = task?.refusalText?.(e) ?? null;
+      if (own) {
+        setErr(own);
+        return;
+      }
       // Swap the raw server body for actionable guidance on the two known
       // policy gates — the remote allow_terminal 403 and the allowed_project_roots
       // 400 — and keep the verbatim message for every other failure so it stays
@@ -1309,6 +1409,34 @@ export function NewTerminalDialog({
     } finally {
       setBusy(false);
     }
+  }
+
+  // Task mode, after a launch whose agent was not started on the task: the
+  // terminal is open in the dock, and this step keeps the task for copying.
+  if (task && taskPaste !== null) {
+    return (
+      <Modal
+        open
+        onClose={onClose}
+        title="Paste the task"
+        width={520}
+        zIndex={85}
+        bodyClassName="p-4"
+        footer={
+          <Button variant="primary" onClick={onClose}>
+            Done
+          </Button>
+        }
+      >
+        <div className="space-y-2 text-[12px]" data-testid="new-terminal-task-paste">
+          <p className="m-0 text-fg-2">
+            The terminal is open, but this agent cannot take a first prompt on start. Copy the task and paste it into the
+            terminal.
+          </p>
+          <TaskPromptBlock text={taskPaste} />
+        </div>
+      </Modal>
+    );
   }
 
   return (
@@ -1339,6 +1467,8 @@ export function NewTerminalDialog({
               ? null
               : policyStepBusy
               ? POLICY_STEP_PENDING
+              : taskFolderNeedsAllow
+              ? TASK_FOLDER_PENDING
               : remoteBlocked
               ? REMOTE_TERMINAL_OFF_MSG
               : launchBlockedByVerdict
@@ -1371,7 +1501,7 @@ export function NewTerminalDialog({
                       // [remote].allow_terminal INBOUND tier - an orthogonal
                       // feature (the route is owner-local anyway).
                       !sshProfile
-                    : !tool || remoteBlocked || launchBlockedByVerdict || sandboxBlocksStart || policyStepBusy)
+                    : !tool || remoteBlocked || launchBlockedByVerdict || sandboxBlocksStart || policyStepBusy || taskFolderNeedsAllow)
                 }
                 onClick={() => void submit()}
               >
@@ -1407,6 +1537,25 @@ export function NewTerminalDialog({
         ; a launch outside them is refused. Changes apply to the next launch.
       </p>
 
+      {task && (
+        <div
+          data-testid="new-terminal-task"
+          className="mb-3 rounded-2 border border-accent/40 bg-accent/10 px-2.5 py-2 text-[11px] leading-relaxed text-fg-2"
+        >
+          <div className="font-medium text-fg-1">{task.title}</div>
+          <div>{task.summary}</div>
+          {task.serverSandbox && (
+            <div className="mt-1 text-fg-2" data-testid="new-terminal-task-sandbox">
+              {task.serverSandbox}
+            </div>
+          )}
+          <div className="mt-1 flex items-center text-fg-3">
+            Each agent below says whether it starts on the task or the task has to be pasted.
+            <HelpInd id="glossary.task_seed" />
+          </div>
+        </div>
+      )}
+
       {remoteBlocked && (
         <div className="mb-3 rounded-2 border border-warn/40 bg-warn/10 px-2 py-1.5 text-[11px] text-warn">
           {REMOTE_TERMINAL_OFF_MSG}
@@ -1440,7 +1589,7 @@ export function NewTerminalDialog({
           There is no PTY behind a GUI run — nothing here is resumable or
           attachable, it's purely "what's already running" context so a
           second launch of the same app isn't a surprise. */}
-      {guiRuns.length > 0 && (
+      {guiRuns.length > 0 && !task && (
         <div className="mb-3 rounded-2 border border-line-2 bg-bg-2 px-2 py-1.5 text-[10.5px] leading-relaxed text-fg-3">
           <div className="mb-1 font-medium text-fg-2">GUI apps launched this session</div>
           <ul className="space-y-0.5">
@@ -1800,6 +1949,28 @@ export function NewTerminalDialog({
         </>
       ) : (
       <>
+      {task ? (
+        <>
+          <label className="mb-1 block text-[11px] font-medium text-fg-2">Project folder</label>
+          <div data-testid="new-terminal-task-folder" className="break-all rounded-2 border border-line-2 bg-bg-2 px-2 py-1.5 font-mono text-[11px] text-fg-1">
+            {task.projectRoot}
+          </div>
+          <p className="mt-1 text-[10.5px] leading-relaxed text-fg-3">Fixed by the task: the agent runs in this project.</p>
+          {taskFolderNeedsAllow && (
+            <AllowFolderStep
+              path={task.projectRoot}
+              onPhase={(p) => setPolicyStepBusy(stepHoldsStart(p))}
+              onConfirm={async (review) => {
+                const root = task.projectRoot;
+                await applyLaunchPolicyChange({ addRoot: root }, "Allow this folder for agent launches", review);
+                setSavedRoots((s) => (s.includes(root) ? s : [...s, root]));
+                await refreshAllowedRoots().catch(() => undefined);
+              }}
+            />
+          )}
+        </>
+      ) : (
+      <>
       <label className="mb-1 block text-[11px] font-medium text-fg-2">
         Project root <span className="text-fg-3">(optional)</span>
       </label>
@@ -1869,6 +2040,8 @@ export function NewTerminalDialog({
           <code className="font-mono">/mnt/c/…</code> form.
         </p>
       )}
+      </>
+      )}
       <div className="mb-3" />
 
       {/* Isolation picker (sandbox plan v2 section 9), a compgen feature
@@ -1876,7 +2049,7 @@ export function NewTerminalDialog({
           hidden while the module is not installed, so the dialog looks as it
           does without the module. Choosing a backend is today's sandboxed
           launch. */}
-      {!sandboxModuleAbsent && SANDBOX_ISOLATION_PICKER && (
+      {!sandboxManaged && !sandboxModuleAbsent && SANDBOX_ISOLATION_PICKER && (
         <Suspense fallback={null}>
           <SANDBOX_ISOLATION_PICKER
             options={isolationPicker.options}
@@ -1920,7 +2093,7 @@ export function NewTerminalDialog({
         </Suspense>
       )}
 
-      {sandboxOn && !sandboxCheckboxDisabled && (
+      {!sandboxManaged && sandboxOn && !sandboxCheckboxDisabled && (
         <div className="mb-3 mt-2 rounded-2 border border-line-2 bg-bg-2 p-2">
           <label
             htmlFor="new-terminal-sandbox-source"

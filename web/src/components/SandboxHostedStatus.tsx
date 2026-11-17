@@ -260,20 +260,12 @@ export function SandboxHostedStatusView({ data, selected, workspace, onWorkspace
                     Stored in this machine&apos;s keychain, bound to the endpoint of the region saved above (save a changed
                     region first); never shown again. Same as <span className="font-mono">observer sandbox hosted connect {p.id}</span>.
                   </p>
-                  {p.credential_env.map((name) => (
-                    <label key={name} className="block space-y-1">
-                      <span className="block font-mono text-fg-2">{name}</span>
-                      <input
-                        type={hostedFieldIsSecret(name) ? "password" : "text"}
-                        className="w-full rounded-1 border border-line-2 bg-bg-2 px-2 py-1 font-mono text-[12px]"
-                        value={draft[name] ?? ""}
-                        autoComplete="off"
-                        spellCheck={false}
-                        disabled={busy !== ""}
-                        onChange={(e) => onConnectDraft?.(p.id, name, e.target.value)}
-                      />
-                    </label>
-                  ))}
+                  <HostedKeyFields
+                    names={p.credential_env}
+                    values={draft}
+                    disabled={busy !== ""}
+                    onChange={(name, v) => onConnectDraft?.(p.id, name, v)}
+                  />
                   <Button type="submit" size="sm" variant="soft" disabled={busy !== "" || !ready}>
                     {busy === "connect-" + p.id ? "connecting…" : "Connect"}
                   </Button>
@@ -385,5 +377,49 @@ export function SandboxHostedStatusView({ data, selected, workspace, onWorkspace
         )}
       </div>
     </div>
+  );
+}
+
+/** HOSTED_KEY_FIELD_CLASS is the key fields' chrome on the Hosted sandboxes card. */
+export const HOSTED_KEY_FIELD_CLASS = "w-full rounded-1 border border-line-2 bg-bg-2 px-2 py-1 font-mono text-[12px]";
+
+/**
+ * HostedKeyFields is the one owner of a hosted provider's key inputs, shared
+ * by the Hosted sandboxes card's Connect form and the setup panel's key
+ * step: one field per variable the provider needs (named by the provider's
+ * own variable names), a masked input for every secret and plain text for an
+ * *_ID field, never pre-filled and never auto-completed. The caller owns the
+ * typed values and clears them as soon as they are sent.
+ */
+export function HostedKeyFields({
+  names,
+  values,
+  disabled,
+  onChange,
+  className = HOSTED_KEY_FIELD_CLASS,
+}: {
+  names: string[];
+  values: Record<string, string>;
+  disabled: boolean;
+  onChange: (name: string, value: string) => void;
+  className?: string;
+}) {
+  return (
+    <>
+                  {names.map((name) => (
+                    <label key={name} className="block space-y-1">
+                      <span className="block font-mono text-fg-2">{name}</span>
+                      <input
+                        type={hostedFieldIsSecret(name) ? "password" : "text"}
+                        className={className}
+                        value={values[name] ?? ""}
+                        autoComplete="off"
+                        spellCheck={false}
+                        disabled={disabled}
+                        onChange={(e) => onChange(name, e.target.value)}
+                      />
+                    </label>
+                  ))}
+    </>
   );
 }

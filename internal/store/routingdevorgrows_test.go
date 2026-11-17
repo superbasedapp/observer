@@ -26,6 +26,12 @@ func TestSelectRoutingDevRows_Aggregates(t *testing.T) {
 	}
 
 	ts := time.Now().UTC().Add(-2 * time.Hour)
+	// The three decisions span two minutes and must share one UTC day bucket;
+	// run just after 02:00 UTC they would straddle midnight (gate flake
+	// 2026-11-14), so step back to the same day.
+	if ts.Add(2*time.Minute).YearDay() != ts.YearDay() {
+		ts = ts.Add(-5 * time.Minute)
+	}
 	rows := []RouterDecisionRow{
 		{
 			APITurnID: &turnID, SessionID: "sess-1", Timestamp: ts,

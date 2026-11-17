@@ -1,6 +1,8 @@
 package guardrecipesvc
 
 import (
+	"sync"
+
 	"github.com/marmutapp/superbased-observer/internal/guard"
 	"github.com/marmutapp/superbased-observer/internal/guardrecipe"
 )
@@ -34,7 +36,7 @@ func ReplayApply(env Env, set *guardrecipe.Set, req Request, inputs []guard.Acti
 	if err != nil {
 		return nil, nil, err
 	}
-	return replay(p, inputs), p.preview, nil
+	return replay(env, p, inputs), p.preview, nil
 }
 
 // ReplayRemove is ReplayApply for a remove. ok is false when the scope has
@@ -44,19 +46,33 @@ func ReplayRemove(env Env, set *guardrecipe.Set, scope guardrecipe.Scope, projec
 	if err != nil || !ok {
 		return nil, nil, ok, err
 	}
-	return replay(p, inputs), p.preview, true, nil
+	return replay(env, p, inputs), p.preview, true, nil
 }
 
-func replay(p *plan, inputs []guard.ActionInput) *Replay {
+func replay(env Env, p *plan, inputs []guard.ActionInput) *Replay {
 	// EvaluateActions mutates per-session taint state inside each guard;
 	// each guard gets its own copy of the inputs so the two runs see the
 	// same sequence.
 	before := append([]guard.ActionInput(nil), inputs...)
 	after := append([]guard.ActionInput(nil), inputs...)
+	eval := env.Evaluate
+	if eval == nil {
+		eval = func(g *guard.Guard, in []guard.ActionInput) []guard.ActionVerdict { return g.EvaluateActions(in) }
+	}
+	// The two guards share no state (each has its own taint, repeats and
+	// budget records, and its own copy of the inputs), so they run side by
+	// side: a week's replay is two full evaluations, and running them one
+	// after the other doubled the wait (demo bug #14).
+	var beforeV, afterV []guard.ActionVerdict
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); beforeV = eval(p.cur, before) }()
+	go func() { defer wg.Done(); afterV = eval(p.next, after) }()
+	wg.Wait()
 	return &Replay{
 		Scanned: len(inputs),
-		Before:  summarize(string(p.cur.Mode()), p.cur.EvaluateActions(before)),
-		After:   summarize(string(p.next.Mode()), p.next.EvaluateActions(after)),
+		Before:  summarize(string(p.cur.Mode()), beforeV),
+		After:   summarize(string(p.next.Mode()), afterV),
 	}
 }
 

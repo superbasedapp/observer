@@ -115,6 +115,7 @@ func newSecurityHostNode(t *testing.T) (cp, root string) {
 	t.Helper()
 	dir := t.TempDir()
 	cp = filepath.Join(dir, "config.toml")
+	seedNodeDB(t, filepath.Join(dir, "o.db"))
 	writeFileT(t, cp, fmt.Sprintf("[observer]\ndb_path = %q\n[guard]\nenabled = true\nmode = \"enforce\"\n", filepath.Join(dir, "o.db")))
 	writePosture(t, cp, guardposture.Posture{Source: guardposture.SourceLocal, SecurityRecorded: true, SecurityActive: true, SecurityPacks: gatefixPacks})
 	root = filepath.Join(dir, "project")

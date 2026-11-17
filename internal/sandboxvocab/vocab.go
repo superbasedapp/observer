@@ -273,6 +273,16 @@ const (
 	// built_below_plan and the state), and the sandbox posture still counts
 	// the run as filtered.
 	SeccompRunObserverDefault SeccompRun = "observer_default"
+	// SeccompRunObserverSeizePIDNS and SeccompRunObserverSeizeYama: Observer's
+	// profile with PTRACE_SEIZE lifted, because [terminal.sandbox]
+	// .seccomp_allow_seize was on and a containment ground held at launch (lane
+	// ptrace, PT-96): the sandbox's own pid namespace, or Yama ptrace_scope 1
+	// or more. The value names the ground. Each equals its profile id
+	// (internal/sandboxseccomp, pinned by a test) and is enforced like
+	// observer_default: the host helper re-checks the ground and reads the
+	// filter back before the run goes on, or refuses it.
+	SeccompRunObserverSeizePIDNS SeccompRun = "observer_seize_pidns"
+	SeccompRunObserverSeizeYama  SeccompRun = "observer_seize_yama"
 	// SeccompRunEngineDefault: the container engine's own default profile,
 	// read back from the engine.
 	SeccompRunEngineDefault SeccompRun = "engine_default"
@@ -292,7 +302,7 @@ const (
 
 // SeccompRuns lists the vocabulary, applied filters first.
 func SeccompRuns() []SeccompRun {
-	return []SeccompRun{SeccompRunObserverDefault, SeccompRunEngineDefault, SeccompRunOff, SeccompRunNotApplicable, SeccompRunNone}
+	return []SeccompRun{SeccompRunObserverDefault, SeccompRunObserverSeizePIDNS, SeccompRunObserverSeizeYama, SeccompRunEngineDefault, SeccompRunOff, SeccompRunNotApplicable, SeccompRunNone}
 }
 
 // Valid reports whether s is in the closed vocabulary.
@@ -307,5 +317,11 @@ func (s SeccompRun) Valid() bool {
 
 // Applied reports whether the value names a filter that was on the agent.
 func (s SeccompRun) Applied() bool {
-	return s == SeccompRunObserverDefault || s == SeccompRunEngineDefault
+	return s == SeccompRunObserverDefault || s.LiftsSeize() || s == SeccompRunEngineDefault
+}
+
+// LiftsSeize reports whether the value names Observer's profile with
+// PTRACE_SEIZE lifted (lane ptrace, PT-96).
+func (s SeccompRun) LiftsSeize() bool {
+	return s == SeccompRunObserverSeizePIDNS || s == SeccompRunObserverSeizeYama
 }

@@ -36,8 +36,12 @@ var (
 	}
 )
 
+// releaseLineHead is the release line's node head at 93f69b8f6: its 230 to
+// 248. A step authored after the merge (249 on) was never in that build.
+const releaseLineHead = 248
+
 // oldLineage is the shared lineage through 211, the old-numbered steps, and
-// every current step at or above from (0 for none).
+// every current step from from up to releaseLineHead (from 0 for none).
 func oldLineage(t *testing.T, old map[string]string, from int) fstest.MapFS {
 	t.Helper()
 	out := lineageThrough(t, 211)
@@ -55,7 +59,7 @@ func oldLineage(t *testing.T, old map[string]string, from int) fstest.MapFS {
 		}
 		for _, de := range des {
 			v, err := strconv.Atoi(strings.SplitN(de.Name(), "_", 2)[0])
-			if err != nil || v < from || !strings.HasSuffix(de.Name(), ".sql") {
+			if err != nil || v < from || v > releaseLineHead || !strings.HasSuffix(de.Name(), ".sql") {
 				continue
 			}
 			b, err := fs.ReadFile(migrations.Files, de.Name())

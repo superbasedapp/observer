@@ -35,6 +35,9 @@ const (
 	// envProveFoundryAPIKey is the prove-lane credential when
 	// SBCI_INFERENCE_PROVIDER=foundry.
 	envProveFoundryAPIKey = "SBCI_PROVE_FOUNDRY_API_KEY" //nolint:gosec // env var NAME, not a credential
+	// envProveOpenAICompatibleAPIKey is the prove-lane credential when
+	// SBCI_INFERENCE_PROVIDER=openai_compatible (OVH AI Endpoints).
+	envProveOpenAICompatibleAPIKey = "SBCI_PROVE_OPENAI_COMPATIBLE_API_KEY" //nolint:gosec // env var NAME, not a credential
 	// envProveRoute selects the (non-production) route/deployment to prove
 	// against.
 	envProveRoute = "SBCI_PROVE_ROUTE"
@@ -50,8 +53,9 @@ const (
 
 // proveKeyEnvs maps each provider family to ITS prove-lane key variable.
 var proveKeyEnvs = map[inference.Family]string{
-	inference.FamilyAnthropic: envProveAPIKey,
-	inference.FamilyFoundry:   envProveFoundryAPIKey,
+	inference.FamilyAnthropic:        envProveAPIKey,
+	inference.FamilyFoundry:          envProveFoundryAPIKey,
+	inference.FamilyOpenAICompatible: envProveOpenAICompatibleAPIKey,
 }
 
 // newProveCmd is the operator-only, fixture-only inference proving lane
@@ -88,8 +92,9 @@ func newProveCmd() *cobra.Command {
 			fmt.Sprintf("  %-34s anthropic (default) or foundry\n", envInferenceProvider) +
 			fmt.Sprintf("  %-34s prove-lane Anthropic key (anthropic)\n", envProveAPIKey) +
 			fmt.Sprintf("  %-34s prove-lane Foundry key (foundry)\n", envProveFoundryAPIKey) +
+			fmt.Sprintf("  %-34s prove-lane key (openai_compatible)\n", envProveOpenAICompatibleAPIKey) +
 			fmt.Sprintf("  %-34s route id to prove against (or --route)\n", envProveRoute) +
-			fmt.Sprintf("  %-34s disclosed attestation (anthropic)\n", "SBCI_PROVIDER_RETENTION_DISCLOSED_*") +
+			fmt.Sprintf("  %-34s disclosed attestation (anthropic, openai_compatible)\n", "SBCI_PROVIDER_RETENTION_DISCLOSED_*") +
 			fmt.Sprintf("  %-34s ARM reader token (foundry; falls back to SBCI_ARM_TOKEN)\n", envProveARMToken) +
 			fmt.Sprintf("  %-34s admin Postgres DSN (REQUIRED)", "SBCI_PG_DSN"),
 		RunE: func(cmd *cobra.Command, _ []string) error {

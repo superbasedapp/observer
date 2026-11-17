@@ -1,0 +1,18 @@
+# gate-tools.tsv - the tools a tools/testrunner command unit may ask for
+# (scripts/ci/gate-commands.tsv, tools column), pinned by version and sha256
+# per architecture. tools/testrunner/bootstrap.sh installs a tool once per
+# worker from this row and refuses a tarball whose sha256 differs.
+#
+# Columns (tab separated): tool  version  arch  sha256  url
+#
+# golangci-lint: the version ci.yml's lint job pins (golangci-lint-action
+#   `version: v2.14.0`); sha256 from the release's
+#   golangci-lint-2.14.0-checksums.txt.
+# node: ci.yml pins only the major (`node-version: '22'`, setup-node takes
+#   the newest 22.x); the runner pins the newest 22.x at the time of writing,
+#   v22.23.5, with the sha256 from nodejs.org/dist/v22.23.5/SHASUMS256.txt.
+#   Move it with CI's major.
+golangci-lint	2.14.0	amd64	ab90aeb7b066f92a33415b638a50fe5344bbb75a0d32ad30cc248d88f81032ab	https://github.com/golangci/golangci-lint/releases/download/v2.14.0/golangci-lint-2.14.0-linux-amd64.tar.gz
+golangci-lint	2.14.0	arm64	ee7ec5f3453d15ddf106fae5a4d6c71737712348a979d1fe9cd52ec7ea299bae	https://github.com/golangci/golangci-lint/releases/download/v2.14.0/golangci-lint-2.14.0-linux-arm64.tar.gz
+node	22.23.5	amd64	c54118104acc524633b5abe106bbf44a53126ec8b4e5fa105cb92b5d7de8a1a1	https://nodejs.org/dist/v22.23.5/node-v22.23.5-linux-x64.tar.gz
+node	22.23.5	arm64	8bd3dc69eee8f3f226315a80d7d1d4faccf217a4c8fae500168ac2e38f3bdba3	https://nodejs.org/dist/v22.23.5/node-v22.23.5-linux-arm64.tar.gz

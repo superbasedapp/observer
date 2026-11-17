@@ -15,6 +15,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/dashapi"
 	"github.com/marmutapp/superbased-observer/internal/sandboxbackend"
+	"github.com/marmutapp/superbased-observer/internal/sandboxremote"
 	"github.com/marmutapp/superbased-observer/internal/sandboxsetup"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -253,9 +254,12 @@ func (s *sandboxSetupService) wire(ctx context.Context, _ sandboxSetupInput, p s
 	for _, st := range p.Steps {
 		w := dashapi.SandboxSetupStep{
 			Prereq: st.Prereq, Kind: string(st.Kind), Label: st.Label, State: string(st.State),
-			Class: string(st.Class), Channel: string(st.Channel), Display: st.Display, Reason: st.Reason,
-			Disclosure: st.Disclosure, After: st.After, Docs: st.Docs, CanRun: st.CanRun, CanUndo: st.CanUndo,
+			Class: string(st.Class), Channel: string(st.Channel), Display: st.Display, DisplayIsCommand: st.DisplayIsCommand,
+			Reason: st.Reason, Disclosure: st.Disclosure, After: st.After, Docs: st.Docs, CanRun: st.CanRun, CanUndo: st.CanUndo,
 			UndoRefused: st.UndoRefused,
+		}
+		if extra := sandboxSetupStepExtras[st.Kind]; extra != nil {
+			extra(p.Backend, &w)
 		}
 		if st.Record != nil {
 			if row, ok := rows[st.Record.ID]; ok && s.ledger != nil {
@@ -269,6 +273,28 @@ func (s *sandboxSetupService) wire(ctx context.Context, _ sandboxSetupInput, p s
 		out.Steps = append(out.Steps, w)
 	}
 	return out
+}
+
+// sandboxSetupStepExtras adds, per step kind, what a surface needs beyond the
+// plan to carry a step out. One row per kind that has extras (dispatch on the
+// step's kind, never on a backend id); a kind absent here adds nothing.
+var sandboxSetupStepExtras = map[sandboxsetup.Kind]func(backend string, w *dashapi.SandboxSetupStep){
+	sandboxsetup.KindCredential: hostedCredentialStepExtras,
+}
+
+// hostedCredentialStepExtras names the credential fields a credential step
+// asks for (the provider's own variable names, never a value) and its CLI
+// form, `observer sandbox hosted connect <provider>`, which reads the same
+// fields from stdin and stores them through the same keystore path. A
+// provider whose calls carry a token minted per run has no stored credential
+// and gets neither.
+func hostedCredentialStepExtras(backend string, w *dashapi.SandboxSetupStep) {
+	v, ok := sandboxremote.VendorFor(backend)
+	if !ok || v.MintedCredential || len(v.EnvCredential) == 0 {
+		return
+	}
+	w.Fields = append([]string(nil), v.EnvCredential...)
+	w.Command = "observer sandbox hosted connect " + backend
 }
 
 // ---- in-process operations (pinned downloads) ------------------------------

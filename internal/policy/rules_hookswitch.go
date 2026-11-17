@@ -48,9 +48,17 @@ func hookSwitchesAt(ctx *MatchContext, path string) []HookSwitch {
 		return nil
 	}
 	var out []HookSwitch
+	// The path's forms are the same for every switch: derive them once
+	// (a replay asks this for every captured command, demo bug #14).
+	// The split forms too (R3-5): a switch table of N globs splits once.
+	forms := homePathFormSegs(ctx, path)
 	for _, sw := range ctx.Cfg.HookSwitches {
-		if _, ok := pathPatternMatch(path, ctx.Cfg.Home, []pathPattern{{glob: sw.Glob, desc: sw.Desc}}); ok {
-			out = append(out, sw)
+		ps := globSegs(sw.Glob, true)
+		for _, fs := range forms {
+			if matchSegs(ps, fs) {
+				out = append(out, sw)
+				break
+			}
 		}
 	}
 	return out
@@ -314,7 +322,7 @@ func hookSwitchWrites(ctx *MatchContext, cmd *Command, withInline bool) []switch
 	}
 	var out []switchWrite
 	anchors := unitAnchors(ctx, cmd)
-	for _, t := range sensitivePathTokens(cmd) {
+	for _, t := range sensitivePathTokensMemo(ctx, cmd) {
 		if !classifyWrite(cmd, t.text) {
 			continue
 		}

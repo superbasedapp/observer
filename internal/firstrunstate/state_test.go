@@ -104,3 +104,31 @@ func TestEmptyPathKeepsNothing(t *testing.T) {
 		t.Fatalf("SetSeen on empty path = %+v, %v", st, err)
 	}
 }
+
+// TestSnoozeReplacesEarlierTime pins the Get started panel's return
+// interval: each snooze restarts it, unlike Dismiss which keeps the first
+// time, and a snooze persists across a reload of the file.
+func TestSnoozeReplacesEarlierTime(t *testing.T) {
+	path := filepath.Join(t.TempDir(), Filename)
+	s := New(path)
+	if _, err := s.Snooze("get_started", t0); err != nil {
+		t.Fatal(err)
+	}
+	later := t0.Add(8 * 24 * time.Hour)
+	st, err := s.Snooze("get_started", later)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := st.Snoozed["get_started"]; !got.Equal(later) {
+		t.Fatalf("snoozed at %v, want %v", got, later)
+	}
+	if got := New(path).Load().Snoozed["get_started"]; !got.Equal(later) {
+		t.Fatalf("reloaded snooze %v, want %v", got, later)
+	}
+	if len(st.DismissedKeys()) != 0 {
+		t.Fatalf("a snooze must not dismiss for good: %v", st.DismissedKeys())
+	}
+	if st, err := New("").Snooze("get_started", t0); err != nil || st.Snoozed != nil {
+		t.Fatalf("empty path keeps nothing: %+v %v", st, err)
+	}
+}

@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/marmutapp/superbased-observer/internal/reserve"
 )
 
 // Pool spend ceilings (T-946, open sign-up). A budget pool's `cap` (migration
@@ -124,15 +126,31 @@ var spendWindows = []spendWindow{
 	{kind: "monthly", key: MonthlyWindowKey, ceiling: func(c SpendCeiling) float64 { return c.MonthlyUSD }},
 }
 
-// ceilingReached is the pure decision: true when any window with a ceiling
-// has spent at least that ceiling. spent maps a window kind to its spend.
-func ceilingReached(c SpendCeiling, spent map[string]float64) bool {
+// ceilingLimits is the pool's spend windows as reserve-core caps: one USD
+// Limit per window that has a ceiling (a zero ceiling is no ceiling and is
+// left out), at the AtCap boundary because a job's cost is only known after
+// the call, so a window closes the moment its spend reaches the ceiling.
+// spent maps a window kind to its spend.
+func ceilingLimits(c SpendCeiling, spent map[string]float64) []reserve.Limit {
+	var out []reserve.Limit
 	for _, w := range spendWindows {
-		if lim := w.ceiling(c); lim > 0 && spent[w.kind] >= lim {
-			return true
+		if ceiling := w.ceiling(c); ceiling > 0 {
+			out = append(out, reserve.Limit{
+				Name:      "ceiling_" + w.kind,
+				Unit:      reserve.UnitUSD,
+				Cap:       ceiling,
+				Committed: spent[w.kind],
+				Boundary:  reserve.AtCap,
+			})
 		}
 	}
-	return false
+	return out
+}
+
+// ceilingReached is the decision, made by the reserve core: true when any
+// window with a ceiling has spent at least that ceiling.
+func ceilingReached(c SpendCeiling, spent map[string]float64) bool {
+	return !reserve.Admit(reserve.Request{Limits: ceilingLimits(c, spent)}).Admitted
 }
 
 // checkSpendCeilingTx returns ErrSpendCeiling when pool has a ceiling and one

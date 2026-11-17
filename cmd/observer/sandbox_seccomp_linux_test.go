@@ -253,6 +253,7 @@ func TestHostSeccompEndedChild(t *testing.T) {
 // TestNewHostSeccomp is the host helper's consistency table: the profile
 // flag and bwrap's --seccomp go together, on sandbox.SeccompFD.
 func TestNewHostSeccomp(t *testing.T) {
+	stubYamaScope(t, 1, true)
 	bw := func(extra ...string) []string {
 		return append(append([]string{"/usr/bin/bwrap", "--ro-bind", "/", "/"}, extra...), "--", "observer", "claude")
 	}
@@ -284,6 +285,14 @@ func TestNewHostSeccomp(t *testing.T) {
 		{"off, an unknown option hides --seccomp: nothing on fd 5", "", bw("--frobnicate", "--seccomp", "5"), false, false},
 		{"on, gated helper", "observer_default", gated, false, false},
 		{"off, gated helper", "", gated, false, false},
+		// The strace opt-in (lane ptrace): a seize profile needs its ground
+		// to hold here (Yama reads 1 in this table, see below).
+		{"seize on a pid namespace, bwrap unshares pid", "observer_seize_pidns", bw("--unshare-pid", "--seccomp", "5"), false, true},
+		{"seize on a pid namespace, bwrap without --unshare-pid", "observer_seize_pidns", bw("--seccomp", "5"), true, false},
+		{"seize on a pid namespace, --unshare-pid only as an operand", "observer_seize_pidns", bw("--setenv", "X", "--unshare-pid", "--seccomp", "5"), true, false},
+		{"seize on a pid namespace, gated helper (no pid namespace)", "observer_seize_pidns", gated, true, false},
+		{"seize on Yama, gated helper", "observer_seize_yama", gated, false, false},
+		{"seize on Yama, bwrap", "observer_seize_yama", bw("--seccomp", "5"), false, true},
 	} {
 		if c.cmd[1] == gatedVerb && !haveGated {
 			continue
@@ -302,12 +311,35 @@ func TestNewHostSeccomp(t *testing.T) {
 		}
 		if c.pipe {
 			got, rerr := io.ReadAll(sc.r)
-			want, _ := sandboxseccomp.Build(sandboxseccomp.ProfileObserverDefault, runtime.GOARCH)
+			want, _ := sandboxseccomp.Build(sandboxseccomp.ProfileID(c.profile), runtime.GOARCH)
 			if rerr != nil || !bytes.Equal(got, want.Bytes()) {
 				t.Errorf("%s: the pipe holds %d bytes, want the %d-byte program (%v)", c.name, len(got), len(want.Bytes()), rerr)
 			}
 		}
 		sc.close()
+	}
+}
+
+// TestNewHostSeccompSeizeYamaLost: a profile lifting PTRACE_SEIZE on the
+// Yama ground is refused before the box starts when ptrace_scope reads 0 or
+// cannot be read (lane ptrace, fail closed).
+func TestNewHostSeccompSeizeYamaLost(t *testing.T) {
+	const gatedVerb = "sandbox-landlock-exec"
+	if _, ok := sandboxGatedHelpers[gatedVerb]; !ok {
+		t.Skip("this build has no process_lite exec step")
+	}
+	gated := []string{"/o/observer", gatedVerb, "--plan", "/p", "--", "observer", "claude"}
+	for _, c := range []struct {
+		scope int
+		known bool
+	}{{0, true}, {0, false}} {
+		stubYamaScope(t, c.scope, c.known)
+		if _, err := newHostSeccomp(sandbox.HostArgs{SeccompProfile: "observer_seize_yama", Command: gated}); err == nil {
+			t.Errorf("Yama %d (known %v): the seize profile was accepted", c.scope, c.known)
+		}
+		if _, err := newHostSeccomp(sandbox.HostArgs{SeccompProfile: "observer_default", Command: gated}); err != nil {
+			t.Errorf("Yama %d (known %v): observer_default refused: %v", c.scope, c.known, err)
+		}
 	}
 }
 

@@ -1012,3 +1012,13 @@ a {
   .topbar-account { max-width: 110px; }
   .main { padding: 16px; }
 }
+
+/* The "Cloud Intelligence (legacy)" section heading in the sidebar. */
+.nav-section-label {
+  padding: 0 12px 4px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}

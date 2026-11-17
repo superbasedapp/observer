@@ -773,6 +773,29 @@ var shareLocalTable = map[string]func(config.Config) any{
 	"obs.admission":               func(c config.Config) any { return c.OrgClient.Share.Obs.Admission },
 	"obs.eval_items":              func(c config.Config) any { return c.OrgClient.Share.Obs.EvalItems },
 	"obs.egress":                  func(c config.Config) any { return c.OrgClient.Share.Obs.Egress },
+	// The scope raise directives (R3-85) act on [org_client.scope], not on a
+	// share tier; shareScopeTable renders them.
+	govern.ScopeUnrestrictedShareKey:   func(c config.Config) any { return c.OrgClient.Scope.ProjectRootAllowlist },
+	govern.ScopeDenylistRemoveShareKey: func(c config.Config) any { return c.OrgClient.Scope.ProjectRootDenylist },
+}
+
+// shareScopeTable renders the scope raise directives (R3-85) from the same
+// govern.Effective.RaiseScope the push seam applies, so the card cannot
+// drift from what ships. The unrestricted row is rendered as a bool ("this
+// machine shares every project": an empty allowlist), because an empty
+// effective allowlist rendered as a list would read as "none" when it means
+// "all"; the removal row is the denylist itself, before and after.
+var shareScopeTable = map[string]func(c config.Config, eff govern.Effective) (local, effective any, raised bool){
+	govern.ScopeUnrestrictedShareKey: func(c config.Config, eff govern.Effective) (any, any, bool) {
+		lv := c.OrgClient.Scope.ProjectRootAllowlist
+		ev, _ := eff.RaiseScope(lv, c.OrgClient.Scope.ProjectRootDenylist)
+		return len(lv) == 0, len(ev) == 0, len(ev) != len(lv)
+	},
+	govern.ScopeDenylistRemoveShareKey: func(c config.Config, eff govern.Effective) (any, any, bool) {
+		lv := c.OrgClient.Scope.ProjectRootDenylist
+		_, ev := eff.RaiseScope(c.OrgClient.Scope.ProjectRootAllowlist, lv)
+		return orEmpty(lv), orEmpty(ev), len(ev) != len(lv)
+	},
 }
 
 // resolveShareBlock resolves the org's delivered share directives against this
@@ -805,7 +828,15 @@ func (s *Server) resolveShareBlock(eff govern.Effective) map[string]governanceSh
 	for key, directive := range eff.Share {
 		row := governanceShareKey{PolicyVersion: eff.Version}
 		fn, known := shareLocalTable[key]
+		scope, isScope := shareScopeTable[key]
 		switch {
+		case isScope:
+			var raised bool
+			row.Local, row.Effective, raised = scope(local, eff)
+			row.Source = govern.ShareSourceLocal
+			if raised {
+				row.Source = govern.ShareSourceOrgRaised
+			}
 		case !known:
 			// Unreachable while TestShareLocalTableCoversNodegovVocabulary
 			// passes — nodegov.Compile refuses any share key outside its own

@@ -8,6 +8,21 @@ release tag).
 
 ## [Unreleased]
 
+### Added
+- **SuperBased: Sign in and connect** (replaces the "Enroll in Org"
+  placeholder). Runs `observer connect --json --no-browser`, opens the
+  approval page in your browser and waits with a code and Cancel. You
+  choose your personal dashboard, a team, or Not now on that page.
+  **SuperBased: Connect to a team...** preselects a team.
+- An account item in the status bar: "SuperBased · not signed in" until
+  you connect, then the name of your dashboard or team (click opens it).
+- A one-time sign-in suggestion on first start, returning once 7 days
+  after Later and never shown on a signed-in or connected machine.
+
+### Changed
+- The Get Started walkthrough opens with sign-in; no account is still
+  needed for anything else.
+
 ## [1.8.1] — 2026-06-03
 
 First Marketplace release of the v1.8 line. The v1.8.0 release shipped

@@ -360,6 +360,7 @@ var purgeNotSessionKeyColumns = map[string]string{
 	"process_runs.thread_count":             "an OS thread count, not an id",
 	"sessions.thread_source":                "a column of the session row itself (an enum), deleted with it",
 	"sessions.vendor_session_ref":           "a column of the session row itself (the vendor's second reference), deleted with it",
+	"cloud_sync_last.session_token_budget":  "a token count (the cloud plan's per-session enrichment budget), not an id",
 }
 
 // purgeSchemaSessionColumns lists every (table, column) of the migrated

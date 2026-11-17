@@ -77,14 +77,19 @@ func TestDashboardHelpDescribesTheDashboard(t *testing.T) {
 }
 
 // TestPricingCoverageNeverABareCount (WINNODE2 16d): unpriced rows always
-// come with what they are: the models, or that none can be named.
+// come with what they are: the models, the invalid-row reasons (demo bug #5,
+// budgetpricingcoverage_invalid_test.go), or that none can be named.
 func TestPricingCoverageNeverABareCount(t *testing.T) {
 	named := budgetPricingCoverageLine(budgetPricingCoverage{Coverage: "partial", UnpricedRows: 3, UnpricedModels: []string{"gemini-3.8-flash-n"}})
 	if !strings.Contains(named, "unpriced_rows=3 unpriced_models=gemini-3.8-flash-n") {
 		t.Fatalf("named: %q", named)
 	}
 	unnamed := budgetPricingCoverageLine(budgetPricingCoverage{Coverage: "partial", UnpricedRows: 2})
-	if !strings.Contains(unnamed, "unpriced_rows=2 unpriced_models=none-named(invalid-rows)") {
+	if !strings.Contains(unnamed, "unpriced_rows=2 unpriced_models=none-named") {
 		t.Fatalf("unnamed: %q", unnamed)
+	}
+	reasoned := budgetPricingCoverageLine(budgetPricingCoverage{Coverage: "partial", UnpricedRows: 2, InvalidReasons: map[string]int{"unverified_tokens": 2}})
+	if strings.Contains(reasoned, "none-named") || !strings.Contains(reasoned, "invalid_rows=unverified_tokens:2") {
+		t.Fatalf("reasoned: %q", reasoned)
 	}
 }

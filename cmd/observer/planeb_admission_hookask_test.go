@@ -336,6 +336,7 @@ func newJudgeHarness(t *testing.T, guardCfg string, posture guardposture.Posture
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	dbPath := filepath.Join(dir, "observer.db")
+	seedNodeDB(t, dbPath)
 	cp := filepath.Join(dir, "config.toml")
 	writeFileT(t, cp, "[observer]\ndb_path = "+strconv.Quote(filepath.ToSlash(dbPath))+"\n\n"+guardCfg)
 	if err := os.Chtimes(cp, time.Now().Add(-time.Hour), time.Now().Add(-time.Hour)); err != nil {

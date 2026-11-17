@@ -92,10 +92,12 @@ const (
 	ownerBrowserSites  = "the Settings → Browser capture card, per-site list (POST /api/browser/sites); each captured turn reads it, so a change needs no restart"
 	ownerSSHProfiles   = "the Terminals > Settings > Remote systems editor (PUT /api/terminal/ssh/profiles) / config.toml [[terminal.ssh.profiles]]"
 	ownerLaunchTools   = "the Settings → Terminal \"Launch binary paths\" card (PUT /api/launch/tool-paths) / config.toml [launch.tools.<tool>]"
+	ownerWorkspace     = "the Terminals → Settings \"Default workspace\" card (PUT /api/workspace/default: checks the folder and creates it) / config.toml"
 	ownerShellWrap     = "`observer shell-wrap enable|disable` / the Settings → Terminal \"Command wrapping\" card (writes these keys AND the shell files together)"
 	ownerOrgGovernance = "your organization's node governance policy (the admin dashboard pins it; the local value is not read)"
 	ownerAutoApply     = "the Settings → Health → Updates \"Update automatically\" switch (PUT /api/update/auto-apply: default, on or off) / config.toml"
 	ownerComponents    = "`observer components select|add|remove` / `observer init --components` / Settings > Components (writes these keys AND runs the teardown of a removed component)"
+	ownerStraceSeize   = "the Terminals > Settings sandbox card's strace switch (POST /api/terminal/sandbox/ptrace-seize: a choice you confirm on this machine, never an agent's or your organization's)"
 )
 
 // routingCardOwner names the Settings → Routing card that edits one of the
@@ -416,6 +418,10 @@ var rules = []rule{
 	// process_lite rows, default off (D7). Sensitive like its neighbours
 	// (it changes what a sandboxed launch runs under).
 	{prefix: "terminal.sandbox.seccomp", exact: true, tier: TierSensitive},
+	// seccomp_allow_seize (lane ptrace, PT-96): lifts PTRACE_SEIZE from that
+	// filter. Written only by its own dashboard route, so the generic editor,
+	// the keys route and `observer config set` read it and never write it.
+	{prefix: "terminal.sandbox.seccomp_allow_seize", exact: true, tier: TierOwnerElsewhere, ownedBy: ownerStraceSeize, prominence: ProminenceExpert},
 	// vendor_forced_native (lane SBX-P3D): a closed choice.
 	{prefix: "terminal.sandbox.vendor_forced_native", exact: true, enum: []string{"", "nest_or_refuse", "refuse"}},
 	// The container driver (lane SBX-P3A): sensitive like the rest of the
@@ -452,6 +458,12 @@ var rules = []rule{
 	// the shell start-up files; the dedicated card/CLI writes both together.
 	// next_spawn: a change reaches the next shell the operator opens.
 	{prefix: "shell_wrap", tier: TierOwnerElsewhere, restart: RestartNextSpawn, section: "terminal", ownedBy: ownerShellWrap, prominence: ProminenceAdvanced},
+	// [workspace] (internal/defaultworkspace): the default workspace folder.
+	// Owner-elsewhere because a key write alone would skip the folder rules
+	// (not the home folder, not in ~/.observer, not inside a git repository)
+	// and would not create the folder; the dedicated card does both. live:
+	// every reader resolves it from the file when it needs it.
+	{prefix: "workspace", tier: TierOwnerElsewhere, restart: RestartLive, section: "terminal", ownedBy: ownerWorkspace},
 
 	// [components] (modular packaging P1): the node's component selection.
 	// Owner-elsewhere because a key write alone would skip the teardown of a

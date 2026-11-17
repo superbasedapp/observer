@@ -17,6 +17,8 @@ import { createCacheStatusBar } from './status/cacheBar';
 import { registerSecurityDiagnostics } from './security';
 import { createComponentGate } from './components';
 import { createAgentAccessStatusBar } from './agentAccessStatus';
+import { ConnectController } from './connect';
+import { createConnectStatus } from './connectStatus';
 import { registerLocTracker } from './loc/tracker';
 import { registerTerminalProfile } from './terminal/profile';
 import { TodayTreeProvider } from './views/todayTree';
@@ -94,6 +96,13 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
       });
 
     registerCommands(ctx, bin, manager);
+
+    // Getting started v2: "Sign in and connect" (runs `observer connect
+    // --json --no-browser` with this binary), the account status bar item and
+    // the first-run sign-in suggestion, both driven by /api/connect/status.
+    const connect = new ConnectController(ctx, bin);
+    connect.register();
+    ctx.subscriptions.push(createConnectStatus(ctx, manager, connect));
 
     statusBar = createCostStatusBar(ctx, manager);
     if (statusBar) {

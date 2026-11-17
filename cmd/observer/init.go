@@ -378,6 +378,11 @@ func newInitCmd() *cobra.Command {
 			// unable to run itself. Silent unless [observer.process.etw] is
 			// enabled AND this host has schtasks.exe.
 			if !flagUninstall {
+				// The default workspace folder, created when missing (never
+				// on a dry run; a failure is a WARN line).
+				if !flagDryRun {
+					initDefaultWorkspaceStep(cmd.Context(), out, resolvedConfig)
+				}
 				initProcessBridgeTaskStep(cmd.Context(), out, resolvedConfig)
 				printCommunityFooter(out)
 			}

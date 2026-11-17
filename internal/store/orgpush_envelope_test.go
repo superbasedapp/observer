@@ -86,13 +86,14 @@ var envelopeWireFamilies = map[string]string{
 	"SessionManifests": "org_push_manifests resync heal via orgpushtomb.go; a manifest ships whole or is deferred",
 
 	// --- teams-tier aggregates (fitRows, key-ordered buckets) ---
-	"RoutingSummaries":     "SelectRoutingSummaries; drops trailing (day,tier,reason,mode) buckets",
-	"CacheSummaries":       "SelectCacheSummaries; drops trailing (day,model,kind) buckets",
-	"CodeintelSummaries":   "SelectCodeintelSummaries; drops trailing (project,lang) buckets",
-	"ProcessSummaries":     "SelectProcessSummaries; drops trailing (day,tool) buckets",
-	"TerminalSummaries":    "SelectTerminalSummaries; drops trailing (day,tool,kind) buckets",
-	"RemoteAuditSummaries": "SelectRemoteAuditSummaries; drops trailing buckets",
-	"SandboxPosture":       "SelectSandboxPostureRows via composeSandboxPosture; drops trailing (day, isolation and capture enum) buckets",
+	"RoutingSummaries":      "SelectRoutingSummaries; drops trailing (day,tier,reason,mode) buckets",
+	"CacheSummaries":        "SelectCacheSummaries; drops trailing (day,model,kind) buckets",
+	"CodeintelSummaries":    "SelectCodeintelSummaries; drops trailing (project,lang) buckets",
+	"ProcessSummaries":      "SelectProcessSummaries; drops trailing (day,tool) buckets",
+	"TerminalSummaries":     "SelectTerminalSummaries; drops trailing (day,tool,kind) buckets",
+	"RemoteAuditSummaries":  "SelectRemoteAuditSummaries; drops trailing buckets",
+	"SandboxPosture":        "SelectSandboxPostureRows via composeSandboxPosture; drops trailing (day, isolation and capture enum) buckets",
+	"SandboxEgressRefusals": "SelectSandboxEgressRefusalDays via composeSandboxEgressCounts (managed only); drops trailing (day, tier, rule) buckets",
 	// The security pillar wire (secorgrows.go composeSecurity, fitSnapshot).
 	"SecurityPosture":  "composeSecurity; one row per push, dropped whole when over budget",
 	"SecurityFindings": "SelectSecurityFindingRows via composeSecurity; drops the oldest-seen findings (last_seen DESC order)",
@@ -225,6 +226,8 @@ func envelopeShareOptions() ShareOptions {
 		TaskDetail:        true,
 		ToolAccountDetail: true,
 		HookActivity:      true,
+		// The managed-only wires (the sandbox egress refusal counts).
+		Managed: true,
 	}
 }
 
@@ -726,6 +729,17 @@ func seedEveryWireFamily(t *testing.T, s *Store) {
 
 	// obs provider seam → the eight Obs* tiers.
 	s.SetObsOrgProviders(stubEnvelopeObsProviders())
+
+	// sandbox_egress_refusals → SandboxEgressRefusals (managed only): one
+	// rule bucket per day, so the aggregate has rows to truncate.
+	for i := 0; i < 10; i++ {
+		if _, err := s.InsertSandboxEgressRefusal(ctx, SandboxEgressRefusal{
+			RunID: "run-env-0", Host: fmt.Sprintf("h%d.example", i), Port: 443, Rule: "allow-list-miss",
+			Tier: "proxy_only", At: now.AddDate(0, 0, -i),
+		}); err != nil {
+			t.Fatalf("seed sandbox egress refusal: %v", err)
+		}
+	}
 
 	// sandbox capability seam → SandboxPosture (+ the envelope-level
 	// SandboxCapability).

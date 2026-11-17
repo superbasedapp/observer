@@ -3,7 +3,8 @@
 # has, so an off file cannot rot unnoticed (modular packaging plan 5.9 and
 # risk R1, "stub rot"; lane MP-REL).
 #
-#   scripts/omit-tag-check.sh [--vet-only] [--run <regex>] [--list] [--only <set>]
+#   scripts/omit-tag-check.sh [--vet-only] [--run <regex>] [--list | --list-tests]
+#                              [--only <set>]
 #                              [--scope distro | --scope narrow --tags <a,b>]
 #                              [--batch <i>/<n>]
 #
@@ -38,14 +39,22 @@
 # Each set prints as a log group; a failing set is named and the run goes on.
 # ci.yml runs --scope distro per push and the full list in 6 batches on a
 # dispatched full run and a tag push (D-609). On a small host use --vet-only or --run.
+#
+# --list prints the sets. --list-tests prints the same sets, each on a line
+# of its own, and after each edition one line per package its tests run:
+# <set> TAB ./<dir>. tools/testrunner's gate reads it to run each set as
+# `--vet-only --only <set>` and each edition package's tests as a Go unit of
+# its own with -tags <set>: the same go vet and go test this script runs,
+# split so they spread over workers. Without either flag nothing changes.
 set -euo pipefail
 
-vet_only=0 run="" list=0 only="" scope="" batch="" tags=""
+vet_only=0 run="" list=0 list_tests=0 only="" scope="" batch="" tags=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --vet-only) vet_only=1; shift ;;
     --run) run="$2"; shift 2 ;;
     --list) list=1; shift ;;
+    --list-tests) list_tests=1; shift ;;
     --only) only="$2"; shift 2 ;;
     # --scope distro: only the distro sets (sbo_distro_* stamp) and no_obs,
     # the editions npm-release publishes. ci.yml runs these on every push.
@@ -177,6 +186,16 @@ tagged_pkgs() {
 is_edition() {
   [[ "$1" == "no_obs" || ",$1" == *",sbo_distro_"* ]]
 }
+
+# --list-tests: the edition packages this run would test, per set.
+if [[ "$list_tests" -eq 1 ]]; then
+  for set in "${sets[@]}"; do
+    printf '%s\n' "$set"
+    is_edition "$set" || continue
+    tagged_pkgs "$set" | while read -r p; do printf '%s\t%s\n' "$set" "$p"; done
+  done
+  exit 0
+fi
 
 fail=0 failed=()
 # In GitHub Actions each set is a collapsible log group, so a batch job still

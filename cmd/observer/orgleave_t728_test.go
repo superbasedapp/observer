@@ -156,7 +156,7 @@ func TestT728DashboardLeaveAndReEnrolEditTheBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	lv, err := d.Leave(ctx)
+	lv, err := d.Leave(ctx, dashapi.SwitchOptions{})
 	if err != nil || !lv.WasEnrolled {
 		t.Fatalf("Leave = (%+v, %v)", lv, err)
 	}

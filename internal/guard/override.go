@@ -304,6 +304,76 @@ func (g *Guard) orgLocksVerdictRule(es *engineSet, ruleID, projectRoot string) b
 	return es.orgLocksRule(ruleID, projectRoot, g.orgLocksEveryRule())
 }
 
+// orgLockCause says WHY the org layer locks ruleID here, for the note a
+// refused local approval leaves on the verdict. Before it, every locked
+// rule read "an org policy locks R", which on a managed node named a policy
+// the organization never wrote: a node-local pack rule (the commit gate,
+// S-791 to S-794) is locked there because the managed tenancy locks every
+// rule, not because the org's bundle names it (2026-11-10 operator report).
+// The order is most specific first; "" when the rule is not locked.
+func (g *Guard) orgLockCause(es *engineSet, ruleID, projectRoot string) orgLockReason {
+	if ruleID == "" {
+		return orgLockNone
+	}
+	if !es.orgApplies() {
+		if g.orgUnverifiable(es) {
+			return orgLockUnverifiable
+		}
+		return orgLockNone
+	}
+	if es.orgNamedRules[ruleID] {
+		return orgLockNamed
+	}
+	if projectRoot != "" {
+		es.pmu.Lock()
+		named := es.projectNamed[projectRoot][ruleID]
+		es.pmu.Unlock()
+		if named {
+			return orgLockProject
+		}
+	}
+	if g.managedTenancy.Load() == nil {
+		// orgLocksEveryRule's conservative answer for an unresolved tenancy.
+		return orgLockUnresolved
+	}
+	if g.orgLocksEveryRule() {
+		return orgLockManaged
+	}
+	return orgLockNone
+}
+
+// orgLockReason is one cause of an org lock.
+type orgLockReason string
+
+const (
+	orgLockNone         orgLockReason = ""
+	orgLockNamed        orgLockReason = "named"
+	orgLockProject      orgLockReason = "project"
+	orgLockManaged      orgLockReason = "managed"
+	orgLockUnverifiable orgLockReason = "unverifiable"
+	orgLockUnresolved   orgLockReason = "unresolved"
+)
+
+// orgLockedNotes is the note per cause. %s is the rule id. Every note
+// starts "[org_locked" (the dashboard's why-not-downgraded reads that
+// prefix) and says where the lift comes from.
+var orgLockedNotes = map[orgLockReason]string{
+	orgLockNamed:        " [org_locked: the organization's guard bundle names %s; the local approval was ignored]",
+	orgLockProject:      " [org_locked: the organization's policy for this project names %s; the local approval was ignored]",
+	orgLockManaged:      " [org_locked: this node is managed by its organization, which locks every rule here, %s included, although its guard bundle does not name it; the local approval was ignored, and only an org grant (request access) or the org marking the rule overridable lifts it]",
+	orgLockUnverifiable: " [org_locked: the organization's guard bundle could not be verified, so every rule is locked, %s included; the local approval was ignored]",
+	orgLockUnresolved:   " [org_locked: this process could not read whether the node is managed, so every rule stays locked, %s included, although the organization's guard bundle does not name it; the local approval was ignored]",
+}
+
+// orgLockedNote renders the note for cause; an unknown or empty cause
+// keeps the generic wording.
+func orgLockedNote(cause orgLockReason, ruleID string) string {
+	if f, ok := orgLockedNotes[cause]; ok {
+		return fmt.Sprintf(f, ruleID)
+	}
+	return legacyOrgLockedNote(ruleID)
+}
+
 // stampOrgOverride stamps the org-override posture onto a freshly
 // built verdict row. Called by every seam that constructs an
 // ActionVerdict, from the SAME snapshot that produced the verdict (the
@@ -323,6 +393,9 @@ func (g *Guard) stampOrgOverrideAt(es *engineSet, av *ActionVerdict, projectRoot
 	av.OrgLocked = orgLockedVerdict(av.Verdict, g.orgLocksVerdictRule(es, av.Verdict.RuleID, projectRoot))
 	av.RequestBase = g.requestBase
 	av.BlockNotice = g.blockNotice
+	if av.Verdict.Decision >= policy.DecisionAsk {
+		av.ApprovalPageHidden = g.approvalPageIsHidden()
+	}
 }
 
 // blockedWhatByKind names the blocked thing for the human-first line,
@@ -381,6 +454,12 @@ func HumanBlockLine(av ActionVerdict, sessionID string) string {
 		return fmt.Sprintf(
 			"observer: %s blocked %s. The organization allows an override: the developer (not the agent) runs `observer guard approve %s --session %s`, then the call can be retried.",
 			av.Verdict.RuleID, what, av.Verdict.RuleID, sessionID)
+	case av.Overridable && av.ApprovalPageHidden:
+		// CG-16: the Security page is hidden on this machine, so the only
+		// way left is a node-wide grant (approvalpointer.go).
+		return fmt.Sprintf(
+			"observer: %s blocked %s. The organization allows an override, but this lane reported no session id, so the override cannot be scoped to one session; the developer (not the agent) %s, then the call can be retried.",
+			av.Verdict.RuleID, what, noSessionApprove(av, av.Verdict.RuleID))
 	case av.Overridable:
 		return fmt.Sprintf(
 			"observer: %s blocked %s. The organization allows an override, but this lane reported no session id, so the override cannot be scoped from the command line here; grant it on the Observer dashboard Security page instead.",

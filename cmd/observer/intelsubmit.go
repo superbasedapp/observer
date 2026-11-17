@@ -88,7 +88,11 @@ func orgIntelSubmitSource(st *store.Store, live *liveOrgEnrichment, railOn func(
 		}
 		settings := orgintel.EvidenceSettingsFor(snap.Inputs.Requirement, plan.Level)
 		now := time.Now().UTC()
-		cands, err := st.ListOrgIntelSubmitCandidates(ctx, snap.Enrolment.OrgID, now.Add(-sweep.MaxAge),
+		// The candidates are only sessions captured under the org enrolled
+		// now (sessions.authority_org_key, D-43): a session captured under
+		// a previous enrolment (possibly another org) is never offered here.
+		since := orgintel.SweepSince(now, sweep.MaxAge)
+		cands, err := st.ListOrgIntelSubmitCandidates(ctx, snap.Enrolment.OrgID, since,
 			sweep.Quiet, sweep.MinActions, orgIntelSubmitPerCycle, now)
 		if err != nil {
 			return err

@@ -193,7 +193,7 @@ var verdictMap = []driverVerdicts{
 		// import, so that one string is pinned by a test in cmd/observer
 		// (lane daemon). The consent verdicts are internal/sandboxremote's.
 		Driver:   "sandboxremote",
-		Backends: []string{sandboxbackend.BackendE2B, sandboxbackend.BackendModal, sandboxbackend.BackendVercelSandbox},
+		Backends: []string{sandboxbackend.BackendE2B, sandboxbackend.BackendModal, sandboxbackend.BackendVercelSandbox, sandboxbackend.BackendDockerSandboxes, sandboxbackend.BackendInstaBox, sandboxbackend.BackendDaytona},
 		Missing: []verdictMissing{
 			{"credential_missing", "hosted-key", ""},
 			{"consent_required", "hosted-consent", ""},

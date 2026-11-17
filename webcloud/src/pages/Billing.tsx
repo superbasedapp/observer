@@ -4,7 +4,7 @@ import { invalidatePortal, usePortalQuery } from "../lib/query";
 import { DashboardSkeleton, ErrorPanel } from "../components/LoadState";
 import { InlineLoading } from "@shared/primitives/Spinner";
 import { SuccessCheck } from "@shared/primitives/SuccessCheck";
-import { getBilling } from "../api";
+import { createBillingPortalSession, getBilling, isTokenBudgeted } from "../api";
 import type { BillingSubscription, BillingView } from "../api";
 import { HERO_VARIANT } from "../lib/vocab";
 import { PageHeader } from "@shared/primitives/PageHeader";
@@ -225,18 +225,41 @@ export function Billing() {
           sub={hero.text}
           variant={hero.variant}
         />
-        <StatCard
-          label="Daily"
-          icon={<PortalMetricIcon metric="dailyAllowance" />}
-          value={fmtInt(plan?.daily_cap)}
-          sub="enrichment jobs per day"
-        />
-        <StatCard
-          label="Monthly"
-          icon={<PortalMetricIcon metric="monthlyAllowance" />}
-          value={fmtInt(plan?.monthly_cap)}
-          sub="enrichment jobs per month"
-        />
+        {isTokenBudgeted(plan) ? (
+          // Plan v5 (R-AI1): no count cap - daily_cap / monthly_cap read 0 -
+          // so the plan's allowance is its token budgets.
+          <>
+            <StatCard
+              label="Daily"
+              icon={<PortalMetricIcon metric="dailyAllowance" />}
+              value={fmtInt(plan?.daily_token_budget)}
+              sub="enrichment tokens per day"
+            />
+            <StatCard
+              label="Monthly"
+              icon={<PortalMetricIcon metric="monthlyAllowance" />}
+              value={fmtInt(plan?.monthly_token_budget)}
+              sub={typeof plan?.evidence_token_budget === "number"
+                ? `enrichment tokens per month · ${fmtInt(plan.evidence_token_budget)} evidence tokens per upload`
+                : "enrichment tokens per month"}
+            />
+          </>
+        ) : (
+          <>
+            <StatCard
+              label="Daily"
+              icon={<PortalMetricIcon metric="dailyAllowance" />}
+              value={fmtInt(plan?.daily_cap)}
+              sub="enrichment jobs per day"
+            />
+            <StatCard
+              label="Monthly"
+              icon={<PortalMetricIcon metric="monthlyAllowance" />}
+              value={fmtInt(plan?.monthly_cap)}
+              sub="enrichment jobs per month"
+            />
+          </>
+        )}
         <StatCard
           label="Concurrent"
           icon={<PortalMetricIcon metric="concurrency" />}
@@ -246,14 +269,20 @@ export function Billing() {
       </Stagger>
       {!plan && (
         <p className="text-[11px] text-fg-3">
-          Plan allowances are not available right now.
+          {data.paid_through_personal_org
+            ? "Your plan is billed through your personal dashboard; its allowances are shown there."
+            : "Plan allowances are not available right now."}
         </p>
       )}
 
       <PlanComparison view={data} onConfirming={() => setConfirming(true)} />
 
       {data.has_subscription && sub && (
-        <SubscriptionCard sub={sub} showResubscribeOffer={showResubscribeOffer} />
+        <SubscriptionCard
+          sub={sub}
+          showResubscribeOffer={showResubscribeOffer}
+          onPortal={data.portal_available ? createBillingPortalSession : undefined}
+        />
       )}
     </Stagger>
   );

@@ -13,8 +13,9 @@ import { DisclosureMark, SensitivityMeter } from "../components/Disclosure";
 import { CONSENT_PURPOSE, orderPurposes } from "../lib/vocab";
 
 /**
- * ConsentSetup is the one-screen consent shell shown right after first
- * sign-in (R2 UX, F10 disposition), now backed by REAL SERVER STATE (F9):
+ * ConsentSetup is the one-screen consent shell (R2 UX, F10 disposition).
+ * D-IND-8: it no longer runs right after first sign-in or gates the console;
+ * the Privacy page links to it, and "Not now" returns to Organizations. Backed by REAL SERVER STATE (F9):
  * Continue POSTs the whole choice set to /portal/api/consent, and "has this
  * account been through setup" is the server's answer, not a localStorage
  * marker. Reload-safe by construction — a refresh re-reads the same state.
@@ -79,9 +80,9 @@ export function ConsentSetup() {
     }
     try {
       await submitConsent(choices);
-      // The Overview shows a one-shot "saved" check from this history state
-      // (the navigation itself is unchanged: immediate, replacing /consent).
-      navigate("/overview", { replace: true, state: { consentSaved: true } });
+      // Back to the Privacy page, which links here and shows the stored
+      // choices (D-IND-8: this screen no longer gates the console).
+      navigate("/privacy", { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : "request failed");
     } finally {
@@ -104,7 +105,7 @@ export function ConsentSetup() {
           </div>
           <p>
             Choose what this service may do with your data for cloud features.
-            You can change these any time from Privacy &amp; devices.
+            You can change these any time from Privacy &amp; machines.
           </p>
         </>
       }
@@ -192,6 +193,15 @@ export function ConsentSetup() {
         onClick={onContinue}
       >
         {busy ? "Saving" : "Continue"}
+      </Button>
+      <Button
+        variant="ghost"
+        className="mt-2 w-full"
+        type="button"
+        disabled={busy}
+        onClick={() => navigate("/home")}
+      >
+        Not now
       </Button>
     </AuthShell>
   );

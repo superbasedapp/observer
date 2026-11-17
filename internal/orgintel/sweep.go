@@ -63,3 +63,18 @@ func EvidenceSettingsFor(req *orgcontract.IntelRequirementBody, level cloudcontr
 	es := req.EvidenceSettings.ForEvidenceLevel(level)
 	return &es
 }
+
+// SweepSince is the oldest session start the background sweep may pick:
+// now-maxAge.
+//
+// Which ORG a session belongs to is not decided here. The candidates query
+// (store.ListOrgIntelSubmitCandidates) selects only sessions whose
+// sessions.authority_org_key is the org enrolled now (agent migration 250,
+// managed SaaS plan M8.1, operator ruling D-43), so a session captured under
+// a previous org is never offered to the next one. That key replaced the
+// enrolment-start floor this function used to apply (fix lane B6), so one
+// mechanism remains, and a re-enrolment into the SAME org no longer skips
+// that org's earlier sessions.
+func SweepSince(now time.Time, maxAge time.Duration) time.Time {
+	return now.Add(-maxAge)
+}

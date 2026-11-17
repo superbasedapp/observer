@@ -3,20 +3,34 @@
 // one test per button label, state chip, error code and rule.
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
+import { getHelp } from "./help.ts";
 import {
+  CHANNEL_BUTTON_LABELS,
   CLASS_BUTTON_LABELS,
+  CREDENTIAL_FORM_NOTE,
+  CREDENTIAL_STORED_NOTE,
+  CREDENTIAL_STORE_LABEL,
   KIND_TERMINAL_VERBS,
+  SETUP_DOCS_HELP,
+  SETUP_OVERVIEW_HELP,
+  SETUP_PREREQ_HELP,
   UNKNOWN_RUNNABLE_HINT,
   afterNote,
-  docsHref,
+  credentialErrorSentence,
+  credentialFields,
+  credentialGuideNote,
+  credentialRunFields,
   ELEVATED_GUIDE_HINT,
   ERROR_SENTENCES,
   SETUP_INPUT_WAIT_MS,
   STALE_TOKEN_MSG,
   STATE_CHIPS,
+  consentFolderFor,
   consentLine,
+  consentNeedsFolder,
   defaultSetupBackend,
   downloadButtonLabel,
   elevatedGuideHint,
@@ -29,6 +43,7 @@ import {
   recordView,
   setupCandidates,
   setupErrorSentence,
+  setupHelpId,
   setupLine,
   setupRoutesAbsent,
   shortDigest,
@@ -36,6 +51,8 @@ import {
   stateChip,
   stepButtonLabel,
   stepButtonRuns,
+  stepCopyText,
+  stepTakesInput,
   summaryOptionLabel,
   summarySetUp,
   unknownStepHint,
@@ -109,8 +126,87 @@ test("label: a pinned download names its size and version", () => {
 });
 
 test("label: guide reads Copy command, and nothing without a command", () => {
-  assert.equal(stepButtonLabel(step({ class: "guide", display: "sudo apt-get install -y bubblewrap" })), "Copy command");
+  assert.equal(stepButtonLabel(step({ class: "guide", display: "sudo apt-get install -y bubblewrap", display_is_command: true })), "Copy command");
   assert.equal(stepButtonLabel(step({ class: "guide" })), null);
+});
+
+// A guide whose display is a sentence copied that sentence as a "command"
+// before the daemon flagged command displays; it offers no button now.
+test("label: a guide whose display is a sentence offers nothing to copy", () => {
+  const s = step({ class: "guide", channel: "none", display: "Install the bubblewrap package with your distribution's package manager, then check again." });
+  assert.equal(stepButtonLabel(s), null);
+  assert.equal(stepCopyText(s), null);
+});
+
+test("copy: a command display, else a credential step's command, is what is copied", () => {
+  assert.equal(stepCopyText(step({ class: "guide", display: "sudo apt-get install -y bubblewrap", display_is_command: true })), "sudo apt-get install -y bubblewrap");
+  const key = step({ prereq: "hosted-key", kind: "credential", class: "guide", channel: "none", display: "Paste the provider's API key.", command: "observer sandbox hosted connect daytona", fields: ["DAYTONA_API_KEY"] });
+  assert.equal(stepCopyText(key), "observer sandbox hosted connect daytona");
+  assert.equal(stepButtonLabel(key), "Copy command");
+});
+
+// The operator's Daytona report: the key step read "Turn on", which sent no
+// key and was refused with a generic sentence.
+test("label: a key step never gets a plain button", () => {
+  const key = step({ prereq: "hosted-key", kind: "credential", class: "auto", channel: "hosted_connect", fields: ["DAYTONA_API_KEY"] });
+  assert.equal(stepTakesInput(key), true);
+  assert.equal(stepButtonLabel(key), null);
+});
+
+test("label: a consent screen and a sign-in name the terminal they open", () => {
+  assert.equal(stepButtonLabel(step({ prereq: "hosted-consent", kind: "consent", class: "auto", channel: "hosted_consent" })), CHANNEL_BUTTON_LABELS.hosted_consent);
+  assert.equal(stepButtonLabel(step({ prereq: "orgshell-login", kind: "account", class: "auto", channel: "orgshell_login" })), "Sign in in terminal");
+  for (const l of Object.values(CHANNEL_BUTTON_LABELS)) assert.doesNotMatch(l, /Turn on/);
+});
+
+// ---------------------------------------------------------------------------
+// Credential (API key) steps
+// ---------------------------------------------------------------------------
+
+const keyStep = (over: Partial<SandboxSetupStep> = {}): SandboxSetupStep =>
+  step({ prereq: "hosted-key", kind: "credential", label: "The provider's API key in this machine's keychain", class: "auto", channel: "hosted_connect", fields: ["DAYTONA_API_KEY"], ...over });
+
+test("credential: a runnable key step asks for the provider's fields", () => {
+  assert.deepEqual(credentialFields(keyStep()), ["DAYTONA_API_KEY"]);
+  assert.deepEqual(credentialFields(keyStep({ fields: ["MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"] })), ["MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"]);
+});
+
+const noFormCases: [string, Partial<SandboxSetupStep>][] = [
+  ["done", { state: "done" }],
+  ["not needed", { state: "not_applicable" }],
+  ["not runnable (organization or an earlier blocked step)", { can_run: false, state: "not_allowed" }],
+  ["no field names from the daemon", { fields: [] }],
+  ["a guide (guided installs off)", { class: "guide", channel: "none", command: "observer sandbox hosted connect daytona" }],
+];
+for (const [name, over] of noFormCases) {
+  test(`credential: no key form when ${name}`, () => {
+    assert.equal(credentialFields(keyStep(over)), null);
+  });
+}
+
+test("credential: the run request carries each named field, trimmed, and nothing else", () => {
+  assert.deepEqual(credentialRunFields(["A", "B"], { A: "  one ", B: "two", C: "stray" }), { A: "one", B: "two" });
+  assert.deepEqual(credentialRunFields(["A"], {}), { A: "" });
+});
+
+test("credential: a refused store shows the daemon's sentence, which names a field and never a value", () => {
+  const body = JSON.stringify({ code: "step_not_runnable", error: "MODAL_TOKEN_SECRET is required" });
+  assert.equal(credentialErrorSentence(400, body), "The key was not stored: MODAL_TOKEN_SECRET is required.");
+  assert.equal(credentialErrorSentence(400, JSON.stringify({ code: "step_not_runnable", error: "a key is required." })), "The key was not stored: a key is required.");
+  assert.equal(credentialErrorSentence(409, JSON.stringify({ code: "plan_changed", error: "x" })), ERROR_SENTENCES.plan_changed);
+  assert.equal(credentialErrorSentence(403, JSON.stringify({ code: "not_allowed_by_org", error: "x" })), ERROR_SENTENCES.not_allowed_by_org);
+});
+
+test("credential: a key step turned guide names the command's prompts and the card's form", () => {
+  const g = keyStep({ class: "guide", channel: "none", command: "observer sandbox hosted connect modal", fields: ["MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"] });
+  assert.equal(
+    credentialGuideNote(g),
+    "Run it in a terminal of your own: it asks for MODAL_TOKEN_ID and MODAL_TOKEN_SECRET and keeps them in this machine's keychain. The Connect form on the Hosted sandboxes card stores them too.",
+  );
+  assert.match(credentialGuideNote(keyStep({ class: "guide", channel: "none", command: "observer sandbox hosted connect e2b", fields: ["E2B_API_KEY"] })) ?? "", /asks for E2B_API_KEY and keeps it/);
+  assert.equal(credentialGuideNote(keyStep()), null);
+  assert.equal(credentialGuideNote(step({ class: "guide", command: "x" })), null);
+  for (const s of [CREDENTIAL_FORM_NOTE, CREDENTIAL_STORE_LABEL, CREDENTIAL_STORED_NOTE, credentialGuideNote(g) ?? ""]) assert.doesNotMatch(s, DASHES);
 });
 
 test("label: never offers no button", () => {
@@ -314,6 +410,16 @@ test("record: installed but not detected and interrupted each name the next step
   assert.match(recordView(record({ status: "install_interrupted" })).remedy ?? "", /Run it again/);
 });
 
+test("recordView: a consent or sign-in run reads as a run, never an install", () => {
+  for (const channel of ["hosted_consent", "org_shell"]) {
+    const failed = recordView(record({ channel, status: "install_failed", exit_code: 1 }));
+    assert.match(failed.line, /The run started from this dashboard/);
+    assert.match(failed.remedy ?? "", /exited with code 1/);
+    assert.doesNotMatch(failed.line + (failed.remedy ?? ""), /install|download|curl/i);
+    assert.match(recordView(record({ channel, status: "installed" })).line, /^Done from this dashboard/);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Manage actions
 // ---------------------------------------------------------------------------
@@ -460,13 +566,57 @@ test("op progress: a fraction and a line, unknown size handled", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Docs links and "afterwards" notes
+// Help (the dashboard's own drawer) and "afterwards" notes
 // ---------------------------------------------------------------------------
 
-test("docs: an anchor becomes a docs link; unsafe ones do not", () => {
-  assert.equal(docsHref("sandboxed-terminals.md#enabling-it"), "https://github.com/superbasedapp/observer/blob/main/docs/sandboxed-terminals.md#enabling-it");
-  assert.equal(docsHref("https://superbased.app/docs/x"), "https://superbased.app/docs/x");
-  for (const bad of ["", undefined, "javascript:alert(1)", "/etc/passwd", "../secret.md", "http://x"]) assert.equal(docsHref(bad), null, String(bad));
+// The docs anchors the Go prerequisite table carries, read from its source
+// (internal/sandboxsetup/prereqs.go): a new anchor without a help entry here
+// fails, so no step's help ever falls back to a page outside the dashboard.
+function goDocsAnchors(): string[] {
+  const src = readFileSync(new URL("../../../internal/sandboxsetup/prereqs.go", import.meta.url), "utf8");
+  const block = /\/\/ Docs anchors\.\s*const \(([\s\S]*?)\n\)/.exec(src);
+  assert.ok(block, "prereqs.go has no Docs anchors const block");
+  return [...block[1].matchAll(/=\s*"([^"]+)"/g)].map((m) => m[1]);
+}
+
+test("help: every docs anchor of the prerequisite table maps to a help entry", () => {
+  const anchors = goDocsAnchors();
+  assert.ok(anchors.length >= 10, `read only ${anchors.length} anchors`);
+  for (const a of anchors) {
+    const id = SETUP_DOCS_HELP[a];
+    assert.ok(id, `no help entry for docs anchor ${a}`);
+    assert.ok(getHelp(id), `${a} maps to ${id}, which is not in the help registry`);
+  }
+  for (const a of Object.keys(SETUP_DOCS_HELP)) assert.ok(anchors.includes(a), `SETUP_DOCS_HELP names ${a}, which no remedy carries`);
+});
+
+test("help: every step-specific and overview entry exists, and lives under the Terminals page", () => {
+  for (const id of [...Object.values(SETUP_PREREQ_HELP), ...Object.values(SETUP_DOCS_HELP), SETUP_OVERVIEW_HELP]) {
+    const e = getHelp(id);
+    assert.ok(e, `${id} is not in the help registry`);
+    assert.match(id, /^glossary\.terminals_sandbox_setup/);
+    for (const rel of e.related ?? []) assert.ok(getHelp(rel), `${id} relates to missing ${rel}`);
+    assert.doesNotMatch([e.title, e.oneLiner, e.detail ?? ""].join("\n"), DASHES);
+    assert.doesNotMatch([e.title, e.oneLiner, e.detail ?? ""].join("\n"), /github\.com/);
+  }
+});
+
+test("help: a step opens its own entry, else its docs anchor's, else the overview", () => {
+  assert.equal(setupHelpId({ prereq: "hosted-key", docs: "sandboxed-terminals.md#hosted-sandboxes-beta-e2b-modal-and-vercel-sandbox" }), "glossary.terminals_sandbox_setup_hosted_key");
+  assert.equal(setupHelpId({ prereq: "enable", docs: "sandboxed-terminals.md#enabling-it" }), "glossary.terminals_sandbox_setup_enable");
+  assert.equal(setupHelpId({ prereq: "bwrap", docs: "sandboxed-terminals.md#enabling-it" }), "glossary.terminals_sandbox_setup_bwrap");
+  assert.equal(setupHelpId({ prereq: "runsc", docs: "sandboxed-terminals.md#gvisor-oci-runsc-beta" }), "glossary.terminals_sandbox_setup_gvisor");
+  assert.equal(setupHelpId({ prereq: "orgshell-login", docs: "sandbox-openshell-org.md#turning-it-on" }), "glossary.terminals_sandbox_setup_org_shell");
+  assert.equal(setupHelpId({ prereq: "mystery", docs: "nowhere.md#x" }), SETUP_OVERVIEW_HELP);
+  assert.equal(setupHelpId({ prereq: "mystery" }), SETUP_OVERVIEW_HELP);
+});
+
+test("help: the key step's entry says where the key is pasted and that it is never shown again", () => {
+  const e = getHelp("glossary.terminals_sandbox_setup_hosted_key");
+  assert.ok(e?.detail);
+  assert.match(e.oneLiner, new RegExp(CREDENTIAL_STORE_LABEL));
+  for (const name of ["E2B_API_KEY", "MODAL_TOKEN_SECRET", "VERCEL_PROJECT_ID", "DOCKER_SANDBOXES_TOKEN", "DAYTONA_API_KEY", "INSTABOX_API_KEY"]) assert.match(e.detail, new RegExp(name));
+  assert.match(e.detail, /Hosted sandboxes card/);
 });
 
 const afterCases: [string, RegExp][] = [
@@ -486,4 +636,29 @@ test("after: nothing for none, an unknown value names itself", () => {
   assert.equal(afterNote(""), null);
   assert.equal(afterNote(undefined), null);
   assert.equal(afterNote("power_cycle"), "Afterwards: power cycle.");
+});
+
+test("consent folder: a consent step's run, repair and update send the picked folder; undo and other steps send none (review finding 7)", () => {
+  const consent = step({ prereq: "hosted-consent", kind: "consent", class: "auto", channel: "hosted_consent" });
+  const other = step({ prereq: "oci-image", class: "auto", channel: "oci_pull" });
+  const rows: Array<[SandboxSetupStep, "run" | "undo" | "update" | "repair", string, string | undefined]> = [
+    [consent, "run", "/home/dev/observer-workspace", "/home/dev/observer-workspace"],
+    [consent, "repair", "/home/dev/proj", "/home/dev/proj"],
+    [consent, "update", " /home/dev/proj ", "/home/dev/proj"],
+    [consent, "undo", "/home/dev/proj", undefined],
+    [consent, "repair", "", undefined],
+    [other, "repair", "/home/dev/proj", undefined],
+  ];
+  for (const [s, action, picked, want] of rows) {
+    assert.equal(consentFolderFor(s, action, picked), want, `${s.channel} ${action} ${JSON.stringify(picked)}`);
+  }
+});
+
+test("consent folder: the picker shows for an unsettled consent step and for a Repair or Update, never for Undo alone", () => {
+  const consent = step({ prereq: "hosted-consent", kind: "consent", class: "auto", channel: "hosted_consent" });
+  assert.equal(consentNeedsFolder(consent, false, []), true);
+  assert.equal(consentNeedsFolder(consent, true, [{ action: "repair", label: "Repair" }]), true);
+  assert.equal(consentNeedsFolder(consent, true, [{ action: "undo", label: "Undo" }]), false);
+  assert.equal(consentNeedsFolder(consent, true, []), false);
+  assert.equal(consentNeedsFolder(step({ channel: "oci_pull" }), false, []), false);
 });

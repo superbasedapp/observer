@@ -33,6 +33,26 @@ export const TOUR_STEPS: TourStep[] = [
       "projects. Start here each day.",
   },
   {
+    id: "get-started",
+    target: '[data-tour="get-started"]',
+    path: "/",
+    placement: "bottom",
+    title: "Get started",
+    body:
+      "Three steps: sign in and connect this machine (recommended, never " +
+      "required), turn capture on for your AI tools, and use them as usual. " +
+      "Once connected, this becomes one line with Open online dashboard.",
+  },
+  {
+    id: "account",
+    target: '[data-tour="topbar-account"]',
+    placement: "bottom",
+    title: "Your account, at the top",
+    body:
+      "Sign in from here at any time. Once this machine is connected, this " +
+      "names your personal dashboard or team, with a button to open it online.",
+  },
+  {
     id: "live",
     target: '[data-tour="nav-live"]',
     path: "/live",
@@ -100,10 +120,11 @@ export const TOUR_STEPS: TourStep[] = [
     target: '[data-tour="nav-settings"]',
     path: "/settings",
     placement: "right",
-    title: "Connect your tools",
+    title: "Settings",
     body:
       "Point Claude Code, Codex, Cursor, and more at SuperBased, tune privacy " +
-      "and routing, and manage Teams sharing - all here in Settings.",
+      "and routing, and see your account and what this machine sends - all " +
+      "here in Settings.",
   },
   {
     id: "filter-and-help",

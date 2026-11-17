@@ -25,7 +25,7 @@ export const FEATURE_LABELS: Record<string, string> = {
 // `budget_pool` field reuses the same names, so this map serves both.
 export const PLAN_LABELS: Record<string, string> = {
   free: "Free",
-  plus_beta: "Plus",
+  plus_beta: "Personal Pro",
 };
 
 // JOB_STATE_LABELS covers the enrichment-job state vocabulary

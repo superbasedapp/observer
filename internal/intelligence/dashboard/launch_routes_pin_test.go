@@ -223,11 +223,14 @@ func TestEveryLaunchRouteIsHeldAndAsked(t *testing.T) {
 // launchRouteSamples is one request per agentLaunchRoutes row that the row
 // holds, for the R-168 agreement check.
 var launchRouteSamples = map[string]struct{ path, body string }{
-	"/api/terminal/launch": {path: "/api/terminal/launch", body: `{"tool":"claude-code"}`},
-	"/api/arena/runs":      {path: "/api/arena/runs", body: `{}`},
-	"/api/session/":        {path: "/api/session/abc/launch", body: `{}`},
-	"/api/tools/launch":    {path: "/api/tools/launch", body: `{"tool":"claude-code"}`},
-	"/api/benchmarks/run":  {path: "/api/benchmarks/run", body: `{"spec":"x","confirm_spend":true}`},
+	"/api/terminal/launch":             {path: "/api/terminal/launch", body: `{"tool":"claude-code"}`},
+	"/api/arena/runs":                  {path: "/api/arena/runs", body: `{}`},
+	"/api/session/":                    {path: "/api/session/abc/launch", body: `{}`},
+	"/api/tools/launch":                {path: "/api/tools/launch", body: `{"tool":"claude-code"}`},
+	"/api/security/fix/launch":         {path: "/api/security/fix/launch", body: `{"tool":"claude-code","project_root_hash":"h"}`},
+	"/api/security/assessments/launch": {path: "/api/security/assessments/launch", body: `{"tool":"claude-code","assessment":"threat_model","project_root_hash":"h"}`},
+	"/api/security/assessments/fix":    {path: "/api/security/assessments/fix", body: `{"tool":"claude-code","run":"3fa9c2d17b0e4a56","item":"T-1"}`},
+	"/api/benchmarks/run":              {path: "/api/benchmarks/run", body: `{"spec":"x","confirm_spend":true}`},
 }
 
 // TestLaunchRoutesAgreeWithR168: every request the dashboard holds is one

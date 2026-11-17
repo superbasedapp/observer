@@ -192,6 +192,11 @@ func TestHeldDetailsShowEveryBodyMember(t *testing.T) {
 		"/api/session/":        `{"carry":"full","fork_message":3}`,
 		"/api/tools/launch":    `{"tool":"claude-code"}`,
 		"/api/benchmarks/run":  `{"spec":"name = 'x'","confirm_spend":true,"allow_unpriced":true}`,
+		// Code security tasks: the fix route's selection and the assessment's
+		// run, target and its echo, each with the agent choice.
+		"/api/security/fix/launch":         `{"query":"","finding":"F-1","project_root_hash":"h1","tool":"claude-code","model":"opus"}`,
+		"/api/security/assessments/launch": `{"assessment":"pentest_local","project_root_hash":"h1","run_id":"20261114-ab12cd","target":"http://localhost:3000/","confirm_target":"http://localhost:3000/","relaxations":["R-179"],"tier_relax":true,"tool":"claude-code","model":"opus"}`,
+		"/api/security/assessments/fix":    `{"run":"3fa9c2d17b0e4a56","item":"T-1","prompt_sha256":"abc","tool":"claude-code","model":"opus"}`,
 	}
 	for _, row := range agentLaunchRoutes {
 		body, ok := bodies[row.pattern]
@@ -234,5 +239,56 @@ func TestHeldDetailsShowEveryBodyMember(t *testing.T) {
 	}
 	if d := byLabel["kind"]; !strings.Contains(d.Value, "desktop app") {
 		t.Errorf("a GUI launch is not said so: %+v", d)
+	}
+}
+
+// TestHeldDetailsRelaxationsAndFixSandbox pins plan section 13.11: a held
+// assessment launch shows the relaxations it carries as warnings, and the fix
+// launch (which has no sandbox control at all) says "unsandboxed" instead of
+// saying nothing about the sandbox.
+func TestHeldDetailsRelaxationsAndFixSandbox(t *testing.T) {
+	rowFor := func(pattern string) agentLaunchRoute {
+		for _, r := range agentLaunchRoutes {
+			if r.pattern == pattern {
+				return r
+			}
+		}
+		t.Fatalf("no launch row %q", pattern)
+		return agentLaunchRoute{}
+	}
+	label := func(ds []dashapi.PendingLaunchDetail, name string) (dashapi.PendingLaunchDetail, bool) {
+		for _, d := range ds {
+			if strings.EqualFold(d.Label, name) {
+				return d, true
+			}
+		}
+		return dashapi.PendingLaunchDetail{}, false
+	}
+	fix := heldSummary(rowFor("/api/security/fix/launch"), "/api/security/fix/launch", []byte(`{"finding":"F-1","project_root_hash":"h1","tool":"claude-code"}`)).Details
+	if d, ok := label(fix, "sandbox"); !ok || !d.Warn || !strings.Contains(d.Value, "unsandboxed") {
+		t.Errorf("the fix launch card does not say it is unsandboxed: %+v", fix)
+	}
+	for _, c := range []struct {
+		name, body string
+		relaxWarn  bool
+		tierWarn   bool
+	}{
+		{"none", `{"assessment":"pentest_local","project_root_hash":"h1","sandbox":true}`, false, false},
+		{"empty list", `{"assessment":"pentest_local","relaxations":[],"tier_relax":false,"sandbox":true}`, false, false},
+		{"rule and tier", `{"assessment":"pentest_local","relaxations":["R-179"],"tier_relax":true,"sandbox":true}`, true, true},
+		{"folded spelling", `{"assessment":"pentest_local","RELAXATIONS":["R-179"],"Tier_Relax":true,"sandbox":true}`, true, true},
+	} {
+		ds := heldSummary(rowFor("/api/security/assessments/launch"), "/api/security/assessments/launch", []byte(c.body)).Details
+		rel, hasRel := label(ds, "relaxations")
+		tier, hasTier := label(ds, "tier_relax")
+		if hasRel && rel.Warn != c.relaxWarn {
+			t.Errorf("%s: relaxations warn = %v, want %v (%+v)", c.name, rel.Warn, c.relaxWarn, rel)
+		}
+		if hasTier && tier.Warn != c.tierWarn {
+			t.Errorf("%s: tier_relax warn = %v, want %v (%+v)", c.name, tier.Warn, c.tierWarn, tier)
+		}
+		if c.relaxWarn && (!hasRel || !hasTier) {
+			t.Errorf("%s: a relaxation member is missing from the card: %+v", c.name, ds)
+		}
 	}
 }

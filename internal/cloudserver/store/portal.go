@@ -47,9 +47,27 @@ type PortalSession struct {
 // is simply an empty slice.
 type PortalLoginOption func(*portalSessionConfig)
 
-// portalSessionConfig is the option target (only IdleTTL today).
+// portalSessionConfig is the option target.
 type portalSessionConfig struct {
 	idleTTL time.Duration
+	// freshAuth: PortalLogin records now as the session's authenticated_at
+	// (WithFreshAuthentication).
+	freshAuth bool
+}
+
+// WithFreshAuthentication tells PortalLogin that the sign-in opening this
+// session was a fresh primary authentication of the person: an AuthKit leg the
+// portal sent prompt=login and max_age=0 (so the provider was told not to
+// satisfy it from its own session), or the dev-auth stub's login. The session
+// then records the sign-in time as its authenticated_at, which the platform
+// OIDC issuer signs as auth_time (BrowserSessionAuthTime).
+//
+// Without it authenticated_at stays NULL: an ordinary AuthKit sign-in may have
+// been answered silently from the provider's own session, so when the person
+// last authenticated is not known, and a session's created_at must never be
+// passed off as an authentication time.
+func WithFreshAuthentication() PortalLoginOption {
+	return func(c *portalSessionConfig) { c.freshAuth = true }
 }
 
 // WithIdleTTL overrides the sliding idle boundary — see
@@ -110,16 +128,25 @@ func (s *Store) PortalLogin(ctx context.Context, provider, subject string, ttl t
 		if _, e := tx.Exec(ctx, s.appRole.setLocalRoleSQL()); e != nil {
 			return fmt.Errorf("set role: %w", e)
 		}
-		accountID, e := resolveOrCreateAccountTx(ctx, tx, provider, subject)
+		accountID, e := s.resolveOrCreateAccountTx(ctx, tx, provider, subject)
 		if e != nil {
 			return e
+		}
+		// authenticated_at is the caller's clock, not the database's: it is
+		// the platform OIDC issuer's auth_time (BrowserSessionAuthTime),
+		// compared against the clock the issuer runs on. NULL unless the
+		// sign-in was a fresh authentication (WithFreshAuthentication).
+		var authenticatedAt *time.Time
+		if cfg.freshAuth {
+			t := now.UTC()
+			authenticatedAt = &t
 		}
 		var expiresAt time.Time
 		if e := tx.QueryRow(ctx,
 			`INSERT INTO browser_sessions
-			   (account_id, session_hash, csrf_hash, expires_at, idle_expires_at, last_seen_at)
-			 VALUES ($1::uuid, $2, $3, $4, $5, $6) RETURNING expires_at`,
-			accountID, hashSecret(rawSession), hashSecret(rawCSRF), expiresAtWant, idleExpiresAt, now).Scan(&expiresAt); e != nil {
+			   (account_id, session_hash, csrf_hash, expires_at, idle_expires_at, last_seen_at, authenticated_at)
+			 VALUES ($1::uuid, $2, $3, $4, $5, $6, $7) RETURNING expires_at`,
+			accountID, hashSecret(rawSession), hashSecret(rawCSRF), expiresAtWant, idleExpiresAt, now, authenticatedAt).Scan(&expiresAt); e != nil {
 			return fmt.Errorf("insert browser session: %w", e)
 		}
 		out = PortalSession{
@@ -160,7 +187,7 @@ var ErrAccountSuspended = errors.New("cloudserver/store: account is suspended")
 // The caller must already have run SET LOCAL ROLE (the store's application
 // role) — resolveOrCreateAccountTx is always invoked from within a WithAccount /
 // WithSystem-style transaction that has set it.
-func resolveOrCreateAccountTx(ctx context.Context, tx pgx.Tx, provider, subject string) (string, error) {
+func (s *Store) resolveOrCreateAccountTx(ctx context.Context, tx pgx.Tx, provider, subject string) (string, error) {
 	var accountID, linkID string
 	e := tx.QueryRow(ctx,
 		`SELECT account_id::text, link_id::text FROM sbci_find_identity_link($1, $2)`,
@@ -171,7 +198,7 @@ func resolveOrCreateAccountTx(ctx context.Context, tx pgx.Tx, provider, subject 
 			`INSERT INTO accounts DEFAULT VALUES RETURNING account_id::text`).Scan(&accountID); e2 != nil {
 			return "", fmt.Errorf("create account: %w", e2)
 		}
-		if _, e2 := tx.Exec(ctx, `SELECT set_config('sbci.account_id', $1, true)`, accountID); e2 != nil {
+		if e2 := s.SetAccountContext(ctx, tx, accountID); e2 != nil {
 			return "", fmt.Errorf("set tenant: %w", e2)
 		}
 		if _, e2 := tx.Exec(ctx,
@@ -196,7 +223,7 @@ func resolveOrCreateAccountTx(ctx context.Context, tx pgx.Tx, provider, subject 
 		if status != accountStatusActive {
 			return "", ErrAccountSuspended
 		}
-		if _, e2 := tx.Exec(ctx, `SELECT set_config('sbci.account_id', $1, true)`, accountID); e2 != nil {
+		if e2 := s.SetAccountContext(ctx, tx, accountID); e2 != nil {
 			return "", fmt.Errorf("set tenant: %w", e2)
 		}
 	}
@@ -322,6 +349,41 @@ func (s *Store) rollBrowserSessionIdle(ctx context.Context, accountID, rawSessio
 			accountID, hashSecret(rawSession), idleUntil, now)
 		return e
 	})
+}
+
+// BrowserSessionAuthTime returns when the person authenticated to establish
+// the browser session sessionID of accountID: the session's authenticated_at,
+// which PortalLogin records only for a sign-in that was a fresh primary
+// authentication (WithFreshAuthentication: an AuthKit leg sent prompt=login
+// and max_age=0, or the dev-auth login), and nothing ever moves. Reusing the
+// session, rolling its idle boundary or rotating its CSRF secret does not
+// change it. It is the platform OIDC issuer's auth_time.
+//
+// The zero time with a nil error means the session exists but when the person
+// authenticated is not known (an ordinary AuthKit sign-in, which the provider
+// may have answered from its own session, or a session minted before cloud
+// migration 0083); the issuer then signs no auth_time and answers a request
+// for a fresh authentication with a forced sign-in. ErrNotFound when the
+// session is unknown or revoked. Read as the account (row-level security),
+// off the hot path: only the issuer's authorize endpoint asks.
+func (s *Store) BrowserSessionAuthTime(ctx context.Context, accountID, sessionID string) (time.Time, error) {
+	var at *time.Time
+	err := s.WithAccount(ctx, accountID, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx,
+			`SELECT authenticated_at FROM browser_sessions
+			  WHERE account_id = $1::uuid AND id = $2::uuid AND revoked_at IS NULL`,
+			accountID, sessionID).Scan(&at)
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, ErrNotFound
+	}
+	if err != nil {
+		return time.Time{}, fmt.Errorf("cloudserver/store.BrowserSessionAuthTime: %w", err)
+	}
+	if at == nil {
+		return time.Time{}, nil
+	}
+	return at.UTC(), nil
 }
 
 // RevokeBrowserSession revokes one session (logout). It is tenant-scoped to the

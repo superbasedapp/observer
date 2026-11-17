@@ -1,0 +1,21 @@
+{
+  "version": "v1.33.0",
+  "agent_version": "1.33.0",
+  "released": "2026-09-15",
+  "commit": "79440d322fc5bb06e264d10ea27e3c8288e177ad",
+  "recorder": "tools/wirecompat",
+  "modes": [
+    {
+      "name": "metadata-only",
+      "pushes": [
+        "metadata-only.push-01.json"
+      ]
+    },
+    {
+      "name": "full-content",
+      "pushes": [
+        "full-content.push-01.json"
+      ]
+    }
+  ]
+}

@@ -24,10 +24,12 @@ import {
 } from "@/lib/secCoverage";
 import { projectLabel, reasonWords, type SecurityStatus } from "@/lib/codeSecurity";
 import type { CoverageProject, CoverageResponse, CoverageRun } from "@/lib/codeSecurityApi";
+import { CheckFamiliesCard } from "./CheckFamiliesCard";
 import { NamedLoading } from "./NamedLoading";
 import type { SecurityScan } from "./useSecurityScan";
 
-// CoverageTab answers "which languages and package types are supported,
+// CoverageTab answers "what is checked" (CheckFamiliesCard: one row per
+// checking family and its state) and "which languages and package types are supported,
 // found and scanned" (redesign plan sections 3.8 and 4.5): the supported
 // table, what each ecosystem did in your projects, the files that were found
 // but not read (grouped by reason, with what to do), and one project's runs.
@@ -416,6 +418,7 @@ export function CoverageTab({
   const scanned = hasCoverage(data);
   return (
     <div className="space-y-4">
+      <CheckFamiliesCard families={data.families} stale={cov.isStale} />
       <Card
         title="Supported"
         sub="Languages and package types the dependency scanners read, and where their vulnerability data comes from."

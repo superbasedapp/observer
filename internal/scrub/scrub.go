@@ -73,8 +73,11 @@ var defaultPatterns = []pattern{
 	// header-length value gets the bearer_token marker, a short one
 	// ("Bearer token auth", "Bearer of") stays a bare redaction exactly as
 	// before, so prose is never promoted to a finding.
-	{re: regexp.MustCompile(`(?i)Bearer\s+[A-Za-z0-9\-._~+/]{8,}=*`), replace: TypedRedactedMarker("bearer_token")},
-	{re: regexp.MustCompile(`(?i)Bearer\s+[A-Za-z0-9\-._~+/]+=*`)},
+	// A match whose whole value is one English word ("Bearer tokens are
+	// accepted", "Bearer authentication") is prose and stays
+	// (bearerprose.go, operator ruling 2026-11-15).
+	{re: regexp.MustCompile(`(?i)Bearer\s+[A-Za-z0-9\-._~+/]{8,}=*`), replace: TypedRedactedMarker("bearer_token"), validate: bearerNotProse},
+	{re: regexp.MustCompile(`(?i)Bearer\s+[A-Za-z0-9\-._~+/]+=*`), validate: bearerNotProse},
 	// Common API key prefixes: sk-..., pk-..., ak-..., api_key=..., etc.
 	// Allow underscores AND hyphens inside the body: pk_test_abc123... and
 	// Anthropic's sk-ant-api03-... both carry separators past the prefix.

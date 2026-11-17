@@ -325,21 +325,39 @@ func TestSeccompProfileFor(t *testing.T) {
 		{"darwin", "arm64", false},
 		{"windows", "amd64", false},
 	} {
-		p, err := seccompProfileFor(c.goos, c.goarch)
+		p, err := seccompProfileFor(c.goos, c.goarch, "observer_default")
 		if (err == nil) != c.ok || (c.ok && p != "observer_default") {
 			t.Errorf("%s/%s: %q, %v", c.goos, c.goarch, p, err)
 		}
 	}
-	if p, err := sandboxSeccompProfile(config.TerminalSandboxConfig{}, landlockRow()); p != "" || err != nil {
+	if p, err := sandboxSeccompProfile(config.TerminalSandboxConfig{}, landlockRow(), ""); p != "" || err != nil {
 		t.Fatalf("off: %q, %v", p, err)
 	}
 	oci, _ := sandboxbackend.Get(sandboxbackend.BackendOCIRunc)
-	if p, err := sandboxSeccompProfile(config.TerminalSandboxConfig{Seccomp: true}, oci); p != "" || err != nil {
+	if p, err := sandboxSeccompProfile(config.TerminalSandboxConfig{Seccomp: true}, oci, ""); p != "" || err != nil {
 		t.Fatalf("a row with the engine's own filter: %q, %v", p, err)
 	}
 	if runtime.GOOS == "linux" && (runtime.GOARCH == "amd64" || runtime.GOARCH == "arm64") {
-		if p, err := sandboxSeccompProfile(config.TerminalSandboxConfig{Seccomp: true}, landlockRow()); p != "observer_default" || err != nil {
+		if p, err := sandboxSeccompProfile(config.TerminalSandboxConfig{Seccomp: true}, landlockRow(), ""); p != "observer_default" || err != nil {
 			t.Fatalf("on: %q, %v", p, err)
+		}
+		// The strace opt-in (lane ptrace): the recorded seize profile is
+		// planned only while the opt-in is on; a non-seize record or the
+		// opt-in off keeps observer_default.
+		for _, c := range []struct {
+			cfg      config.TerminalSandboxConfig
+			recorded string
+			want     string
+		}{
+			{config.TerminalSandboxConfig{Seccomp: true, SeccompAllowSeize: true}, "observer_seize_yama", "observer_seize_yama"},
+			{config.TerminalSandboxConfig{Seccomp: true}, "observer_seize_yama", "observer_default"},
+			{config.TerminalSandboxConfig{Seccomp: true, SeccompAllowSeize: true}, "observer_default", "observer_default"},
+			{config.TerminalSandboxConfig{Seccomp: true, SeccompAllowSeize: true}, "off", "observer_default"},
+			{config.TerminalSandboxConfig{SeccompAllowSeize: true}, "observer_seize_yama", ""},
+		} {
+			if p, err := sandboxSeccompProfile(c.cfg, landlockRow(), c.recorded); p != c.want || err != nil {
+				t.Errorf("%+v recorded %q: %q, %v; want %q", c.cfg, c.recorded, p, err, c.want)
+			}
 		}
 	}
 }

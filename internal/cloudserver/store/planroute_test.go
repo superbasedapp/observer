@@ -58,9 +58,10 @@ func bindAndActivate(t *testing.T, s *store.Store, routeID, arm string) {
 // (0041, kept by 0043), concurrency unchanged, and the Claude Haiku 5.5
 // route pinned (0043).
 func TestFreePlanV4Allowance(t *testing.T) {
-	s, _ := newStore(t)
+	s, pool := newStore(t)
 	ctx := context.Background()
 	acct := makeAccount(t, s)
+	pinCountPlan(t, pool, acct) // v4 is no longer the default (0079); pin it
 
 	a, err := s.ResolveAllowance(ctx, acct, store.FeatureSessionEnrichment, midMonth())
 	if err != nil {
@@ -91,7 +92,7 @@ func TestPlusPlanV4AllowanceAndRoutePin(t *testing.T) {
 	acct := makeAccount(t, s)
 	now := midMonth()
 
-	if _, err := s.AssignPlan(ctx, acct, store.PlanPlusBeta, store.LatestPlanVersion, time.Time{}, now); err != nil {
+	if _, err := s.AssignPlan(ctx, acct, store.PlanPlusBeta, 4, time.Time{}, now); err != nil {
 		t.Fatalf("AssignPlan(plus, latest): %v", err)
 	}
 	a, err := s.ResolveAllowance(ctx, acct, store.FeatureSessionEnrichment, now)

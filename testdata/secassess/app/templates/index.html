@@ -1,0 +1,15 @@
+<!-- Notes demo application: home page (local testing only, see ../../README.md). -->
+<h1>Notes</h1>
+<p>Keep short notes, share the public ones.</p>
+<form action="/search" method="get">
+  <input name="term" placeholder="Search public notes">
+  <button type="submit">Search</button>
+</form>
+<h2>Sign in</h2>
+<form id="login-form">
+  <input name="username" placeholder="Username" autocomplete="username">
+  <input name="password" type="password" placeholder="Password" autocomplete="current-password">
+  <button type="submit">Sign in</button>
+</form>
+<pre id="login-result"></pre>
+<script src="/static/app.js"></script>

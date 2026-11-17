@@ -51,6 +51,26 @@ function isPromptGuardEvent(event: SessionGuardEvent): boolean {
   return event.event_kind === "user_prompt" || event.rule_id === "R-172" || event.rule_id === "R-190";
 }
 
+// isOrgLocked reports a verdict the organization locks on this node: the
+// row's posture flag, or the note a refused local approval leaves.
+function isOrgLocked(event: SessionGuardEvent): boolean {
+  return !!event.org_locked || (event.reason ?? "").includes("[org_locked");
+}
+
+// subagentNote says how a sub-agent relates to this verdict: a hook verdict
+// on a Claude Code sub-agent's call is stored under the root session, so
+// the sub-agent's feed shows it from there, and the root's feed names the
+// sub-agent. An ask raised inside a sub-agent that cannot show a prompt (a
+// background one) reaches the developer as a deny from the tool itself.
+function subagentNote(event: SessionGuardEvent, sessionId: string | null): string {
+  const sub = event.subagent_session_id;
+  if (!sub) return "";
+  const askNote = event.decision === "ask" ? "; a background sub-agent cannot show this ask, so the tool denies it" : "";
+  if (sessionId === sub) return `in this sub-agent (stored on the parent session)${askNote}`;
+  const short = (sub.split(":agent:")[1] ?? sub).slice(0, 8);
+  return `in sub-agent ${short}${askNote}`;
+}
+
 // GuardVerdictsStrip renders the session's guard policy BLOCKS (the events
 // prop already arrives server-filtered to enforced/deny/ask — see
 // SessionGuardEvent's doc comment; informational `flag` events are dropped
@@ -65,9 +85,11 @@ function isPromptGuardEvent(event: SessionGuardEvent): boolean {
 // low-volume events — this compact strip gives the same "what got blocked,
 // and roughly when" answer without that.
 function GuardVerdictsStrip({
+  sessionId,
   messages,
   events,
 }: {
+  sessionId: string | null;
   messages: SessionMessages["messages"];
   events: SessionGuardEvent[];
 }) {
@@ -106,6 +128,19 @@ function GuardVerdictsStrip({
               <Tooltip content="Observe mode: the policy engine recorded this verdict but did not block the call.">
                 <Pill variant="neutral">observed only</Pill>
               </Tooltip>
+            )}
+            {event.layer_label && (
+              <Tooltip content={`Policy layer: ${event.layer_label}${event.source ? ` (source ${event.source})` : ""}`}>
+                <Pill variant={event.layer === "org" ? "accent" : "neutral"}>from {event.layer_label}</Pill>
+              </Tooltip>
+            )}
+            {isOrgLocked(event) && (
+              <Tooltip content="The organization locks this rule on this node, so a local approval does not lift it. The reason below says why; an org grant (request access) does.">
+                <Pill variant="warn">org-locked</Pill>
+              </Tooltip>
+            )}
+            {subagentNote(event, sessionId) && (
+              <span className="text-fg-4">{subagentNote(event, sessionId)}</span>
             )}
             {event.reason && (
               <CopyOnClick value={event.reason} className="block w-full basis-full text-fg-3">
@@ -214,7 +249,7 @@ export function MessagesTab({
         onPage={raw.onPage}
       />
       {messages.data && (
-        <GuardVerdictsStrip messages={messages.data.messages} events={guard.data?.events ?? []} />
+        <GuardVerdictsStrip sessionId={sessionId} messages={messages.data.messages} events={guard.data?.events ?? []} />
       )}
 
       {messages.data?.account_summary && (

@@ -46,17 +46,18 @@ export function shareHistoryProgress(
 }
 
 /**
- * shareHistoryCrossEnrolmentWarning is the operator ruling D-273 item 2 (review
- * M3-12): Share history keeps its behaviour, but before the confirm it says
- * that the older rows can include sessions captured under a previous
- * enrolment (another organization, or personal use before enrolling), and
- * that they go to the CURRENT organization. `observer org backfill --all`
- * prints the same warning.
+ * shareHistoryCrossEnrolmentWarning is the note before the confirm (operator
+ * ruling D-273 item 2, review M3-12, amended by D-43 and the operator answer
+ * of 2026-11-13, agent migration 250): rows captured under the organization
+ * enrolled now, and personal use from before this machine first enrolled, go
+ * to that organization; sessions captured under a previous enrolment (another
+ * organization) stay on this machine. `observer org backfill --all` prints
+ * the same note.
  */
 export function shareHistoryCrossEnrolmentWarning(org: string): string {
   return (
-    `The older rows can include sessions captured under a previous enrolment: another organization, ` +
-    `or personal use before this machine enrolled. They all go to ${org}, the organization this machine is enrolled in now.`
+    `The older rows go to ${org}: sessions captured while this machine was enrolled in it, and personal use from before it first enrolled anywhere. ` +
+    `Sessions captured under a previous enrolment in another organization stay on this machine.`
   );
 }
 

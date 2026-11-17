@@ -32,6 +32,14 @@ func poolBalance(t *testing.T, pool *pgxpool.Pool, name string) int64 {
 // class).
 func midMonth() time.Time { return time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC) }
 
+// countPlanVersion is the last plan version whose session enrichment is
+// capped by COUNT (v4, migration 0043). v5 (0079, ruling R-AI1) moved both
+// plans to token budgets; the count-cap mechanics these tests pin (R4 timing,
+// the cycle snapshot, the pool split) still govern every v1-v4 assignment and
+// the project digest, so they are exercised on v4. The token path is
+// tokenbudget_test.go's.
+const countPlanVersion = 4
+
 // TestPlanResolutionDefaultsToFree pins absence-means-free: an account with no
 // account_plans row resolves the seeded free v1 plan, which is why migration
 // 0012 needs no backfill for accounts that predate it.
@@ -48,11 +56,14 @@ func TestPlanResolutionDefaultsToFree(t *testing.T) {
 		t.Fatalf("default plan = %s v%d, want %s v%d",
 			a.Plan.Name, a.Plan.Version, store.PlanFree, store.DefaultFreePlanVersion)
 	}
-	// Migration 0041 (D-299) raised free to 100/day and 3000/month in the v3
-	// row; 0043 ("Pin Haiku") kept those caps in v4 and pinned the Claude
-	// Haiku 5.5 route; concurrency is unchanged.
-	if a.DailyCap != 100 || a.MonthlyCap != 3000 || a.ConcurrencyCap != 2 {
-		t.Fatalf("free caps = %d/%d/%d, want 100/3000/2", a.DailyCap, a.MonthlyCap, a.ConcurrencyCap)
+	// Migration 0079 (ruling R-AI1) moved free to the 'free' enrichment tier:
+	// no COUNT cap is enforced on session enrichment (0/0), the concurrency
+	// cap is unchanged, and the tier carries the token budgets.
+	if a.DailyCap != 0 || a.MonthlyCap != 0 || a.ConcurrencyCap != 2 {
+		t.Fatalf("free caps = %d/%d/%d, want 0/0/2", a.DailyCap, a.MonthlyCap, a.ConcurrencyCap)
+	}
+	if a.Tier == nil || a.Tier.Name != "free" || a.Plan.EnrichmentTier != "free" {
+		t.Fatalf("free plan tier = %+v / %q, want the free enrichment tier", a.Tier, a.Plan.EnrichmentTier)
 	}
 	if a.Plan.RouteID != haikuRoute {
 		t.Fatalf("free plan route_id = %q, want %q", a.Plan.RouteID, haikuRoute)
@@ -80,6 +91,7 @@ func TestMidCycleUpgradeRaisesConsultedCapImmediately(t *testing.T) {
 	s, pool := newStore(t)
 	ctx := context.Background()
 	acct := makeAccount(t, s)
+	pinCountPlan(t, pool, acct)
 	now := midMonth()
 
 	const freeDaily, plusDaily = 100, 500
@@ -102,7 +114,7 @@ func TestMidCycleUpgradeRaisesConsultedCapImmediately(t *testing.T) {
 		t.Fatalf("reservation %d on free = %v, want ErrDailyLimit", freeDaily+1, err)
 	}
 
-	res, err := s.AssignPlan(ctx, acct, store.PlanPlusBeta, store.LatestPlanVersion, time.Time{}, now)
+	res, err := s.AssignPlan(ctx, acct, store.PlanPlusBeta, countPlanVersion, time.Time{}, now)
 	if err != nil {
 		t.Fatalf("AssignPlan: %v", err)
 	}
@@ -143,10 +155,10 @@ func TestDowngradeDefersToCycleEnd(t *testing.T) {
 	acct := makeAccount(t, s)
 	now := midMonth()
 
-	if _, err := s.AssignPlan(ctx, acct, store.PlanPlusBeta, store.LatestPlanVersion, time.Time{}, now); err != nil {
+	if _, err := s.AssignPlan(ctx, acct, store.PlanPlusBeta, countPlanVersion, time.Time{}, now); err != nil {
 		t.Fatalf("upgrade: %v", err)
 	}
-	down, err := s.AssignPlan(ctx, acct, store.PlanFree, store.LatestPlanVersion, time.Time{}, now)
+	down, err := s.AssignPlan(ctx, acct, store.PlanFree, countPlanVersion, time.Time{}, now)
 	if err != nil {
 		t.Fatalf("downgrade: %v", err)
 	}
@@ -178,10 +190,10 @@ func TestDowngradeDefersToCycleEnd(t *testing.T) {
 	}
 	// A caller cannot backdate a downgrade past the boundary either.
 	acct2 := makeAccount(t, s)
-	if _, err := s.AssignPlan(ctx, acct2, store.PlanPlusBeta, store.LatestPlanVersion, time.Time{}, now); err != nil {
+	if _, err := s.AssignPlan(ctx, acct2, store.PlanPlusBeta, countPlanVersion, time.Time{}, now); err != nil {
 		t.Fatalf("upgrade acct2: %v", err)
 	}
-	forced, err := s.AssignPlan(ctx, acct2, store.PlanFree, store.LatestPlanVersion, now.Add(time.Hour), now)
+	forced, err := s.AssignPlan(ctx, acct2, store.PlanFree, countPlanVersion, now.Add(time.Hour), now)
 	if err != nil {
 		t.Fatalf("downgrade with an explicit early effective_from: %v", err)
 	}
@@ -197,6 +209,7 @@ func TestPlusDrawsItsOwnBudgetPool(t *testing.T) {
 	s, pool := newStore(t)
 	ctx := context.Background()
 	acct := makeAccount(t, s)
+	pinCountPlan(t, pool, acct)
 	now := midMonth()
 
 	freeBefore, plusBefore := poolBalance(t, pool, "free"), poolBalance(t, pool, "plus_beta")
@@ -210,7 +223,7 @@ func TestPlusDrawsItsOwnBudgetPool(t *testing.T) {
 		t.Fatalf("plus_beta pool moved (%d) on a FREE reservation", got)
 	}
 
-	if _, err := s.AssignPlan(ctx, acct, store.PlanPlusBeta, store.LatestPlanVersion, time.Time{}, now); err != nil {
+	if _, err := s.AssignPlan(ctx, acct, store.PlanPlusBeta, countPlanVersion, time.Time{}, now); err != nil {
 		t.Fatalf("upgrade: %v", err)
 	}
 	freeAfterUpgrade := poolBalance(t, pool, "free")
@@ -227,7 +240,7 @@ func TestPlusDrawsItsOwnBudgetPool(t *testing.T) {
 
 	// A refund returns the unit to the pool it was drawn from, even after the
 	// account has been moved back to free.
-	if _, err := s.AssignPlan(ctx, acct, store.PlanFree, store.LatestPlanVersion, time.Time{}, now); err != nil {
+	if _, err := s.AssignPlan(ctx, acct, store.PlanFree, countPlanVersion, time.Time{}, now); err != nil {
 		t.Fatalf("downgrade: %v", err)
 	}
 	if err := s.ReleaseReservation(ctx, acct, rid, false); err != nil {
@@ -250,7 +263,7 @@ func TestOverlappingOpenAssignmentRejected(t *testing.T) {
 	acct := makeAccount(t, s)
 	now := midMonth()
 
-	if _, err := s.AssignPlan(ctx, acct, store.PlanPlusBeta, store.LatestPlanVersion, time.Time{}, now); err != nil {
+	if _, err := s.AssignPlan(ctx, acct, store.PlanPlusBeta, countPlanVersion, time.Time{}, now); err != nil {
 		t.Fatalf("AssignPlan: %v", err)
 	}
 	var planID string
@@ -268,7 +281,7 @@ func TestOverlappingOpenAssignmentRejected(t *testing.T) {
 	// The store path refuses rather than silently rewriting a running grant it
 	// cannot close without producing a zero-length window: re-assigning at the
 	// SAME instant the running assignment started is exactly that case.
-	if _, e := s.AssignPlan(ctx, acct, store.PlanPlusBeta, store.LatestPlanVersion, now, now); !errors.Is(e, store.ErrPlanAssignmentConflict) {
+	if _, e := s.AssignPlan(ctx, acct, store.PlanPlusBeta, countPlanVersion, now, now); !errors.Is(e, store.ErrPlanAssignmentConflict) {
 		t.Fatalf("same-instant reassignment = %v, want ErrPlanAssignmentConflict", e)
 	}
 
@@ -292,7 +305,7 @@ func TestAccountPlansRLSIsolation(t *testing.T) {
 	b := makeAccount(t, s)
 	now := midMonth()
 
-	if _, err := s.AssignPlan(ctx, a, store.PlanPlusBeta, store.LatestPlanVersion, time.Time{}, now); err != nil {
+	if _, err := s.AssignPlan(ctx, a, store.PlanPlusBeta, countPlanVersion, time.Time{}, now); err != nil {
 		t.Fatalf("AssignPlan(a): %v", err)
 	}
 
@@ -319,7 +332,7 @@ func TestAccountPlansRLSIsolation(t *testing.T) {
 	if _, err := tx.Exec(ctx, `SET LOCAL ROLE sbci_app`); err != nil {
 		t.Fatalf("set role: %v", err)
 	}
-	if _, err := tx.Exec(ctx, `SELECT set_config('sbci.account_id', $1, true)`, b); err != nil {
+	if err := s.SetAccountContext(ctx, tx, b); err != nil {
 		t.Fatalf("set tenant: %v", err)
 	}
 	var visible int
@@ -458,7 +471,7 @@ func TestUsageSurfacesPlanLabel(t *testing.T) {
 	if snap.Plan != store.PlanFree || snap.PlanLabel != "Signed-in Free" || snap.BudgetPool != "free" {
 		t.Fatalf("free surface = %q / %q / %q", snap.Plan, snap.PlanLabel, snap.BudgetPool)
 	}
-	if _, err := s.AssignPlan(ctx, acct, store.PlanPlusBeta, store.LatestPlanVersion, time.Time{}, now); err != nil {
+	if _, err := s.AssignPlan(ctx, acct, store.PlanPlusBeta, countPlanVersion, time.Time{}, now); err != nil {
 		t.Fatalf("AssignPlan: %v", err)
 	}
 	snap, err = s.Usage(ctx, acct, store.FeatureSessionEnrichment, now)
@@ -481,7 +494,7 @@ func TestAssignUnknownPlanRejected(t *testing.T) {
 	s, _ := newStore(t)
 	ctx := context.Background()
 	acct := makeAccount(t, s)
-	if _, err := s.AssignPlan(ctx, acct, "enterprise_unicorn", store.LatestPlanVersion, time.Time{}, midMonth()); !errors.Is(err, store.ErrPlanNotFound) {
+	if _, err := s.AssignPlan(ctx, acct, "enterprise_unicorn", countPlanVersion, time.Time{}, midMonth()); !errors.Is(err, store.ErrPlanNotFound) {
 		t.Fatalf("AssignPlan(unknown) = %v, want ErrPlanNotFound", err)
 	}
 }
@@ -554,10 +567,10 @@ func TestDowngradeCeilsToACycleBoundary(t *testing.T) {
 			ctx := context.Background()
 			acct := makeAccount(t, s)
 			// Start on Plus so the move to free is a genuine downgrade.
-			if _, err := s.AssignPlan(ctx, acct, store.PlanPlusBeta, store.LatestPlanVersion, time.Time{}, c.now); err != nil {
+			if _, err := s.AssignPlan(ctx, acct, store.PlanPlusBeta, countPlanVersion, time.Time{}, c.now); err != nil {
 				t.Fatalf("upgrade: %v", err)
 			}
-			got, err := s.AssignPlan(ctx, acct, store.PlanFree, store.LatestPlanVersion, c.effectiveFrom, c.now)
+			got, err := s.AssignPlan(ctx, acct, store.PlanFree, countPlanVersion, c.effectiveFrom, c.now)
 			if err != nil {
 				t.Fatalf("downgrade: %v", err)
 			}
@@ -599,7 +612,7 @@ func TestScheduledUpgradeReportsDeferred(t *testing.T) {
 	now := midMonth()
 	future := now.Add(72 * time.Hour)
 
-	up, err := s.AssignPlan(ctx, acct, store.PlanPlusBeta, store.LatestPlanVersion, future, now)
+	up, err := s.AssignPlan(ctx, acct, store.PlanPlusBeta, countPlanVersion, future, now)
 	if err != nil {
 		t.Fatalf("scheduled upgrade: %v", err)
 	}
@@ -611,7 +624,7 @@ func TestScheduledUpgradeReportsDeferred(t *testing.T) {
 	}
 	// An immediate upgrade is still immediate.
 	acct2 := makeAccount(t, s)
-	imm, err := s.AssignPlan(ctx, acct2, store.PlanPlusBeta, store.LatestPlanVersion, time.Time{}, now)
+	imm, err := s.AssignPlan(ctx, acct2, store.PlanPlusBeta, countPlanVersion, time.Time{}, now)
 	if err != nil {
 		t.Fatalf("immediate upgrade: %v", err)
 	}
@@ -701,16 +714,16 @@ func TestAssignPlanChainStillPassesUnderTheExclusion(t *testing.T) {
 	acct := makeAccount(t, s)
 	now := midMonth()
 
-	if _, err := s.AssignPlan(ctx, acct, store.PlanPlusBeta, store.LatestPlanVersion, time.Time{}, now); err != nil {
+	if _, err := s.AssignPlan(ctx, acct, store.PlanPlusBeta, countPlanVersion, time.Time{}, now); err != nil {
 		t.Fatalf("upgrade: %v", err)
 	}
-	down, err := s.AssignPlan(ctx, acct, store.PlanFree, store.LatestPlanVersion, time.Time{}, now)
+	down, err := s.AssignPlan(ctx, acct, store.PlanFree, countPlanVersion, time.Time{}, now)
 	if err != nil {
 		t.Fatalf("deferred downgrade: %v", err)
 	}
 	// A later upgrade, after the deferred downgrade has taken effect.
 	after := down.EffectiveFrom.Add(48 * time.Hour)
-	if _, err := s.AssignPlan(ctx, acct, store.PlanPlusBeta, store.LatestPlanVersion, time.Time{}, after); err != nil {
+	if _, err := s.AssignPlan(ctx, acct, store.PlanPlusBeta, countPlanVersion, time.Time{}, after); err != nil {
 		t.Fatalf("upgrade after the boundary: %v", err)
 	}
 

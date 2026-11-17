@@ -1,0 +1,20 @@
+{
+  "data": {
+    "id": "cpls_01jc0000000000000000000000",
+    "customer_id": "ctm_01jc0000000000000000000000",
+    "urls": {
+      "general": {
+        "overview": "https://sandbox-customer-portal.paddle.com/cpl_01jc0000000000000000000000?action=overview&token=pga_not_a_real_token"
+      },
+      "subscriptions": [
+        {
+          "id": "sub_01jc0000000000000000000000",
+          "cancel_subscription": "https://sandbox-customer-portal.paddle.com/cpl_01jc0000000000000000000000?action=cancel_subscription&subscription_id=sub_01jc0000000000000000000000&token=pga_not_a_real_token",
+          "update_subscription_payment_method": "https://sandbox-customer-portal.paddle.com/cpl_01jc0000000000000000000000?action=update_subscription_payment_method&subscription_id=sub_01jc0000000000000000000000&token=pga_not_a_real_token"
+        }
+      ]
+    },
+    "created_at": "2026-11-16T10:00:00.000Z"
+  },
+  "meta": { "request_id": "22222222-3333-4444-5555-666666666666" }
+}

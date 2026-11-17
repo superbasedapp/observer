@@ -81,6 +81,26 @@ func FindCheckoutRoot(dir string) (string, bool) {
 	return loc.checkout, loc.ok
 }
 
+// LinkedGitDir returns the per-worktree git directory of the linked
+// worktree whose checkout top level is exactly dir, as this host spells it
+// (a `.git` file a Windows git wrote names `D:/...`, which a WSL host reads
+// as `/mnt/d/...`), and false for anything else: a plain checkout, a
+// directory below a worktree's top level, or no worktree. A caller that
+// runs git in such a checkout passes it as GIT_DIR (with GIT_WORK_TREE set
+// to dir), because git itself cannot follow a pointer spelled for the
+// other OS.
+func LinkedGitDir(dir string) (string, bool) {
+	abs, err := absResolveSymlinks(dir)
+	if err != nil {
+		return "", false
+	}
+	loc := locateGit(abs)
+	if !loc.ok || !loc.worktree || filepath.Clean(loc.checkout) != filepath.Clean(abs) {
+		return "", false
+	}
+	return loc.gitDir, true
+}
+
 // LinkedCommonDir returns the common git directory of the linked worktree
 // containing dir (the main repository's `.git`, which holds its objects and
 // refs), and false when dir is not inside a linked worktree in git's own

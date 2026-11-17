@@ -2285,3 +2285,18 @@ func (s *Store) SecFindingEvents(ctx context.Context, findingID string, limit in
 	}
 	return out, rows.Err()
 }
+
+// SecSessionHasCategory reports whether the session has any finding of the
+// category, open or closed (security coverage gaps plan item 6: a session
+// with a test_tampering finding never verifies a fix).
+func (s *Store) SecSessionHasCategory(ctx context.Context, sessionID string, category policy.FindingCategory) (bool, error) {
+	if sessionID == "" {
+		return false, nil
+	}
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sec_findings WHERE session_id = ? AND category = ?`,
+		sessionID, string(category)).Scan(&n); err != nil {
+		return false, fmt.Errorf("store.SecSessionHasCategory: %w", err)
+	}
+	return n > 0, nil
+}

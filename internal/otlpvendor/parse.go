@@ -81,7 +81,7 @@ func ParseLogs(req *collogspb.ExportLogsServiceRequest) Result {
 							continue
 						}
 						matched = true
-						body := rec.GetBody().GetStringValue()
+						body := contentBody(rec.GetBody().GetStringValue(), names, r.Names)
 						apply(&out, vd, r, v, recordCtx{agent: rc.Agent, trace: hex.EncodeToString(rec.GetTraceId())},
 							ts, rec.GetTimeUnixNano(), recordKey(ts, nil, ord), body)
 					}
@@ -178,6 +178,28 @@ func logNames(rec interface {
 		}
 	}
 	return names
+}
+
+// contentBody is a log record's body as a content fallback: the body, or ""
+// when the body is only the record's event name. Claude Code (and Kimchi,
+// which reuses its event names) set every event's body to the event name
+// ("claude_code.tool_result"), so without this every tool_result,
+// tool_decision and flag-less user_prompt became a content row holding its
+// own event name (the OTel-direct spike's finding; docs/security.md
+// OTELDIRECT-5). A body that differs from every name is kept as before.
+func contentBody(body string, names, ruleNames []string) string {
+	b := strings.TrimSpace(body)
+	if b == "" {
+		return ""
+	}
+	for _, list := range [][]string{names, ruleNames} {
+		for _, n := range list {
+			if n != "" && b == n {
+				return ""
+			}
+		}
+	}
+	return body
 }
 
 // nameMatch reports whether any candidate name satisfies the rule.

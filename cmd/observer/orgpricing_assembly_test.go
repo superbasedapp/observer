@@ -275,9 +275,10 @@ func TestAssembly_OrgRateReachesTheOrgPushWire(t *testing.T) {
 		t.Fatalf("seed project: %v", err)
 	}
 	if _, err := seed.ExecContext(ctx, `
-INSERT INTO sessions (id, project_id, tool, model, started_at)
-VALUES ('assembly-s1', (SELECT id FROM projects WHERE root_path = '/tmp/assembly-proj'), 'claude-code', ?, ?)`,
-		assemblyPricedModel, stamp); err != nil {
+INSERT INTO sessions (id, project_id, tool, model, started_at, authority_org_key)
+VALUES ('assembly-s1', (SELECT id FROM projects WHERE root_path = '/tmp/assembly-proj'), 'claude-code', ?, ?, ?)`,
+		// Captured under the enrolled org (M8.1): only that org's rows ship.
+		assemblyPricedModel, stamp, orgclient.OrgKey("https://org.example", "org-1")); err != nil {
 		t.Fatalf("seed session: %v", err)
 	}
 	if _, err := seed.ExecContext(ctx, `

@@ -54,12 +54,46 @@ type CreateResult struct {
 	// projects the tool's state, a hosted row, or a tool with no sign-in
 	// row. Additive.
 	SignInShared string
+	// MaskWorkspaceSecrets carries PrepareRequest.MaskWorkspaceSecrets to
+	// Attach, which composes the argv (the bwrap driver hides the workspace's
+	// secret files there). Additive.
+	MaskWorkspaceSecrets bool
 }
 
 // AttachResult is how the PTY child enters the run: the argv prefix the
 // launcher prepends (empty for a backend that needs none).
 type AttachResult struct {
 	WrapArgv []string
+	// SecretMask is what the workspace secret mask covered for this run: nil
+	// unless CreateResult.MaskWorkspaceSecrets was set and the backend built
+	// the mask. Additive.
+	SecretMask *SecretMaskOutcome
+}
+
+// SecretMaskOutcome is the plain-data result of the opt-in workspace secret
+// mask for one launch (the pure planner's report, internal/sandbox
+// SecretMaskReport, flattened so termsvc imports no sandbox package). The
+// mask is a snapshot taken at launch: files created afterwards are not
+// masked, and Complete says whether the walk covered everything it could see.
+type SecretMaskOutcome struct {
+	// Masked is the number of files hidden in the box.
+	Masked int
+	// Complete: no limit was reached, no folder was unreadable and every
+	// secret-named entry the walk met is hidden. When false, Gaps says where.
+	Complete bool
+	// Gaps are the places the mask does not cover (at most 100), each a path
+	// and a reason from the closed internal/sandbox SecretMaskGapReason
+	// vocabulary (depth_limit, dir_limit, dir_entries_limit, mask_limit,
+	// unreadable, symlink, not_regular, unsafe_name).
+	Gaps []SecretMaskGap
+	// GapsDropped counts the gaps beyond the listed ones.
+	GapsDropped int
+}
+
+// SecretMaskGap is one place a SecretMaskOutcome does not cover.
+type SecretMaskGap struct {
+	Path   string
+	Reason string
 }
 
 // LifecycleVerdict is the typed outcome of a non-composing operation.
@@ -160,5 +194,6 @@ func ComposePrepare(ctx context.Context, lc SandboxLifecycle, req PrepareRequest
 		Note:         created.Note,
 		Isolation:    created.Isolation,
 		SignInShared: created.SignInShared,
+		SecretMask:   att.SecretMask,
 	}, nil
 }

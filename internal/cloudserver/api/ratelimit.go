@@ -51,6 +51,18 @@ type RateLimitConfig struct {
 	// other's budget. The shared per-device/per-account caps in the
 	// authenticate middleware still apply on top — this narrows, never widens.
 	StructuralPerWindow int
+	// The connect flow's own buckets (connect.go, portal_connect.go;
+	// docs/plans/onboarding-v2-connect-flow.md section 8), each with its own
+	// window (connectRateWindows) rather than Window:
+	//
+	//	ConnectCreatePerWindow  creates per client IP per 10 minutes
+	//	ConnectPollPerWindow    polls per request per minute
+	//	ConnectCodePerWindow    code entries per account per 15 minutes
+	//	ConnectCodeIPPerWindow  code entries per client IP per 15 minutes
+	ConnectCreatePerWindow int
+	ConnectPollPerWindow   int
+	ConnectCodePerWindow   int
+	ConnectCodeIPPerWindow int
 }
 
 // RateLimiter is the shared, atomic counter contract used by the HTTP policy.
@@ -83,6 +95,15 @@ const (
 	// node, while still bounding a runaway loop.
 	defaultRateStructural = 90
 	rateLimitRetrySecMin  = 1
+
+	defaultRateConnectCreate = 10
+	defaultRateConnectPoll   = 40
+	defaultRateConnectCode   = 10
+	defaultRateConnectCodeIP = 20
+
+	connectCreateWindow = 10 * time.Minute
+	connectPollWindow   = time.Minute
+	connectCodeWindow   = 15 * time.Minute
 )
 
 // RateLimitConfigFromEnv builds a RateLimitConfig from SBCI_RATELIMIT_*, using
@@ -95,6 +116,10 @@ const (
 //	SBCI_RATELIMIT_ACCOUNT  per-account cap (v1 + portal);       default 240; "0" disables
 //	SBCI_RATELIMIT_WEBHOOK  per-IP cap on the provider webhook;  default 60;  "0" disables
 //	SBCI_RATELIMIT_STRUCTURAL per-device cap on structural uploads; default 90; "0" disables
+//	SBCI_RATELIMIT_CONNECT_CREATE  connect creates per IP per 10 minutes; default 10
+//	SBCI_RATELIMIT_CONNECT_POLL    connect polls per request per minute; default 40
+//	SBCI_RATELIMIT_CONNECT_CODE    code entries per account per 15 minutes; default 10
+//	SBCI_RATELIMIT_CONNECT_CODE_IP code entries per IP per 15 minutes; default 20
 func RateLimitConfigFromEnv() RateLimitConfig {
 	cfg := RateLimitConfig{
 		Window:              defaultRateWindow,
@@ -103,6 +128,11 @@ func RateLimitConfigFromEnv() RateLimitConfig {
 		AccountPerWindow:    defaultRateAccount,
 		WebhookPerWindow:    defaultRateWebhook,
 		StructuralPerWindow: defaultRateStructural,
+
+		ConnectCreatePerWindow: defaultRateConnectCreate,
+		ConnectPollPerWindow:   defaultRateConnectPoll,
+		ConnectCodePerWindow:   defaultRateConnectCode,
+		ConnectCodeIPPerWindow: defaultRateConnectCodeIP,
 	}
 	if v := os.Getenv("SBCI_RATELIMIT_WINDOW"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
@@ -114,6 +144,10 @@ func RateLimitConfigFromEnv() RateLimitConfig {
 	cfg.AccountPerWindow = envIntDefault("SBCI_RATELIMIT_ACCOUNT", cfg.AccountPerWindow)
 	cfg.WebhookPerWindow = envIntDefault("SBCI_RATELIMIT_WEBHOOK", cfg.WebhookPerWindow)
 	cfg.StructuralPerWindow = envIntDefault("SBCI_RATELIMIT_STRUCTURAL", cfg.StructuralPerWindow)
+	cfg.ConnectCreatePerWindow = envIntDefault("SBCI_RATELIMIT_CONNECT_CREATE", cfg.ConnectCreatePerWindow)
+	cfg.ConnectPollPerWindow = envIntDefault("SBCI_RATELIMIT_CONNECT_POLL", cfg.ConnectPollPerWindow)
+	cfg.ConnectCodePerWindow = envIntDefault("SBCI_RATELIMIT_CONNECT_CODE", cfg.ConnectCodePerWindow)
+	cfg.ConnectCodeIPPerWindow = envIntDefault("SBCI_RATELIMIT_CONNECT_CODE_IP", cfg.ConnectCodeIPPerWindow)
 	return cfg
 }
 
@@ -277,6 +311,11 @@ type rateLimiters struct {
 	// structural shares the per-DEVICE key shape with `device` but deliberately
 	// not its budget (same reasoning as `webhook`).
 	structural *rateLimitDimension
+	// The connect flow's buckets (RateLimitConfig.Connect*).
+	connectCreate *rateLimitDimension
+	connectPoll   *rateLimitDimension
+	connectCode   *rateLimitDimension
+	connectCodeIP *rateLimitDimension
 }
 
 func newRateLimitersWithBackend(cfg RateLimitConfig, backend RateLimiter) *rateLimiters {
@@ -290,6 +329,11 @@ func newRateLimitersWithBackend(cfg RateLimitConfig, backend RateLimiter) *rateL
 		account:    &rateLimitDimension{backend: backend, bucket: "account", limit: cfg.AccountPerWindow, window: window},
 		webhook:    &rateLimitDimension{backend: backend, bucket: "webhook", limit: cfg.WebhookPerWindow, window: window},
 		structural: &rateLimitDimension{backend: backend, bucket: "structural", limit: cfg.StructuralPerWindow, window: window},
+
+		connectCreate: &rateLimitDimension{backend: backend, bucket: "connect_create", limit: cfg.ConnectCreatePerWindow, window: connectCreateWindow},
+		connectPoll:   &rateLimitDimension{backend: backend, bucket: "connect_poll", limit: cfg.ConnectPollPerWindow, window: connectPollWindow},
+		connectCode:   &rateLimitDimension{backend: backend, bucket: "connect_code", limit: cfg.ConnectCodePerWindow, window: connectCodeWindow},
+		connectCodeIP: &rateLimitDimension{backend: backend, bucket: "connect_code_ip", limit: cfg.ConnectCodeIPPerWindow, window: connectCodeWindow},
 	}
 }
 

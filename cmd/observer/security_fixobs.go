@@ -331,11 +331,26 @@ var fixObsInferenceRules = map[string]bool{
 // (exit code 0), and no test file was edited. NoNewFindingInRegion stays
 // false: nothing here checks the changed region.
 func fixObservations(v secdiffobs.FixVerdict) secfinding.FixObservations {
-	return secfinding.FixObservations{RuleNoLongerFires: true, TestCommandObserved: true, TestExitCode: v.ExitCode}
+	return secfinding.FixObservations{RuleNoLongerFires: true, TestCommandObserved: true, TestExitCode: v.ExitCode, TestFilesEdited: v.AddedTests}
 }
+
+// gitRunner is gitview.RunReadOnly's shape (a test stands in).
+type gitRunner func(ctx context.Context, root string, maxBytes int, args ...string) ([]byte, bool, error)
 
 // fixVerdict loads the evidence for one finding and decides.
 func fixVerdict(ctx context.Context, st *store.Store, root string, f secfinding.Finding) (secdiffobs.FixVerdict, error) {
+	return fixVerdictWith(ctx, st, root, f, gitview.RunReadOnly)
+}
+
+// fixVerdictWith is fixVerdict with the git runner injected. A test file
+// the session edited counts as "only added to" (security coverage gaps
+// plan item 6) only under all four guards: every edit action is covered by
+// an AI file_changes row at high confidence that deleted, modified or
+// overwrote nothing (store.FixEditFacts.AdditiveOnly); a whole-file write
+// is of a file git did not hold before the session's first edit of it; and
+// neither the session's own test edits (secdiffobs.Observe over them) nor
+// a stored test_tampering finding of the session shows tampering.
+func fixVerdictWith(ctx context.Context, st *store.Store, root string, f secfinding.Finding, git gitRunner) (secdiffobs.FixVerdict, error) {
 	rows, err := st.LoadFixEvidence(ctx, root, f.Location.RelPath, f.ClosedAt)
 	if err != nil {
 		return secdiffobs.FixVerdict{}, err
@@ -344,14 +359,116 @@ func fixVerdict(ctx context.Context, st *store.Store, root string, f secfinding.
 	for _, c := range rows.Commands {
 		ev.Commands = append(ev.Commands, secdiffobs.SessionCommand{At: c.At, Command: c.Command, ExitKnown: c.ExitKnown, ExitCode: c.ExitCode, HostReportedSuccess: c.HostReportedSuccess})
 	}
+	var tests []string
 	for _, t := range rows.EditedTargets {
-		if rel, ok := fixObsRelative(root, t); ok {
-			ev.EditedPaths = append(ev.EditedPaths, rel)
-		} else {
-			ev.EditedPaths = append(ev.EditedPaths, filepath.ToSlash(t))
+		rel, ok := fixObsRelative(root, t)
+		if !ok {
+			rel = filepath.ToSlash(t)
+		}
+		ev.EditedPaths = append(ev.EditedPaths, rel)
+		if ok && secdiffobs.IsTestPath(rel) {
+			tests = append(tests, rel)
+		}
+	}
+	if len(tests) > 0 && rows.SessionID != "" {
+		if ev.AdditiveOnly, ev.TamperingObserved, err = fixAdditiveTests(ctx, st, root, rows.SessionID, tests, git); err != nil {
+			return secdiffobs.FixVerdict{}, err
 		}
 	}
 	return secdiffobs.DecideFix(ev), nil
+}
+
+// fixAdditiveTests returns the test paths proven only added to, and
+// whether the session's test edits or findings show tampering.
+func fixAdditiveTests(ctx context.Context, st *store.Store, root, sessionID string, tests []string, git gitRunner) ([]string, bool, error) {
+	tampered, err := st.SecSessionHasCategory(ctx, sessionID, policy.FindingTestTampering)
+	if err != nil || tampered {
+		return nil, tampered, err
+	}
+	facts, err := st.LoadFixEditFacts(ctx, root, sessionID, tests)
+	if err != nil {
+		return nil, false, err
+	}
+	want := map[string]bool{}
+	var additive []string
+	for _, rel := range tests {
+		fe, ok := facts[rel]
+		if !ok || !fe.AdditiveOnly() {
+			continue
+		}
+		if fe.WholeWrite && !fixNewInSession(ctx, root, rel, fe.FirstEditAt, git) {
+			continue
+		}
+		want[rel] = true
+		additive = append(additive, rel)
+	}
+	if len(additive) == 0 {
+		return nil, false, nil
+	}
+	edits, err := st.SessionAgentEdits(ctx, sessionID, 0)
+	if err != nil {
+		return nil, false, err
+	}
+	var diffs []secdiffobs.FileDiff
+	seen := map[string]bool{}
+	for _, e := range edits {
+		rel, ok := fixObsRelative(root, e.Target)
+		if !ok || !want[rel] {
+			continue
+		}
+		pairs := editPairs(e.RawInput)
+		if len(pairs) == 0 {
+			want[rel] = false // an edit whose text cannot be read proves nothing
+		}
+		for _, p := range pairs {
+			// The text guard beside the line counts: an edit keeps every
+			// byte it replaces, or creates the file.
+			if p[0] != "" && !strings.Contains(p[1], p[0]) {
+				want[rel] = false
+			}
+			diffs = append(diffs, secdiffobs.FromEdit(rel, p[0], p[1]))
+		}
+		seen[rel] = true
+	}
+	for _, o := range secdiffobs.Observe(diffs) {
+		if fixTamperingRules[o.RuleID] {
+			return nil, true, nil
+		}
+	}
+	kept := additive[:0]
+	for _, rel := range additive {
+		if want[rel] && seen[rel] {
+			kept = append(kept, rel)
+		}
+	}
+	return kept, false, nil
+}
+
+// fixTamperingRules are the diff observations that mean a test was
+// weakened (S-767 to S-769).
+var fixTamperingRules = map[string]bool{"S-767": true, "S-768": true, "S-769": true}
+
+// fixNewInSession reports whether git first added rel after since (or
+// never): a whole-file write of such a file created it in the session. A
+// git failure proves nothing (false).
+func fixNewInSession(ctx context.Context, root, rel string, since time.Time, git gitRunner) bool {
+	if git == nil || since.IsZero() {
+		return false
+	}
+	out, truncated, err := git(ctx, root, 4096, "log", "--diff-filter=A", "--format=%ct", "--no-renames", "--", rel)
+	if err != nil || truncated {
+		return false
+	}
+	for _, line := range strings.Fields(string(out)) {
+		sec, err := strconv.ParseInt(line, 10, 64)
+		if err != nil {
+			return false
+		}
+		if !time.Unix(sec, 0).After(since) {
+			return false
+		}
+	}
+	return true
 }
 
 // flagFixClaims raises unverified_fix for new commits whose subject claims

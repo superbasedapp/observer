@@ -1,0 +1,99 @@
+# gate-commands.tsv - the gate's command units: the checks that are not
+# `go test` of one package (edition vet, golangci-lint, the web suites),
+# declared once and run by `testrunner gate` on its workers through
+# tools/testrunner/bootstrap.sh exec, in the source tree, under the run's
+# test timeout. A command unit passes on exit 0 and fails otherwise, with its
+# output tail in the summary. The commands are the repo's own: each row says
+# where it was taken from, and a change there must be mirrored here.
+#
+# Columns (tab separated; '#' lines and blank lines are ignored):
+#   name      the unit's id and ledger key. {set} and {shard} are filled in
+#             by the expansion.
+#   expand    -            one unit
+#             omit-sets    one unit per tag set `scripts/omit-tag-check.sh
+#                          --list-tests --scope distro` prints (the editions and
+#                          no_obs, what ci.yml runs per push; `testrunner
+#                          gate --omit-scope all` lists every set, the
+#                          dispatched matrix); {set} in the command is the
+#                          set, {set} in
+#                          the name its key (a distro set's sbo_distro_*
+#                          stamp, else the set), and the weight is the set's
+#                          row in omit-tag-weights.tsv (else this row's)
+#             packages:N   N units over every package of the main module
+#                          (go list ./... as GOOS=linux), dealt by weight
+#                          (go-test-weights.tsv) longest first; {packages}
+#                          in the command is the shard's ./dir list, {shard}
+#                          in the name is i/N, and each gets weight/N
+#   when      on an affected gate the row runs when a changed file matches
+#             one entry: *.ext (suffix), dir/ (prefix) or an exact path;
+#             always on --full
+#   tools     - or a comma list: node, golangci-lint (pinned in
+#             gate-tools.tsv), own-tree (a fresh copy of the source for
+#             a command that writes into the tree, so it never races the
+#             other units of a multi-slot box; list it before git-index),
+#             git-index (a git repository of the tree the command runs in,
+#             for commands that call git)
+#   weight_s  estimated seconds on a CI-sized runner (LPT order and the
+#             spend projection only)
+#   command   run by bash -c in the source tree
+#
+# vet: ci.yml's omit-tags job runs scripts/omit-tag-check.sh per set: go vet
+#   -tags <set> ./..., plus the tagged packages' tests for the four editions.
+#   The gate splits that in two so one edition is not one 20-minute unit:
+#   this row runs the vet (--vet-only), and every package the editions test
+#   (--list-tests) becomes a Go unit of its own run with -tags <set>
+#   (<import>[<set key>], split like any Go unit at a quarter of its
+#   split-table parts), triggered with this row. The script reads the tree
+#   with git grep.
+# lint: ci.yml's lint job (golangci-lint-action, version v2.14.0, default
+#   args: golangci-lint run over ./...). Sharding by package keeps the
+#   findings identical to the whole-tree run: every enabled linter analyses
+#   one package at a time (facts from dependencies are computed either way),
+#   the exclusions are path rules, and .golangci.yml sets no per-run issue
+#   limits (max-issues-per-linter and max-same-issues are 0). The shards
+#   together list exactly the packages ./... matches.
+# web: ci.yml's frontend job (web) and ci-private.yml's frontend-web2 job
+#   (web2), step by step, including their embedded-dist drift checks;
+#   webcloud: the webcloud step of ci.yml's taxonomy-build-drift job (npm ci,
+#   then make verify-webcloud-dist, which runs this script). shared/ has no
+#   suite of its own; the three apps import it, so a shared/ change runs all
+#   three.
+vet:{set}	omit-sets	*.go,go.mod,go.sum,scripts/omit-tag-check.sh,scripts/ci/omit-tag-weights.tsv	git-index	120	scripts/omit-tag-check.sh --vet-only --only '{set}'
+lint:{shard}	packages:6	*.go,go.mod,go.sum,.golangci.yml	golangci-lint	1500	golangci-lint run {packages}
+web:web	-	web/,shared/,package.json,package-lock.json,scripts/uicopylint/,scripts/sync-web-embed.sh,internal/intelligence/dashboard/webapp/dist/	node,own-tree,git-index	480	cd web && npm ci && npm run typecheck && npm test && cd .. && node scripts/uicopylint/uicopylint.mjs web/src && cd web && npm run build && cd .. && scripts/sync-web-embed.sh web/dist internal/intelligence/dashboard/webapp/dist && { drift=$(git status --porcelain -- internal/intelligence/dashboard/webapp/dist); [ -z "$drift" ] || { echo "Committed webapp/dist drifted from web/dist. Run make web-build and commit the result."; echo "$drift" | head -40; exit 1; }; }
+web:web2	-	web2/,shared/,package.json,package-lock.json,scripts/uicopylint/,scripts/sync-web-embed.sh,internal/orgserver/dashboard/webapp/dist/	node,own-tree,git-index	480	cd web2 && npm ci && npm run typecheck && npm test && cd .. && node scripts/uicopylint/uicopylint.mjs web2/src && cd web2 && npm run build && cd .. && scripts/sync-web-embed.sh web2/dist internal/orgserver/dashboard/webapp/dist && { drift=$(git status --porcelain -- internal/orgserver/dashboard/webapp/dist); [ -z "$drift" ] || { echo "Committed orgserver webapp/dist drifted from web2/dist. Run make web-build-org and commit the result."; echo "$drift" | head -40; exit 1; }; }
+web:webcloud	-	webcloud/,shared/,package.json,package-lock.json,scripts/verify-webcloud-dist.sh	node,own-tree	240	cd webcloud && npm ci && cd .. && scripts/verify-webcloud-dist.sh
+# migcheck: internal/migcheck's online migration rules (plan 06 18.2.4) over
+#   the org PostgreSQL and cloud lineages; the pre-push hook runs it advisory.
+#   Advisory here too until R1: it flips to --enforce at R1, when the M0.8
+#   rules land in CLAUDE.md and M3a ships the non-transactional step class
+#   (G2a).
+migcheck	-	internal/orgserver/db/pgmigrations/,internal/cloudserver/db/migrations/,internal/migcheck/,tools/migcheck/,internal/migplan/shipped/,tests/invariant/testdata/shipped-migrations.json	-	30	go run ./tools/migcheck --advisory
+# orgstateinv: the org server's process-wide state against tools/orgstateinv/allowlist.tsv
+#   (plan 07 M2.1). Its test reads the tree from disk, so cipkgs does not select it
+#   on an org-server change; this row does.
+orgstateinv	-	internal/orgserver/,cmd/observer-org/,tools/orgstateinv/	-	30	go run ./tools/orgstateinv
+# structcheck: the managed-SaaS structural rules (plan 07 M3-0.8; tools/structcheck/doc.go
+#   lists them): tenancy classes, new-table org_id, raw advisory locks, package state,
+#   root files, imports_test pins and lease_gen are enforced; RLS policies, ON CONFLICT
+#   targets and plan-name literals are advisory until M3b.1, M3a.4 and internal/entitlements.
+#   S9 reads every package directory under internal/, hence the broad when.
+structcheck	-	internal/,cmd/observer-org/,tools/structcheck/,tools/orgstateinv/	-	30	go run ./tools/structcheck
+# opsgate: the Track E gate driver, the nightly and the train (plan 07 M11.2a, M11.2b, M11.3, M11.4; deploy/saas-ovh/ops,
+#   deploy/saas-ovh/roll.sh). test-ops.sh runs nightly.sh against a throwaway git history with a built gatedriver, a
+#   stubbed systemctl and a fake bisect runner (a seeded failure is named), and bash -n (shellcheck when installed) on
+#   every ops script; test-roll.sh runs roll.sh's dry run and its promote, halt and inconclusive paths with stubbed
+#   ssh, curl and judge. The Go rules are the tools/gatedriver and internal/trainhalt Go units.
+opsgate	-	deploy/saas-ovh/ops/,deploy/saas-ovh/roll.sh,deploy/saas-ovh/test-roll.sh,tools/gatedriver/	-	60	bash deploy/saas-ovh/ops/test-ops.sh && bash deploy/saas-ovh/test-roll.sh
+# drift: ci-private.yml's generated-file drift jobs that need only go, git and make
+#   (L-139: the v1.39.0 release found stale OpenAPI stubs and a stale track sitemap
+#   that no gate row had checked). Not here: the website accuracy check (it reads the
+#   GitHub API) and verify-distribution-readmes (it needs python3, absent from the
+#   golang image); the release preflight runs both. Nor verify-track-build: its
+#   sitemap <lastmod> dates come from `git log`, and the git-index snapshot is one
+#   commit made today, so every page would read as changed (ci-private.yml's
+#   track-build-drift job keeps running it on GitHub). git-index: the scripts start
+#   with git rev-parse --show-toplevel.
+drift	-	docs/openapi/,internal/orgserver/,internal/orgclient/,internal/integration/,internal/guard/,tools/guardcoveragegen/,tools/adapterparitygen/,website/,web/,CHANGELOG.md,Makefile,Makefile.private,scripts/verify-website-build.sh,scripts/w8-claim-inventory.sh	git-index	300	make verify-openapi verify-website-build verify-w8-claims verify-adapter-parity-doc verify-guard-coverage-ts
+# website-tests: ci-private.yml's website worker tests.
+website-tests	-	website/	node	60	node --test --test-reporter=spec website/tools/test/*.test.mjs

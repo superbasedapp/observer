@@ -1,0 +1,5 @@
+/* Notes demo application (local testing only). */
+body { font-family: sans-serif; margin: 2rem auto; max-width: 40rem; }
+nav a { margin-right: 1rem; }
+input { margin: 0.25rem; }
+pre { background: #f4f4f4; padding: 0.5rem; }

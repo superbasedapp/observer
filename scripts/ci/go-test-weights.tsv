@@ -560,6 +560,7 @@ tests/e2e/oneshot	2
 tests/e2e/statusline	6
 tests/hookbudget	2
 tests/invariant	51
+tests/isolation	90
 tools/guardcoveragegen	1
 tools/pricing-snapshotgen	1
 web/compgen	1

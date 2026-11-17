@@ -46,6 +46,11 @@ type OnlineAnswer struct {
 	// version of the package (lane SEC-D1FIX2 milestone 2a): an unpinned
 	// install of it is malicious (S-741), not "some versions" (S-749).
 	MalAllVersions bool `json:"mal_all,omitempty"`
+	// Provenance is the registry's build-provenance state of the version
+	// installed (DecideProvenance; "" when not checked: provenance off, or
+	// an ecosystem with no reader). It never changes the verdict; Decide
+	// copies it onto the check only for an answered public name.
+	Provenance policy.InstallProvenance `json:"provenance,omitempty"`
 	// Private reports that the asked side classified the name private and
 	// sent it nowhere (status not_asked).
 	Private bool `json:"private,omitempty"`
@@ -175,6 +180,9 @@ func Decide(in DecideInput) policy.InstallCheck {
 			}
 			break
 		}
+	}
+	if in.Online.Status == OnlineAnswered && !in.Private && !in.Spec.Invalid {
+		c.Provenance = in.Online.Provenance
 	}
 	return c
 }

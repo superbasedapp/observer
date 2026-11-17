@@ -228,6 +228,26 @@ var governancePinnableKeys = []governancePinnableKey{
 	{Key: "terminal.sandbox.default_on", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: true},
 	// lane FU4 (tracker F-002): the seccomp filter, required on, never off.
 	{Key: "terminal.sandbox.seccomp", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: true},
+	// The agent-run security assessments (plan section 13.3): restrictive-only
+	// switches and tier, and a lowering-only window ceiling.
+	{Key: "security.assessments.relax_pentest_local", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: false},
+	{Key: "security.assessments.relax_red_team_local", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: false},
+	{Key: "security.assessments.scoped_approval", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: false},
+	{Key: "security.assessments.max_network_tier", Kind: "string", Enum: []any{"proxy_only", "internet"}, Direction: governanceDirRestrictiveOnly, Safe: "proxy_only"},
+	{Key: "security.assessments.relaxation_max_minutes", Kind: "int", Direction: governanceDirLoweringOnly, Min: 5, Max: 240},
+	// The depth work's time boxes (a lowering ceiling each) and the time box
+	// action (restrictive toward closing the terminal).
+	{Key: "security.assessments.time_box_threat_model_minutes", Kind: "int", Direction: governanceDirLoweringOnly, Min: 5, Max: 240},
+	{Key: "security.assessments.time_box_pentest_local_minutes", Kind: "int", Direction: governanceDirLoweringOnly, Min: 5, Max: 240},
+	{Key: "security.assessments.time_box_red_team_local_minutes", Kind: "int", Direction: governanceDirLoweringOnly, Min: 5, Max: 240},
+	{Key: "security.assessments.time_box_action", Kind: "string", Enum: []any{"stop_button", "auto_close"}, Direction: governanceDirRestrictiveOnly, Safe: "auto_close"},
+	// The pen test limits (W4): the budget and pace are lowering ceilings, the
+	// .env handling restrictive toward refusing the launch.
+	{Key: "security.assessments.workspace_secret_mode", Kind: "string", Enum: []any{"off", "warn", "mask", "refuse"}, Direction: governanceDirRestrictiveOnly, Safe: "refuse"},
+	{Key: "security.assessments.pentest_request_budget", Kind: "int", Direction: governanceDirLoweringOnly, Min: 10, Max: 10000},
+	{Key: "security.assessments.pentest_pace_rps", Kind: "int", Direction: governanceDirLoweringOnly, Min: 1, Max: 100},
+	// The request helper (W5b): a pin may only switch it off.
+	{Key: "security.assessments.probe_helper", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: false},
 	{Key: "terminal.sandbox.allow_remote_clone", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: false},
 	{Key: "terminal.sandbox.allow_worktree_source", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: false},
 	{Key: "terminal.sandbox.allow_tool_config_writes", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: false},

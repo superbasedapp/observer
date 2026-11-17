@@ -22,7 +22,7 @@ var knownDropped = map[string]bool{
 	"routing_dev": true, "codeintel_dev": true, "terminal_runs": true,
 	"terminal_commands": true, "remote_audit": true, "guard_pins": true,
 	"guard_approvals": true, "terminal_summaries": true, "remote_audit_summaries": true,
-	"sandbox_posture": true, "sandbox_capability": true, "security_posture": true,
+	"sandbox_posture": true, "sandbox_capability": true, "sandbox_egress_refusals": true, "security_posture": true,
 	"security_findings": true, "ai_change_records": true, "mcp_relay_activity": true,
 	"mcp_relay_events": true, "mcp_inventory": true, "routing_details": true,
 	"limit_gauges": true, "session_limit_snapshots": true, "guard_events": true,

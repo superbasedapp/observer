@@ -75,6 +75,7 @@ func scanConsentConfig(t *testing.T) (cfgPath, secDir string) {
 	t.Helper()
 	dir := t.TempDir()
 	cfgPath = filepath.Join(dir, "config.toml")
+	seedNodeDB(t, filepath.Join(dir, "observer.db"))
 	body := "[observer]\ndb_path = " + strconv.Quote(filepath.Join(dir, "observer.db")) +
 		"\n[components]\nadd = [\"security.deps\", \"security.scan.scalibr\", \"security.scan.osv\"]\n[security.deps]\nonline = false\n"
 	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {

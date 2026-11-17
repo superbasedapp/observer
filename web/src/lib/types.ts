@@ -3052,6 +3052,15 @@ export type SessionGuardEvent = {
   reason?: string;
   target_excerpt?: string;
   taint_origin?: string;
+  /** The session the row is stored under (the root for a sub-agent's hook verdict). */
+  session_id?: string;
+  /** The `<root>:agent:<agent>` session whose call a root-stored hook verdict judged. */
+  subagent_session_id?: string;
+  /** Policy layer that produced the verdict (org | local | project | pack | builtin | judge | other). */
+  layer?: string;
+  layer_label?: string;
+  overridable?: boolean;
+  org_locked?: boolean;
 };
 
 export type SessionGuardEventsResponse = {
@@ -4042,6 +4051,8 @@ export type EnrolmentStatus = {
   org_name?: string;
   /** Display name (never an id); see orgDisplayLabel in lib/orgName.ts. */
   org_display?: string;
+  /** "managed" | "individual": the connection kind (lib/getStarted.ts reads "managed"). Absent from an older daemon. */
+  tenancy?: string;
   org_server_url?: string;
   user_email?: string;
   enrolled_at?: string;
@@ -4822,7 +4833,8 @@ export type LaunchIsolation = {
   capture_degraded?: boolean;
   capture_causes?: string[];
   // seccomp is what the syscall filter gave the run (the closed
-  // sandboxvocab.SeccompRun vocabulary: observer_default, engine_default,
+  // sandboxvocab.SeccompRun vocabulary: observer_default, the strace
+  // switch's observer_seize_pidns and observer_seize_yama, engine_default,
   // off, not_applicable, none); absent from an older daemon or a run that
   // recorded none.
   seccomp?: string;
@@ -5193,12 +5205,18 @@ export type UpdateOrgRefusal = {
 // both read the same two endpoints — defined once here rather than forked
 // per component.
 
-// GuardRule is one /api/guard/rules catalog row — the rule's definition
-// (doc) and remediation hint (advice). Multi-row IDs (e.g. R-152's write +
-// read rows) arrive once per row. `source`/`enforced` are effective-view
-// extras (?effective=1): which policy layer defined the rule (builtin |
-// user | project | trusted_project | org) and whether it's per-rule
-// enforced even in observe mode.
+// GuardRule is one /api/guard/rules row — the rule's definition (doc) and
+// remediation hint (advice). Multi-row IDs (e.g. R-152's write + read rows)
+// arrive once per row, and a project-scoped org rule once per project.
+// `source`/`enforced`/`project`/`overridable`/`org_locked` are effective-view
+// fields (the default; ?catalog=1 is the built-in table): which policy layer
+// defined the rule (builtin | user | project | trusted_project | org), whether
+// it's per-rule enforced even in observe mode, the org project a
+// project-scoped org rule applies to, whether the org marked it overridable,
+// and whether the organization locks it on this node (no local disable or
+// override, pages/security/orgLock.ts). `org_named` says the organization's
+// bundle sets the rule itself; a rule locked but not named runs at its own
+// decision (every rule on a managed node is locked).
 export type GuardRule = {
   id: string;
   category?: string;
@@ -5209,6 +5227,10 @@ export type GuardRule = {
   advice?: string;
   source?: string;
   enforced?: boolean;
+  project?: string;
+  overridable?: boolean;
+  org_locked?: boolean;
+  org_named?: boolean;
 };
 
 export type GuardRulesResponse = { rules: GuardRule[] | null };

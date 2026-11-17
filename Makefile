@@ -11,7 +11,7 @@ WEB_DIR        := web
 WEB_DIST       := $(WEB_DIR)/dist
 WEB_EMBED_DIST := internal/intelligence/dashboard/webapp/dist
 
-.PHONY: all build test test-race test-invariant test-restart-script lint fmt vet tidy clean run cover \
+.PHONY: all build test test-race test-invariant test-restart-script test-assess-livecheck lint fmt vet tidy clean run cover \
         build-observer build-antigravity-bridge build-node-inspection install-node-inspection \
         web-install web-dev web-build web-clean \
         plugins-build verify-plugins-build \
@@ -124,6 +124,13 @@ test-invariant:
 # private temp dir (never /tmp/obs.log, never :8820). T-557.
 test-restart-script:
 	bash scripts/test-restart-daemon.sh
+
+# Hermetic test of the security assessments live-check kit
+# (scripts/assess-livecheck): the fixture-server matcher, the detached
+# spawn, the launch controls' bodies, the port-file wait and the scratch-root
+# clean. No node, no agent; Linux or WSL only (it reads /proc).
+test-assess-livecheck:
+	bash scripts/assess-livecheck/test-kit.sh
 
 # render-module-fixtures lives in Makefile.private (its one owner, T-405):
 # its inputs are deploy/, which is private-only, and this file pulls that

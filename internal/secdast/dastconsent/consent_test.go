@@ -2,8 +2,10 @@ package dastconsent
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -51,7 +53,7 @@ func TestConsentRecord(t *testing.T) {
 	}
 	// A hand-edited record (another surface, an older version) fails.
 	b, _ := os.ReadFile(filepath.Join(dir, File))
-	for _, edit := range []struct{ from, to string }{{`"cli"`, `"dashboard"`}, {`"version":1`, `"version":0`}} {
+	for _, edit := range []struct{ from, to string }{{`"cli"`, `"dashboard"`}, {fmt.Sprintf(`"version":%d`, Version), `"version":1`}} {
 		if err := os.WriteFile(filepath.Join(dir, File), []byte(strings.Replace(string(b), edit.from, edit.to, 1)), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -62,7 +64,7 @@ func TestConsentRecord(t *testing.T) {
 	// The same fields signed under another accept's domain do not count.
 	forged := Consent{Version: Version, AcceptedAt: at, Surface: "cli", By: "dev"}
 	forged.MAC = guardposture.RecordMAC("sbo-osv-db-consent-v1", forged.canonical(), key)
-	if err := os.WriteFile(filepath.Join(dir, File), []byte(`{"version":1,"accepted_at":"2026-11-04T10:00:00Z","surface":"cli","by":"dev","mac":"`+forged.MAC+`"}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, File), []byte(`{"version":`+strconv.Itoa(Version)+`,"accepted_at":"2026-11-04T10:00:00Z","surface":"cli","by":"dev","mac":"`+forged.MAC+`"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if Read(dir, key).Accepted() {

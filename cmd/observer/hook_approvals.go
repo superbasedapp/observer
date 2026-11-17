@@ -64,33 +64,54 @@ func hookApprovalDSN(dbPath string, busy time.Duration) string {
 // hookApprovalLookup returns the hook guard's approval lookup over the
 // database at dbPath, bounded by budget (the hook timeout).
 func hookApprovalLookup(dbPath string, budget time.Duration) guard.ApprovalLookup {
+	return func(ruleID, sessionID, rootHash string) (bool, error) {
+		return hookApprovalRead(dbPath, budget, false, func(ctx context.Context, st *store.Store) (bool, error) {
+			return st.ApprovalActiveFor(ctx, ruleID, sessionID, rootHash, time.Now().UTC())
+		})
+	}
+}
+
+// hookApprovalCoverLookup is hookApprovalLookup that also says which approval
+// covers (store.ApprovalCoverFor: the same scope semantics, in the same single
+// read), so a verdict can name the approval and its grantor (plan section 13.7).
+func hookApprovalCoverLookup(dbPath string, budget time.Duration) guard.ApprovalCoverLookup {
+	return func(ruleID, sessionID, rootHash string) (guard.ApprovalCover, error) {
+		return hookApprovalRead(dbPath, budget, guard.ApprovalCover{}, func(ctx context.Context, st *store.Store) (guard.ApprovalCover, error) {
+			c, err := st.ApprovalCoverFor(ctx, ruleID, sessionID, rootHash, time.Now().UTC())
+			return guard.ApprovalCover{Found: c.Found, ID: c.ID, GrantedBy: c.GrantedBy}, err
+		})
+	}
+}
+
+// hookApprovalRead runs one read of the approvals register under the hook's
+// rules (the file's header comment): read-only open, no migration, one budget
+// for the open and the query, and a missing file or register is no grant.
+func hookApprovalRead[T any](dbPath string, budget time.Duration, none T, read func(context.Context, *store.Store) (T, error)) (T, error) {
 	if budget <= 0 {
 		budget = defaultHookApprovalBudget
 	}
-	return func(ruleID, sessionID, rootHash string) (bool, error) {
-		if dbPath == "" {
-			return false, errors.New("no database path configured")
-		}
-		if _, err := os.Stat(dbPath); errors.Is(err, fs.ErrNotExist) {
-			return false, nil
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), budget)
-		defer cancel()
-		database, err := sql.Open("sqlite", hookApprovalDSN(dbPath, hookApprovalBusy(budget)))
-		if err != nil {
-			return false, fmt.Errorf("open: %w", err)
-		}
-		defer database.Close()
-		database.SetMaxOpenConns(1)
-		ok, err := store.New(database).ApprovalActiveFor(ctx, ruleID, sessionID, rootHash, time.Now().UTC())
-		if err != nil && !approvalsTablePresent(ctx, database) {
-			// A database the daemon has not migrated yet (a fresh file
-			// another hook step created) has no register, so no grants:
-			// the same answer as a missing file, not a failure.
-			return false, nil
-		}
-		return ok, err
+	if dbPath == "" {
+		return none, errors.New("no database path configured")
 	}
+	if _, err := os.Stat(dbPath); errors.Is(err, fs.ErrNotExist) {
+		return none, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+	database, err := sql.Open("sqlite", hookApprovalDSN(dbPath, hookApprovalBusy(budget)))
+	if err != nil {
+		return none, fmt.Errorf("open: %w", err)
+	}
+	defer database.Close()
+	database.SetMaxOpenConns(1)
+	got, err := read(ctx, store.New(database))
+	if err != nil && !approvalsTablePresent(ctx, database) {
+		// A database the daemon has not migrated yet (a fresh file
+		// another hook step created) has no register, so no grants:
+		// the same answer as a missing file, not a failure.
+		return none, nil
+	}
+	return got, err
 }
 
 // approvalsTablePresent reports whether guard_approvals exists. It runs only

@@ -6,7 +6,7 @@
 // disable Apply, a project scope without the trusted layer is not offered,
 // drift and a removal preview read as they should.
 
-import { test } from "node:test";
+import { before, test } from "node:test";
 import assert from "node:assert/strict";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
@@ -18,7 +18,8 @@ import {
   writeErrorText,
   type RecipesViewProps,
 } from "@/pages/security/RecipesCard";
-import { ApiError } from "@/lib/api";
+import { ApiError, buildUrl } from "@/lib/api";
+import { apiCache } from "@/lib/useApi";
 import { applyBody, type Recipe, type RecipePreview, type RecipeReplay, type RecipeSelection, type RecipesState } from "@/lib/guardRecipes";
 
 const consoleError = console.error;
@@ -26,6 +27,20 @@ console.error = (...args: unknown[]) => {
   if (typeof args[0] === "string" && args[0].includes("useLayoutEffect does nothing on the server")) return;
   consoleError(...args);
 };
+
+// The recipe input links go through GatedLink, which waits for this
+// machine's visibility posture (CG-21). Answer it as an individual node, so
+// they render as links; the managed case is its own test below.
+const GOVERNANCE_PATH = buildUrl("/api/governance");
+const lists = { hidden_sections: [], read_only_sections: [], hidden_settings: [], read_only_settings: [] };
+const SOLO_GOVERNANCE = { active: false, state: "no_grant", version: 0, notice: {}, ...lists };
+const MANAGED_GOVERNANCE = {
+  ...SOLO_GOVERNANCE,
+  managed: true,
+  visibility: { managed_defaults: true, ...lists, hidden_settings: ["guard"] },
+};
+const answerGovernance = (g: unknown) => apiCache.fetch(GOVERNANCE_PATH, async () => g);
+before(() => answerGovernance(SOLO_GOVERNANCE));
 
 type Call = { url: string; method: string; headers: Headers; body?: string };
 
@@ -196,7 +211,30 @@ test("the replay asks the simulate route with the recipe and reads recipe_replay
     async (calls) => {
       assert.deepEqual(await fetchRecipeReplay(SEL, 168, false), replay);
       assert.equal(await fetchRecipeReplay(SEL, 720, false), null, "an older daemon without the block");
-      assert.equal(calls[0].url, "/api/guard/simulate?hours=168&recipe=1&level=strict&packs=frontend%2Cnetworking&scope=global");
+      assert.equal(calls[0].url, "/api/guard/simulate?hours=168&recipe=1&level=strict&packs=frontend%2Cnetworking&scope=global&progress=1");
+    },
+  );
+});
+
+test("the replay polls a running run, reports its progress and returns the result (demo bug #14)", async () => {
+  const replay: RecipeReplay = {
+    scanned: 3,
+    before: { mode: "observe", verdicts: 0, by_decision: {}, by_rule_blocking: {} },
+    after: { mode: "observe", verdicts: 0, by_decision: {}, by_rule_blocking: {} },
+  };
+  let n = 0;
+  const seen: number[] = [];
+  await withFetch(
+    () =>
+      ++n === 1
+        ? { running: true, queued: false, actions: 3, evaluated: 3, total: 9, elapsed_ms: 400 }
+        : { window_hours: 168, recipe_replay: replay },
+    async (calls) => {
+      const out = await fetchRecipeReplay(SEL, 168, false, undefined, (p) => seen.push(p.evaluated));
+      assert.deepEqual(out, replay);
+      assert.deepEqual(seen, [3], "the one running answer was reported");
+      assert.equal(calls.length, 2, "one poll while running, one that read the result");
+      assert.ok(calls.every((c) => c.url.includes("progress=1")));
     },
   );
 });
@@ -238,6 +276,17 @@ test("a clean preview enables Apply and shows the moves, the changes and the inp
   assert.match(html, /aria-pressed="true"[^>]*>Strict</);
 });
 
+test("a recipe input whose Settings section is hidden here is a label, not a link (CG-21)", async () => {
+  await answerGovernance(MANAGED_GOVERNANCE);
+  try {
+    const html = render(props());
+    assert.doesNotMatch(html, /href="\/settings\?section=guard"/);
+    assert.match(html, /Allowed hosts/);
+  } finally {
+    await answerGovernance(SOLO_GOVERNANCE);
+  }
+});
+
 test("problems refuse the apply and are listed", () => {
   const html = render(props({ preview: { key: "k", data: previewOf({ problems: ["R-160 cannot be loosened"] }), loading: false, error: "" } }));
   assert.match(buttonTag(html, "recipes-apply"), / disabled=""/);
@@ -252,6 +301,19 @@ test("nothing picked: no preview, Apply disabled with the reason", () => {
   assert.match(buttonTag(html, "recipes-apply"), / disabled=""/);
   assert.match(html, /Pick a level or a pack first\./);
   assert.match(html, /No level: the guard mode stays as it is/);
+});
+
+test("with no level the slider is neutral, never the accent that reads as Balanced (demo bug #9)", () => {
+  const none = render(props({ sel: { ...SEL, level: "" }, preview: { key: "", data: null, loading: false, error: "" } }));
+  const slider = none.match(/<input[^>]*type="range"[^>]*>/)?.[0] ?? "";
+  assert.match(slider, /data-level-state="none"/);
+  assert.match(slider, /grayscale/);
+  assert.doesNotMatch(slider, /accent-accent/);
+  assert.match(none, /No level selected: move the slider or pick one below/);
+  const set = render(props());
+  const setSlider = set.match(/<input[^>]*type="range"[^>]*>/)?.[0] ?? "";
+  assert.match(setSlider, /data-level-state="set"/);
+  assert.match(setSlider, /accent-accent/);
 });
 
 test("a project scope says the machine-wide mode cannot move, and needs the trusted layer", () => {

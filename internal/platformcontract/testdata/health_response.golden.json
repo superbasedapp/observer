@@ -1,0 +1,8 @@
+{
+  "tenant_id": "org_1",
+  "status": "degraded",
+  "last_push": "stale",
+  "backlog": "parked",
+  "quota": "near",
+  "error": "database"
+}

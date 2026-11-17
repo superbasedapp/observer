@@ -46,9 +46,10 @@ func TestCatalogShape(t *testing.T) {
 	// SBX-P7 adds the e2b, modal and vercel hosted drivers; lane GATES-SBX
 	// adds readopt, credentials, mxc.appcontainer, wslc and hcs; lane GATES-SEC
 	// the trivy and kics drivers and isolation.seal; plan 14.5 item 3b the
-	// Go symbol check, security.reach.go).
-	if got := feature + integration; got < 38 || got > 80 {
-		t.Errorf("optional node rows = %d, want 38 to 80", got)
+	// Go symbol check, security.reach.go; the 2026-11-11 hosted rows the
+	// docker, instabox and daytona drivers).
+	if got := feature + integration; got < 38 || got > 85 {
+		t.Errorf("optional node rows = %d, want 38 to 85", got)
 	}
 	if server < 21 {
 		t.Errorf("server rows = %d, want at least 21", server)
@@ -231,9 +232,12 @@ func TestDigestOrderIndependent(t *testing.T) {
 
 func TestImages(t *testing.T) {
 	core := InImage(ImageCore)
-	want := map[string]bool{"org.core": true, "org.oidc": true}
+	// org.sandbox was part of org.core until wave 17 lane pooled-sandbox gave
+	// it a row of its own (so a pooled host can switch it per org); it stays
+	// in the core image, which therefore serves exactly what it did.
+	want := map[string]bool{"org.core": true, "org.oidc": true, "org.sandbox": true}
 	if len(core) != len(want) {
-		t.Fatalf("core image = %v, want org.core and org.oidc (Q11)", core)
+		t.Fatalf("core image = %v, want org.core, org.oidc and org.sandbox (Q11)", core)
 	}
 	for _, id := range core {
 		if !want[id] {
@@ -243,19 +247,21 @@ func TestImages(t *testing.T) {
 }
 
 // TestDigestMixesCatalogVersion pins the digest to the catalog version
-// (3 since lane SEC-F2B, 4 since lane GATES-SEC): a version bump changes every binary's
-// components digest once, the release-note line.
+// (3 since lane SEC-F2B, 4 since lane GATES-SEC, 5 since wave 17's
+// org.vendorconn, org.sandbox, org.coding, org.agent-config and org.entities
+// rows): a version bump changes every binary's components digest once, the
+// release-note line.
 func TestDigestMixesCatalogVersion(t *testing.T) {
-	if CatalogVersion != 4 {
-		t.Fatalf("CatalogVersion = %d; the wave-6 bump is 4", CatalogVersion)
+	if CatalogVersion != 5 {
+		t.Fatalf("CatalogVersion = %d; the wave 17 bump is 5", CatalogVersion)
 	}
 	ids := []string{"core", "security", "security.provenance"}
-	h := sha256.Sum256([]byte("sbo-components-v4\ncore\nsecurity\nsecurity.provenance"))
+	h := sha256.Sum256([]byte("sbo-components-v5\ncore\nsecurity\nsecurity.provenance"))
 	if got := Digest(ids); got != hex.EncodeToString(h[:]) {
-		t.Fatalf("digest %s does not mix in catalog v4", got)
+		t.Fatalf("digest %s does not mix in catalog v5", got)
 	}
-	v3 := sha256.Sum256([]byte("sbo-components-v3\ncore\nsecurity\nsecurity.provenance"))
-	if Digest(ids) == hex.EncodeToString(v3[:]) {
-		t.Fatal("the digest still reads as catalog v3")
+	v4 := sha256.Sum256([]byte("sbo-components-v4\ncore\nsecurity\nsecurity.provenance"))
+	if Digest(ids) == hex.EncodeToString(v4[:]) {
+		t.Fatal("the digest still reads as catalog v4")
 	}
 }

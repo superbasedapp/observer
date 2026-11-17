@@ -54,6 +54,9 @@ type Finding struct {
 	Path string
 	// Line is the 1-based line (0: unknown).
 	Line int
+	// CWE are the finding's CWE ids; only the closed shape counts
+	// (policy.ValidCWE), and they only pick the hint (testAskCWEs).
+	CWE []string
 }
 
 // categoryWords is what a finding of each category is, in Observer's own
@@ -73,6 +76,7 @@ var categoryWords = map[policy.FindingCategory]string{
 	policy.FindingScopeDrift:           "a change outside the task's scope",
 	policy.FindingGitBypass:            "a git hook bypass",
 	policy.FindingProvenance:           "a provenance gap",
+	policy.FindingLicense:              "a dependency licence outside the project's policy",
 }
 
 // categoryHints is the fix hint of each category, in Observer's own words.
@@ -91,6 +95,36 @@ var categoryHints = map[policy.FindingCategory]string{
 	policy.FindingScopeDrift:           "Keep the change to the files the task needs.",
 	policy.FindingGitBypass:            "Commit without skipping the hooks.",
 	policy.FindingProvenance:           "Record where this change came from.",
+	policy.FindingLicense:              "Replace the dependency or record an exception.",
+}
+
+// TestAskHint is the fix hint of a finding about untrusted input handling
+// (security coverage gaps plan item 6): fix it and add a test for the
+// input, a fuzz test where the language has one. Observer credits a test
+// the session only added (secdiffobs AdditiveOnly) when it verifies the fix.
+const TestAskHint = "Fix it and add a test for this input (a fuzz test where the language has one)."
+
+// testAskCWEs are the input-handling weaknesses whose hint asks for a test:
+// validation, path traversal, OS command, XSS, SQL and code injection,
+// resource exhaustion, deserialization, XXE, entity expansion, out of
+// bounds write and ReDoS. One entry per CWE.
+var testAskCWEs = map[string]bool{
+	"CWE-20": true, "CWE-22": true, "CWE-78": true, "CWE-79": true, "CWE-89": true, "CWE-94": true,
+	"CWE-400": true, "CWE-502": true, "CWE-611": true, "CWE-770": true, "CWE-776": true, "CWE-787": true,
+	"CWE-1333": true,
+}
+
+// hintFor returns f's fix hint: the test-asking hint for a code finding
+// about input handling, else the category's.
+func hintFor(f Finding) string {
+	if f.Category == policy.FindingCodeVuln || f.Category == policy.FindingSecurityRegression {
+		for _, c := range f.CWE {
+			if policy.ValidCWE(c) && testAskCWEs[c] {
+				return TestAskHint
+			}
+		}
+	}
+	return categoryHints[f.Category]
 }
 
 // confidenceWords renders the confidence.
@@ -150,7 +184,7 @@ func Line(f Finding) string {
 	tail := " " + HumanLine
 	data := location(f, MaxLineBytes-len(head)-len(tail))
 	room := MaxLineBytes - len(head) - len(tail) - len(data)
-	if hint := categoryHints[f.Category]; hint != "" && room > minHintBytes {
+	if hint := hintFor(f); hint != "" && room > minHintBytes {
 		if len(hint)+1 <= room {
 			head += " " + hint
 		} else {

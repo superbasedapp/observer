@@ -43,6 +43,17 @@ type Env struct {
 	// nil uses this package's fallbacks.
 	DroppedLayers DroppedLayersFunc
 	LintUser      UserLintFunc
+	// ReplayFS, when set, is the filesystem memo the before and after guards
+	// share (guard.Options.ReplayFS): a replay caller passes one so the two
+	// judge a week of actions with one lookup per distinct path. nil (every
+	// apply and preview) builds guards that ask the filesystem as usual.
+	ReplayFS *guard.ReplayFS
+	// Evaluate, when set, runs one guard over a replay's inputs in place of
+	// g.EvaluateActions: the dashboard passes a chunked evaluator that counts
+	// progress and stops when the replay is abandoned. It must return the
+	// verdicts EvaluateActions would (a stopped run may return a prefix; the
+	// caller that stopped it discards the result). nil is EvaluateActions.
+	Evaluate func(g *guard.Guard, inputs []guard.ActionInput) []guard.ActionVerdict
 }
 
 func (e Env) now() time.Time {
@@ -592,7 +603,7 @@ func fillPreview(env Env, pv *Preview, text []byte, remove bool, edit func(*conf
 		pv.ModeNote = joinNotes(pv.ModeNote, fmt.Sprintf("Your organization holds the prompt mode at %q, so the %q written to the config file is not in force.", after.Prompt.Mode, fileAfter.Prompt.Mode))
 	}
 
-	cur, err = guard.New(guard.Options{Config: before, Home: env.Home, KnownProjectRoots: env.KnownProjectRoots, PackRules: env.PackRules})
+	cur, err = guard.New(guard.Options{Config: before, Home: env.Home, KnownProjectRoots: env.KnownProjectRoots, PackRules: env.PackRules, ReplayFS: env.ReplayFS})
 	if err != nil {
 		return nil, nil, false, fmt.Errorf("build the current guard: %w", err)
 	}
@@ -606,7 +617,7 @@ func fillPreview(env Env, pv *Preview, text []byte, remove bool, edit func(*conf
 		}
 		return os.ReadFile(p) //nolint:gosec // the guard's own policy files
 	}
-	next, err = guard.New(guard.Options{Config: after, Home: env.Home, KnownProjectRoots: env.KnownProjectRoots, PackRules: env.PackRules, ReadFile: readFile})
+	next, err = guard.New(guard.Options{Config: after, Home: env.Home, KnownProjectRoots: env.KnownProjectRoots, PackRules: env.PackRules, ReadFile: readFile, ReplayFS: env.ReplayFS})
 	if err != nil {
 		return nil, nil, false, fmt.Errorf("build the proposed guard: %w", err)
 	}

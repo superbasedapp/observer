@@ -79,6 +79,7 @@ node_modules
 # rendered config, Caddy's certificate store.
 deploy/demo-box/state
 deploy/cloud-box/state
+deploy/saas-ovh/cloud-app/state
 # Operator-created secret directories the compose files bind-mount.
 deploy/observer-org/production/secrets
 deploy/observer-gateway/config
@@ -106,6 +107,25 @@ deploy/observer-gateway/config
 !deploy/modules/_shared/openshell/testdata/bundle-on/openshell/.env
 !deploy/modules/_shared/openshell/testdata/bundle-tag-only/.env
 !deploy/modules/_shared/openshell/testdata/bundle-tag-only/openshell/.env
+# The OpenTofu test-bundle .env fixtures (stand-ins, never a real secret):
+# deploy/embed.go names them by pattern since MS-R-050, and a //go:embed
+# pattern with no match fails the observer-org image build. Named one by one
+# for the same BuildKit reason as above.
+!deploy/modules/appliance/azure/app/tests/bundles/agent-access/.env
+!deploy/modules/compact/aws/app/tests/bundles/aa-no-overlay/.env
+!deploy/modules/compact/aws/app/tests/bundles/aa-off-leaked-key/.env
+!deploy/modules/compact/aws/app/tests/bundles/aa-tag-only/.env
+!deploy/modules/compact/aws/app/tests/bundles/aa-wrong-origin/.env
+!deploy/modules/compact/aws/app/tests/bundles/agent-access/.env
+!deploy/modules/compact/aws/app/tests/bundles/leaked/.env
+!deploy/modules/compact/aws/app/tests/bundles/placeholder/.env
+!deploy/modules/compact/azure/app/tests/bundles/aa-no-overlay/.env
+!deploy/modules/compact/azure/app/tests/bundles/aa-off-leaked-key/.env
+!deploy/modules/compact/azure/app/tests/bundles/aa-tag-only/.env
+!deploy/modules/compact/azure/app/tests/bundles/aa-wrong-origin/.env
+!deploy/modules/compact/azure/app/tests/bundles/agent-access/.env
+!deploy/modules/compact/azure/app/tests/bundles/leaked/.env
+!deploy/modules/compact/azure/app/tests/bundles/placeholder/.env
 # Local OpenTofu state, its provider cache and filled tfvars. The committed
 # tfvars fixtures live deeper (tests/fixtures/) and stay.
 **/*.tfstate
@@ -113,4 +133,3 @@ deploy/observer-gateway/config
 **/.terraform
 deploy/modules/*/*/*/*.tfvars
 deploy/modules/*/*/*/*.tfvars.json
-deploy/ops/**/*.tfvars

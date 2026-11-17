@@ -41,6 +41,12 @@ type PaddlePlan struct {
 	// (e.g. "$15/mo"). Empty is fine — the portal falls back to computing its
 	// own label from the plan.
 	Display string `json:"display,omitempty"`
+	// NoTrialOf is set on a trial-less sibling price (SBCI_PADDLE_NO_TRIAL_PRICES,
+	// paddle_notrial.go): the catalogue price whose trial this one leaves
+	// out. Such a price grants the same plan, is never listed in the
+	// checkout catalogue, and is offered only by the server, to a scope that
+	// has already had its trial. Empty on every catalogue price.
+	NoTrialOf string `json:"no_trial_of,omitempty"`
 }
 
 // PaddleEvent is the slice of a Paddle Billing (v2) webhook envelope W9 acts on.
@@ -76,6 +82,12 @@ type PaddleEvent struct {
 	// not-yet-linked subscription to an account: the untrusted AccountID alone
 	// never binds. Empty for events on an already-bound subscription.
 	CheckoutNonce string
+	// OrgID is custom_data.org_id (W14-D3): the org an org checkout was
+	// started for. UNTRUSTED like AccountID: the org a subscription pays for
+	// is the server-minted checkout intent's org (or, once bound, the row's),
+	// never this value; a non-empty value that differs from the intent's org
+	// refuses the binding. Empty on account checkouts.
+	OrgID string
 	// Adjustment* carry the refund/chargeback slice of an adjustment.* event
 	// (G2-08). Adjustments carry no custom_data, so the account is resolved from
 	// the bound subscription, never from AccountID.
@@ -102,6 +114,17 @@ type PaddleEvent struct {
 	// transaction.completed's payload carries none of these three sources on
 	// a fresh first-purchase delivery.
 	TrialEndsAt time.Time
+
+	// TransactionPaid (FR-7) is true when this event's details.totals amount
+	// (grand_total, falling back to total) parses as a decimal greater than
+	// zero: positive evidence that money moved. Absent or unparseable totals
+	// are false, so only a transaction that proves a payment may re-open a
+	// refunded or canceled subscription (activateMayReopen).
+	TransactionPaid bool
+	// Quantity (FR-22) is data.items[0].quantity: the seat quantity Paddle
+	// bills the subscription's first item for. 0 when the event carries no
+	// items (adjustments) or no quantity.
+	Quantity int64
 }
 
 // BillingIntake reports what happened to a delivery.
@@ -111,9 +134,17 @@ type BillingIntake struct {
 	Applied   bool // a plan assignment / subscription change was made
 	// Outcome is a short machine tag for the audit trail: applied | duplicate |
 	// ignored | unattributed | binding_refused | unknown_price | account_not_found
-	// | not_billable | stale | status_only.
+	// | not_billable | stale | status_only | terminal_pending (FR-8: a terminal
+	// event for a not-yet-bound subscription, kept for the bind) |
+	// bound_terminal (FR-8: the bind found a pending terminal state) |
+	// terminal_kept (FR-7: an activation that may not re-open a terminal row).
+	// It is stamped on billing_events.outcome (FR-2).
 	Outcome string
 	Note    string
+	// Reason is the machine reason of a refused binding (FR-2), one of the
+	// bindRefusal* constants; empty for every other outcome. It is written to
+	// paddle_binding_refusals.reason and to the webhook's alert log line.
+	Reason string
 	// AccountID is the RESOLVED account this event was attributed to — NEVER
 	// the untrusted request-supplied custom_data.account_id (P3-d). Empty
 	// when the event could not be attributed to any account (ignored,
@@ -124,6 +155,11 @@ type BillingIntake struct {
 	// account that does NOT exist, so it is deliberately left unattributed).
 	// This is what the webhook handler audits under, not ev.AccountID.
 	AccountID string
+	// OrgID is the RESOLVED org this event's subscription pays for (W14-D3):
+	// the bound row's org_id, or the consumed checkout intent's. Empty on the
+	// account path (every personal subscription) and whenever AccountID is
+	// empty.
+	OrgID string
 }
 
 var (
@@ -209,16 +245,23 @@ func (s *Store) ProcessPaddleEvent(ctx context.Context, ev PaddleEvent) (Billing
 		return BillingIntake{}, err
 	}
 
-	// 3. Stamp processed + the RESOLVED account (P2-1 / P3-d).
+	// 3. Stamp processed + the RESOLVED account (P2-1 / P3-d) + the outcome
+	// (FR-2), and keep the durable refusal record in the same transaction.
 	if err := s.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		var acct *string
 		if resolvedAccount != "" {
 			acct = &resolvedAccount
 		}
-		_, e := tx.Exec(ctx,
-			`UPDATE billing_events SET processed_at=$2, account_id=$3::uuid WHERE event_id=$1`,
-			ev.EventID, now, acct)
-		return e
+		var outcome *string
+		if intake.Outcome != "" {
+			outcome = &intake.Outcome
+		}
+		if _, e := tx.Exec(ctx,
+			`UPDATE billing_events SET processed_at=$2, account_id=$3::uuid, outcome=$4 WHERE event_id=$1`,
+			ev.EventID, now, acct, outcome); e != nil {
+			return e
+		}
+		return s.recordBindingOutcomeTx(ctx, tx, ev, intake, now)
 	}); err != nil {
 		return BillingIntake{}, fmt.Errorf("cloudserver/store.ProcessPaddleEvent: stamp: %w", err)
 	}
@@ -376,6 +419,8 @@ func resolveAdjustmentAction(action, typ, status string) paddleAction {
 // `accounts` row was actually proven to exist for the id in play, so a caller
 // can safely use it to attribute an audit row or a billing_events.account_id
 // write without ever risking an FK failure on a foreign/forged id.
+//
+//nolint:gocyclo // one ordered guard per billing rule (eligibility, ordering, bind gate, FR-2/FR-8 pending and intent checks) inside one transaction by design; splitting would scatter the lock-held sequence.
 func (s *Store) applyPaddleEvent(ctx context.Context, ev PaddleEvent, now time.Time) (BillingIntake, string, error) {
 	act := resolvePaddleAction(ev)
 	if act.kind == "ignore" {
@@ -395,34 +440,22 @@ func (s *Store) applyPaddleEvent(ctx context.Context, ev PaddleEvent, now time.T
 	needBind := false
 	if !bound {
 		if !act.binds {
-			// An adjustment / status event on a subscription we have no binding for
-			// cannot be attributed — record it, act on nothing.
+			// FR-8: a terminal event (cancel, full refund, chargeback) for a
+			// subscription not bound yet is kept by subscription id for the
+			// bind to read, never dropped.
+			if status, ok := pendingTerminalStatus(ev, act); ok {
+				in, err := s.recordPendingTerminal(ctx, ev, status, now)
+				return in, "", err
+			}
+			// Any other adjustment / status event on a subscription we have no
+			// binding for cannot be attributed — record it, act on nothing.
 			return BillingIntake{Applied: false, Outcome: "unattributed", Note: "subscription not bound to an account"}, "", nil
 		}
-		// F2 binding gate: a fresh subscription binds to an account ONLY with a
-		// valid server-minted checkout nonce. The untrusted custom_data.account_id
-		// is necessary but not sufficient. P2-1: the api decode boundary
-		// (paddleEventFromEnvelope) already sanitizes a non-UUID account id to
-		// "" before this is ever reached — this uuid.Parse check is
-		// DEFENSE-IN-DEPTH so the store is safe standalone (a direct caller
-		// that skips the api decode step, e.g. a test or a future non-HTTP
-		// intake path, gets the same fail-closed refusal here rather than a
-		// hard `::uuid` cast error deeper in the transaction).
-		trimmedAccountID := strings.TrimSpace(ev.AccountID)
-		if trimmedAccountID == "" {
-			return BillingIntake{Applied: false, Outcome: "binding_refused", Note: "no account in custom_data"}, "", nil
+		gated, refused, ok := s.paddleBindGate(ev)
+		if !ok {
+			return refused, "", nil
 		}
-		if _, e := uuid.Parse(trimmedAccountID); e != nil {
-			return BillingIntake{Applied: false, Outcome: "binding_refused", Note: "account id in custom_data is not a valid uuid"}, "", nil
-		}
-		if strings.TrimSpace(ev.CheckoutNonce) == "" {
-			return BillingIntake{Applied: false, Outcome: "binding_refused", Note: "missing checkout nonce"}, "", nil
-		}
-		// A binding must grant a real plan; a foreign/unknown price can never bind.
-		if _, known := s.paddlePlanForPrice(ev.PriceID); !known {
-			return BillingIntake{Applied: false, Outcome: "unknown_price", Note: "binding refused: unknown price " + ev.PriceID}, "", nil
-		}
-		account = trimmedAccountID
+		account = gated
 		needBind = true
 	}
 
@@ -437,7 +470,7 @@ func (s *Store) applyPaddleEvent(ctx context.Context, ev PaddleEvent, now time.T
 	}
 
 	var intake BillingIntake
-	var resolvedAccount string
+	var resolvedAccount, resolvedOrg string
 	err = s.WithAccount(ctx, account, func(ctx context.Context, tx pgx.Tx) error {
 		// F4: serialize every billing apply for this account. A concurrent replay
 		// of the same (or a racing) event blocks here rather than interleaving.
@@ -457,6 +490,9 @@ func (s *Store) applyPaddleEvent(ctx context.Context, ev PaddleEvent, now time.T
 		if e := tx.QueryRow(ctx, `SELECT status FROM accounts WHERE account_id=$1::uuid`, account).Scan(&status); e != nil {
 			if errors.Is(e, pgx.ErrNoRows) {
 				intake = BillingIntake{Applied: false, Outcome: "account_not_found", Note: "account not found"}
+				if needBind {
+					intake.Reason = bindRefusalAccountNotFound
+				}
 				return nil
 			}
 			return fmt.Errorf("read account: %w", e)
@@ -465,10 +501,20 @@ func (s *Store) applyPaddleEvent(ctx context.Context, ev PaddleEvent, now time.T
 		resolvedAccount = account
 		if status == "deleted" || status == "closed" {
 			intake = BillingIntake{Applied: false, Outcome: "not_billable", Note: "account not billable (" + status + ")"}
+			if needBind {
+				intake.Reason = bindRefusalAccountNotBillable
+			}
 			return nil
 		}
 
 		if needBind {
+			// FR-8: serialize with recordPendingTerminal on the subscription id,
+			// so a terminal event recorded for this subscription is either
+			// visible below or, when it lost the race, sees the binding and is
+			// redelivered onto the bound path.
+			if e := paddleSubscriptionLockTx(ctx, tx, ev.SubscriptionID); e != nil {
+				return fmt.Errorf("subscription lock: %w", e)
+			}
 			// P1-2: RE-RESOLVE the binding now that the advisory lock is held.
 			// transaction.completed and subscription.created/trialing for the
 			// SAME first-purchase checkout typically carry the SAME
@@ -496,12 +542,18 @@ func (s *Store) applyPaddleEvent(ctx context.Context, ev PaddleEvent, now time.T
 			// Consume the single-use checkout intent for this account. No live
 			// matching intent ⇒ the binding is refused (the custom_data.account_id
 			// was not proven by the server-initiated checkout).
-			ok, intentPrice, e := consumeCheckoutIntentTx(ctx, tx, account, ev.CheckoutNonce, ev.SubscriptionID, now)
+			// FR-2: the intent's window is judged at the event's own
+			// occurred_at (Paddle's clock, inside the signed body), never at
+			// when this delivery happens to be processed.
+			ok, intentPrice, intentOrg, e := consumeCheckoutIntentTx(ctx, tx, account, ev.CheckoutNonce, ev.SubscriptionID, occurred)
 			if e != nil {
 				return fmt.Errorf("consume checkout intent: %w", e)
 			}
 			if !ok {
-				intake = BillingIntake{Applied: false, Outcome: "binding_refused", Note: "no matching live checkout nonce for account"}
+				intake = BillingIntake{
+					Applied: false, Outcome: "binding_refused", Reason: bindRefusalNoLiveIntent,
+					Note: "no checkout nonce for the account that was live when the event occurred",
+				}
 				return nil
 			}
 			// P3-c: the checkout intent records the price the portal minted
@@ -511,11 +563,41 @@ func (s *Store) applyPaddleEvent(ctx context.Context, ev PaddleEvent, now time.T
 			// carries no assertion either way, so it is never a mismatch.
 			if intentPrice != "" && intentPrice != ev.PriceID {
 				intake = BillingIntake{
-					Applied: false, Outcome: "binding_refused",
+					Applied: false, Outcome: "binding_refused", Reason: bindRefusalPriceMismatch,
 					Note: "checkout intent price does not match the event's price",
 				}
 				return nil
 			}
+			// W14-D3: the org a new subscription pays for is the intent's
+			// (orgBindingRefusal, paddle_org.go).
+			if note := s.orgBindingRefusal(ev, intentOrg); note != "" {
+				intake = BillingIntake{Applied: false, Outcome: "binding_refused", Reason: bindRefusalScope, Note: note}
+				return nil
+			}
+			resolvedOrg = intentOrg
+			// FR-8: a terminal state recorded before this bind wins over the
+			// activation, unless this delivery is itself a later payment.
+			pending, havePending, e := pendingTerminalTx(ctx, tx, ev.SubscriptionID)
+			if e != nil {
+				return fmt.Errorf("read pending terminal: %w", e)
+			}
+			if havePending {
+				if e := markPendingTerminalAppliedTx(ctx, tx, ev.SubscriptionID, now); e != nil {
+					return fmt.Errorf("mark pending terminal: %w", e)
+				}
+				if !PendingTerminalSuperseded(ev, pending.OccurredAt) {
+					intake, e = s.bindPendingTerminalTx(ctx, tx, ev, account, resolvedOrg, pending, occurred)
+					return e
+				}
+			}
+		} else {
+			// An already-bound subscription keeps the scope it was bound
+			// with (W14-D3): the row's own org_id, empty on the account path.
+			o, e := boundSubscriptionOrgTx(ctx, tx, account, ev.SubscriptionID)
+			if e != nil {
+				return fmt.Errorf("read subscription scope: %w", e)
+			}
+			resolvedOrg = o
 		}
 
 		// F3: per-subscription ordering. If we have already applied an event at or
@@ -533,13 +615,45 @@ func (s *Store) applyPaddleEvent(ctx context.Context, ev PaddleEvent, now time.T
 			return nil
 		}
 
-		intake, e = applyResolvedAction(ctx, tx, s, ev, act, account, periodEnd, occurred, now)
+		intake, e = applyScopedActionTx(ctx, tx, s, ev, act, account, resolvedOrg, periodEnd, occurred, now)
 		return e
 	})
 	if err != nil {
 		return BillingIntake{}, "", err
 	}
+	if resolvedAccount != "" {
+		intake.OrgID = resolvedOrg
+	}
 	return intake, resolvedAccount, nil
+}
+
+// paddleBindGate is applyPaddleEvent's binding gate for a subscription with
+// no binding yet: the account it may bind to, or the refusal to record.
+func (s *Store) paddleBindGate(ev PaddleEvent) (account string, refused BillingIntake, ok bool) {
+	// F2 binding gate: a fresh subscription binds to an account ONLY with a
+	// valid server-minted checkout nonce. The untrusted custom_data.account_id
+	// is necessary but not sufficient. P2-1: the api decode boundary
+	// (paddleEventFromEnvelope) already sanitizes a non-UUID account id to
+	// "" before this is ever reached — this uuid.Parse check is
+	// DEFENSE-IN-DEPTH so the store is safe standalone (a direct caller
+	// that skips the api decode step, e.g. a test or a future non-HTTP
+	// intake path, gets the same fail-closed refusal here rather than a
+	// hard `::uuid` cast error deeper in the transaction).
+	trimmedAccountID := strings.TrimSpace(ev.AccountID)
+	if trimmedAccountID == "" {
+		return "", BillingIntake{Applied: false, Outcome: "binding_refused", Reason: bindRefusalNoAccount, Note: "no account in custom_data"}, false
+	}
+	if _, e := uuid.Parse(trimmedAccountID); e != nil {
+		return "", BillingIntake{Applied: false, Outcome: "binding_refused", Reason: bindRefusalAccountNotUUID, Note: "account id in custom_data is not a valid uuid"}, false
+	}
+	if strings.TrimSpace(ev.CheckoutNonce) == "" {
+		return "", BillingIntake{Applied: false, Outcome: "binding_refused", Reason: bindRefusalMissingNonce, Note: "missing checkout nonce"}, false
+	}
+	// A binding must grant a real plan; a foreign/unknown price can never bind.
+	if _, known := s.paddlePlanForPrice(ev.PriceID); !known {
+		return "", BillingIntake{Applied: false, Outcome: "unknown_price", Reason: bindRefusalUnknownPrice, Note: "binding refused: unknown price " + ev.PriceID}, false
+	}
+	return trimmedAccountID, BillingIntake{}, true
 }
 
 // applyResolvedAction performs the per-kind entitlement mutation. It runs inside
@@ -556,7 +670,7 @@ func applyResolvedAction(ctx context.Context, tx pgx.Tx, s *Store, ev PaddleEven
 	case "restore":
 		return applyPaddleRestore(ctx, tx, ev, account, occurred, now)
 	case "status_only":
-		return applyPaddleStatusOnly(ctx, tx, ev, account, occurred)
+		return applyAccountPaddleStatusOnly(ctx, tx, s, ev, account, occurred, now)
 	default:
 		return BillingIntake{Applied: false, Outcome: "ignored", Note: "no action"}, nil
 	}
@@ -636,14 +750,25 @@ func applyPaddleActivate(ctx context.Context, tx pgx.Tx, s *Store, ev PaddleEven
 	// errors) — there is no way to catch that error and still commit the
 	// graceful outcome below, so this must be a pre-check, not a post-hoc
 	// error mapping. Excludes ev.SubscriptionID itself so a renewal/update on
-	// the SAME subscription is never refused.
+	// the SAME subscription is never refused. W14-D3: an org subscription the
+	// account pays for is not the account's own (org_id NULL only, the 0090
+	// trigger's account scope).
+	//
+	// FR-22: a subscription `migrate-personal` re-keyed onto the account's
+	// personal org is still the account's own plan, so it occupies the same
+	// slot here (personalOrgIDTx; "" when the account has no personal org).
+	personalOrg, err := personalOrgIDTx(ctx, tx)
+	if err != nil {
+		return BillingIntake{}, fmt.Errorf("read personal org: %w", err)
+	}
 	var conflictingSub string
 	checkErr := tx.QueryRow(ctx,
 		`SELECT paddle_subscription_id FROM paddle_subscriptions
 		  WHERE account_id=$1::uuid AND paddle_subscription_id<>$2
+		    AND (org_id IS NULL OR org_id = $3::uuid)
 		    AND status NOT IN ('canceled','refunded','charged_back')
 		  LIMIT 1`,
-		account, ev.SubscriptionID).Scan(&conflictingSub)
+		account, ev.SubscriptionID, nullableUUID(personalOrg)).Scan(&conflictingSub)
 	switch {
 	case errors.Is(checkErr, pgx.ErrNoRows):
 		// no competing live subscription — proceed
@@ -651,7 +776,7 @@ func applyPaddleActivate(ctx context.Context, tx pgx.Tx, s *Store, ev PaddleEven
 		return BillingIntake{}, fmt.Errorf("check live subscription: %w", checkErr)
 	default:
 		return BillingIntake{
-			Applied: false, Outcome: "refused_second_live",
+			Applied: false, Outcome: "refused_second_live", Reason: bindRefusalSecondLive,
 			Note: "account already holds a live subscription (" + conflictingSub + "); this distinct subscription id was refused",
 		}, nil
 	}
@@ -697,6 +822,13 @@ func applyPaddleActivate(ctx context.Context, tx pgx.Tx, s *Store, ev PaddleEven
 		account, ev.SubscriptionID).Scan(&existingStatus, &existingTrialEnd); e != nil && !errors.Is(e, pgx.ErrNoRows) {
 		return BillingIntake{}, fmt.Errorf("read existing subscription for activate: %w", e)
 	}
+	// FR-7: a refunded, charged-back or canceled row is re-opened only by a
+	// paid transaction.completed (ActivateMayReopen); nothing is written, not
+	// even last_event_at, so the renewal payment that may follow is never
+	// judged stale against this event.
+	if !ActivateMayReopen(ev, existingStatus) {
+		return terminalKeptIntake(existingStatus), nil
+	}
 	rowStatus, preservedTrialEnd := resolveActivateStatus(ev, existingStatus, existingTrialEnd)
 	// activatePeriodEnd feeds BOTH current_period_end and (while trialing)
 	// trial_ends_at in upsertSubscriptionTx. A preserved trial keeps its OWN
@@ -714,8 +846,13 @@ func applyPaddleActivate(ctx context.Context, tx pgx.Tx, s *Store, ev PaddleEven
 			activatePeriodEnd = &t
 		}
 	}
-	if e := upsertSubscriptionTx(ctx, tx, account, ev, plan, rowStatus, nil, activatePeriodEnd, occurred); e != nil {
+	if e := upsertSubscriptionTx(ctx, tx, account, "", ev, plan, rowStatus, nil, activatePeriodEnd, occurred); e != nil {
 		return BillingIntake{}, fmt.Errorf("upsert subscription: %w", e)
+	}
+	if rowStatus == "trialing" {
+		if e := recordTrialUseTx(ctx, tx, account, "", ev.SubscriptionID, occurred); e != nil {
+			return BillingIntake{}, fmt.Errorf("record trial use: %w", e)
+		}
 	}
 	if _, e := assignPlanTx(ctx, tx, account, plan.Name, plan.Version, now, now, "paddle"); e != nil {
 		if errors.Is(e, ErrPlanAssignmentConflict) {
@@ -774,7 +911,7 @@ func applyPaddleCancel(ctx context.Context, tx pgx.Tx, s *Store, ev PaddleEvent,
 			plan = PaddlePlan{Name: PlanPlusBeta, Version: 1}
 		}
 	}
-	if e := upsertSubscriptionTx(ctx, tx, account, ev, plan, "canceled", &now, periodEnd, occurred); e != nil {
+	if e := upsertSubscriptionTx(ctx, tx, account, "", ev, plan, "canceled", &now, periodEnd, occurred); e != nil {
 		return BillingIntake{}, fmt.Errorf("upsert subscription: %w", e)
 	}
 	effective := ev.CurrentPeriodEnd
@@ -789,86 +926,38 @@ func applyPaddleCancel(ctx context.Context, tx pgx.Tx, s *Store, ev PaddleEvent,
 	if effective.IsZero() {
 		effective = now
 	}
+	// FR-22: the drop lands on the plan the account would hold without
+	// Paddle (an operator grant, else free), and never touches a plan an
+	// operator granted after the subscription started.
+	fallback, keep, err := paddleDropTargetTx(ctx, tx, account, now)
+	if err != nil {
+		return BillingIntake{}, err
+	}
+	if keep {
+		return BillingIntake{Applied: true, Outcome: "applied", Note: "canceled; the operator plan grant in force is kept"}, nil
+	}
 	if wasTrialing {
-		if e := scheduleTrialCancelDowngradeTx(ctx, tx, account, effective, now, "paddle"); e != nil {
+		if e := paddleMoveAccountPlanAtTx(ctx, tx, account, fallback, effective, now); e != nil {
 			if errors.Is(e, ErrPlanAssignmentConflict) {
 				return BillingIntake{Applied: true, Outcome: "applied", Note: "canceled during trial; already scheduled"}, nil
 			}
 			return BillingIntake{}, fmt.Errorf("schedule trial-cancel downgrade: %w", e)
 		}
-		return BillingIntake{Applied: true, Outcome: "applied", Note: "canceled during trial; downgrade at trial end"}, nil
+		return BillingIntake{Applied: true, Outcome: "applied", Note: "canceled during trial; downgrade at trial end to " + fallback.Name}, nil
 	}
-	// DefaultFreePlanVersion, not a hardcoded 1: a cancellation must land the
-	// account on the SAME free plan an account with no assignment resolves,
-	// otherwise a canceled subscriber silently keeps the superseded free
-	// allowance (v1's 5/day) forever. The downgrade still defers to the cycle
-	// boundary because moving back TO the free pool is not an activation.
-	if _, e := assignPlanTx(ctx, tx, account, PlanFree, DefaultFreePlanVersion, effective, now, "paddle"); e != nil {
+	// The fallback is DefaultFreePlanVersion when no operator grant exists,
+	// not a hardcoded 1: a cancellation must land the account on the SAME
+	// free plan an account with no assignment resolves, otherwise a canceled
+	// subscriber silently keeps the superseded free allowance (v1's 5/day)
+	// forever. The downgrade still defers to the cycle boundary because moving
+	// back TO the free pool is not an activation.
+	if _, e := assignPlanTx(ctx, tx, account, fallback.Name, fallback.Version, effective, now, "paddle"); e != nil {
 		if errors.Is(e, ErrPlanAssignmentConflict) {
-			return BillingIntake{Applied: true, Outcome: "applied", Note: "canceled; already on free"}, nil
+			return BillingIntake{Applied: true, Outcome: "applied", Note: "canceled; already on " + fallback.Name}, nil
 		}
 		return BillingIntake{}, fmt.Errorf("downgrade: %w", e)
 	}
-	return BillingIntake{Applied: true, Outcome: "applied", Note: "canceled; downgrade scheduled at cycle boundary"}, nil
-}
-
-// scheduleTrialCancelDowngradeTx schedules the free downgrade to start EXACTLY
-// at `effective` (the trial's own end), bypassing assignPlanTx's F11 monthly-
-// cycle ceiling — see applyPaddleCancel's doc comment for why that ceiling
-// does not apply while trialing. It mirrors assignPlanTx / revokePlanToFreeTx's
-// "close the open row, insert the new one" shape (CLAUDE.md #4: same
-// invariants, no second entitlement-write path) rather than introducing a
-// third. Caller already holds the account's advisory lock
-// (applyPaddleEvent) and tenant context.
-func scheduleTrialCancelDowngradeTx(ctx context.Context, tx pgx.Tx, accountID string, effective, now time.Time, source string) error {
-	effective = effective.UTC()
-	if effective.Before(now) {
-		effective = now
-	}
-	free, err := loadPlanTx(ctx, tx, PlanFree, DefaultFreePlanVersion)
-	if err != nil {
-		return err
-	}
-	// Supersede anything scheduled after the new effective instant — the
-	// trial cancellation is itself the authoritative downgrade schedule now
-	// (mirrors revokePlanToFreeTx's "clear scheduled assignments" step).
-	if _, e := tx.Exec(ctx,
-		`DELETE FROM account_plans WHERE account_id = $1::uuid AND effective_from > $2`,
-		accountID, effective); e != nil {
-		return fmt.Errorf("clear scheduled assignments: %w", e)
-	}
-	var openID string
-	var openFrom time.Time
-	e := tx.QueryRow(ctx,
-		`SELECT id::text, effective_from FROM account_plans
-		  WHERE account_id = $1::uuid AND effective_until IS NULL FOR UPDATE`,
-		accountID).Scan(&openID, &openFrom)
-	switch {
-	case errors.Is(e, pgx.ErrNoRows):
-		// No open assignment — the account is already on the implicit default
-		// free plan with nothing scheduled; a trial cancellation confirms
-		// that, nothing to write.
-		return nil
-	case e != nil:
-		return fmt.Errorf("lock open assignment: %w", e)
-	default:
-		if !openFrom.Before(effective) {
-			return ErrPlanAssignmentConflict
-		}
-		if _, e := tx.Exec(ctx,
-			`UPDATE account_plans SET effective_until = $3
-			  WHERE account_id = $1::uuid AND id = $2::uuid`,
-			accountID, openID, effective); e != nil {
-			return fmt.Errorf("close open assignment: %w", e)
-		}
-	}
-	if _, e := tx.Exec(ctx,
-		`INSERT INTO account_plans (account_id, plan_id, effective_from, source)
-		 VALUES ($1::uuid, $2::uuid, $3, $4)`,
-		accountID, free.ID, effective, source); e != nil {
-		return fmt.Errorf("insert free assignment: %w", e)
-	}
-	return nil
+	return BillingIntake{Applied: true, Outcome: "applied", Note: "canceled; downgrade to " + fallback.Name + " scheduled at cycle boundary"}, nil
 }
 
 // applyPaddleRevoke handles the "revoke" action (full refund / chargeback):
@@ -886,10 +975,25 @@ func applyPaddleRevoke(ctx context.Context, tx pgx.Tx, ev PaddleEvent, account s
 		account, ev.SubscriptionID, rowStatus, now, occurred); e != nil {
 		return BillingIntake{}, fmt.Errorf("mark subscription %s: %w", rowStatus, e)
 	}
-	if e := revokePlanToFreeTx(ctx, tx, account, now, "paddle"); e != nil {
-		return BillingIntake{}, fmt.Errorf("revoke to free: %w", e)
+	// FR-22: revoke onto the plan the account holds without Paddle (an
+	// operator grant, else free); an operator grant in force is kept.
+	fallback, keep, err := paddleDropTargetTx(ctx, tx, account, now)
+	if err != nil {
+		return BillingIntake{}, err
 	}
-	return BillingIntake{Applied: true, Outcome: "applied", Note: rowStatus + "; paid access revoked"}, nil
+	if keep {
+		return BillingIntake{Applied: true, Outcome: "applied", Note: rowStatus + "; the operator plan grant in force is kept"}, nil
+	}
+	if fallback.Name == PlanFree {
+		if e := revokePlanToFreeTx(ctx, tx, account, now, "paddle"); e != nil {
+			return BillingIntake{}, fmt.Errorf("revoke to free: %w", e)
+		}
+		return BillingIntake{Applied: true, Outcome: "applied", Note: rowStatus + "; paid access revoked"}, nil
+	}
+	if e := paddleMoveAccountPlanAtTx(ctx, tx, account, fallback, now, now); e != nil && !errors.Is(e, ErrPlanAssignmentConflict) {
+		return BillingIntake{}, fmt.Errorf("revoke to %s: %w", fallback.Name, e)
+	}
+	return BillingIntake{Applied: true, Outcome: "applied", Note: rowStatus + "; paid access revoked to " + fallback.Name}, nil
 }
 
 // applyPaddleRestore handles the "restore" action (chargeback_reverse): the
@@ -942,6 +1046,18 @@ func applyPaddleStatusOnly(ctx context.Context, tx pgx.Tx, ev PaddleEvent, accou
 		newStatus = "paused"
 	}
 	if newStatus != "" {
+		// FR-7: a dunning status never moves a terminal row back into a live
+		// status (past_due is live through the grace window); like a refused
+		// activation, nothing is written.
+		var current string
+		if e := tx.QueryRow(ctx,
+			`SELECT status FROM paddle_subscriptions WHERE account_id=$1::uuid AND paddle_subscription_id=$2`,
+			account, ev.SubscriptionID).Scan(&current); e != nil && !errors.Is(e, pgx.ErrNoRows) {
+			return BillingIntake{}, fmt.Errorf("read subscription status: %w", e)
+		}
+		if terminalSubscriptionStatus(current) {
+			return terminalKeptIntake(current), nil
+		}
 		if _, e := tx.Exec(ctx,
 			`UPDATE paddle_subscriptions SET status=$3, last_event_at=$4, updated_at=now()
 			  WHERE account_id=$1::uuid AND paddle_subscription_id=$2`,
@@ -957,6 +1073,18 @@ func applyPaddleStatusOnly(ctx context.Context, tx pgx.Tx, ev PaddleEvent, accou
 		}
 	}
 	return BillingIntake{Applied: true, Outcome: "status_only", Note: "recorded; access unchanged"}, nil
+}
+
+// applyScopedActionTx applies the resolved action on the subscription's
+// scope: the org branch when orgID is set (W14-D3, paddle_org.go: the row is
+// written with its org scope and no account plan changes), else the account
+// branch. past_due_since follows the status the branch writes through cloud
+// 0098's trigger, its one writer (W16-D5).
+func applyScopedActionTx(ctx context.Context, tx pgx.Tx, s *Store, ev PaddleEvent, act paddleAction, account, orgID string, periodEnd *time.Time, occurred, now time.Time) (BillingIntake, error) {
+	if orgID != "" {
+		return applyOrgResolvedAction(ctx, tx, s, ev, act, account, orgID, periodEnd, occurred, now)
+	}
+	return applyResolvedAction(ctx, tx, s, ev, act, account, periodEnd, occurred, now)
 }
 
 // upsertSubscriptionTx writes the account's subscription linkage inside the
@@ -983,7 +1111,12 @@ func applyPaddleStatusOnly(ctx context.Context, tx pgx.Tx, ev PaddleEvent, accou
 // even verified we never persist an arbitrary URL from it); COALESCE keeps a
 // previously-stored URL when this particular event didn't carry one (Paddle's
 // own docs: subscription.updated omits management_urls entirely).
-func upsertSubscriptionTx(ctx context.Context, tx pgx.Tx, account string, ev PaddleEvent, plan PaddlePlan, status string, canceledAt, periodEnd *time.Time, occurred time.Time) error {
+//
+// W14-D3: orgID is the org scope ("" on the account path, which writes NULL
+// exactly as before). It is set on insert and never moved by a later event
+// (COALESCE keeps the stored scope), so a subscription stays with the org it
+// was bound to.
+func upsertSubscriptionTx(ctx context.Context, tx pgx.Tx, account, orgID string, ev PaddleEvent, plan PaddlePlan, status string, canceledAt, periodEnd *time.Time, occurred time.Time) error {
 	var trialEndsAt *time.Time
 	if status == "trialing" {
 		switch {
@@ -996,13 +1129,25 @@ func upsertSubscriptionTx(ctx context.Context, tx pgx.Tx, account string, ev Pad
 	}
 	updateURL := validatePaddleManagementURL(ev.ManagementUpdateURL)
 	cancelURL := validatePaddleManagementURL(ev.ManagementCancelURL)
+	var orgArg *string
+	if orgID != "" {
+		orgArg = &orgID
+	}
+	// FR-22: the billed seat quantity, kept from the last event that carried
+	// one (COALESCE below).
+	var quantity *int64
+	if ev.Quantity > 0 {
+		q := ev.Quantity
+		quantity = &q
+	}
 	_, e := tx.Exec(ctx,
 		`INSERT INTO paddle_subscriptions
 		     (account_id, paddle_customer_id, paddle_subscription_id, plan_name, plan_version,
 		      status, current_period_end, canceled_at, last_event_at, trial_ends_at,
-		      management_update_url, management_cancel_url, created_at, updated_at)
-		 VALUES ($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now(), now())
+		      management_update_url, management_cancel_url, org_id, seat_quantity, created_at, updated_at)
+		 VALUES ($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::uuid,$14, now(), now())
 		 ON CONFLICT (account_id, paddle_subscription_id) DO UPDATE SET
+		     org_id                = COALESCE(paddle_subscriptions.org_id, EXCLUDED.org_id),
 		     paddle_customer_id    = EXCLUDED.paddle_customer_id,
 		     plan_name             = EXCLUDED.plan_name,
 		     plan_version          = EXCLUDED.plan_version,
@@ -1013,9 +1158,10 @@ func upsertSubscriptionTx(ctx context.Context, tx pgx.Tx, account string, ev Pad
 		     trial_ends_at         = CASE WHEN EXCLUDED.status = 'trialing' THEN EXCLUDED.trial_ends_at ELSE NULL END,
 		     management_update_url = COALESCE(EXCLUDED.management_update_url, paddle_subscriptions.management_update_url),
 		     management_cancel_url = COALESCE(EXCLUDED.management_cancel_url, paddle_subscriptions.management_cancel_url),
+		     seat_quantity         = COALESCE(EXCLUDED.seat_quantity, paddle_subscriptions.seat_quantity),
 		     updated_at            = now()`,
 		account, ev.CustomerID, ev.SubscriptionID, plan.Name, plan.Version,
-		status, periodEnd, canceledAt, occurred, trialEndsAt, updateURL, cancelURL)
+		status, periodEnd, canceledAt, occurred, trialEndsAt, updateURL, cancelURL, orgArg, quantity)
 	return e
 }
 
@@ -1061,10 +1207,22 @@ type PaddleSubscription struct {
 	CanceledAt       *time.Time `json:"canceled_at,omitempty"`
 	// TrialEndsAt is set only while Status == "trialing" (A7 / gap 1.11).
 	TrialEndsAt *time.Time `json:"trial_ends_at,omitempty"`
+	// PastDueSince is when the subscription entered past_due, set only
+	// while Status == "past_due" (cloud 0098's trigger, W16-D5). It is read
+	// by the org readers (OrgSubscription, PortalOrgSubscription) and the
+	// account reader (AccountSubscription).
+	PastDueSince *time.Time `json:"past_due_since,omitempty"`
 	// ManagementURLs is nil when Paddle sent neither link (or when a link
 	// failed validatePaddleManagementURL) — the portal falls back to "use the
 	// receipt email Paddle sent you" in that case (gap 1.4).
 	ManagementURLs *PaddleManagementURLs `json:"management_urls,omitempty"`
+	// SeatQuantity is the quantity Paddle bills the first item for (FR-22,
+	// cloud 0137), 0 when unknown. Read by AccountSubscription only.
+	SeatQuantity int64 `json:"seat_quantity,omitempty"`
+	// OrgID is set by AccountSubscription when the subscription is the one
+	// `migrate-personal` re-keyed onto the account's personal org (FR-22):
+	// still the account's own plan, billed through that org. Empty otherwise.
+	OrgID string `json:"org_id,omitempty"`
 }
 
 // AccountSubscription returns the account's most relevant subscription — the
@@ -1072,24 +1230,34 @@ type PaddleSubscription struct {
 // recently updated terminal one (canceled/refunded/charged_back), so the
 // portal Billing surface shows the honest current state including a revoked
 // (refunded/charged_back) subscription. Returns ErrNotFound when the account
-// has no subscription at all.
+// has no subscription at all. W14-D3: only the account's OWN subscriptions
+// count (org_id NULL); one it pays for a team org is that org's
+// (PortalOrgSubscription). FR-22: a subscription `migrate-personal` re-keyed
+// onto the account's personal org is still its own and counts too (OrgID set),
+// so the Billing page shows it and the checkout refuses a second one.
 func (s *Store) AccountSubscription(ctx context.Context, accountID string) (PaddleSubscription, error) {
 	var out PaddleSubscription
 	var trialEndsAt *time.Time
-	var updateURL, cancelURL *string
+	var updateURL, cancelURL, orgID *string
+	var seats *int64
 	found := false
 	err := s.WithAccount(ctx, accountID, func(ctx context.Context, tx pgx.Tx) error {
-		e := tx.QueryRow(ctx,
+		personalOrg, e := personalOrgIDTx(ctx, tx)
+		if e != nil {
+			return fmt.Errorf("read personal org: %w", e)
+		}
+		e = tx.QueryRow(ctx,
 			`SELECT paddle_subscription_id, paddle_customer_id, plan_name, plan_version,
 			        status, current_period_end, canceled_at, trial_ends_at,
-			        management_update_url, management_cancel_url
+			        management_update_url, management_cancel_url, past_due_since,
+			        seat_quantity, org_id::text
 			   FROM paddle_subscriptions
-			  WHERE account_id=$1::uuid
+			  WHERE account_id=$1::uuid AND (org_id IS NULL OR org_id = $2::uuid)
 			  ORDER BY (status IN ('active','trialing','past_due','paused')) DESC, updated_at DESC
-			  LIMIT 1`, accountID).
+			  LIMIT 1`, accountID, nullableUUID(personalOrg)).
 			Scan(&out.SubscriptionID, &out.CustomerID, &out.PlanName, &out.PlanVersion,
 				&out.Status, &out.CurrentPeriodEnd, &out.CanceledAt, &trialEndsAt,
-				&updateURL, &cancelURL)
+				&updateURL, &cancelURL, &out.PastDueSince, &seats, &orgID)
 		if errors.Is(e, pgx.ErrNoRows) {
 			return nil
 		}
@@ -1106,6 +1274,12 @@ func (s *Store) AccountSubscription(ctx context.Context, accountID string) (Padd
 		return PaddleSubscription{}, ErrNotFound
 	}
 	out.TrialEndsAt = trialEndsAt
+	if seats != nil {
+		out.SeatQuantity = *seats
+	}
+	if orgID != nil {
+		out.OrgID = *orgID
+	}
 	if updateURL != nil || cancelURL != nil {
 		m := &PaddleManagementURLs{}
 		if updateURL != nil {
@@ -1144,6 +1318,13 @@ func (s *Store) paddlePlanForPrice(priceID string) (PaddlePlan, bool) {
 		return p, true
 	}
 	return PaddlePlan{}, false
+}
+
+// PaddlePricePlan returns the plan a configured price maps to (the
+// checkout's opening quantity reads its seat minimum, api checkoutQuantity),
+// and false for a price this deployment does not sell.
+func (s *Store) PaddlePricePlan(priceID string) (PaddlePlan, bool) {
+	return s.paddlePlanForPrice(priceID)
 }
 
 // SetPaddlePriceMap wires the price→plan map at service bootstrap (from
@@ -1195,12 +1376,14 @@ func hashCheckoutNonce(raw string) []byte {
 // nonce to the caller ONCE — the portal puts it in the checkout's
 // custom_data.checkout_nonce so the webhook can later prove the subscription was
 // created by a SERVER-initiated checkout for this exact account.
+// ttl is the bind window judged at the event's occurred_at; ttl <= 0 means
+// CheckoutIntentBindWindow (FR-2).
 func (s *Store) CreateCheckoutIntent(ctx context.Context, accountID, priceID string, ttl time.Duration, now time.Time) (string, time.Time, error) {
 	if strings.TrimSpace(accountID) == "" {
 		return "", time.Time{}, errors.New("cloudserver/store.CreateCheckoutIntent: account id required")
 	}
 	if ttl <= 0 {
-		ttl = 30 * time.Minute
+		ttl = CheckoutIntentBindWindow
 	}
 	now = now.UTC()
 	expiresAt := now.Add(ttl)
@@ -1247,9 +1430,17 @@ func (s *Store) CreateCheckoutIntent(ctx context.Context, accountID, priceID str
 // non-null). The already-expired branch is admitted only on that same exact
 // match — expiry no longer matters once the nonce has already been proven
 // used for this exact subscription.
-func consumeCheckoutIntentTx(ctx context.Context, tx pgx.Tx, accountID, rawNonce, subscriptionID string, now time.Time) (bool, string, error) {
+//
+// FR-2: eventAt is the binding event's occurred_at (Paddle's clock, inside
+// the signed body; processing time only when Paddle sent none), so the window
+// is judged when the customer paid, not when this delivery is processed: a
+// retry after an outage still binds. consumed_at records the same instant.
+//
+// W14-D3: the third result is the intent's org_id ("" for an account
+// checkout), the org an org checkout was minted for.
+func consumeCheckoutIntentTx(ctx context.Context, tx pgx.Tx, accountID, rawNonce, subscriptionID string, eventAt time.Time) (bool, string, string, error) {
 	var intentID string
-	var priceID *string
+	var priceID, orgID *string
 	e := tx.QueryRow(ctx,
 		`UPDATE checkout_intents
 		    SET consumed_at = COALESCE(consumed_at, $4),
@@ -1260,27 +1451,33 @@ func consumeCheckoutIntentTx(ctx context.Context, tx pgx.Tx, accountID, rawNonce
 		          (consumed_at IS NULL AND expires_at > $4)
 		       OR (consumed_at IS NOT NULL AND consumed_subscription_id = $3)
 		        )
-		  RETURNING intent_id::text, price_id`,
-		accountID, hashCheckoutNonce(rawNonce), subscriptionID, now.UTC()).Scan(&intentID, &priceID)
+		  RETURNING intent_id::text, price_id, org_id::text`,
+		accountID, hashCheckoutNonce(rawNonce), subscriptionID, eventAt.UTC()).Scan(&intentID, &priceID, &orgID)
 	if errors.Is(e, pgx.ErrNoRows) {
-		return false, "", nil
+		return false, "", "", nil
 	}
 	if e != nil {
-		return false, "", e
+		return false, "", "", e
 	}
-	price := ""
+	price, org := "", ""
 	if priceID != nil {
 		price = *priceID
 	}
-	return true, price, nil
+	if orgID != nil {
+		org = *orgID
+	}
+	return true, price, org, nil
 }
 
-// SweepExpiredCheckoutIntents deletes checkout intents past their TTL (consumed
-// or not). Content-free housekeeping; safe to call from a periodic sweep.
+// SweepExpiredCheckoutIntents deletes checkout intents whose bind window ended
+// more than checkoutIntentRetention ago (consumed or not). FR-2: an intent is
+// kept past its window so a delivery of an event that occurred inside the
+// window but is processed late still binds. Content-free housekeeping; safe to
+// call from a periodic sweep.
 func (s *Store) SweepExpiredCheckoutIntents(ctx context.Context, now time.Time) (int64, error) {
 	var n int64
 	err := s.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		ct, e := tx.Exec(ctx, `DELETE FROM checkout_intents WHERE expires_at <= $1`, now.UTC())
+		ct, e := tx.Exec(ctx, `DELETE FROM checkout_intents WHERE expires_at <= $1`, now.UTC().Add(-checkoutIntentRetention))
 		if e != nil {
 			return e
 		}
@@ -1299,9 +1496,17 @@ func (s *Store) SweepExpiredCheckoutIntents(ctx context.Context, now time.Time) 
 // typo in SBCI_PADDLE_PRICES fails the deploy loudly instead of quietly
 // fail-closing every live activation as "unknown price" months later. Pass
 // LatestPlanVersion (0) to accept any published version of that name.
+//
+// W14-D3: an org plan (Team, Business) is not a plans row: the plans table
+// holds account-kind templates only (plangen.go). Such a plan exists when the
+// entitlements catalog has it as an org-kind template, which is what an org
+// price maps to (paddle_org.go catalogOrgPlan).
 func (s *Store) PlanExists(ctx context.Context, name string, version int) (bool, error) {
 	if strings.TrimSpace(name) == "" {
 		return false, nil
+	}
+	if catalogOrgPlan(PaddlePlan{Name: name, Version: version}) {
+		return true, nil
 	}
 	var ok bool
 	err := s.WithSystem(ctx, func(ctx context.Context, tx pgx.Tx) error {

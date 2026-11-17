@@ -181,6 +181,11 @@ type SandboxBackendAvail struct {
 	CaptureByTier map[string]string `json:"capture_by_tier,omitempty"`
 	// Component is the catalog id that owns the row's driver.
 	Component string `json:"component"`
+	// MasksWorkspaceSecrets is the registry's capability flag: the row can hide
+	// the workspace's secret files inside the box on request
+	// (sandboxbackend.Capability.CanMaskWorkspaceSecrets; decision D32). The
+	// dashboard branches on this flag, never on the row's id.
+	MasksWorkspaceSecrets bool `json:"masks_workspace_secrets,omitempty"`
 	// Hint is the driver's note about a known issue on this host that does
 	// not make the row unavailable (for example a container runtime known
 	// to fail, with the known-good one); empty when none.
@@ -230,4 +235,28 @@ type SandboxSourceAvail struct {
 type SandboxToolAvail struct {
 	Available bool   `json:"available"`
 	Reason    string `json:"reason,omitempty"`
+}
+
+// SandboxSeizeRow is what the strace switch ([terminal.sandbox]
+// .seccomp_allow_seize, lane ptrace) gives one sandbox that loads
+// Observer's syscall filter, on this host now.
+type SandboxSeizeRow struct {
+	Backend string `json:"backend"`
+	Label   string `json:"label"`
+	// Lifted: a launch on the row would get PTRACE_SEIZE with the switch on.
+	Lifted bool `json:"lifted"`
+	// Ground is the containment ground ("pid_namespace" or "yama") when
+	// Lifted.
+	Ground string `json:"ground,omitempty"`
+	// Reason says why PTRACE_SEIZE stays denied on the row when not Lifted.
+	Reason string `json:"reason,omitempty"`
+}
+
+// SandboxSeizeHost is the sandbox module's answer for the strace switch:
+// Yama's ptrace_scope as read now (YamaKnown false when it cannot be read)
+// and one row per sandbox that loads Observer's filter.
+type SandboxSeizeHost struct {
+	YamaScope int
+	YamaKnown bool
+	Rows      []SandboxSeizeRow
 }

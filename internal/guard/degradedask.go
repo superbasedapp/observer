@@ -31,7 +31,9 @@ import (
 // ConfirmBlockLine renders the leading sentence for a degraded ask. The
 // command is printed only when it would work: an approval is scoped to a
 // session, so a seam that reported no session id points at the dashboard
-// Security page instead (the HumanBlockLine precedent). Hyphens only.
+// Security page instead (the HumanBlockLine precedent), or, where that page
+// is hidden on this machine, at a short node-wide CLI grant
+// (approvalpointer.go, CG-16). Hyphens only.
 func ConfirmBlockLine(av ActionVerdict, sessionID string) string {
 	what, ok := blockedWhatByKind[av.Kind]
 	if !ok {
@@ -49,13 +51,13 @@ func ConfirmBlockLine(av ActionVerdict, sessionID string) string {
 	}
 	if sessionID != "" {
 		return fmt.Sprintf(
-			"observer: %s needs your confirmation before %s runs, and this tool cannot ask you, so it was blocked. To allow it, the developer (not the agent) runs `observer guard approve %s --session %s` (or approves it on the Observer dashboard Security page), then lets the agent retry the identical call.",
-			rule, what, rule, sessionID,
+			"observer: %s needs your confirmation before %s runs, and this tool cannot ask you, so it was blocked. To allow it, the developer (not the agent) runs `observer guard approve %s --session %s`%s, then lets the agent retry the identical call.",
+			rule, what, rule, sessionID, sessionApproveAlso(av),
 		)
 	}
 	return fmt.Sprintf(
-		"observer: %s needs your confirmation before %s runs, and this tool cannot ask you, so it was blocked. This tool reported no session id, so the developer (not the agent) approves %s on the Observer dashboard Security page, then lets the agent retry the identical call.",
-		rule, what, rule,
+		"observer: %s needs your confirmation before %s runs, and this tool cannot ask you, so it was blocked. This tool reported no session id, so the developer (not the agent) %s, then lets the agent retry the identical call.",
+		rule, what, noSessionApprove(av, rule),
 	)
 }
 

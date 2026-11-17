@@ -224,6 +224,15 @@ type FamilyRow = dashapi.FamilyRow
 // FreshLaunchSpec re-exports dashapi.FreshLaunchSpec.
 type FreshLaunchSpec = dashapi.FreshLaunchSpec
 
+// FreshLaunchResult re-exports dashapi.FreshLaunchResult.
+type FreshLaunchResult = dashapi.FreshLaunchResult
+
+// FreshLaunchDetailer re-exports dashapi.FreshLaunchDetailer.
+type FreshLaunchDetailer = dashapi.FreshLaunchDetailer
+
+// SecretMaskOutcome re-exports dashapi.SecretMaskOutcome.
+type SecretMaskOutcome = dashapi.SecretMaskOutcome
+
 // GUILaunchResult re-exports dashapi.GUILaunchResult.
 type GUILaunchResult = dashapi.GUILaunchResult
 
@@ -455,6 +464,9 @@ var SpawnAuditKind = dashapi.SpawnAuditKind
 // StandingTerminalVerifier re-exports dashapi.StandingTerminalVerifier.
 type StandingTerminalVerifier = dashapi.StandingTerminalVerifier
 
+// SwitchOptions re-exports dashapi.SwitchOptions.
+type SwitchOptions = dashapi.SwitchOptions
+
 // TerminalControlAuthorizer re-exports dashapi.TerminalControlAuthorizer.
 type TerminalControlAuthorizer = dashapi.TerminalControlAuthorizer
 
@@ -463,6 +475,9 @@ type TerminalRoot = dashapi.TerminalRoot
 
 // TerminalSessionLink re-exports dashapi.TerminalSessionLink.
 type TerminalSessionLink = dashapi.TerminalSessionLink
+
+// RuleRelaxationFact re-exports dashapi.RuleRelaxationFact.
+type RuleRelaxationFact = dashapi.RuleRelaxationFact
 
 // TerminalStatusProvider re-exports dashapi.TerminalStatusProvider.
 type TerminalStatusProvider = dashapi.TerminalStatusProvider

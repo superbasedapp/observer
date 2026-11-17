@@ -105,6 +105,9 @@ var gatedWireFamilies = map[string]snapFamily{
 	// The sandbox posture aggregate (sandboxposture.go), probed over
 	// terminal_run like the other terminal wires.
 	"SandboxPosture": snapFamSandboxPosture,
+	// The sandbox egress refusal counts (sandboxegress_org.go, audit CG-15),
+	// probed over the refusal audit and its drop counts.
+	"SandboxEgressRefusals": snapFamSandboxEgressCounts,
 	// The security pillar wire (secorgrows.go), probed over the sec_* tables.
 	"SecurityFindings": snapFamSecurityFindings,
 	"AIChangeRecords":  snapFamSecurityChangeRecords,

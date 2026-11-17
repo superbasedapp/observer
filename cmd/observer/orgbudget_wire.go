@@ -431,7 +431,7 @@ func wireCLIBudgetPosture(ctx context.Context, b orgBundle, logger *slog.Logger)
 	b.client.SetPricingAuthoritative(func() bool { return granted })
 	b.client.SetPricingRail(func() bool { return b.cfg.Guard.Budget.FromOrg }, pricingWire.onPricingFetch)
 	if _, err := b.client.LoadPersistedPricing(ctx); err != nil {
-		logger.Warn("org pricing: could not load the persisted document", "err", err)
+		logger.Warn("team pricing: could not load the persisted document", "err", err)
 	}
 
 	budgetWire := newOrgBudgetHandle(nil, b.cfg.Guard.Budget, func() bool { return granted }, b.store, logger)
@@ -442,7 +442,7 @@ func wireCLIBudgetPosture(ctx context.Context, b orgBundle, logger *slog.Logger)
 	b.client.SetBudgetMaxDocumentAge(budgetDocumentMaxAge(b.cfg.Guard.Budget, logger))
 	primed, err := b.client.LoadPersistedBudget(ctx)
 	if err != nil {
-		logger.Warn("org budget: could not load the persisted document", "err", err)
+		logger.Warn("team budget: could not load the persisted document", "err", err)
 	}
 	budgetWire.Prime(primed)
 }

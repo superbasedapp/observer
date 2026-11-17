@@ -18,6 +18,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/componentstate"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/dashapi"
+	"github.com/marmutapp/superbased-observer/internal/defaultworkspace"
 	"github.com/marmutapp/superbased-observer/internal/sandboxbackend"
 	"github.com/marmutapp/superbased-observer/internal/sandboxselect"
 	"github.com/marmutapp/superbased-observer/internal/sandboxsetup"
@@ -50,6 +51,8 @@ type setupRig struct {
 	compAdds  []string
 	compRems  []string
 	connected []string
+	// connectedFields are the credential fields each connect received.
+	connectedFields []map[string]string
 }
 
 func newSetupRig(t *testing.T, cfgText string) *setupRig {
@@ -120,8 +123,9 @@ func newSetupRig(t *testing.T, cfgText string) *setupRig {
 		},
 		contentFetch:  func(context.Context, config.Config, []string) error { return nil },
 		contentImport: func(config.Config, string) error { return nil },
-		hostedConnect: func(_ context.Context, provider, _ string) error {
+		hostedConnect: func(_ context.Context, provider string, fields map[string]string) error {
 			r.connected = append(r.connected, provider)
+			r.connectedFields = append(r.connectedFields, fields)
 			return nil
 		},
 		observerBin: func() string { return "/opt/observer" },
@@ -540,6 +544,8 @@ func TestSandboxSetupConsentEcho(t *testing.T) {
 func TestSandboxSetupTerminalChannels(t *testing.T) {
 	r := newSetupRig(t, setupBaseConfig)
 	ctx := context.Background()
+	// A host-absolute folder, so the consent row runs on Windows too.
+	work, _ := filepath.Abs(filepath.FromSlash("/work"))
 	cases := []struct {
 		h    setupHandler
 		step sandboxsetup.Step
@@ -547,7 +553,7 @@ func TestSandboxSetupTerminalChannels(t *testing.T) {
 		want []string
 	}{
 		{runOCIPull, sandboxsetup.Step{Prereq: "oci-image", Package: "oci", Channel: sandboxsetup.ChOCIPull}, dashapi.SandboxSetupRunRequest{}, []string{"/opt/observer", "sandbox", "oci", "pull"}},
-		{runHostedConsent, sandboxsetup.Step{Prereq: "hosted-consent", Channel: sandboxsetup.ChConsent}, dashapi.SandboxSetupRunRequest{FromFile: "/work"}, []string{"/opt/observer", "sandbox", "hosted", "consent", "modal", "--workspace", "/work"}},
+		{runHostedConsent, sandboxsetup.Step{Prereq: "hosted-consent", Channel: sandboxsetup.ChConsent}, dashapi.SandboxSetupRunRequest{FromFile: work}, []string{"/opt/observer", "sandbox", "hosted", "consent", "modal", "--workspace", work}},
 		{runOrgShellLogin, sandboxsetup.Step{Prereq: "orgshell-login", Channel: sandboxsetup.ChOrgShell}, dashapi.SandboxSetupRunRequest{}, []string{"/opt/observer", "sandbox", "org-shell", "login"}},
 	}
 	for i, tc := range cases {
@@ -569,6 +575,59 @@ func TestSandboxSetupTerminalChannels(t *testing.T) {
 	}
 	if !reflect.DeepEqual(r.connected, []string{"modal"}) || len(r.spawned) != len(cases) {
 		t.Fatalf("connected %v spawned %v", r.connected, r.spawned)
+	}
+}
+
+// TestSandboxSetupHostedConsentNeedsProject: a consent run without a folder
+// falls back to the default workspace when it is set up (review finding 6,
+// 2026-11-12); otherwise it is refused before any terminal opens, naming the
+// fix (the setup terminal starts in the home directory, which is never
+// uploaded). A relative folder is always refused.
+func TestSandboxSetupHostedConsentNeedsProject(t *testing.T) {
+	// Host-absolute spellings, so the table runs on Windows too.
+	defDir, _ := filepath.Abs(filepath.FromSlash("/home/dev/observer-workspace"))
+	work, _ := filepath.Abs(filepath.FromSlash("/work"))
+	ready := defaultworkspace.Status{Resolved: defaultworkspace.Resolved{Dir: defDir, Builtin: true}, Exists: true, Ready: true}
+	notReady := defaultworkspace.Status{Resolved: defaultworkspace.Resolved{Dir: defDir, Builtin: true}, Problem: "Observer has not finished setting this folder up."}
+	step := sandboxsetup.Step{Prereq: "hosted-consent", Channel: sandboxsetup.ChConsent}
+	for _, tc := range []struct {
+		name      string
+		ws        string
+		def       *defaultworkspace.Status
+		wantWS    string
+		wantInErr string
+	}{
+		{"no folder, default workspace ready", "", &ready, defDir, ""},
+		{"blank folder, default workspace ready", "  ", &ready, defDir, ""},
+		{"picked folder wins over the default", work, &ready, work, ""},
+		{"no folder, default workspace not ready", "", &notReady, "", "default workspace is not ready"},
+		{"no folder, no default workspace", "", nil, "", "--from-file"},
+		{"relative folder", "relative/dir", &ready, "", "absolute"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newSetupRig(t, setupBaseConfig)
+			if tc.def != nil {
+				def := *tc.def
+				r.svc.run.defaultWorkspace = func(config.Config) defaultworkspace.Status { return def }
+			}
+			_, err := runHostedConsent(context.Background(), runCtxFor(r, sandboxbackend.BackendModal, step, dashapi.SandboxSetupRunRequest{FromFile: tc.ws}))
+			if tc.wantWS == "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantInErr) {
+					t.Fatalf("err = %v, want a refusal naming %q", err, tc.wantInErr)
+				}
+				if len(r.spawned) != 0 {
+					t.Fatalf("a refused consent spawned %v", r.spawned)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []string{"/opt/observer", "sandbox", "hosted", "consent", "modal", "--workspace", tc.wantWS}
+			if len(r.spawned) != 1 || !reflect.DeepEqual(r.spawned[0], want) {
+				t.Fatalf("spawned %v, want %v", r.spawned, want)
+			}
+		})
 	}
 }
 

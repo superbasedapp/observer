@@ -63,7 +63,7 @@ func TestSandboxReadoptTerminalGates(t *testing.T) {
 	}{
 		{"no confirm token", offered, &fakeLaunchManager{}, `{"run":"` + run + `"}`, false, http.StatusForbidden, ""},
 		{"piece not in this build", nil, &fakeLaunchManager{}, `{"run":"` + run + `"}`, true, http.StatusNotFound, "not in this build"},
-		{"terminal stack off", offered, nil, `{"run":"` + run + `"}`, true, http.StatusServiceUnavailable, "Settings > Terminal"},
+		{"terminal stack off", offered, nil, `{"run":"` + run + `"}`, true, http.StatusServiceUnavailable, "Settings > Session attach"},
 		{"malformed run id", offered, &fakeLaunchManager{}, `{"run":"../x; rm -rf /"}`, true, http.StatusBadRequest, "run id"},
 		{"run not offered", offered, &fakeLaunchManager{}, `{"run":"run0000000000000399"}`, true, http.StatusConflict, "not offered"},
 	}
@@ -118,7 +118,7 @@ func TestGuidedInstallOffNamesTheControl(t *testing.T) {
 			t.Errorf("guided install refusal does not name %q: %s", want, errGuidedInstallOff)
 		}
 	}
-	for _, want := range []string{"Settings > Terminal", "[handoff].allow_dashboard_launch"} {
+	for _, want := range []string{"Settings > Session attach", "[handoff].allow_dashboard_launch"} {
 		if !strings.Contains(errTerminalUnavailable, want) {
 			t.Errorf("terminal refusal does not name %q: %s", want, errTerminalUnavailable)
 		}

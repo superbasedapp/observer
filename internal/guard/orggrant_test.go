@@ -306,3 +306,81 @@ func TestOrgGrant_Prompt(t *testing.T) {
 		}
 	})
 }
+
+// TestOrgGrant_MissSaysWhy walks the "no grant applied" table (grantNoteRules):
+// whenever a grant question changes nothing for a reason other than "no
+// grant covers this call", the verdict stays enforced AND its reason says
+// why. A silent miss is what sent a developer holding a perpetual grant back
+// to request the same grant again (operator report 2026-11-13).
+func TestOrgGrant_MissSaysWhy(t *testing.T) {
+	t.Parallel()
+	long := strings.Repeat("x", 400)
+	cases := []struct {
+		name string
+		res  OrgGrantResult
+		want string // "" = the reason carries no org-grants note
+		not  string
+	}{
+		{"no grant at all", OrgGrantResult{}, "", "[org grants:"},
+		{"the grant list could not be read", OrgGrantResult{Failed: "context deadline exceeded"}, "could not be consulted (context deadline exceeded)", ""},
+		{"a long failure text is bounded", OrgGrantResult{Failed: long}, strings.Repeat("x", maxGrantFailureLen) + "...)", long},
+		{"a failure outranks every other detail", OrgGrantResult{Failed: "busy", Unverified: true, ScopeMissID: 8}, "could not be consulted (busy)", "G-8"},
+		{"the cache does not verify", OrgGrantResult{Unverified: true}, "could not be verified", ""},
+		{"the grant lacks the lock override", OrgGrantResult{LockRefused: true}, "locked-rule approval", ""},
+		{"a grant for the rule is pinned to another scope", OrgGrantResult{ScopeMissID: 8}, "G-8 covers this rule only for another project, command or lane", ""},
+	}
+	for _, c := range cases {
+		g := enforceGuard(t)
+		fg := &fakeGrants{res: c.res}
+		g.SetOrgGrantClaim(fg.claim)
+		av, _ := g.EvaluateHook(rmEvent(askCaps))
+		if av.Verdict.Decision != policy.DecisionDeny || av.GrantID != 0 || av.DegradedFrom != "" {
+			t.Errorf("%s: verdict = %+v grant=%d degraded=%q, want the deny to stand", c.name, av.Verdict, av.GrantID, av.DegradedFrom)
+		}
+		if fg.consumed != 0 {
+			t.Errorf("%s: a use was counted", c.name)
+		}
+		if c.want != "" && !strings.Contains(av.Verdict.Reason, c.want) {
+			t.Errorf("%s: reason %q does not say %q", c.name, av.Verdict.Reason, c.want)
+		}
+		if c.not != "" && strings.Contains(av.Verdict.Reason, c.not) {
+			t.Errorf("%s: reason %q must not carry %q", c.name, av.Verdict.Reason, c.not)
+		}
+	}
+}
+
+// TestOrgGrant_SessionSharesThePeekAndTheClaim: with a session wired (the
+// hook process), the peek and the claim of one verdict go through ONE
+// conversation, ended once, and the grant still applies; a verdict whose
+// peek finds nothing ends its conversation too.
+func TestOrgGrant_SessionSharesThePeekAndTheClaim(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name         string
+		res          OrgGrantResult
+		wantQuestion int
+		wantGrant    int64
+	}{
+		{name: "granted: peek and claim, one conversation", res: exemptResult(12), wantQuestion: 2, wantGrant: 12},
+		{name: "no grant: the peek only, one conversation", res: OrgGrantResult{}, wantQuestion: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			g := enforceGuard(t)
+			fg := &fakeGrants{res: tc.res}
+			sessions, ended := 0, 0
+			g.SetOrgGrantSession(func() (OrgGrantClaim, func()) {
+				sessions++
+				return fg.claim, func() { ended++ }
+			})
+			av, _ := g.EvaluateHook(rmEvent(askCaps))
+			if av.GrantID != tc.wantGrant {
+				t.Errorf("grant = %d, want %d", av.GrantID, tc.wantGrant)
+			}
+			if sessions != 1 || ended != 1 || len(fg.queries) != tc.wantQuestion {
+				t.Errorf("sessions %d ended %d questions %d, want 1, 1, %d", sessions, ended, len(fg.queries), tc.wantQuestion)
+			}
+		})
+	}
+}

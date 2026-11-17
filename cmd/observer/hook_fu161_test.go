@@ -80,6 +80,7 @@ func fu161NewNode(t *testing.T, enforced bool) fu161Node {
 		mode = "enforce"
 	}
 	cp := filepath.Join(dir, "config.toml")
+	seedNodeDB(t, filepath.Join(dir, "o.db"))
 	writeFileT(t, cp, fmt.Sprintf("[observer]\ndb_path = %q\n[observer.hooks]\nauto_register = false\n[guard]\nenabled = true\nmode = %q\n[guard.prompt]\nenabled = true\nhook_lane = true\n",
 		filepath.Join(dir, "o.db"), mode))
 	if enforced {

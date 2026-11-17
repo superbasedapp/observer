@@ -22,6 +22,12 @@ var testCommands = []struct {
 	Class string
 	Re    *regexp.Regexp
 }{
+	// Fuzz runs first, so the record names them (security coverage gaps
+	// plan item 6): they are test commands like the rest.
+	{"go_fuzz", seg(`(\S*/)?go\s+test\b[^\n;&|]*\s-fuzz[=\s]\S`)},
+	{"cargo_fuzz", seg(`cargo\s+(\+\S+\s+)?fuzz\s+run\b`)},
+	{"jazzer", seg(`(\S*/)?jazzer\b`)},
+	{"atheris", seg(`python3?\s+\S*fuzz\S*\.py\b[^\n;&|]*-atheris_runs=`)},
 	{"go_test", seg(`(\S*/)?go\s+test\b`)},
 	{"pytest", seg(`(py\.?test|python3?\s+-m\s+(pytest|unittest))\b`)},
 	{"js_test", seg(`((npm|pnpm|yarn|bun)\s+(run\s+)?test\b|(npx\s+)?(jest|vitest|mocha)\b)`)},
@@ -72,6 +78,17 @@ type FixEvidence struct {
 	Commands []SessionCommand
 	// EditedPaths are the files the session edited (its change).
 	EditedPaths []string
+	// AdditiveOnly are the test files among EditedPaths whose every edit
+	// in the session only added lines: no line deleted or modified, no
+	// whole-file overwrite of an existing file, no deletion. A new test
+	// weakens nothing, so it does not hold the verification (plan item 6);
+	// the test-tampering rules (S-767 to S-769) still watch every edit.
+	AdditiveOnly []string
+	// TamperingObserved: the session has a test_tampering finding (S-767
+	// to S-769: an added skip, a build-ignore line, a weakened assertion)
+	// on any path. A fix is never verified through such a session, so an
+	// added test that only skips cannot earn the record.
+	TamperingObserved bool
 }
 
 // The FixVerdict reasons, one per decision row.
@@ -79,6 +96,7 @@ const (
 	FixVerified          = "observed_test_command"
 	FixNoEdit            = "no_ai_edit_of_file"
 	FixTestFileEdited    = "test_file_edited"
+	FixTamperingObserved = "test_tampering_observed"
 	FixNoTestCommand     = "no_test_command_after_edit"
 	FixExitUnknown       = "test_exit_unknown"
 	FixTestCommandFailed = "test_command_nonzero_exit"
@@ -94,6 +112,9 @@ type FixVerdict struct {
 	Class               string
 	ExitCode            int
 	HostReportedSuccess bool
+	// AddedTests: the session added test files or tests (AdditiveOnly)
+	// before the observed command.
+	AddedTests bool
 }
 
 // Detail is the record's wording: an observed command, never "tests passed".
@@ -101,10 +122,14 @@ func (v FixVerdict) Detail() string {
 	if !v.Verified {
 		return v.Reason
 	}
-	if v.HostReportedSuccess {
-		return "observed test command: class " + v.Class + ", host reported success (no exit code recorded); Observer did not run the tests"
+	added := ""
+	if v.AddedTests {
+		added = ", after the session added tests"
 	}
-	return "observed test command: class " + v.Class + ", exit code 0 (as the host reported it); Observer did not run the tests"
+	if v.HostReportedSuccess {
+		return "observed test command: class " + v.Class + ", host reported success (no exit code recorded)" + added + "; Observer did not run the tests"
+	}
+	return "observed test command: class " + v.Class + ", exit code 0 (as the host reported it)" + added + "; Observer did not run the tests"
 }
 
 // DecideFix walks the decision rows top-down.
@@ -112,10 +137,22 @@ func DecideFix(ev FixEvidence) FixVerdict {
 	if ev.LastEditAt.IsZero() {
 		return FixVerdict{Reason: FixNoEdit}
 	}
+	if ev.TamperingObserved {
+		return FixVerdict{Reason: FixTamperingObserved}
+	}
+	additive := make(map[string]bool, len(ev.AdditiveOnly))
+	for _, p := range ev.AdditiveOnly {
+		additive[p] = true
+	}
+	addedTests := false
 	for _, p := range ev.EditedPaths {
-		if IsTestPath(p) {
+		if !IsTestPath(p) {
+			continue
+		}
+		if !additive[p] {
 			return FixVerdict{Reason: FixTestFileEdited}
 		}
+		addedTests = true
 	}
 	var last *SessionCommand
 	class := ""
@@ -136,7 +173,7 @@ func DecideFix(ev FixEvidence) FixVerdict {
 	case last.ExitCode != 0:
 		return FixVerdict{Reason: FixTestCommandFailed, Class: class, ExitCode: last.ExitCode}
 	}
-	return FixVerdict{Verified: true, Reason: FixVerified, Class: class, HostReportedSuccess: last.HostReportedSuccess}
+	return FixVerdict{Verified: true, Reason: FixVerified, Class: class, HostReportedSuccess: last.HostReportedSuccess, AddedTests: addedTests}
 }
 
 // fixClaim is the closed fix-claim phrase table over a commit subject

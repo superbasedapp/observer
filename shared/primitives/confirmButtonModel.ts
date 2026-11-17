@@ -21,13 +21,31 @@ export type ArmedBehaviour = {
 };
 
 /** armedBehaviour is the one rule for how the armed step ends, by the
- *  control's own shape: a reason field or holdArmed waits for the operator,
- *  everything else disarms itself after timeoutMs. */
-export function armedBehaviour(p: { withReason: boolean; holdArmed: boolean; timeoutMs: number }): ArmedBehaviour {
+ *  control's own shape, walked top-down:
+ *   - a reason field waits for the operator (Cancel, Escape);
+ *   - holdArmed waits, with a Cancel button;
+ *   - an explicit timeoutMs is a deliberate timed arm (a caller that asked for
+ *     it, e.g. the node dashboard's 8 s confirms), disarming itself;
+ *   - otherwise (the default) the armed step WAITS: it never disarms on its
+ *     own, because a silent revert after a couple of seconds made a slow
+ *     second click re-arm and do nothing (demo issue 24). A click elsewhere or
+ *     Escape cancels, and no Cancel button is added so the button cannot move
+ *     in a right-aligned cell. */
+export function armedBehaviour(p: { withReason: boolean; holdArmed: boolean; timeoutMs?: number }): ArmedBehaviour {
   if (p.withReason) return { autoDisarmMs: null, showCancel: true, disarmOnOutsideClick: false };
   if (p.holdArmed) return { autoDisarmMs: null, showCancel: true, disarmOnOutsideClick: true };
-  return { autoDisarmMs: p.timeoutMs, showCancel: false, disarmOnOutsideClick: false };
+  if (p.timeoutMs !== undefined && p.timeoutMs > 0) return { autoDisarmMs: p.timeoutMs, showCancel: false, disarmOnOutsideClick: false };
+  return { autoDisarmMs: null, showCancel: false, disarmOnOutsideClick: true };
 }
+
+/** ARMED_DEFAULT_NOTE is what the floating note says when the caller gave no
+ *  note of its own and the armed step waits (no timeout), so the way out is
+ *  always visible. */
+export const ARMED_DEFAULT_NOTE = "Click again to confirm. Click elsewhere or press Escape to cancel.";
+
+/** ARMED_CLASSES marks the armed button so it reads as armed even where the
+ *  idle and armed variants are the same (danger -> danger). */
+export const ARMED_CLASSES = "ring-2 ring-warn ring-offset-1 ring-offset-bg-1";
 
 /** ConfirmClick is what one click on the button does. */
 export type ConfirmClick = "fire" | "arm" | "hold";

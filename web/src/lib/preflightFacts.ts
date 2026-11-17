@@ -28,10 +28,10 @@ export const PREFLIGHT_FACT_ROWS: ReadonlyArray<FactRow> = [
   (_tool, p) => launchRuntimeAdvisory(p),
   (_tool, p) =>
     p.config_override === "missing"
-      ? "Nothing is at the binary path set for this tool. Change or remove it in Settings > Terminal (Launch binary paths)."
+      ? "Nothing is at the binary path set for this tool. Change or remove it in Settings > Session attach (Launch binary paths)."
       : null,
   (_tool, p) =>
-    p.config_override === "used" ? "Uses the binary path set in Settings > Terminal (Launch binary paths)." : null,
+    p.config_override === "used" ? "Uses the binary path set in Settings > Session attach (Launch binary paths)." : null,
   (_tool, p) =>
     p.missing_interpreter
       ? `It needs ${p.missing_interpreter}, which isn't installed, so it will fail to start.`

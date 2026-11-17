@@ -140,6 +140,12 @@ func newHostSeccomp(h sandbox.HostArgs) (*hostSeccomp, error) {
 	if h.SeccompProfile == "" {
 		return sc, nil
 	}
+	// The strace opt-in's second look (lane ptrace, PT-96): a profile that
+	// lifts PTRACE_SEIZE needs its containment ground to hold now, or the
+	// launch is refused before the box starts.
+	if err := checkSeizeGround(h.SeccompProfile, h.Command, gated); err != nil {
+		return nil, fmt.Errorf("seccomp: %w", err)
+	}
 	self, err := readSeccompStatus("self")
 	if err != nil {
 		return nil, fmt.Errorf("seccomp: read the host helper's own state: %w", err)
@@ -175,6 +181,28 @@ func newHostSeccomp(h sandbox.HostArgs) (*hostSeccomp, error) {
 	}
 	sc.r = r
 	return sc, nil
+}
+
+// checkSeizeGround re-checks the containment ground a profile lifting
+// PTRACE_SEIZE names: for the pid-namespace ground, the bwrap command must
+// carry --unshare-pid (a gated child, the process_lite exec step, has no
+// pid namespace of its own); for the Yama ground, ptrace_scope must read 1
+// or more now. Any other profile passes.
+func checkSeizeGround(profile string, command []string, gated bool) error {
+	id := sandboxseccomp.ProfileID(profile)
+	if _, ok := sandboxseccomp.SeizeGroundOf(id); !ok {
+		return nil
+	}
+	var f sandboxseccomp.SeizeFacts
+	if !gated {
+		own, err := sandbox.BwrapUnsharesPID(command)
+		if err != nil {
+			return err
+		}
+		f.OwnPIDNamespace = own
+	}
+	f.YamaScope, f.YamaKnown = readYamaScope()
+	return sandboxseccomp.CheckSeizeGround(id, f)
 }
 
 // files appends the program's read end to the child's ExtraFiles, so it

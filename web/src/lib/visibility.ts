@@ -41,6 +41,8 @@ export type DashboardVisibility = {
   tabs?: Record<string, VisibilityEntry>;
 };
 
+import { hiddenTabIds, tabOfPath } from "./tabVisibility.ts";
+
 // The organization display name lives in ./orgName (its one owner, T-160);
 // re-exported here so the governance surfaces' existing imports keep working.
 export { orgDisplayLabel, orgDisplayLabelSentence } from "./orgName.ts";
@@ -152,6 +154,65 @@ export function readOnlySettingsIds(gov: Gov): readonly string[] {
 /** Whether a nav page's level was decided by the managed default. */
 export function navSource(gov: Gov, id: string): VisibilitySource {
   return gov?.visibility?.sections?.[id]?.source ?? "none";
+}
+
+/** Whether a Settings section's level was decided by the managed default. */
+export function settingsSource(gov: Gov, id: string): VisibilitySource {
+  return gov?.visibility?.settings?.[id]?.source ?? "none";
+}
+
+/**
+ * What a link to a place in this dashboard should render on this machine:
+ * "shown" (an ordinary link), "managed" (the target page, Settings section
+ * or page tab is hidden here, so the link becomes a "managed by your
+ * organization" note instead of landing on a notice) or "unresolved" (the
+ * posture is not known yet and the target is not on the floor, so the label
+ * renders without a link and without a claim either way).
+ */
+export type LinkGate = "shown" | "managed" | "unresolved";
+
+/** The tables hrefGate maps an address with: the nav paths, and the tabbed
+ *  pages (lib/pageTabRoutes.ts NODE_TAB_ROUTES) for `?tab=` addresses. */
+export type HrefGateTables = {
+  navPaths: ReadonlyArray<{ id: string; path: string }>;
+  tabRoutes?: ReadonlyArray<{ navId: string; path: string; tabs: { ids: readonly string[] } }>;
+};
+
+/**
+ * hrefGate decides how a link to `href` renders (CG-20/CG-21). It reads the
+ * same resolved visibility the route guard and the Settings rail read, so a
+ * link is never offered to a page, a `/settings?section=` or a `?tab=` the
+ * organization hid. Addresses outside the nav table, and the floor pages and
+ * Settings sections, are always "shown". `gov` must be the filtering posture
+ * (useGovernanceVisibility().gov) and `posture` its readiness.
+ */
+export function hrefGate(
+  href: string,
+  gov: Gov,
+  posture: GovernancePosture,
+  tables: HrefGateTables,
+): LinkGate {
+  const [pathname = "/", rest = ""] = href.split("?", 2);
+  const query = rest.split("#", 1)[0] ?? "";
+  const path = pathname.split("#", 1)[0] || "/";
+  const navId = pathNavId(path, tables.navPaths);
+  const ready = posture === "ready";
+  if (navId != null && !FLOOR_NAV_IDS.includes(navId)) {
+    if (!ready) return "unresolved";
+    if (hiddenNavIds(gov).includes(navId)) return "managed";
+  }
+  if (navId === "settings") {
+    const section = new URLSearchParams(query).get("section");
+    if (section && !FLOOR_SETTINGS_IDS.includes(section)) {
+      if (!ready) return "unresolved";
+      if (hiddenSettingsIds(gov).includes(section)) return "managed";
+    }
+  }
+  if (ready && tables.tabRoutes && /(^|&)tab=/.test(query)) {
+    const tab = tabOfPath(`${path}?${query}`, tables.tabRoutes);
+    if (tab != null && hiddenTabIds(gov).includes(tab)) return "managed";
+  }
+  return "shown";
 }
 
 /**

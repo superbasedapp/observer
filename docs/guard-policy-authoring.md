@@ -51,6 +51,30 @@ Decision semantics by mode: in **observe** the effective decision is
 unless the rule sets `enforce = true`, which makes the engine use the
 declared decision regardless of mode.
 
+### On an org bundle
+
+An org bundle may define `[[rule]]` entries too; the org dashboard authors
+them in Policies > Guard > Custom rules ([guard.md](guard.md) "Org custom
+rules"). The same grammar applies. Conventionally their ids start with
+`ORG-` (the dashboard suggests the next free one): the lint only refuses a
+built-in id and a duplicate, but a later release can add any `R-` id, and an
+org rule whose id a release claims stops loading. A local `disable` never
+removes an org-defined rule. To let developers approve past one, grant it
+with a separate row, exactly as for a built-in:
+
+```toml
+[[rule]]
+id         = "ORG-1"
+category   = "exfil"
+decision   = "deny"
+enforce    = true
+match.command_base = "scp"
+
+[[override]]
+rule        = "ORG-1"
+overridable = true      # no decision / enforce: the rule above stays as written
+```
+
 ## Matcher vocabulary (all fields under `match.`)
 
 Multiple matchers in one rule **AND** together; their detail strings
@@ -360,6 +384,13 @@ every other bundle (lane sec-p2b):
   "can be overridden" off wins). A conflict is not an error; publishing is
   still allowed. A section the draft replaces (the same projects and
   audience) is not a conflict.
+- **Preview a developer's rule set.** "Preview a developer's rules" lists
+  every rule the developer's machine evaluates from the organization's side
+  (the built-in catalog and the Code security pack with the composed bundle
+  applied), the bundles that set each rule, and on request what their
+  machines report (guard mode, approvals in force). Local disables and
+  local policy files are not reported (docs/guard.md "Where a machine's
+  rules come from").
 - **Preview a developer in a project.** "Preview a developer's rules"
   takes an optional project. The preview then also shows the project rules
   that developer gets inside that project (the envelope delivery would

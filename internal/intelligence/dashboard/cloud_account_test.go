@@ -15,6 +15,8 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/dashapi"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
+	"github.com/marmutapp/superbased-observer/internal/orgcontract"
+	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
 // fakeCloudRunner is a controllable CloudCommandRunner: it records each
@@ -347,11 +349,12 @@ func TestCloudLoginRefusals(t *testing.T) {
 // a client id is configured. Not-enrolled (and a Status error, which must not
 // block a legitimate personal sign-in) still reach the runner.
 func TestCloudLoginOrgEnrolledRefusal(t *testing.T) {
-	t.Run("enrolled refuses without spawning", func(t *testing.T) {
+	t.Run("managed enrolment refuses without spawning", func(t *testing.T) {
 		probe := &fakeCloudProbe{st: CloudSignInState{ClientIDConfigured: true}}
 		runner := &fakeCloudRunner{}
 		srv := newCloudAccountTestServer(t, probe, runner)
 		srv.opts.OrgClient = &fakeEnrolment{state: orgclient.EnrolmentState{Enrolled: true, OrgName: "Acme Corp"}}
+		writeTestEnrolment(t, srv, orgcontract.TenancyManaged)
 
 		rec := httptest.NewRecorder()
 		srv.handleCloudLogin(rec, httptest.NewRequest(http.MethodPost, "/api/cloud/login", nil))
@@ -364,6 +367,22 @@ func TestCloudLoginOrgEnrolledRefusal(t *testing.T) {
 		if got := runner.calls(); len(got) != 0 {
 			t.Fatalf("must not spawn a subprocess when org-enrolled, calls = %v", got)
 		}
+	})
+	// Getting started v2: an individual connection (a personal dashboard,
+	// an individual team connection) is the person's own account, so the
+	// sign-in proceeds.
+	t.Run("individual enrolment proceeds", func(t *testing.T) {
+		probe := &fakeCloudProbe{st: CloudSignInState{ClientIDConfigured: true}}
+		runner := &fakeCloudRunner{}
+		srv := newCloudAccountTestServer(t, probe, runner)
+		srv.opts.OrgClient = &fakeEnrolment{state: orgclient.EnrolmentState{Enrolled: true, OrgName: "Sam"}}
+		writeTestEnrolment(t, srv, orgcontract.TenancyIndividual)
+
+		code, _ := cloudDoJSON[CloudLoginState](t, srv.handleCloudLogin, http.MethodPost, "/api/cloud/login")
+		if code != http.StatusOK {
+			t.Fatalf("individual-enrolment login → %d", code)
+		}
+		cloudWaitFor(t, "spawn when individually enrolled", func() bool { return len(runner.calls()) == 1 })
 	})
 	t.Run("not enrolled still proceeds", func(t *testing.T) {
 		probe := &fakeCloudProbe{st: CloudSignInState{ClientIDConfigured: true}}
@@ -679,5 +698,17 @@ func TestValidCloudLoginPort(t *testing.T) {
 		if err := validCloudLoginPort(tc.port); (err == nil) != tc.ok {
 			t.Errorf("validCloudLoginPort(%d) = %v, want ok=%v", tc.port, err, tc.ok)
 		}
+	}
+}
+
+// writeTestEnrolment stores an enrolment row of the given kind, the fact
+// enrolmentTenancy reads through orgclient.NodeManaged.
+func writeTestEnrolment(t *testing.T, srv *Server, tenancy string) {
+	t.Helper()
+	if err := store.New(srv.opts.DB).WriteEnrolment(context.Background(), store.Enrolment{
+		OrgID: "org-1", OrgName: "Acme Corp", OrgServerURL: "https://org.acme.example",
+		UserID: "u1", UserEmail: "dev@acme.example", Tenancy: tenancy,
+	}); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -26,6 +26,11 @@ func cloudPrintConfiguredEnableExplanation(w io.Writer, background bool, level s
 
 // buildCloudEnvelopeConfigured captures settings and generation in one policy
 // read. Background consent also checks this generation atomically on insert.
+//
+// It is the preview and consent build, so it is where the envelope is fitted
+// to the account's evidence budget (cloudbudget.go): preview and consent read
+// the same stored budget and so produce the same fitted bytes, and the
+// receipt freezes the fitted settings for the send-time rebuild.
 func buildCloudEnvelopeConfigured(ctx context.Context, st *store.Store, sessionID string, purpose cloudcontract.Purpose, pricer *cost.Engine, generation int64) (cloudEnvelopeResult, error) {
 	policy, ok, err := st.GetCloudEnrichPolicy(ctx)
 	if err != nil {
@@ -37,7 +42,14 @@ func buildCloudEnvelopeConfigured(ctx context.Context, st *store.Store, sessionI
 			return cloudEnvelopeResult{}, store.ErrCloudBackgroundPolicyChanged
 		}
 	}
-	return buildCloudEnvelopeWithSettings(ctx, st, sessionID, purpose, cloudFieldClasses(purpose), pricer, policy.EvidenceSettings)
+	budget, known, err := cloudEvidenceBudget(ctx, st)
+	if err != nil {
+		return cloudEnvelopeResult{}, err
+	}
+	classes := cloudFieldClasses(purpose)
+	return fitCloudEnvelopeToBudget(purpose, policy.EvidenceSettings, budget, known, func(s *store.CloudEvidenceSettings) (cloudEnvelopeResult, error) {
+		return buildCloudEnvelopeWithSettings(ctx, st, sessionID, purpose, classes, pricer, s)
+	})
 }
 
 func cloudSettingsForPurpose(settings *store.CloudEvidenceSettings, purpose cloudcontract.Purpose) (*store.CloudEvidenceSettings, string, error) {

@@ -100,7 +100,20 @@ import { cloudPreviewAvailable, cloudWriteState } from "@/lib/cloudGovernance";
 // pins it read-only by default): every write control then renders disabled
 // with the managed explanation, while reads and the network-free evidence
 // preview stay available (G11; the daemon guard exempts the preview).
-export function CloudIntelligenceSection({ icon, readOnly = false }: { icon?: LucideIcon; readOnly?: boolean }) {
+//
+// Getting started v2: Settings > Account embeds this page as "AI summaries"
+// with `accountOwnsSignIn`; the Account card above it then owns Sign in and
+// Sign out, and the card here keeps Sync now and the preferences.
+export function CloudIntelligenceSection({
+  icon,
+  readOnly = false,
+  accountOwnsSignIn = false,
+}: {
+  icon?: LucideIcon;
+  readOnly?: boolean;
+  /** The Account card above owns sign-in (Settings > Account). */
+  accountOwnsSignIn?: boolean;
+}) {
   const status = useApi<CloudStatusWithDigestPlan>("/api/cloud/status", undefined, [], {
     refreshMs: 15000,
   });
@@ -131,6 +144,7 @@ export function CloudIntelligenceSection({ icon, readOnly = false }: { icon?: Lu
         orgEnrolled={orgEnrolled}
         orgLabel={orgLabel}
         lockedTitle={write.lockedTitle}
+        accountOwnsSignIn={accountOwnsSignIn}
       />
 
       {data && !orgEnrolled && <CloudEnrichmentSummary data={data} />}
@@ -161,7 +175,7 @@ export function CloudIntelligenceSection({ icon, readOnly = false }: { icon?: Lu
       <ChartShell
         title="Cloud activity"
         icon={icon}
-        sub="Optional signed-in personal enrichment (Signed-in Free). Every local Observer feature works fully without this. Node-local state only: consent receipts, the send outbox by state, and synced enrichment results. Uploads and result pulls run when you press Sync now on the Cloud account card, or on the schedule below when auto-sync is on."
+        sub="Optional signed-in personal enrichment (Signed-in Free). Every local Observer feature works fully without this. Stored on this machine only: consent receipts, the send outbox by state, and synced enrichment results. Uploads and result pulls run when you press Sync now on the Cloud account card, or on the schedule below when auto-sync is on."
       >
         <ChartState
           loading={status.loading && !data}
@@ -208,6 +222,7 @@ function CloudAccountCard({
   orgEnrolled,
   orgLabel,
   lockedTitle,
+  accountOwnsSignIn = false,
 }: {
   signIn: CloudSignInView | null;
   loading: boolean;
@@ -218,6 +233,8 @@ function CloudAccountCard({
   orgLabel: string;
   /** Set when the organization pinned this section read-only (G11). */
   lockedTitle?: string;
+  /** Settings > Account owns Sign in / Sign out; this card keeps Sync now. */
+  accountOwnsSignIn?: boolean;
 }) {
   const [login, setLogin] = useState<CloudLoginState | null>(null);
   const [busy, setBusy] = useState<"login" | "logout" | null>(null);
@@ -372,7 +389,7 @@ function CloudAccountCard({
   const pillLabel = orgEnrolled || locked ? "Managed" : meta.label;
   const pillVariant = orgEnrolled || locked ? "info" : meta.variant;
   const signInDisabledTitle = orgEnrolled
-    ? `Personal cloud sign-in is managed by ${orgLabel} and is unavailable on this node.`
+    ? `Personal cloud sign-in is managed by ${orgLabel} and is unavailable on this machine.`
     : lockedTitle;
 
   return (
@@ -380,15 +397,15 @@ function CloudAccountCard({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <div className="text-[13px] font-semibold text-fg-1">Cloud account</div>
+            <div className="text-[13px] font-semibold text-fg-1">{accountOwnsSignIn ? "AI summaries" : "Cloud account"}</div>
             <Pill variant={pillVariant} className="normal-case">
               {pillLabel}
             </Pill>
           </div>
           <p className="mt-1 max-w-[62ch] text-[11.5px] leading-relaxed text-fg-3">
-            Sign in with your SuperBased account to enable optional cloud enrichment.
-            Signing in only stores a device-bound credential on this machine; nothing
-            about your sessions leaves it until you grant consent for a purpose.
+            {accountOwnsSignIn
+              ? "Uses your SuperBased account from the card above. Nothing about your sessions leaves this machine until you agree to what is sent."
+              : "Sign in with your SuperBased account to enable optional cloud enrichment. Signing in only stores a credential that is bound to this machine; nothing about your sessions leaves it until you grant consent for a purpose."}
           </p>
           <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[10.5px] text-fg-3">
             {signIn?.known && (
@@ -422,7 +439,7 @@ function CloudAccountCard({
 
         <div className="flex shrink-0 flex-col items-end gap-2">
           <div className="flex items-center gap-2">
-            {phase !== "signed_in" && (
+            {phase !== "signed_in" && !accountOwnsSignIn && (
               <Button
                 variant="primary"
                 onClick={() => void startLogin()}
@@ -447,30 +464,34 @@ function CloudAccountCard({
                     </Button>
                   </span>
                 </Tooltip>
-                <Tooltip content={signInDisabledTitle || "Run the sign-in again (refreshes the stored WorkOS sign-in)"}>
-                  <span className="inline-flex">
+                {!accountOwnsSignIn && (
+                  <>
+                    <Tooltip content={signInDisabledTitle || "Run the sign-in again (refreshes the stored WorkOS sign-in)"}>
+                      <span className="inline-flex">
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() => void startLogin()}
+                          disabled={!canSignIn}
+                        >
+                          Sign in again
+                        </Button>
+                      </span>
+                    </Tooltip>
                     <Button
-                      size="sm"
                       variant="secondary"
-                      onClick={() => void startLogin()}
-                      disabled={!canSignIn}
+                      onClick={() => void logout()}
+                      disabled={!actionsAvailable || busy !== null || phase !== "signed_in" || locked}
+                      title={lockedTitle}
                     >
-                      Sign in again
+                      {busy === "logout" ? "Signing out…" : "Sign out"}
                     </Button>
-                  </span>
-                </Tooltip>
-                <Button
-                  variant="secondary"
-                  onClick={() => void logout()}
-                  disabled={!actionsAvailable || busy !== null || phase !== "signed_in" || locked}
-                  title={lockedTitle}
-                >
-                  {busy === "logout" ? "Signing out…" : "Sign out"}
-                </Button>
+                  </>
+                )}
               </>
             )}
             {phase !== "signed_in" && (
-              <Button size="sm" variant="secondary" disabled title="Sign in first">
+              <Button size="sm" variant="secondary" disabled title={accountOwnsSignIn ? "Sign in on the Account card first" : "Sign in first"}>
                 Sync now
               </Button>
             )}
@@ -489,16 +510,16 @@ function CloudAccountCard({
         <div className="mt-3 rounded-2 border border-info/30 bg-info-soft px-3 py-2 text-[11.5px] text-fg-2">
           <div className="font-semibold text-info">Managed by {orgLabel}</div>
           <p className="mt-1 leading-relaxed">
-            This node is enrolled in {orgLabel}. Personal cloud enrichment is managed by your
-            organization and is unavailable here - sessions captured on this node are org-owned.
-            Signing in personally does nothing on an enrolled node.
+            This machine is connected to {orgLabel}. Personal AI summaries are managed by your
+            team and are unavailable here. Sessions captured on this machine belong to the team.
+            Signing in personally does nothing on a connected machine.
           </p>
           <p className="mt-1 leading-relaxed">
-            Those sessions are enriched on the organization plane instead: see{" "}
+            Your team summarizes those sessions on its own server instead: see{" "}
             <Link to="/settings?section=intel" className="font-medium text-accent hover:text-accent-strong">
-              Org enrichment
+              Team AI summaries
             </Link>
-            , and each session's Org enrichment card.
+            , and each session's Team AI summaries card.
           </p>
         </div>
       )}
@@ -779,11 +800,11 @@ function CloudEnableCard({
       const res = await cloudEnable(withExcerpts, background, effectiveEvidenceSettings(draftEvidence, withExcerpts));
       if (!res.ok) {
         setError(
-          res.exit_error || cloudOutputTail(res.output) || "Turning on Cloud Intelligence failed.",
+          res.exit_error || cloudOutputTail(res.output) || "Turning on AI summaries failed.",
         );
         return;
       }
-      pushToast("Cloud Intelligence is on.", "success");
+      pushToast("AI summaries are on.", "success");
       onChanged();
     } catch (e) {
       setError(apiReason(e));
@@ -799,11 +820,11 @@ function CloudEnableCard({
       const res = await cloudDisable();
       if (!res.ok) {
         setError(
-          res.exit_error || cloudOutputTail(res.output) || "Turning off Cloud Intelligence failed.",
+          res.exit_error || cloudOutputTail(res.output) || "Turning off AI summaries failed.",
         );
         return;
       }
-      pushToast("Cloud Intelligence is off.", "success");
+      pushToast("AI summaries are off.", "success");
       onChanged();
     } catch (e) {
       setError(apiReason(e));
@@ -815,12 +836,12 @@ function CloudEnableCard({
   if (orgEnrolled) {
     return (
       <div className="rounded-3 border border-line-2 bg-bg-2 p-4">
-        <div className="text-[13px] font-semibold text-fg-1">Turn on Cloud Intelligence</div>
+        <div className="text-[13px] font-semibold text-fg-1">Turn on AI summaries</div>
         <div className="mt-3 rounded-2 border border-info/30 bg-info-soft px-3 py-2 text-[11.5px] text-fg-2">
           <div className="font-semibold text-info">Managed by {orgLabel}</div>
           <p className="mt-1 leading-relaxed">
-            This node is enrolled in {orgLabel}. Personal cloud enrichment is managed by your
-            organization and is unavailable here.
+            This machine is connected to {orgLabel}. Personal AI summaries are managed by your
+            team and are unavailable here.
           </p>
         </div>
       </div>
@@ -830,8 +851,8 @@ function CloudEnableCard({
   if (!signedIn) {
     return (
       <div className="rounded-3 border border-line-2 bg-bg-2 p-4">
-        <div className="text-[13px] font-semibold text-fg-1">Turn on Cloud Intelligence</div>
-        <p className="mt-1 text-[11.5px] text-fg-3">Sign in above to turn on Cloud Intelligence.</p>
+        <div className="text-[13px] font-semibold text-fg-1">Turn on AI summaries</div>
+        <p className="mt-1 text-[11.5px] text-fg-3">Sign in above to turn on AI summaries.</p>
       </div>
     );
   }
@@ -847,7 +868,7 @@ function CloudEnableCard({
     const wantsExcerpts = draftExcerpts;
     return (
       <div className="rounded-3 border border-line-2 bg-bg-2 p-4">
-        <div className="text-[13px] font-semibold text-fg-1">Cloud Intelligence is on</div>
+        <div className="text-[13px] font-semibold text-fg-1">AI summaries are on</div>
         <p className="mt-1 text-[11.5px] text-fg-3">
           {CLOUD_ENRICH_LEVEL_LABELS[policy!.level]} - background {policy!.background ? "on" : "off"}{" "}
           - since {cloudFmtWhen(policy!.updated_at)}.
@@ -929,7 +950,7 @@ function CloudEnableCard({
 
   return (
     <div className="rounded-3 border border-line-2 bg-bg-2 p-4">
-      <div className="text-[13px] font-semibold text-fg-1">Turn on Cloud Intelligence</div>
+      <div className="text-[13px] font-semibold text-fg-1">Turn on AI summaries</div>
       <p className="mt-1 max-w-[62ch] text-[11.5px] leading-relaxed text-fg-3">
         After you turn this on, each session you finish is named and tagged for you in the
         background, a few minutes after it ends. You can turn it off here at any time.
@@ -1070,7 +1091,7 @@ function CloudConsentGrantsCard({
     <div className="rounded-3 border border-line-2 bg-bg-2 p-4">
       <div className="text-[13px] font-semibold text-fg-1">Consent grants</div>
       <p className="mt-1 max-w-[66ch] text-[11.5px] leading-relaxed text-fg-3">
-        Every consent receipt this device holds, and every purpose you can grant a standing
+        Every consent receipt this machine holds, and every purpose you can grant a standing
         (revocable any time) authorization for. A standing grant only lets a future Confirm and
         enrich skip the extra consent-recording step for that purpose - it never changes what is
         previewed or uploaded.
@@ -1132,7 +1153,7 @@ function CloudConsentGrantsCard({
                   const isBusy = busyPurpose === g.purpose;
                   if (!g.ok) {
                     return (
-                      <Tooltip key={g.purpose} content={g.reason || "Not grantable on this device."}>
+                      <Tooltip key={g.purpose} content={g.reason || "Not grantable on this machine."}>
                         <span
                           tabIndex={0}
                           className="cursor-help rounded-2 border border-line-2 bg-bg-3 px-2.5 py-1 text-caption text-fg-4 focus:outline-none focus-visible:ring-1 focus-visible:ring-accent-ring"
@@ -1281,7 +1302,7 @@ function CloudDeleteAccountCard({
           disabled={!!lockedTitle}
           className="h-3.5 w-3.5 rounded-1 border-line-2 disabled:cursor-not-allowed"
         />
-        Only clear this device (keep the hosted account)
+        Only clear this machine (keep the hosted account)
       </label>
 
       <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -1296,10 +1317,10 @@ function CloudDeleteAccountCard({
             ? "Working…"
             : armed
               ? localOnly
-                ? "Confirm - clear this device"
+                ? "Confirm - clear this machine"
                 : "Confirm - delete cloud account"
               : localOnly
-                ? "Clear this device"
+                ? "Clear this machine"
                 : "Delete cloud account"}
         </Button>
         </Tooltip>
@@ -1469,8 +1490,8 @@ function CloudPreferences({
       </div>
       {orgEnrolled && (
         <div className="mt-2 text-[10.5px] text-fg-4">
-          These preferences do not take effect while this node is org-enrolled - personal cloud
-          enrichment is unavailable here.
+          These preferences do not take effect while this machine is connected to a team.
+          Personal AI summaries are unavailable here.
         </div>
       )}
 
@@ -1505,7 +1526,7 @@ function CloudPreferences({
 
         <div className="space-y-1.5 text-[11px] text-fg-3">
           <div className="text-[10.5px] text-fg-4">
-            Background enrichment is controlled by the Turn on Cloud Intelligence card above.
+            Background enrichment is controlled by the Turn on AI summaries card above.
           </div>
         </div>
       </div>
@@ -1641,7 +1662,7 @@ function StatusBody({ data }: { data: CloudStatusWithDigestPlan }) {
         <div className="mb-1 font-semibold text-fg-1">No cloud activity yet (optional)</div>
         <p className="leading-relaxed text-fg-3">
           No consent receipts, outbox items, or synced results exist on this
-          node yet. Cloud Intelligence is entirely optional - every local
+          machine yet. AI summaries are entirely optional - every local
           feature (sessions, cost, cache, routing, analysis) works without it.
         </p>
         <ul className="mt-2 list-disc space-y-1 pl-5 text-[11.5px] text-fg-3">
@@ -1716,7 +1737,7 @@ function AutomationNote() {
       </p>
       <p className="mt-1">
         Automation is opt-in and off by default - whether background enrichment runs at all is
-        the "Run in the background" switch on the Turn on Cloud Intelligence card above; syncing
+        the "Run in the background" switch on the Turn on AI summaries card above; syncing
         automatically (
         <code className="rounded-1 border border-line-3 bg-bg-3 px-1 py-0.5 font-mono text-[10px] text-fg-2">
           auto_sync
@@ -1735,7 +1756,7 @@ function AllowanceCard({ known }: { known: boolean }) {
     <div className="rounded-3 border border-line-2 bg-bg-2 px-3 py-2">
       <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.06em] text-fg-3">
         Free-tier allowance
-        <Tooltip content="The daily/monthly allowance is reported by the server at sync and is not stored on this node. Nothing is shown until then - no fabricated numbers.">
+        <Tooltip content="The daily/monthly allowance is reported by the server at sync and is not stored on this machine. Nothing is shown until then - no fabricated numbers.">
           <span
             tabIndex={0}
             aria-label="About the allowance"

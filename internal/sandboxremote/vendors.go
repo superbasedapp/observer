@@ -26,6 +26,16 @@ const (
 	// through the org's validating front, which the org publishes in its
 	// signed managed sandbox body.
 	VendorOpenShellOrg = "openshell-org"
+	// VendorDockerSandboxes is Docker's cloud sandboxes (Docker Agentic
+	// Platform, the Sandboxes API at connect.docker.com; lane SBX-DOCKER).
+	VendorDockerSandboxes = "docker-sandboxes"
+	// VendorInstaBox is InstaBox (instabox.sh): a Linux VM per box, reached
+	// over its REST API and its terminal WebSocket.
+	VendorInstaBox = "instabox"
+	// VendorDaytona is Daytona Cloud (daytona.io), a hosted vendor:
+	// REST plus its SSH access tokens through the pure-Go SSH transport
+	// (sandbox plan v2's Daytona row), never its AGPL Go SDK.
+	VendorDaytona = "daytona"
 )
 
 // RegionKind says how a vendor places a box.
@@ -456,7 +466,276 @@ var vendors = map[string]Vendor{
 		// request (FX4 item 2, F-P6-2; FX3 had assumed 4 MiB).
 		OneShotStdinBytes: 1<<20 - 64<<10,
 	},
+	// Docker's cloud sandboxes (lane SBX-DOCKER): the Docker Agentic
+	// Platform's pay-as-you-go hosted microVMs, driven through the Sandboxes
+	// API (OpenAPI 3.2, v1, labelled experimental). Every fact was read on
+	// 2026-11-11 from the pages named per call; the client-level live smoke
+	// of 2026-11-11 (three micro boxes, docs/sandboxed-terminals.md "Docker
+	// Sandboxes", live smoke) checked the ones its comments say.
+	VendorDockerSandboxes: {
+		ID: VendorDockerSandboxes, Name: "Docker Sandboxes",
+		// The API reference's server; the base keeps its /sandboxes path
+		// prefix and every /v1 path is appended to it.
+		DefaultEndpoint: "https://connect.docker.com/sandboxes",
+		Domains:         []string{"docker.com"},
+		KeystoreService: "sbo-sandbox-docker-v1",
+		EnvCredential:   dockerSandboxesEnvNames,
+		// Docker documents no region for cloud sandboxes: the one entry is
+		// the provider's own choice, grounded by the FAQ (which names the
+		// cloud endpoint and no region), so an org allowed_regions floor
+		// refuses it (S7b).
+		Regions: Regions{
+			Kind: RegionSelectable, Default: ProviderChosen,
+			Known: []string{ProviderChosen},
+			Docs:  regionDocs("https://docs.docker.com/ai/sandboxes/faq/", ProviderChosen),
+		},
+		Tiers: map[vocab.Tier]TierMapping{
+			// An inline network policy at create, "enforced before the first guest
+			// process" (the API reference, CreateSandboxRequest.networkPolicies):
+			// denyAll with explicit deny rules for every name and address. Live
+			// 2026-11-11: denyAll alone left an installed default allow of "**"
+			// in the effective policy and the box reached the internet; with the
+			// deny rules it resolved no name and reached no address.
+			vocab.TierNone:      blockAll("an inline denyAll network policy with deny rules for every name and address (**, 0.0.0.0/0, ::/0) at create; the relay carries only the hook stream", false),
+			vocab.TierProxyOnly: blockAll("an inline denyAll network policy with deny rules for every name and address at create; the relay carries the hook stream and the model proxy", true),
+			// The create request's inline policy has denyAll only, so the open
+			// tier sends none and the account's own default policy decides
+			// (sbx --cloud policy init allow-all|balanced|deny-all); the docs
+			// do not say whether metadata or private ranges are refused:
+			// claimed, and disclosed (NetworkNotes). Live 2026-11-11, on an
+			// account whose default was denyAll plus a default-layer allow of
+			// "**": public names and addresses answered, while 169.254.169.254
+			// and 10.0.0.1 timed out (one account, one observation).
+			vocab.TierInternet: {Mechanism: "no inline policy, so the Docker account's default network policy applies (allow-all opens it), plus the relay for the model proxy", Source: vocab.SourceClaimed, Relay: true},
+		},
+		// "Extensions can't move expiration beyond 24 hours from creation"
+		// (cloud usage page); the default is one hour, and the driver always
+		// sends its own timeout.
+		LifetimeCaps: []PlanCap{{"all plans", 1440}},
+		// A stop preserves memory and the restart timeout action keeps it;
+		// the driver sends onTimeout delete and never stops a box.
+		MemoryImages: MemoryImagePolicy{AutoPauseExists: true, CanDisable: true, Note: "a stop keeps the box's memory; the driver sends onTimeout delete and never stops a box"},
+		Price: Price{
+			USDPerHour: 0.14, Size: "small: 2 vCPU, 4 GB, the size the driver asks for (billed per second from start to stop)",
+			Date: "2026-11-11", Source: "https://www.docker.com/c/sbx-promo/ (rates current as of September 2026) and https://docs.docker.com/ai/sandboxes-api/limits/",
+		},
+		// The interactive process API documents a PTY, a resize frame and a
+		// resume from a stream sequence, so the PTY is the vendor's and a
+		// dropped stream re-attaches (the E2B shape, over a WebSocket). Live
+		// 2026-11-11: a PTY took its initial size and a resize (stty size
+		// 24 80, then 40 120); a pipe stream held 5.5 minutes, past its
+		// five-minute grant, was re-attached once by the client and echoed
+		// again; the default image runs as root (uid 0), so HOME is /root.
+		RelayStdin: true, GuestPTY: false, Reattach: true, BoxHome: "/root",
+		Docs: []EndpointDoc{
+			{"exchange", "POST", "https://hub.docker.com/v2/auth/token (identifier and the account's access token) -> access_token", "https://docs.docker.com/ai/sandboxes-api/authentication/", "the management token's lifetime (re-exchanged on a 401)"},
+			{"create", "POST", "/v1/sandboxes (Idempotency-Key; displayName, imageRef, resources cpus and memoryMib, labels, startupExecution.rawImage.start, features.timeouts onTimeout delete, networkPolicies denyAll below internet)", "https://docs.docker.com/reference/api/sandboxes/api.yaml (createSandbox, CreateSandboxRequest)", "whether a raw image stays running without a start command (the driver sends sleep infinity; with it the box ran and answered 201 or a running read within 16 s live)"},
+			{"get", "GET", "/v1/sandboxes/{sandbox}", "api.yaml (getSandbox, Sandbox, SandboxStatus)", ""},
+			{"list", "GET", "/v1/sandboxes (pageSize and a continuation token; no label filter, so the run label is matched in the client)", "api.yaml (listSandboxes); https://docs.docker.com/ai/sandboxes-api/concepts/", ""},
+			{"delete", "DELETE", "/v1/sandboxes/{sandbox}?force=true (If-Match: the etag; 202 while deleting, 204 when gone)", "api.yaml (deleteSandbox); concepts page", ""},
+			{"endpoint credential", "POST", "/v1/sandboxes/{sandbox}/endpoint-credentials (sandboxesExec, sandboxesFilesRead, sandboxesFilesWrite; ttl at most 300s)", "api.yaml (createEndpointCredential, EndpointCredential); authentication page", ""},
+			{"create process", "POST", "{core.endpoint.uri}/v1/processes (cmd argv, env, workingDir, user, pty.initialSize; Idempotency-Key)", "api.yaml (createProcess, CreateProcessRequest)", ""},
+			{"interact", "GET", "{core.endpoint.uri}/v1/processes/{process}/interact (WebSocket subprotocol sandboxes.v1: attach with resumeFrom, stdin, closeStdin, resize; chunk, exited, heartbeat)", "api.yaml (interact, x-websocket, InteractRequest, ProcessOutput)", ""},
+			{"get process", "GET", "{core.endpoint.uri}/v1/processes/{process}", "api.yaml (getProcess, Process)", ""},
+			{"signal", "POST", "{core.endpoint.uri}/v1/processes/{process}/signal (kill)", "api.yaml (signal, ProcessSignal)", ""},
+			{"mkdir", "PUT", "{core.endpoint.uri}/v1/files/directories (parents true)", "api.yaml (mkdir, FilesMkdirRequest)", ""},
+			{"upload", "POST", "{core.endpoint.uri}/v1/files/upload (multipart metadata and content pairs, streamed)", "api.yaml (upload, FileHeader)", "a size cap on one upload stream"},
+			{"read file", "GET", "{core.endpoint.uri}/v1/files/content?path=", "api.yaml (readFile)", "the unary message cap above which a read is refused"},
+		},
+		// Settled by the live smoke of 2026-11-11 and so no longer listed: a
+		// box's endpoint is https://<port>-<id>.sbx.sandboxes-cloud.docker.com
+		// (under docker.com, as the client requires); the default image runs
+		// as root; a box started with sleep infinity stays running through
+		// the run; an open interact stream past its five-minute grant ends
+		// and the client's re-attach resumes it; a forced delete answers at
+		// once and the next read is a 404; a killed process reports exit -1.
+		Unverified: []string{
+			"whether a raw image box stays running without a start command (the driver always sends sleep infinity as startupExecution.rawImage.start)",
+			"the management token's lifetime (re-exchanged once on a 401; a 6-minute run needed no second exchange)",
+			"the account's default network policy on the internet tier on other accounts, and whether the metadata endpoint and private ranges are refused or only unrouted there",
+			"the isolation class of a cloud box (a VM by its evidence: its own kernel, 6.12.114, and an /init on vsock as pid 1; Docker documents none)",
+			"file, upload and output retention caps, label key syntax and numeric rate limits",
+			"the FAQ names https://api.sandboxes-cloud.docker.com as the cloud endpoint while the API reference names https://connect.docker.com/sandboxes (the driver uses the API reference's, which answered live)",
+		},
+		TemplateRule: "on Docker Sandboxes a template is an OCI image reference the service can pull (imageRef) that holds the agent tool, sh and git, runs as root (HOME /root) and is started with sleep infinity in place of its own command; name it in [terminal.sandbox.hosted.docker].template, or use the internet tier, where the tool installs at first start when the account's network policy lets the box reach its vendor",
+		NetworkNotes: []string{
+			"on the internet tier Docker applies your account's own default network policy (sbx --cloud policy init allow-all, balanced or deny-all); Observer cannot see or change it, and Docker's docs do not say whether the metadata address or private ranges are refused (in the 2026-11-11 live smoke they timed out while public hosts answered)",
+		},
+	},
+	// InstaBox (instabox.sh). Every fact is InstaBox's public docs and
+	// OpenAPI document (https://api.instabox.sh/v1/openapi.json, version
+	// 1.0.0), read 2026-11-11, and an API-level live smoke of this client
+	// on the operator's free account the same day (create, ready, exec,
+	// root exec, files, two terminal streams, delete; no agent run, no
+	// relay): see docs/sandboxed-terminals.md, InstaBox "Live smoke".
+	VendorInstaBox: {
+		ID: VendorInstaBox, Name: "InstaBox",
+		DefaultEndpoint: "https://api.instabox.sh",
+		Domains:         []string{"instabox.sh"},
+		KeystoreService: "sbo-sandbox-instabox-v1",
+		EnvCredential:   []string{"INSTABOX_API_KEY"},
+		// The create takes no region (a region field is 400 unknown_field)
+		// and the machine reports none: placement is the platform's.
+		Regions: Regions{
+			Kind: RegionSelectable, Default: ProviderChosen,
+			Known: []string{ProviderChosen},
+			Docs:  regionDocs("https://instabox.sh/docs/machines.md", ProviderChosen),
+		},
+		// InstaBox documents no network policy: no deny-all, no allowlist,
+		// nothing that would make the none or proxy_only tier true, so the
+		// row offers only internet. Whether its open egress refuses private,
+		// link-local and metadata ranges is not documented: claimed.
+		Tiers: map[vocab.Tier]TierMapping{
+			vocab.TierInternet: {Mechanism: "InstaBox's own open egress (it documents no network policy) plus the relay for the model proxy", Source: vocab.SourceClaimed, Relay: true},
+		},
+		// Free: a machine pauses after 480 minutes of continuous running
+		// (only an InstaBox admin changes it), which ends the run. Paid
+		// plans default to no max run; the run's timeout is the create's
+		// deleteAfterSeconds, at most 86400.
+		LifetimeCaps: []PlanCap{{"Free", 480}, {"Pro, Builder and Team", 1440}},
+		MemoryImages: MemoryImagePolicy{AutoPauseExists: true, CanDisable: false, Note: "a running machine pauses into a memory image after 30 idle minutes (fixed on the free plan) and at its max run; the driver changes neither, and deleteAfterSeconds deletes the machine at the run's timeout whatever its state"},
+		Price: Price{
+			USDPerHour: 0.034, Size: "4 vCPU, 8 GiB, the default and the free plan's only size (a free machine is never billed; paid plans pay this beyond their monthly credit, by the second while running, plus disk past the included amount)",
+			Date: "2026-11-11", Source: "https://instabox.sh/docs/pricing.md ($0.004 per vCPU-hour, $0.00225 per GiB-hour)",
+		},
+		// The relay and the guest helper each ride their own terminal
+		// WebSocket session, in raw mode (the client's start script): no
+		// non-PTY exec stream with a streaming stdin is documented.
+		RelayStdin: true, GuestPTY: true, Reattach: false, GuestReattach: false, BoxHome: "/data/home",
+		// The create answers 202 with an operation; the client waits for it,
+		// and the core waits until the machine is ready (runtime.ready).
+		ReadyWaitSeconds: 180,
+		Docs: []EndpointDoc{
+			{"create", "POST", "/v1/machines (Idempotency-Key; name, templateId, deleteAfterSeconds, metadata)", "https://instabox.sh/docs/api/machines.md; openapi.json createMachine", ""},
+			{"operation", "GET", "/v1/operations/{id}?wait=25s (long poll)", "https://instabox.sh/docs/api/operations.md; openapi.json getOperation", ""},
+			{"get", "GET", "/v1/machines/{id}", "https://instabox.sh/docs/api/machines.md; openapi.json getMachine", ""},
+			{"list", "GET", "/v1/machines?metadata=key:value&cursor=", "https://instabox.sh/docs/api/machines.md; openapi.json listMachines", ""},
+			{"delete", "DELETE", "/v1/machines/{id} (Idempotency-Key, X-Confirm-Delete)", "https://instabox.sh/docs/api/machines.md; openapi.json deleteMachine", ""},
+			{"exec", "POST", "/v1/machines/{id}/exec (argv, cwd, envs, stdin, timeoutSeconds 600)", "https://instabox.sh/docs/api/commands.md; openapi.json execCommand", ""},
+			{"upload", "PUT", "/v1/machines/{id}/files?path=&mode=&parents=true (raw body)", "https://instabox.sh/docs/api/commands.md; openapi.json writeMachineFile", "the mode of a parent directory parents=true creates"},
+			{"download", "GET", "/v1/machines/{id}/files/content?path=", "https://instabox.sh/docs/api/commands.md; openapi.json downloadMachineFile", ""},
+			{"terminal", "GET", "/v1/machines/{id}/terminal?session=&restart=1 (WebSocket: binary bytes, JSON controls)", "openapi.json openMachineTerminal", "the typed start line and the raw-mode PTY are Observer's own use of the documented terminal (byte-transparent in the 2026-11-11 live smoke; not yet under a real relay or agent)"},
+		},
+		Unverified: []string{
+			"the terminal stream under a real relay and agent run (the 2026-11-11 live smoke carried 65,559 bytes, NUL, 0xff and the ^C, ^D and ^Z bytes unchanged both ways, and the exit code, but no relay or agent ran)",
+			"the largest terminal message the server accepts (32 KiB messages were accepted live; the client sends no larger)",
+			"passwordless sudo on templates other than agent-browser (sudo -n ran as root there, live 2026-11-11)",
+			"whether terminal traffic alone keeps a machine out of idle pause while the agent waits silently (activity leases exist and are not used)",
+			"what a run sees at the free plan's 480-minute max-run pause (the machine pauses with a cooldown; the run ends)",
+			"refusal of the metadata endpoint and private ranges (no network policy is documented)",
+			"what the ci, android and omarchy templates hold (agent-browser, the default, has sha256sum but no git, gzip, node or npm on the standard PATH, live 2026-11-11, so a first-start npm install there fails and the staged diff has no git)",
+		},
+		TemplateRule: "InstaBox's free plan creates only from the agent-browser (the default), android, omarchy and ci templates (403 template_not_allowed otherwise); a paid plan may name any template GET /v1/templates lists as creatable, as an id or id@version, in [terminal.sandbox.hosted.instabox].template",
+		NetworkNotes: []string{
+			"InstaBox documents no network policy, so its machines reach the internet on every run; Observer's relay carries only the hook stream and the model proxy, and the box's own traffic goes through InstaBox's network, which Observer does not carry and cannot stop",
+			"what a machine sends is capped at about 50 Mbit/s per machine (InstaBox's limits page)",
+		},
+	},
+	// Daytona Cloud (a hosted vendor). Every fact below was read on
+	// 2026-11-11 from Daytona's public documentation: the main API spec
+	// https://www.daytona.io/docs/openapi.json (Apache-2.0, info.version
+	// 1.0), the toolbox API spec https://www.daytona.io/docs/toolbox-openapi.json,
+	// and the guide pages cited per fact. A client-level live smoke on
+	// 2026-11-11 (one box on the operator's own account, TestLiveSmoke
+	// behind SBO_DAYTONA_LIVE, docs/sandboxed-terminals.md "Daytona") settled
+	// the facts marked "live 2026-11-11"; the hosted register (REM-1 to
+	// REM-12, REM-DAY-1 to REM-DAY-3) is still owed, so the row stays doc.
+	VendorDaytona: {
+		ID: VendorDaytona, Name: "Daytona",
+		// The authentication page: the API URL defaults to
+		// https://app.daytona.io/api; every request sends the key as a bearer
+		// token.
+		DefaultEndpoint: "https://app.daytona.io/api",
+		Domains:         []string{"daytona.io"},
+		KeystoreService: "sbo-sandbox-daytona-v1",
+		// The authentication page names the key's variable; its URL and
+		// target variables are not read (the endpoint and region come from
+		// [terminal.sandbox.hosted.daytona]).
+		EnvCredential: []string{"DAYTONA_API_KEY"},
+		// The sandboxes page, "Regions": targets us and eu; the
+		// authentication page lists no default target, so an unpinned run
+		// records provider chosen.
+		Regions: Regions{
+			Kind: RegionSelectable, Default: ProviderChosen,
+			Known: []string{"us", "eu"},
+			Docs:  regionDocs("https://www.daytona.io/docs/en/sandboxes/", "us", "eu"),
+		},
+		Tiers: map[vocab.Tier]TierMapping{
+			// The network limits page: networkBlockAll blocks all outbound
+			// traffic. Whether DNS is blocked too is not stated (Unverified).
+			vocab.TierNone:      blockAll("networkBlockAll = true (all outbound traffic blocked); the relay carries only the hook stream", false),
+			vocab.TierProxyOnly: blockAll("networkBlockAll = true; the relay carries the hook stream and the model proxy", true),
+			// The network limits page: Tier 1 and 2 organizations get a
+			// restricted network (essential services only) that no sandbox
+			// setting widens; Tier 3 and 4 get full internet. Private,
+			// link-local and metadata ranges are not said to be refused:
+			// claimed, and disclosed (NetworkNotes).
+			vocab.TierInternet: {Mechanism: "the organization's own tier network policy (essential services only on Daytona Tier 1 and 2, full internet on Tier 3 and 4) plus the relay for the model proxy", Source: vocab.SourceClaimed, Relay: true},
+		},
+		// Daytona documents no plan lifetime cap: ttlMinutes is "subject to
+		// the maximum sandbox lifespan configured for the organization
+		// region and sandbox class", whose value is not published. 1440
+		// minutes is Observer's own cap (the top of max_run_minutes), not a
+		// vendor fact.
+		LifetimeCaps: []PlanCap{{"no plan cap documented (Observer's own cap)", 1440}},
+		// Auto-pause is for VM sandbox classes only and is not allowed for
+		// an ephemeral sandbox (CreateSandbox.autoPauseInterval); every box
+		// is created ephemeral (autoDeleteInterval 0), so a stop deletes it
+		// and leaves no archive.
+		MemoryImages: MemoryImagePolicy{AutoPauseExists: false, Note: "no pause on the container class; every box is ephemeral (autoDeleteInterval 0), so a stop deletes it and nothing is archived"},
+		Price: Price{
+			USDPerHour: 0.0666, Size: "1 vCPU, 1 GiB, 3 GiB disk (the default sandbox; the first 5 GiB of disk are free)",
+			Date: "2026-11-11", Source: "https://www.daytona.io/pricing ($0.0504 per vCPU-hour, $0.0162 per GiB-hour of memory, billed per second) and https://www.daytona.io/docs/en/sandboxes/ (the default size)",
+		},
+		// A second exec stream with a streaming stdin is a second SSH exec
+		// channel; no PTY resize is used (the PTY WebSocket's framing is not
+		// documented), so the guest helper owns the PTY.
+		RelayStdin: true, GuestPTY: true, Reattach: false, GuestReattach: false,
+		// The file system guide: "File operations assume you are operating
+		// in the sandbox user's home directory"; the default user is
+		// "daytona" (CreateSandbox.user's example), so its home is
+		// /home/daytona (live 2026-11-11: the default snapshot
+		// daytonaio/sandbox:0.11.0 runs SSH sessions as daytona, uid 1001,
+		// HOME /home/daytona, with passwordless sudo).
+		BoxHome: "/home/daytona",
+		// Create answers the Sandbox, possibly before it reaches started
+		// (states creating, pending_build, pulling_snapshot): the core waits.
+		// Live 2026-11-11: the default snapshot answered started in 1.3 s.
+		ReadyWaitSeconds: 300,
+		Docs: []EndpointDoc{
+			{"create", "POST", "/sandbox (name, labels, env, target, snapshot, autoStopInterval 0, autoDeleteInterval 0, ttlMinutes, public false, networkBlockAll)", "https://www.daytona.io/docs/openapi.json (createSandbox, CreateSandbox); https://www.daytona.io/docs/en/sandboxes/ (Auto-stop, Wall-clock TTL, Ephemeral)", "the answer to a repeated name (the spec lists only 200) and to a snapshot that does not exist"},
+			{"get", "GET", "/sandbox/{sandboxIdOrName}", "openapi.json (getSandbox, Sandbox, SandboxState)", ""},
+			{"list", "GET", "/sandbox?labels={json}&limit=&cursor=", "openapi.json (listSandboxes, ListSandboxesResponse)", "the list is documented as eventually consistent"},
+			{"delete", "DELETE", "/sandbox/{sandboxIdOrName}", "openapi.json (deleteSandbox)", ""},
+			{"ssh access", "POST", "/sandbox/{sandboxIdOrName}/ssh-access?expiresInMinutes=", "openapi.json (createSshAccess, SshAccessDto); https://www.daytona.io/docs/en/ssh-access/", "the gateway's host key (not published; live 2026-11-11: ssh.app.daytona.io:22, ssh-ed25519 SHA256:A1Q6sAQohGVYSNJt8rInS/gjF3Hd0Yp33d0HymhdEV8) and which auth method the gateway takes besides the token as the user name"},
+			{"exec", "SSH", "an exec channel on ssh.app.daytona.io as <token>@ (stdin, stdout, stderr, exit status, stdin EOF: RFC 4254)", "https://www.daytona.io/docs/en/ssh-access/", "exec channels are not documented (the page shows interactive and IDE sessions only); live 2026-11-11: exit statuses, stderr apart, stdin EOF, a SIGTERM kill (143), user daytona and sudo -n all work"},
+			{"upload", "POST", "{toolboxProxyUrl}/{sandboxId}/files/upload-v2?path= (raw application/octet-stream body)", "https://www.daytona.io/docs/toolbox-openapi.json (UploadFile)", "an upload size limit"},
+			{"mode", "POST", "{toolboxProxyUrl}/{sandboxId}/files/permissions?path=&mode=", "toolbox-openapi.json (SetFilePermissions)", ""},
+			{"download", "GET", "{toolboxProxyUrl}/{sandboxId}/files/download?path=", "toolbox-openapi.json (DownloadFile)", ""},
+		},
+		Unverified: []string{
+			"the SSH gateway's host key (not published; the client trusts the first key a run sees and refuses a change, ledger SBX-DAY-1; the key seen live 2026-11-11 is recorded in the endpoint table)",
+			"exec channels on the SSH gateway are not documented (they worked in the live smoke of 2026-11-11: exit statuses, stderr, stdin EOF, kill)",
+			"whether networkBlockAll is honoured on every tier (live 2026-11-11 on the operator's organization: DNS and an HTTPS fetch both failed from the box; the organization's tier was not recorded)",
+			"refusal of the metadata endpoint and private ranges on the internet tier",
+			"the maximum sandbox lifespan per organization, region and class",
+			"the Tier 1 memory quota (the limits page lists 10 GiB in one table and 20 GiB in another)",
+			"an upload size limit on the toolbox",
+			"the create's answer to a repeated name or a missing snapshot",
+		},
+		NetworkNotes: []string{
+			"on the internet tier the box's network is your Daytona organization's own tier policy: on Tier 1 and 2 only Daytona's essential services (package registries, git hosts, model providers) are reachable, on Tier 3 and 4 the full internet; that traffic goes through Daytona's network, which Observer does not carry and cannot stop",
+		},
+	},
 }
+
+// dockerSandboxesEnvNames are the Docker Sandboxes row's environment
+// variable names: the Docker account's access token (made with "Allow Cloud
+// Sandboxes access", scope sandbox:use) and the Docker ID it belongs to. The
+// authentication page's example reads DOCKER_PAT and DOCKER_ID; the row
+// names its own, so another tool's Docker variables are never sent by
+// surprise.
+var dockerSandboxesEnvNames = []string{"DOCKER_SANDBOXES_TOKEN", "DOCKER_SANDBOXES_ID"}
 
 // VendorFor returns the vendor of a registry row id.
 func VendorFor(id string) (Vendor, bool) {

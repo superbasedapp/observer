@@ -26,6 +26,7 @@ import { SandboxOpenShellPanel, type SandboxOpenShellConfig } from "@/components
 import { SandboxVMPanel, type SandboxVMConfig } from "@/components/SandboxVMPanel";
 import { SandboxHostedPanel, type SandboxHostedConfig } from "@/components/SandboxHostedPanel";
 import { SandboxOrgShellCard } from "@/components/SandboxOrgShellCard";
+import { SandboxStraceSeizeCard } from "@/components/SandboxStraceSeizeToggle";
 import { SandboxCredentialsPanel, type SandboxReadoptConfig } from "@/components/SandboxCredentialsPanel";
 import {
   SandboxWindowsTiersPanel,
@@ -1017,6 +1018,7 @@ export function SandboxSettingsCard() {
                   <OrgSetNote show={pinned.has("seccomp")} />
                 </span>
               </label>
+              <SandboxStraceSeizeCard writable={writable} />
             </div>
 
             {draft.oci && ociSelected && <SandboxOCIPanel value={draft.oci} pinned={pinned} writable={writable} onChange={(v) => update("oci", v)} />}

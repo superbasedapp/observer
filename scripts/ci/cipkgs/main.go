@@ -30,6 +30,14 @@
 //	    to no package and is not on the known-unread list (a test may read
 //	    it from disk).
 //
+//	go run ./scripts/ci/cipkgs affected --precise <base-sha> <head-sha>
+//	    The same for a local gate rerun (tools/testrunner), never called by
+//	    ci.yml: a changed _test.go file or embedded dashboard bundle
+//	    (webapp/dist) selects its own package instead of everything that
+//	    imports it, and a changed file of a tree tests read only by path
+//	    (the web sources, docs) selects the packages whose test files name
+//	    it or a directory above it instead of ALL (precise.go).
+//
 //	go run ./scripts/ci/cipkgs fresh
 //	    Module-relative paths of the packages that always run with -count=1,
 //	    even on a push where the others may replay a cached result: the
@@ -47,7 +55,9 @@
 //	    (scripts/ci/go-test-splits.tsv). The top-level Test functions are
 //	    grouped by the first splitKeyLen characters after "Test" and the
 //	    sorted groups are cut into k contiguous runs of about equal test
-//	    count. Parts 0..k-2 print -run=^Test(?:<their groups>); the last
+//	    count; a group bigger than one part's share is refined by longer
+//	    prefixes, down to single tests (groupCounts). Parts 0..k-2 print
+//	    -run=^Test(?:<their groups>); the last
 //	    part prints -skip=^Test(?:<every earlier group>), so it runs
 //	    everything the earlier parts do not: Examples, Fuzz seeds and any
 //	    test the parser missed. The union of the k parts is therefore the
@@ -206,10 +216,14 @@ func run(args []string, out io.Writer) error {
 		}
 		return runNarrow(root, module, args[1], args[2], out)
 	case "affected":
-		if len(args) != 3 {
-			return errors.New("usage: cipkgs affected <base> <head>")
+		precise := len(args) == 4 && args[1] == "--precise"
+		if precise {
+			args = append([]string{args[0]}, args[2:]...)
 		}
-		res, err := affected(root, module, args[1], args[2])
+		if len(args) != 3 {
+			return errors.New("usage: cipkgs affected [--precise] <base> <head>")
+		}
+		res, err := affected(root, module, args[1], args[2], precise)
 		if err != nil {
 			return err
 		}
@@ -629,7 +643,10 @@ func classify(changed []string, pkgDirs map[string]bool) (dirs map[string]bool, 
 	return dirs, false, ""
 }
 
-func affected(root, module, base, head string) ([]string, error) {
+// affected is the affected mode. precise selects classifyPrecise
+// (precise.go: `affected --precise`, the local gate rerun's rule); without
+// it the result is the push rule ci.yml runs, unchanged.
+func affected(root, module, base, head string, precise bool) ([]string, error) {
 	if base == "" || strings.Trim(base, "0") == "" {
 		fmt.Fprintln(os.Stderr, "cipkgs: no base commit; testing everything")
 		return []string{"ALL"}, nil
@@ -656,7 +673,16 @@ func affected(root, module, base, head string) ([]string, error) {
 	for _, p := range pkgs {
 		pkgDirs[p.rel] = true
 	}
-	dirs, all, why := classify(changed, pkgDirs)
+	var dirs map[string]bool
+	var cs changeSet
+	var all bool
+	var why string
+	if precise {
+		cs, all, why = classifyPrecise(changed, pkgDirs)
+		dirs = cs.dirs
+	} else {
+		dirs, all, why = classify(changed, pkgDirs)
+	}
 	if all {
 		fmt.Fprintln(os.Stderr, "cipkgs: "+why+"; testing everything")
 		return []string{"ALL"}, nil
@@ -701,12 +727,24 @@ func affected(root, module, base, head string) ([]string, error) {
 	for _, r := range readers {
 		hit[importPath(module, r)] = true
 	}
+	// --precise: the packages whose change stays in the package, and the
+	// packages whose tests read a changed file by path.
+	for d := range cs.leaf {
+		hit[importPath(module, d)] = true
+	}
+	fileRd, err := fileReaders(root, pkgs, cs.read)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range fileRd {
+		hit[importPath(module, r)] = true
+	}
 	res := make([]string, 0, len(hit))
 	for h := range hit {
 		res = append(res, relPath(module, h))
 	}
 	sort.Strings(res)
-	fmt.Fprintf(os.Stderr, "cipkgs: %d changed file(s) in %d package(s) affect %d package(s)\n", len(changed), len(dirs), len(res))
+	fmt.Fprintf(os.Stderr, "cipkgs: %d changed file(s) in %d package(s) affect %d package(s)\n", len(changed), len(dirs)+len(cs.leaf), len(res))
 	return res, nil
 }
 
@@ -941,13 +979,56 @@ func splitKey(n string) string {
 	return rest + "$"
 }
 
+// groupCounts maps each group key to its test count. A group of more than
+// maxGroup tests is refined: its key grows by one character at a time (a
+// test whose whole name is the key stays as the key anchored with $), until
+// every group fits or names a single test. Refined keys extend their parent
+// key, so the key set stays prefix-free and each test still matches exactly
+// one. Without this, a package whose tests mostly share one three-letter
+// prefix (tests/e2e/orgserver: 23 of 57 are TestSecurity...) cannot be cut
+// into more than two non-empty parts.
+func groupCounts(names []string, maxGroup int) map[string]int {
+	count := map[string]int{}
+	base := map[string][]string{}
+	for _, n := range names {
+		key := splitKey(n)
+		if strings.HasSuffix(key, "$") {
+			count[key]++
+			continue
+		}
+		base[key] = append(base[key], n[len("Test"):])
+	}
+	for key, rests := range base {
+		refineGroup(key, rests, maxGroup, count)
+	}
+	return count
+}
+
+// refineGroup records the tests whose rest-of-name starts with key: as one
+// group when they fit in maxGroup (or are one test), else split one
+// character further.
+func refineGroup(key string, rests []string, maxGroup int, count map[string]int) {
+	if len(rests) <= maxGroup || len(rests) == 1 {
+		count[key] += len(rests)
+		return
+	}
+	sub := map[string][]string{}
+	for _, r := range rests {
+		if len(r) == len(key) {
+			count[key+"$"]++
+			continue
+		}
+		sub[r[:len(key)+1]] = append(sub[r[:len(key)+1]], r)
+	}
+	for k, rs := range sub {
+		refineGroup(k, rs, maxGroup, count)
+	}
+}
+
 // splitGroups cuts the sorted groups of names into k contiguous parts of
 // about equal test count.
 func splitGroups(names []string, k int) [][]string {
-	count := map[string]int{}
-	for _, n := range names {
-		count[splitKey(n)]++
-	}
+	count := groupCounts(names, (len(names)+k-1)/k)
 	keys := make([]string, 0, len(count))
 	for key := range count {
 		keys = append(keys, key)

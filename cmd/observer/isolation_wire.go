@@ -177,9 +177,13 @@ func isolationHostFacts(observerDir string, maskPaths []string) (isolation.Host,
 	if err != nil {
 		return isolation.Host{}, err
 	}
+	roots, err := foreignMountRoots()
+	if err != nil {
+		return isolation.Host{}, err
+	}
 	seen := map[string]bool{}
 	var mp []string
-	for _, p := range append(foreignMountRoots(), maskPaths...) {
+	for _, p := range append(roots, maskPaths...) {
 		if p = strings.TrimSpace(p); p != "" && !seen[p] {
 			seen[p] = true
 			mp = append(mp, p)

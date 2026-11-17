@@ -19,6 +19,7 @@ import (
 
 	"golang.org/x/mod/module"
 
+	"github.com/marmutapp/superbased-observer/internal/policy"
 	"github.com/marmutapp/superbased-observer/internal/secfeed"
 )
 
@@ -72,6 +73,24 @@ type Options struct {
 	Endpoints map[string]string
 	// Now is the clock (back-off); nil is time.Now.
 	Now func() time.Time
+	// Provenance turns on the build-provenance reading of each answered
+	// package (plan 2026-11-13 section 4): npm's from the abbreviated
+	// packument already fetched (no extra request), PyPI's from one extra
+	// request to the simple index page. Default false: no provenance work
+	// and no extra request.
+	Provenance bool
+	// ProvenanceOn, when set, is read on every lookup instead of
+	// Provenance, so a setting change applies without a new client (the
+	// daemon's live [security.deps] provenance).
+	ProvenanceOn func() bool
+}
+
+// provenanceEnabled reports whether provenance is read on this lookup.
+func (c *Client) provenanceEnabled() bool {
+	if c.provenanceOn != nil {
+		return c.provenanceOn()
+	}
+	return c.provenance
 }
 
 // Client is the public online client.
@@ -80,6 +99,9 @@ type Client struct {
 	endpoints map[string]string
 	now       func() time.Time
 	allowed   map[string]bool
+	// provenance mirrors Options.Provenance; provenanceOn overrides it.
+	provenance   bool
+	provenanceOn func() bool
 
 	mu       sync.Mutex
 	cooldown map[string]time.Time
@@ -108,7 +130,7 @@ func New(o Options) *Client {
 	for _, e := range secfeed.Ecosystems() {
 		allowed[e.MetadataHost] = true
 	}
-	return &Client{http: hc, endpoints: o.Endpoints, now: now, allowed: allowed, cooldown: map[string]time.Time{}}
+	return &Client{http: hc, endpoints: o.Endpoints, now: now, allowed: allowed, provenance: o.Provenance, provenanceOn: o.ProvenanceOn, cooldown: map[string]time.Time{}}
 }
 
 // AllowedHosts returns the exact host allow-list.
@@ -165,6 +187,14 @@ func (c *Client) doAccept(ctx context.Context, method, raw string, body []byte, 
 // doHeaders is the one request path: an Accept header, an optional
 // If-None-Match, and the response headers back. 304 returns (nil, 304).
 func (c *Client) doHeaders(ctx context.Context, method, raw string, body []byte, limit int64, accept, ifNoneMatch string) ([]byte, int, http.Header, error) {
+	return c.doKeyed(ctx, "", method, raw, body, limit, accept, ifNoneMatch)
+}
+
+// doKeyed is doHeaders with the back-off key of the caller's choosing: ""
+// is the URL's host (every verdict request); a side request that must never
+// cool down its host's verdict requests (PyPI's provenance page) passes its
+// own key. The allow-list is always checked on the host itself.
+func (c *Client) doKeyed(ctx context.Context, backoffKey, method, raw string, body []byte, limit int64, accept, ifNoneMatch string) ([]byte, int, http.Header, error) {
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme != "https" || u.User != nil || (u.Port() != "" && u.Port() != "443") {
 		return nil, 0, nil, errFailed{ReasonNotPublic}
@@ -173,8 +203,11 @@ func (c *Client) doHeaders(ctx context.Context, method, raw string, body []byte,
 	if !c.allowed[host] {
 		return nil, 0, nil, errFailed{ReasonNotPublic}
 	}
+	if backoffKey == "" {
+		backoffKey = host
+	}
 	c.mu.Lock()
-	until := c.cooldown[host]
+	until := c.cooldown[backoffKey]
 	c.mu.Unlock()
 	if c.now().Before(until) {
 		return nil, 0, nil, errFailed{ReasonCoolingDown}
@@ -213,7 +246,7 @@ func (c *Client) doHeaders(ctx context.Context, method, raw string, body []byte,
 			wait = min(time.Duration(s)*time.Second, maxCooldown)
 		}
 		c.mu.Lock()
-		c.cooldown[host] = c.now().Add(wait)
+		c.cooldown[backoffKey] = c.now().Add(wait)
 		c.mu.Unlock()
 		return nil, resp.StatusCode, nil, errFailed{ReasonRateLimited}
 	case resp.StatusCode != http.StatusOK:
@@ -265,6 +298,9 @@ func (c *Client) Lookup(ctx context.Context, specs []secfeed.InstallSpec) []secf
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			reg := c.registry(ctx, specs[i])
+			if reg.err == nil && !reg.notFound && osvErr == nil {
+				reg.prov = c.provenanceOf(ctx, specs[i], reg)
+			}
 			now := c.now()
 			a := &out[i]
 			a.FetchedAt = now
@@ -278,7 +314,7 @@ func (c *Client) Lookup(ctx context.Context, specs []secfeed.InstallSpec) []secf
 				// the online check is incomplete, never "fine".
 				a.Status, a.Reason = secfeed.OnlineFailed, ReasonOSV
 			default:
-				a.Status, a.FirstPublished = secfeed.OnlineAnswered, reg.first
+				a.Status, a.FirstPublished, a.Provenance = secfeed.OnlineAnswered, reg.first, reg.prov
 				for _, id := range osvIDs[i] {
 					if strings.HasPrefix(id, "MAL-") {
 						a.MalIDs = append(a.MalIDs, id)
@@ -420,14 +456,23 @@ type regResult struct {
 	notFound bool
 	first    time.Time
 	err      error
+	// prov is the provenance state; a facts reader that reads it from the
+	// verdict's own document (npm) sets it, provenanceOf fills the rest.
+	prov    policy.InstallProvenance
+	provSet bool
 }
 
 // registryRow is one ecosystem's metadata request and reader. facts, when
 // set, replaces the one-request url-and-read path (npm's two-step read).
+// provenance, when set, is the row's extra provenance request (PyPI's),
+// made only after the verdict request answered; a row with neither a
+// facts reader that sets the state nor a provenance reader stays "" (not
+// checked).
 type registryRow struct {
-	url   func(name string) (string, error)
-	read  func(b []byte) (time.Time, error)
-	facts func(ctx context.Context, c *Client, name string) regResult
+	url        func(name string) (string, error)
+	read       func(b []byte) (time.Time, error)
+	facts      func(ctx context.Context, c *Client, name, version string) regResult
+	provenance func(ctx context.Context, c *Client, name, version string) policy.InstallProvenance
 }
 
 // npmAbbreviated is the abbreviated packument's media type: the version
@@ -449,8 +494,10 @@ const (
 )
 
 // npmFacts reads npm's registry facts in at most two requests, the first
-// one small.
-func npmFacts(ctx context.Context, c *Client, name string) regResult {
+// one small. The abbreviated document is decoded once; with provenance on,
+// its per-version attestations give the provenance state on every path
+// (zero extra requests).
+func npmFacts(ctx context.Context, c *Client, name, version string) regResult {
 	raw := "https://registry.npmjs.org/" + url.PathEscape(name)
 	b, status, err := c.doAccept(ctx, http.MethodGet, raw, nil, maxRegistryBytes, npmAbbreviated)
 	if err != nil {
@@ -459,13 +506,21 @@ func npmFacts(ctx context.Context, c *Client, name string) regResult {
 	if status == http.StatusNotFound || status == http.StatusGone {
 		return regResult{notFound: true}
 	}
-	var d struct {
-		Modified string                     `json:"modified"`
-		Versions map[string]json.RawMessage `json:"versions"`
-	}
+	var d npmAbbrevDoc
 	if err := json.Unmarshal(b, &d); err != nil {
 		return regResult{err: errFailed{ReasonBadAnswer}}
 	}
+	r := npmFactsFrom(ctx, c, raw, d)
+	if c.provenanceEnabled() && r.err == nil && !r.notFound {
+		r.prov, r.provSet = secfeed.DecideProvenance(npmProvenanceFacts(d, version)), true
+	}
+	return r
+}
+
+// npmFactsFrom is npm's first-publish read over the decoded abbreviated
+// document: settled from it alone, or one full read for a small, recently
+// modified package.
+func npmFactsFrom(ctx context.Context, c *Client, raw string, d npmAbbrevDoc) regResult {
 	modified := parseTime(d.Modified)
 	if !modified.IsZero() && c.now().Sub(modified) >= npmSettledAfter {
 		// First published at or before the last modification: old enough
@@ -496,7 +551,8 @@ func npmFacts(ctx context.Context, c *Client, name string) regResult {
 var registryTable = map[secfeed.Ecosystem]registryRow{
 	secfeed.EcoNpm: {facts: npmFacts},
 	secfeed.EcoPyPI: {
-		url: func(n string) (string, error) { return "https://pypi.org/pypi/" + url.PathEscape(n) + "/json", nil },
+		provenance: pypiProvenance,
+		url:        func(n string) (string, error) { return "https://pypi.org/pypi/" + url.PathEscape(n) + "/json", nil },
 		read: func(b []byte) (time.Time, error) {
 			var d struct {
 				Releases map[string][]struct {
@@ -605,7 +661,7 @@ func (c *Client) registry(ctx context.Context, s secfeed.InstallSpec) regResult 
 		return regResult{err: errFailed{ReasonNoRegistry}}
 	}
 	if row.facts != nil {
-		return row.facts(ctx, c, secfeed.Normalize(s.Eco, s.Name))
+		return row.facts(ctx, c, secfeed.Normalize(s.Eco, s.Name), s.Version)
 	}
 	raw, err := row.url(secfeed.Normalize(s.Eco, s.Name))
 	if err != nil {

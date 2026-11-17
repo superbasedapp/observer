@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/marmutapp/superbased-observer/internal/cloudserver/enrichbudget"
 )
 
 // ResultsAccountSeqLockKey is the advisory-lock key an account's per-account
@@ -99,9 +101,13 @@ type resultKindMeta struct {
 func (s *Store) completeJobWithResultTx(ctx context.Context, accountID, jobID, evidencePK, reservationID, leaseWorker string, leaseGeneration int64, schemaVersion string, resultJSON []byte, prov ResultProvenance, meta resultKindMeta, now time.Time) (string, bool, error) {
 	var resultID string
 	committed := false
-	err := s.WithAccount(ctx, accountID, func(ctx context.Context, tx pgx.Tx) error {
-		ct, e := tx.Exec(ctx,
-			`UPDATE analysis_jobs j
+	// CLOUD-LOCK-1: a deadlock/serialization loser is rolled back by the
+	// server, so the whole transaction runs again; outputs reset per try.
+	err := s.txRetry.run(ctx, func() error {
+		resultID, committed = "", false
+		return s.WithAccount(ctx, accountID, func(ctx context.Context, tx pgx.Tx) error {
+			ct, e := tx.Exec(ctx,
+				`UPDATE analysis_jobs j
 			    SET state = 'succeeded', terminal_reason = NULL,
 			        lease_worker = NULL, lease_expires_at = NULL, updated_at = $3
 			  WHERE j.account_id = $1::uuid AND j.id = $2::uuid
@@ -111,49 +117,49 @@ func (s *Store) completeJobWithResultTx(ctx context.Context, accountID, jobID, e
 			    AND j.lease_expires_at > clock_timestamp()
 			    AND j.consent_generation = (SELECT a.consent_generation FROM accounts a WHERE a.account_id = j.account_id)
 			    AND (SELECT a.status FROM accounts a WHERE a.account_id = j.account_id) = 'active'`,
-			accountID, jobID, now, leaseWorker, leaseGeneration)
-		if e != nil {
-			return fmt.Errorf("complete CAS: %w", e)
-		}
-		if ct.RowsAffected() == 0 {
-			// Authorization changed since revalidation — discard the completion.
-			return nil
-		}
-		// Propose the next per-account cursor under the same advisory lock as
-		// older workers. Migration 0038's insert trigger owns allocation and
-		// enforces the durable account high-water mark even for old binaries
-		// proposing MAX(account_seq)+1 after retention removed their rows.
-		if _, e := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`,
-			ResultsAccountSeqLockKey(accountID)); e != nil {
-			return fmt.Errorf("lock account_seq allocation: %w", e)
-		}
-		var nextAccountSeq int64
-		if e := tx.QueryRow(ctx,
-			`SELECT coalesce((SELECT last_sequence FROM account_result_cursors WHERE account_id = $1::uuid), 0) + 1`,
-			accountID).Scan(&nextAccountSeq); e != nil {
-			return fmt.Errorf("read next account_seq: %w", e)
-		}
-		kind := meta.Kind
-		if kind == "" {
-			kind = ResultKindSessionEnrichment
-		}
-		var projectPKArg any
-		if meta.CloudProjectID != "" {
-			pk, e := ensureProjectTx(ctx, tx, accountID, meta.CloudProjectID)
+				accountID, jobID, now, leaseWorker, leaseGeneration)
 			if e != nil {
-				return e
+				return fmt.Errorf("complete CAS: %w", e)
 			}
-			projectPKArg = pk
-		}
-		var periodStartArg, periodEndArg any
-		if meta.PeriodStart != "" {
-			periodStartArg = meta.PeriodStart
-		}
-		if meta.PeriodEnd != "" {
-			periodEndArg = meta.PeriodEnd
-		}
-		if e := tx.QueryRow(ctx,
-			`INSERT INTO analysis_results
+			if ct.RowsAffected() == 0 {
+				// Authorization changed since revalidation — discard the completion.
+				return nil
+			}
+			// Propose the next per-account cursor under the same advisory lock as
+			// older workers. Migration 0038's insert trigger owns allocation and
+			// enforces the durable account high-water mark even for old binaries
+			// proposing MAX(account_seq)+1 after retention removed their rows.
+			if _, e := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`,
+				ResultsAccountSeqLockKey(accountID)); e != nil {
+				return fmt.Errorf("lock account_seq allocation: %w", e)
+			}
+			var nextAccountSeq int64
+			if e := tx.QueryRow(ctx,
+				`SELECT coalesce((SELECT last_sequence FROM account_result_cursors WHERE account_id = $1::uuid), 0) + 1`,
+				accountID).Scan(&nextAccountSeq); e != nil {
+				return fmt.Errorf("read next account_seq: %w", e)
+			}
+			kind := meta.Kind
+			if kind == "" {
+				kind = ResultKindSessionEnrichment
+			}
+			var projectPKArg any
+			if meta.CloudProjectID != "" {
+				pk, e := ensureProjectTx(ctx, tx, accountID, meta.CloudProjectID)
+				if e != nil {
+					return e
+				}
+				projectPKArg = pk
+			}
+			var periodStartArg, periodEndArg any
+			if meta.PeriodStart != "" {
+				periodStartArg = meta.PeriodStart
+			}
+			if meta.PeriodEnd != "" {
+				periodEndArg = meta.PeriodEnd
+			}
+			if e := tx.QueryRow(ctx,
+				`INSERT INTO analysis_results
 			   (account_id, job_id, result, schema_version, ai_source, account_seq,
 			    model_route_id, route_version, prompt_version, price_version,
 			    prompt_hash, tokens_in, tokens_out, cost_usd, retry_count,
@@ -162,49 +168,53 @@ func (s *Store) completeJobWithResultTx(ctx context.Context, accountID, jobID, e
 			         $6, $7, $8, $9, $10, $11, $12, $13, $14,
 			         $15, $16::uuid, $17::date, $18::date)
 			 RETURNING id::text`,
-			accountID, jobID, resultJSON, schemaVersion, nextAccountSeq,
-			prov.ModelRouteID, prov.RouteVersion, prov.PromptVersion, prov.PriceVersion,
-			prov.PromptHash, prov.TokensIn, prov.TokensOut, prov.CostUSD, prov.RetryCount,
-			kind, projectPKArg, periodStartArg, periodEndArg).Scan(&resultID); e != nil {
-			return fmt.Errorf("insert result: %w", e)
-		}
-		// D21 regeneration supersede path (W6c): a newer result for the same
-		// cloud session marks the prior current result(s) superseded, pointing
-		// superseded_by at this one. The worker's column-level UPDATE grant
-		// (migration 0018) lets it flip only superseded/superseded_by, never a
-		// result body, and any user revisions on the superseded result survive
-		// (R6: regeneration never displaces a user edit).
-		if _, e := supersedePriorSessionResultsTx(ctx, tx, accountID, jobID, resultID); e != nil {
-			return e
-		}
-		if reservationID != "" {
-			if e := finalizeReservationTx(ctx, tx, accountID, reservationID, "settled", false); e != nil {
+				accountID, jobID, resultJSON, schemaVersion, nextAccountSeq,
+				prov.ModelRouteID, prov.RouteVersion, prov.PromptVersion, prov.PriceVersion,
+				prov.PromptHash, prov.TokensIn, prov.TokensOut, prov.CostUSD, prov.RetryCount,
+				kind, projectPKArg, periodStartArg, periodEndArg).Scan(&resultID); e != nil {
+				return fmt.Errorf("insert result: %w", e)
+			}
+			// D21 regeneration supersede path (W6c): a newer result for the same
+			// cloud session marks the prior current result(s) superseded, pointing
+			// superseded_by at this one. The worker's column-level UPDATE grant
+			// (migration 0018) lets it flip only superseded/superseded_by, never a
+			// result body, and any user revisions on the superseded result survive
+			// (R6: regeneration never displaces a user edit).
+			if _, e := supersedePriorSessionResultsTx(ctx, tx, accountID, jobID, resultID); e != nil {
 				return e
 			}
-			// T-946: the accepted result's provider cost counts against the
-			// pool's spend ceiling, in the same transaction that stores it.
-			if e := addReservationSpendTx(ctx, tx, accountID, reservationID, prov.CostUSD, now); e != nil {
+			if reservationID != "" {
+				// A token reservation books what the provider reported (a
+				// missing meter books the whole hold, never zero).
+				if e := finalizeReservationActualTx(ctx, tx, accountID, reservationID, "settled", false,
+					enrichbudget.ActualTokens(prov.TokensIn, prov.TokensOut)); e != nil {
+					return e
+				}
+				// T-946: the accepted result's provider cost counts against the
+				// pool's spend ceiling, in the same transaction that stores it.
+				if e := addReservationSpendTx(ctx, tx, accountID, reservationID, prov.CostUSD, now); e != nil {
+					return e
+				}
+			}
+			rv := prov.RouteVersion
+			attempts := prov.RetryCount + 1
+			// InternalUnits=1 counts ONLY this (successful) attempt; each prior
+			// failed attempt logged its own 'attempt' row, so the ledger's internal
+			// units sum to the total attempts without double-counting.
+			if e := appendLedgerTx(ctx, tx, accountID, ledgerEntry{
+				JobID: jobID, Event: "settled", UserUnits: 1, InternalUnits: 1,
+				RouteVersion: &rv, Attempts: &attempts,
+				TokensIn: &prov.TokensIn, TokensOut: &prov.TokensOut,
+				Detail: `{"scope":"settle"}`,
+			}); e != nil {
 				return e
 			}
-		}
-		rv := prov.RouteVersion
-		attempts := prov.RetryCount + 1
-		// InternalUnits=1 counts ONLY this (successful) attempt; each prior
-		// failed attempt logged its own 'attempt' row, so the ledger's internal
-		// units sum to the total attempts without double-counting.
-		if e := appendLedgerTx(ctx, tx, accountID, ledgerEntry{
-			JobID: jobID, Event: "settled", UserUnits: 1, InternalUnits: 1,
-			RouteVersion: &rv, Attempts: &attempts,
-			TokensIn: &prov.TokensIn, TokensOut: &prov.TokensOut,
-			Detail: `{"scope":"settle"}`,
-		}); e != nil {
-			return e
-		}
-		if e := deleteEvidenceForJobTx(ctx, tx, accountID, evidencePK, now); e != nil {
-			return e
-		}
-		committed = true
-		return nil
+			if e := deleteEvidenceForJobTx(ctx, tx, accountID, evidencePK, now); e != nil {
+				return e
+			}
+			committed = true
+			return nil
+		})
 	})
 	return resultID, committed, err
 }

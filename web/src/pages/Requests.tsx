@@ -35,6 +35,8 @@ import {
 import { dollarsShown } from "@/lib/format";
 import { requestEntryFrom, withoutEntryParams } from "@/lib/requestEntry";
 import { grantsCacheLine, sentToLine } from "@/lib/grantsCache";
+import { requestAsk, requestOutcome, splitRequests, RECENT_FINISHED_DAYS, type RequestGrantSummary } from "@/lib/requestRows";
+import { exceptionRows } from "@/lib/exceptionsInForce";
 
 // Requests (request-grants design §1.2, phase G6): ask the organization for
 // a time-limited exception, preview exactly what will be sent, and follow the
@@ -99,16 +101,7 @@ type CreateRequest = {
   machine_identity?: string;
 };
 
-type GrantSummary = {
-  id: number;
-  type: string;
-  effect?: string;
-  status: string;
-  starts_at_ns: number;
-  expires_at_ns?: number;
-  max_uses?: number;
-  subject_kind: string;
-};
+type GrantSummary = RequestGrantSummary;
 
 type OrgRequest = {
   id: number;
@@ -133,15 +126,17 @@ type GrantWire = {
   effect?: string;
   subject_kind: string;
   rule_id?: string;
+  lane?: string;
   command_class?: string;
   operand_hash?: string;
+  project_root_hash?: string;
   target?: string;
   starts_at_ns: number;
   expires_at_ns?: number;
   max_uses?: number;
 };
 
-type GrantView = { grant: GrantWire; uses_used: number; honoured: boolean; reason?: string };
+type GrantView = { grant: GrantWire; uses_used: number; honoured: boolean; reason?: string; covered_by?: number };
 
 type Queued = { id: number; created_at: string; attempts: number; last_error?: string; request_json: string };
 
@@ -164,15 +159,6 @@ type RequestsPage = {
 
 type Problem = { field: string; code: string; message: string };
 type Preview = { request: CreateRequest; json: string; problems: Problem[] };
-
-const STATUS_TONE: Record<string, "neutral" | "success" | "warn" | "danger" | "info" | "accent"> = {
-  open: "info",
-  granted: "success",
-  declined: "danger",
-  withdrawn: "neutral",
-  lapsed: "neutral",
-  resolved: "neutral",
-};
 
 const REASON_TEXT: Record<string, string> = {
   not_started: "starts later",
@@ -197,13 +183,6 @@ function expiryText(expiresNs: number | undefined, nowNs: number): string {
   const left = Math.round((expiresNs - nowNs) / 1e9);
   const at = new Date(expiresNs / 1e6).toLocaleString();
   return left > 0 ? `until ${at} (${humanDuration(left)} left)` : `expired ${at}`;
-}
-
-function grantWhat(g: { type: string; rule_id?: string; target?: string }, types: RequestType[]): string {
-  const label = types.find((t) => t.id === g.type)?.label ?? g.type;
-  if (g.rule_id) return `${label}: ${g.rule_id}`;
-  if (g.target) return `${label}: ${g.target}`;
-  return label;
 }
 
 const DURATIONS = [
@@ -268,8 +247,16 @@ export function RequestsPage() {
     page.reload();
   };
 
-  const inForce = (data?.grants.grants ?? []).filter((g) => g.honoured);
-  const notInForce = (data?.grants.grants ?? []).filter((g) => !g.honoured);
+  const [showHistory, setShowHistory] = useState(false);
+  const dollars = dollarsShown();
+  const split = useMemo(() => splitRequests(data?.requests ?? [], now), [data?.requests, now]);
+
+  // Both rails: grant-rail grants and the budget increases the budget rail
+  // folds into a cap (lib/exceptionsInForce).
+  const exceptions = useMemo(
+    () => exceptionRows(data?.grants.grants ?? [], data?.budgets ?? [], types, now, dollars),
+    [data?.grants.grants, data?.budgets, types, now, dollars],
+  );
 
   return (
     <div className="space-y-6 p-4 sm:p-6">
@@ -320,22 +307,30 @@ export function RequestsPage() {
               humanDuration,
             )}
           >
-            {inForce.length === 0 && notInForce.length === 0 ? (
+            {exceptions.length === 0 ? (
               <p className="text-[12px] text-fg-3">No exceptions. Everything your organization configured applies as written.</p>
             ) : (
               <ul className="divide-y divide-line-1">
-                {[...inForce, ...notInForce].map((g) => (
-                  <li key={g.grant.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2 text-[12px]">
-                    <span className="font-mono text-fg-3">G-{g.grant.id}</span>
-                    <span className="font-medium text-fg-0">{grantWhat(g.grant, types)}</span>
-                    {g.grant.effect && <Pill variant={g.grant.effect === "exempt" ? "accent" : "info"}>{g.grant.effect}</Pill>}
-                    <span className="text-fg-2">{expiryText(g.grant.expires_at_ns, now)}</span>
-                    {g.grant.max_uses ? (
+                {exceptions.map((g) => (
+                  <li key={g.key} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2 text-[12px]">
+                    <span className="font-mono text-fg-3">G-{g.grantId}</span>
+                    <span className="font-medium text-fg-0" title={g.title}>
+                      {g.what}
+                    </span>
+                    {g.effect && <Pill variant={g.effect === "exempt" ? "accent" : "info"}>{g.effect}</Pill>}
+                    {g.scope && <span className="text-fg-3">{g.scope}</span>}
+                    <span className="text-fg-2">{expiryText(g.expiresAtNs, now)}</span>
+                    {g.maxUses ? (
                       <span className="text-fg-3">
-                        {g.uses_used} of {g.grant.max_uses} uses
+                        {g.usesUsed} of {g.maxUses} uses
                       </span>
                     ) : null}
                     <span className="flex-1" />
+                    {g.coveredBy ? (
+                      <Pill variant="neutral" title={`G-${g.coveredBy} already gives everything this grant gives. Your approver can revoke this one; nothing changes for you.`}>
+                        same as G-{g.coveredBy}
+                      </Pill>
+                    ) : null}
                     {g.honoured ? (
                       <Pill variant="success">in force</Pill>
                     ) : (
@@ -381,86 +376,43 @@ export function RequestsPage() {
               />
             ) : (
               <>
-              {/* Phones: one card per request; the table needs ~560px. */}
-              <ul className="divide-y divide-line-1 md:hidden" aria-label="Your requests">
-                {data.requests.map((r) => (
-                  <li key={r.id} className="space-y-1 py-2.5 text-[12px]">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0 font-medium text-fg-0">
-                        <span className="font-mono text-fg-3">{r.id}</span>{" "}
-                        {types.find((t) => t.id === r.request_type)?.label ?? r.kind}
-                        {r.payload?.rule_id ? ` ${r.payload.rule_id}` : r.target ? ` ${r.target}` : ""}
+                <RequestRows
+                  rows={split.current}
+                  types={types}
+                  budgets={data.budgets ?? []}
+                  dollars={dollars}
+                  nowNs={now}
+                  onWithdraw={withdraw}
+                  label="Your requests"
+                />
+                {split.current.length === 0 && (
+                  <p className="text-[12px] text-fg-3">Nothing open or recent. Older requests are under History.</p>
+                )}
+                {split.history.length > 0 && (
+                  <div className="mt-3 border-t border-line-1 pt-2">
+                    <button
+                      type="button"
+                      className="text-[12px] font-medium text-fg-2 hover:text-fg-0"
+                      aria-expanded={showHistory}
+                      onClick={() => setShowHistory((v) => !v)}
+                    >
+                      {showHistory ? "Hide" : "Show"} history ({split.history.length} finished more than {RECENT_FINISHED_DAYS} days ago)
+                    </button>
+                    {showHistory && (
+                      <div className="mt-2">
+                        <RequestRows
+                          rows={split.history}
+                          types={types}
+                          budgets={data.budgets ?? []}
+                          dollars={dollars}
+                          nowNs={now}
+                          onWithdraw={withdraw}
+                          label="Request history"
+                        />
                       </div>
-                      <Pill variant={STATUS_TONE[r.status] ?? "neutral"}>{r.status}</Pill>
-                    </div>
-                    <div className="text-fg-2">{r.message}</div>
-                    {r.grant ? (
-                      <div className="text-fg-1">
-                        Granted as G-{r.grant.id}, {expiryText(r.grant.expires_at_ns, now)}
-                      </div>
-                    ) : r.resolution_note ? (
-                      <div className="text-fg-1">{r.resolution_note}</div>
-                    ) : null}
-                    <div className="flex items-center justify-between gap-2 text-fg-3">
-                      <span>{new Date(r.created_at).toLocaleString()}</span>
-                      {r.status === "open" && (
-                        <Button size="sm" variant="ghost" onClick={() => withdraw(r.id)}>
-                          Withdraw
-                        </Button>
-                      )}
-                    </div>
-                  </li>
-                ))}
-              </ul>
-              <div className="hidden overflow-x-auto md:block">
-                <table className="w-full min-w-[560px] text-left text-[12px]">
-                  <thead className="text-[10.5px] uppercase tracking-[0.06em] text-fg-3">
-                    <tr>
-                      <th className="py-1.5 pr-3 font-semibold">#</th>
-                      <th className="py-1.5 pr-3 font-semibold">Ask</th>
-                      <th className="py-1.5 pr-3 font-semibold">Status</th>
-                      <th className="py-1.5 pr-3 font-semibold">Answer</th>
-                      <th className="py-1.5 font-semibold" />
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.requests.map((r) => (
-                      <tr key={r.id} className="border-t border-line-1/60 align-top">
-                        <td className="py-2 pr-3 font-mono text-fg-3">{r.id}</td>
-                        <td className="py-2 pr-3">
-                          <div className="font-medium text-fg-0">
-                            {types.find((t) => t.id === r.request_type)?.label ?? r.kind}
-                            {r.payload?.rule_id ? ` ${r.payload.rule_id}` : r.target ? ` ${r.target}` : ""}
-                          </div>
-                          <div className="mt-0.5 text-fg-2">{r.message}</div>
-                          <div className="mt-0.5 text-fg-3">{new Date(r.created_at).toLocaleString()}</div>
-                        </td>
-                        <td className="py-2 pr-3">
-                          <Pill variant={STATUS_TONE[r.status] ?? "neutral"}>{r.status}</Pill>
-                        </td>
-                        <td className="py-2 pr-3 text-fg-2">
-                          {r.grant ? (
-                            <span>
-                              Granted as G-{r.grant.id}, {expiryText(r.grant.expires_at_ns, now)}
-                            </span>
-                          ) : r.resolution_note ? (
-                            <span>{r.resolution_note}</span>
-                          ) : (
-                            <span className="text-fg-3">-</span>
-                          )}
-                        </td>
-                        <td className="py-2 text-right">
-                          {r.status === "open" && (
-                            <Button size="sm" variant="ghost" onClick={() => withdraw(r.id)}>
-                              Withdraw
-                            </Button>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    )}
+                  </div>
+                )}
               </>
             )}
           </Card>
@@ -482,6 +434,103 @@ export function RequestsPage() {
         />
       )}
     </div>
+  );
+}
+
+// RequestRows renders a list of the developer's requests: one card per
+// request on phones, a table from md up. The status and answer come from
+// requestOutcome (a granted row reads its grant's live state, #27) and the
+// ask from requestAsk (a budget by name, #20).
+function RequestRows({
+  rows,
+  types,
+  budgets,
+  dollars,
+  nowNs,
+  onWithdraw,
+  label,
+}: {
+  rows: OrgRequest[];
+  types: RequestType[];
+  budgets: RequestableBudget[];
+  dollars: boolean;
+  nowNs: number;
+  onWithdraw: (id: number) => void;
+  label: string;
+}) {
+  if (rows.length === 0) return null;
+  const view = rows.map((r) => ({
+    r,
+    o: requestOutcome(r, nowNs),
+    ask: requestAsk(r, budgets, dollars),
+    typeLabel: types.find((t) => t.id === r.request_type)?.label ?? r.kind,
+  }));
+  return (
+    <>
+      {/* Phones: one card per request; the table needs ~560px. */}
+      <ul className="divide-y divide-line-1 md:hidden" aria-label={label}>
+        {view.map(({ r, o, ask, typeLabel }) => (
+          <li key={r.id} className="space-y-1 py-2.5 text-[12px]">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0 font-medium text-fg-0" title={ask.title}>
+                <span className="font-mono text-fg-3">{r.id}</span> {typeLabel}
+                {ask.detail}
+              </div>
+              <Pill variant={o.tone}>{o.status}</Pill>
+            </div>
+            <div className="text-fg-2">{r.message}</div>
+            {o.answer && <div className="text-fg-1">{o.answer}</div>}
+            <div className="flex items-center justify-between gap-2 text-fg-3">
+              <span>{new Date(r.created_at).toLocaleString()}</span>
+              {r.status === "open" && (
+                <Button size="sm" variant="ghost" onClick={() => onWithdraw(r.id)}>
+                  Withdraw
+                </Button>
+              )}
+            </div>
+          </li>
+        ))}
+      </ul>
+      <div className="hidden overflow-x-auto md:block">
+        <table className="w-full min-w-[560px] text-left text-[12px]" aria-label={label}>
+          <thead className="text-[10.5px] uppercase tracking-[0.06em] text-fg-3">
+            <tr>
+              <th className="py-1.5 pr-3 font-semibold">#</th>
+              <th className="py-1.5 pr-3 font-semibold">Ask</th>
+              <th className="py-1.5 pr-3 font-semibold">Status</th>
+              <th className="py-1.5 pr-3 font-semibold">Answer</th>
+              <th className="py-1.5 font-semibold" />
+            </tr>
+          </thead>
+          <tbody>
+            {view.map(({ r, o, ask, typeLabel }) => (
+              <tr key={r.id} className="border-t border-line-1/60 align-top">
+                <td className="py-2 pr-3 font-mono text-fg-3">{r.id}</td>
+                <td className="py-2 pr-3">
+                  <div className="font-medium text-fg-0" title={ask.title}>
+                    {typeLabel}
+                    {ask.detail}
+                  </div>
+                  <div className="mt-0.5 text-fg-2">{r.message}</div>
+                  <div className="mt-0.5 text-fg-3">{new Date(r.created_at).toLocaleString()}</div>
+                </td>
+                <td className="py-2 pr-3">
+                  <Pill variant={o.tone}>{o.status}</Pill>
+                </td>
+                <td className="py-2 pr-3 text-fg-2">{o.answer ? <span>{o.answer}</span> : <span className="text-fg-3">-</span>}</td>
+                <td className="py-2 text-right">
+                  {r.status === "open" && (
+                    <Button size="sm" variant="ghost" onClick={() => onWithdraw(r.id)}>
+                      Withdraw
+                    </Button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
   );
 }
 

@@ -990,13 +990,26 @@ func (e *Engine) buildContext(ev *Event) *MatchContext {
 	return ctx
 }
 
-// applyRule runs one rule row against the context. The
-// safe-pattern-first ordering is owned HERE, structurally (the dcg
-// lesson, spec §4.3): for command-unit rules every unit is checked
-// against the rule's safe patterns before its matcher, and a safe
-// unit is exempt from THIS rule only — other units and other rules
-// still evaluate. Event-scoped rules get one safe-pattern pass with a
-// nil unit.
+// applyRule runs one rule row against the context. The safe-pattern
+// exemption is owned HERE, structurally (the dcg lesson, spec §4.3): a
+// rule author cannot forget it, and a unit a safe pattern exempts never
+// reports a hit for THIS rule — other units and other rules still
+// evaluate. Event-scoped rules get one safe-pattern pass with a nil unit.
+//
+// The engine asks the MATCHER first and the safe patterns only for a unit
+// the matcher hits (demo bug #14, R3-5). Both are pure predicates over the
+// same context, so "safe exempts, else the matcher decides" is the same
+// conjunction in either order and no verdict changes: `rm -rf /tmp/x` is
+// still never reported. The order is a cost choice. The matchers start with
+// a cheap shape test (is this a recursive delete, a git push, ...), while
+// several safe patterns are the expensive half (R-101's resolves every
+// operand through the filesystem's symlinks), and asking them first made a
+// week's replay spend most of its time proving `ls` and `go test` safe.
+// TestApplyRuleMatcherFirstEqualsSafeFirst pins the equivalence over the
+// whole built-in table. A matcher that keeps per-evaluation state (the
+// R-126 SQL read budget, MatchContext.sqlEval) would be asked on units it
+// was not asked on before if its row carried a safe pattern, so such a row
+// carries none (TestStatefulMatcherRowsCarryNoSafePattern).
 func applyRule(r *Rule, ctx *MatchContext) (bool, string) {
 	hit, detail, _ := applyRuleCeiling(r, ctx)
 	return hit, detail
@@ -1022,11 +1035,12 @@ func applyRuleCeiling(r *Rule, ctx *MatchContext) (hit bool, detail string, capp
 		for _, alt := range [2]bool{true, false} {
 			for i := range ctx.Cmds {
 				cmd := &ctx.Cmds[i]
-				if cmd.altReading != alt || anySafe(r.SafePat, ctx, cmd) {
+				if cmd.altReading != alt {
 					continue
 				}
+				// Matcher first, safe patterns only on a hit (applyRule).
 				ok, d := r.MatchCmd(ctx, cmd)
-				if !ok {
+				if !ok || anySafe(r.SafePat, ctx, cmd) {
 					continue
 				}
 				if cmd.uncalledDef == "" {
@@ -1040,11 +1054,8 @@ func applyRuleCeiling(r *Rule, ctx *MatchContext) (hit bool, detail string, capp
 		}
 		return capHit, capDetail, capHit
 	}
-	if anySafe(r.SafePat, ctx, nil) {
-		return false, "", false
-	}
 	hit, detail = r.Match(ctx)
-	if !hit {
+	if !hit || anySafe(r.SafePat, ctx, nil) {
 		return false, "", false
 	}
 	// An event-scoped rule reads every unit at once, so it is asked again

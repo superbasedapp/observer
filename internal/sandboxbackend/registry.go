@@ -42,6 +42,18 @@ const (
 	// org's validating front. Explicit-only and preview; offered only on a
 	// managed node whose verified sandbox body publishes the gateway.
 	BackendOpenShellOrg = "openshell-org"
+	// BackendDockerSandboxes is Docker's cloud sandboxes (the Docker
+	// Agentic Platform's Sandboxes API; lane SBX-DOCKER): a hosted row,
+	// opt-in and beta. Docker's local `sbx` microVMs are a different
+	// product and no row here.
+	BackendDockerSandboxes = "docker-sandboxes"
+	// BackendInstaBox is the InstaBox hosted row (instabox.sh): beta, a
+	// Linux VM on InstaBox's machines, internet tier only.
+	BackendInstaBox = "instabox"
+	// BackendDaytona is Daytona Cloud, a hosted row: REST plus its
+	// SSH access tokens through the pure-Go SSH transport (sandbox plan v2's
+	// Daytona row), beta until a live receipt.
+	BackendDaytona = "daytona"
 )
 
 // ConnectorSSH is the SSH connector id.
@@ -167,6 +179,14 @@ var registry = map[string]Capability{
 			// happens after the box is released, not before the agent runs.
 			// It moves to measured with the N2-L1 receipt.
 			Seccomp: vocab.SeccompObserverProfile, SeccompSource: vocab.SourceDocumented,
+			// --unshare-pid, emitted on every plan (internal/sandbox
+			// BuildPlan); the host helper checks the command carries it
+			// before it lifts PTRACE_SEIZE (sandbox.BwrapUnsharesPID).
+			OwnPIDNamespace: true,
+			// The SecretMask option of the plan hides workspace secret
+			// files behind /dev/null (internal/sandbox secretmask.go); the
+			// other rows have no such planner.
+			MasksWorkspaceSecrets: true,
 		},
 		Control: Control{
 			Interface: InterfaceCLI, Stability: StabilityVendorStable,
@@ -889,6 +909,107 @@ var registry = map[string]Capability{
 		[]HostKind{HostRemote}, "class is the RuntimeClass's (gVisor or Kata); org provisioned", false),
 	BackendAgentCore: planned(BackendAgentCore, "AWS Bedrock AgentCore Runtime", "P7", vocab.ClassHWVM, vocab.LocationRemote,
 		[]HostKind{HostRemote}, "org provisioned; managed and full distros only", false),
+	// docker-sandboxes (lane SBX-DOCKER): Docker's cloud sandboxes through
+	// the Sandboxes API from Go (no SDK, no CLI). Built with hostedRow, then
+	// dockerHostedRow records its own grounding date and the class source.
+	BackendDockerSandboxes: dockerHostedRow(hostedRow(Capability{
+		ID: BackendDockerSandboxes, Label: "Docker Sandboxes",
+		// Docker documents hypervisor microVMs for its local sandboxes and
+		// says nothing of the cloud ones' isolation: hw_vm, claimed
+		// (dockerHostedRow).
+		Iso: Isolation{Class: vocab.ClassHWVM},
+		// The REST API is v1 and labelled experimental by Docker; an offered
+		// row may not sit on an experimental surface, so it is preview (the
+		// pre-1.0 Modal SDK precedent) and stays beta until a live receipt.
+		Control: Control{Interface: InterfaceRESTRemote, Stability: StabilityVendorPreview, Pins: DriverPins{RequiredMin: "1", TestedLow: "1", TestedHigh: "1"}},
+		// The interactive process API documents a PTY, a resize frame and a
+		// resume from a stream sequence over one WebSocket per process; the
+		// relay is a second, pipe process on its own stream.
+		Term:               Terminal{PTYOwner: PTYBackendExec, Resize: ResizeBackendAPI, Reattach: ReattachBackendNative, RelayReattach: RelaySeparateStream, Transport: TransportWebSocketStream},
+		Net:                hostedNet(vocab.SourceClaimed),
+		LifetimeCapSeconds: 86400,
+		Note:               "Docker's cloud sandboxes (Docker Agentic Platform) on Docker's machines, through Docker's Sandboxes API (v1, experimental) from Go (no SDK); beta: built from Docker's documentation and API reference; a client-level live smoke on 2026-11-11 created, drove and deleted three boxes, but the hosted register (REM-1 to REM-12) has not been run. The internet tier follows your Docker account's own default network policy.",
+	}, 86400)),
+	// InstaBox (instabox.sh): a hosted row like the three of lane SBX-P7,
+	// built from InstaBox's own docs (instaBoxRow); internet tier only,
+	// because InstaBox documents no network policy.
+	BackendInstaBox: instaBoxRow(),
+	// Daytona (a hosted row): the vendor facts behind each field
+	// are internal/sandboxremote's vendor table, grounded per call in
+	// docs/sandboxed-terminals.md "Hosted sandboxes" (Daytona).
+	BackendDaytona: datedHostedRow(Capability{
+		ID: BackendDaytona, Label: "Daytona",
+		// The default sandbox class is a container (the API's SandboxClass
+		// enum: container, linux-vm, windows; VM sandboxes start only from
+		// VM snapshots). The driver asks for no VM snapshot, so the row is
+		// the container class (plan v2 section 4.2: another class would be
+		// another row).
+		Iso: Isolation{Class: vocab.ClassContainer},
+		// The main API (OpenAPI info.version 1.0) for the lifecycle and the
+		// toolbox for files; processes run on exec channels over Daytona's
+		// SSH access tokens (golang.org/x/crypto/ssh, no SDK).
+		Control: Control{Interface: InterfaceRESTRemote, Stability: StabilityVendorStable, Pins: DriverPins{RequiredMin: "1", TestedLow: "1", TestedHigh: "1"}},
+		// The PTY Daytona documents is a WebSocket whose framing the docs do
+		// not give: the guest helper owns the PTY over an exec channel. No
+		// vendor reattach; the guest helper's kept-PTY re-adoption is held
+		// off (Vendor.GuestReattach false) until REM-13.
+		Term:               Terminal{PTYOwner: PTYGuestHelper, Resize: ResizeGuest, Reattach: ReattachNone, RelayReattach: RelaySeparateStream, Transport: TransportExecStdio},
+		Net:                hostedNet(vocab.SourceClaimed),
+		LifetimeCapSeconds: 86400,
+		Note:               "Daytona sandboxes (containers) on Daytona's machines, through Daytona's REST API and SSH access from Go (no SDK); beta: built from Daytona's documentation; one client-level smoke ran with a key on 2026-11-11, the register (REM-1 to REM-12 and REM-DAY-1 to REM-DAY-3) is owed. On the internet tier the box's network is your Daytona organization's tier policy (essential services only on Tier 1 and 2). No reattach.",
+	}, 86400, daytonaDocSource, "2026-11-11"),
+}
+
+// dockerSourceDocs names the grounding of the docker-sandboxes row.
+const dockerSourceDocs = "Docker's Sandboxes API reference (api.yaml, v1) and the Docker Sandboxes docs read 2026-11-11 (docs/sandboxed-terminals.md \"Hosted sandboxes\", Docker Sandboxes); internal/sandboxremote/dockersbx httptest fake tests"
+
+// dockerHostedRow completes the docker-sandboxes row from hostedRow without
+// changing hostedRow itself: its own grounding date and source, and the
+// isolation class claimed, because Docker documents the cloud sandboxes'
+// isolation nowhere (only the local sandboxes' microVMs).
+func dockerHostedRow(c Capability) Capability {
+	c.Verification = []Verified{
+		{Host: HostLinux, Kind: vocab.VerifiedDoc, Source: dockerSourceDocs, Date: "2026-11-11", RegisterRef: hostedRegister},
+		{Host: HostWSL2, Kind: vocab.VerifiedDoc, Source: dockerSourceDocs, Date: "2026-11-11", RegisterRef: hostedRegister},
+	}
+	c.Iso.ClassSource = vocab.SourceClaimed
+	return c
+}
+
+// instaBoxDocSource names the grounding of the InstaBox row.
+const instaBoxDocSource = "InstaBox's public API documentation and OpenAPI document (api.instabox.sh/v1/openapi.json 1.0.0) read 2026-11-11 (docs/sandboxed-terminals.md \"Hosted sandboxes\", InstaBox); internal/sandboxremote/instabox recorded-response and httptest fake tests; an API-level live smoke of the wire client on 2026-11-11 (no agent run, no relay, so still doc)"
+
+// instaBoxRow is the InstaBox hosted row: hostedRow with its own dated
+// grounding and a network that offers the internet tier only (InstaBox
+// documents no deny-all or allowlist, so none and proxy_only would be a
+// claim nothing enforces).
+func instaBoxRow() Capability {
+	c := hostedRow(Capability{
+		ID: BackendInstaBox, Label: "InstaBox",
+		// Firecracker microVMs, documented by the vendor (another kernel).
+		Iso: Isolation{Class: vocab.ClassHWVM},
+		// REST from Go (no SDK); an invite-gated service: preview.
+		Control: Control{Interface: InterfaceRESTRemote, Stability: StabilityVendorPreview, Pins: DriverPins{RequiredMin: "1", TestedLow: "1", TestedHigh: "1"}},
+		// No non-PTY exec with a streaming stdin is documented: the relay and
+		// the guest helper each ride a terminal WebSocket session whose PTY
+		// the start script puts in raw mode (a byte stream of one box
+		// process, so exec_stdio). The guest helper owns the agent's PTY; no
+		// reattach (a session's replay length is undocumented).
+		Term: Terminal{PTYOwner: PTYGuestHelper, Resize: ResizeGuest, Reattach: ReattachNone, RelayReattach: RelaySeparateStream, Transport: TransportExecStdio},
+		Net: Network{
+			Egress:       []vocab.Tier{vocab.TierInternet},
+			Enforcer:     EnforcerProvider,
+			EgressSource: map[vocab.Tier]vocab.ClassSource{vocab.TierInternet: vocab.SourceClaimed},
+			KeyCustody:   []vocab.KeyCustody{vocab.CustodyHomeRelay, vocab.CustodyInBoxAPIKey, vocab.CustodyInBoxOAuthSeed},
+		},
+		LifetimeCapSeconds: 28800,
+		Note:               "InstaBox Firecracker microVMs on InstaBox's machines, through InstaBox's REST API and terminal WebSocket from Go (no SDK, no SSH); beta: built from InstaBox's documentation; its wire client passed an API-level live smoke on 2026-11-11 (create, exec, files, the raw terminal stream, delete), but no agent has run on the row (register REM-1 to REM-12). Internet tier only: InstaBox documents no way to block a machine's network. The free plan pauses a machine after 30 idle minutes and after 480 minutes of running, which ends the run; no reattach.",
+	}, 28800)
+	c.Verification = []Verified{
+		{Host: HostLinux, Kind: vocab.VerifiedDoc, Source: instaBoxDocSource, Date: "2026-11-11", RegisterRef: hostedRegister},
+		{Host: HostWSL2, Kind: vocab.VerifiedDoc, Source: instaBoxDocSource, Date: "2026-11-11", RegisterRef: hostedRegister},
+	}
+	return c
 }
 
 // planned builds a row that is not offered yet: the class, location and
@@ -1044,4 +1165,22 @@ func KeystoreServices() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// daytonaDocSource names the grounding of the daytona row.
+const daytonaDocSource = "Daytona's public documentation read 2026-11-11 (openapi.json and toolbox-openapi.json at www.daytona.io/docs, the sandboxes, SSH access, network limits, limits and pricing pages; docs/sandboxed-terminals.md \"Hosted sandboxes\", Daytona); internal/sandboxremote/daytona recorded-response, httptest and in-process SSH fake tests"
+
+// daytonaRegister names the register rows the daytona row owes.
+const daytonaRegister = "REM-1 to REM-12 and REM-DAY-1 to REM-DAY-3 (docs/sandboxed-terminals.md, the hosted register)"
+
+// datedHostedRow is hostedRow for a hosted row grounded on its own date
+// and source (a vendor added after the first three), without changing
+// hostedRow itself.
+func datedHostedRow(c Capability, lifetime int, source, date string) Capability {
+	c = hostedRow(c, lifetime)
+	c.Verification = []Verified{
+		{Host: HostLinux, Kind: vocab.VerifiedDoc, Source: source, Date: date, RegisterRef: daytonaRegister},
+		{Host: HostWSL2, Kind: vocab.VerifiedDoc, Source: source, Date: date, RegisterRef: daytonaRegister},
+	}
+	return c
 }

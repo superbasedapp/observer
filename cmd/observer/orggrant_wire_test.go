@@ -8,7 +8,9 @@ import (
 	"encoding/base64"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -162,5 +164,110 @@ func TestRequestAccessBaseWiredIntoHookAndDaemon(t *testing.T) {
 		if av, _ := g.EvaluateHook(ev); av.RequestBase != "http://127.0.0.1:9123" {
 			t.Errorf("guard %d: RequestBase = %q", i, av.RequestBase)
 		}
+	}
+}
+
+// TestHookOrgGrantClaimOnABusyNode is the 2026-11-13 operator report through
+// the hook process's own claim: an in-force org grant must apply while the
+// daemon holds the database's write lock, and a grant list that cannot be
+// read must say so instead of reading as "no grant". Before the fix the hook
+// ran a full db.Open (ping, pragmas, migration plan) and two writes per
+// question under the 500 ms hook timeout, and every overrun was silent.
+func TestHookOrgGrantClaimOnABusyNode(t *testing.T) {
+	pinToolHomes(t)
+	ctx := context.Background()
+	garbage := filepath.Join(t.TempDir(), "garbage.db")
+	writeFileT(t, garbage, strings.Repeat("not a database ", 100))
+	unmigrated := filepath.Join(t.TempDir(), "unmigrated.db")
+	writeFileT(t, unmigrated, "")
+	cases := []struct {
+		name       string
+		maxUses    int64
+		path       string // "" = the seeded database
+		writeLock  bool
+		wantOK     bool
+		wantFailed bool
+	}{
+		{"unlimited grant, idle database", 0, "", false, true, false},
+		{"unlimited grant, the daemon holds the write lock", 0, "", true, true, false},
+		{"use-limited grant, idle database", 2, "", false, true, false},
+		{"use-limited grant, the write lock is held: no grant, and it says so", 2, "", true, false, true},
+		{"no database yet: no grant, not a failure", 0, filepath.Join(t.TempDir(), "absent.db"), false, false, false},
+		{"an unreadable database: no grant, and it says so", 0, garbage, false, false, true},
+		{"a database the daemon has not migrated: no grant, not a failure", 0, unmigrated, false, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dbPath := filepath.Join(t.TempDir(), "observer.db")
+			database, err := dbtemplate.Open(ctx, db.Options{Path: dbPath})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = database.Close() })
+			now := time.Now()
+			seedVerifiedGrant(t, store.New(database), orgcontract.AccessGrantWire{
+				ID: 11, Type: accessgrant.TypeGuardExemption, Effect: orgcontract.AccessGrantEffectExempt,
+				SubjectKind: orgcontract.AccessGrantSubjectMember, RuleID: "S-793",
+				StartsAtNs: now.Add(-time.Minute).UnixNano(), ExpiresAtNs: now.Add(time.Hour).UnixNano(), MaxUses: tc.maxUses,
+			})
+			if tc.writeLock {
+				writer, err := database.Conn(ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := writer.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					_, _ = writer.ExecContext(ctx, `ROLLBACK`)
+					_ = writer.Close()
+				})
+			}
+			path := tc.path
+			if path == "" {
+				path = dbPath
+			}
+			const budget = 500 * time.Millisecond
+			claim, done := newOrgGrantSession(hookOrgGrantOpener(path), constOrgGrantBudget(budget))()
+			defer done()
+			q := guard.OrgGrantQuery{RuleID: "S-793", Lane: guard.OrgGrantLaneTool, Decision: "ask"}
+			start := time.Now()
+			peek := claim(q)
+			q.Consume = true
+			got := claim(q)
+			if took := time.Since(start); took > 2*budget+time.Second {
+				t.Errorf("the two questions took %v, far past the hook budget", took)
+			}
+			if peek.OK != (tc.wantOK || tc.maxUses > 0 && tc.path == "") {
+				t.Errorf("peek = %+v", peek)
+			}
+			if got.OK != tc.wantOK || (got.Failed != "") != tc.wantFailed {
+				t.Fatalf("claim = %+v, want ok=%v failed=%v", got, tc.wantOK, tc.wantFailed)
+			}
+			if tc.wantOK && got.GrantID != 11 {
+				t.Fatalf("claim = %+v, want G-11", got)
+			}
+		})
+	}
+}
+
+// TestHookOrgGrantOpenerNeverMigrates: the hook's grant question never
+// creates or migrates a database (a hook is not the process that migrates
+// the node).
+func TestHookOrgGrantOpenerNeverMigrates(t *testing.T) {
+	empty := filepath.Join(t.TempDir(), "empty.db")
+	writeFileT(t, empty, "")
+	absent := filepath.Join(t.TempDir(), "absent.db")
+	for _, path := range []string{empty, absent} {
+		claim := newOrgGrantClaim(hookOrgGrantOpener(path), 200*time.Millisecond)
+		if got := claim(guard.OrgGrantQuery{RuleID: "S-793", Lane: guard.OrgGrantLaneTool, Decision: "ask", Consume: true}); got.OK {
+			t.Fatalf("%s: claim = %+v", path, got)
+		}
+	}
+	if fi, err := os.Stat(empty); err != nil || fi.Size() != 0 {
+		t.Fatalf("the question wrote to an unmigrated database: %v %v", fi, err)
+	}
+	if _, err := os.Stat(absent); !os.IsNotExist(err) {
+		t.Fatalf("the question created a database: %v", err)
 	}
 }

@@ -75,6 +75,8 @@ export const GUARD_RULE_NAMES: Readonly<Record<string, string>> = {
   "R-303": "Poisoned MCP tool description",
   "R-304": "Agent changing the MCP server list",
   "R-305": "Approved MCP server's command or URL changed",
+  "R-306": "MCP server not approved by the access table",
+  "R-307": "MCP call denied by the org's access grant",
   // Anomaly
   "A-610": "Agent stuck in a loop",
   "A-613": "Agent retrying a refused action in new shapes",
@@ -89,10 +91,40 @@ export const GUARD_RULE_NAMES: Readonly<Record<string, string>> = {
   "B-602": "Daily spend over budget",
   "B-603": "Monthly spend over budget",
   "B-604": "Weekly spend over budget",
+  "B-621": "Session token usage over budget",
+  "B-622": "Daily token usage over budget",
+  "B-623": "Monthly token usage over budget",
+  "B-624": "Weekly token usage over budget",
+  "B-625": "Required budget not verified on this node",
+  "B-626": "Tool spend over the org's cap",
+  "B-627": "Tool token usage over the org's cap",
+  "B-628": "Model spend over the org's cap",
+  "B-629": "Model token usage over the org's cap",
   "B-610": "5-hour usage limit warning",
   "B-611": "5-hour usage limit reached",
   "B-612": "Weekly usage limit warning",
   "B-613": "Weekly usage limit reached",
+  // Code security: repository trust, secrets and package installs
+  "S-701": "Untrusted repository makes the agent run commands",
+  "S-702": "Untrusted repository redirects the agent or Observer",
+  "S-703": "Untrusted repository turns off approvals or hooks",
+  "S-704": "Untrusted repository hides code or runs programs",
+  "S-705": "Repository with accepted commands or warnings",
+  "S-721": "Agent write that adds a secret",
+  "S-741": "Install of a package listed as malicious",
+  "S-742": "Install of a possible typosquat package",
+  "S-743": "Install of a package newer than the minimum age",
+  "S-744": "Install of a package no index could check",
+  "S-745": "Install from a custom registry or index",
+  "S-747": "Manifest edit adding a flagged dependency",
+  "S-748": "Install the online check could not answer",
+  "S-749": "Install of a package with malicious versions",
+  "S-757": "Install without the build provenance earlier versions had",
+  // Commit gate
+  "S-791": "Agent commit with a new high-confidence finding open",
+  "S-792": "Agent push with a new high-confidence finding open",
+  "S-793": "Agent commit with changes the quick scan did not find clean",
+  "S-794": "Agent commit while the project's security state is unknown",
 };
 
 /** GUARD_CATEGORY_LABEL names each catalog category (the catalog spells them
@@ -110,6 +142,7 @@ export const GUARD_CATEGORY_LABEL: Readonly<Record<string, string>> = {
   budget: "Budget",
   limit: "Usage limits",
   secrets: "Secrets",
+  code_security: "Code security",
 };
 
 /** guardCategoryLabel names a category; an unknown one keeps its spelling. */

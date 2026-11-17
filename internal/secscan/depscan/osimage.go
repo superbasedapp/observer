@@ -22,6 +22,15 @@ import (
 // KindOSImage is ChildRequest.Kind for an image's OS packages.
 const KindOSImage = "os_image"
 
+// KindSBOM is ChildRequest.Kind for the packages an SBOM file lists
+// (ChildRequest.Packages), matched without extraction.
+const KindSBOM = "sbom"
+
+// SBOMID is the driver id an SBOM-file run is recorded under: never
+// ScalibrID, so a supplied SBOM never reads as the project's own scan in
+// the coverage views (an empty SBOM proves nothing about the project).
+const SBOMID = "sbom-import"
+
 // OSImageRequest names the one release an image run matches.
 type OSImageRequest struct {
 	// Ecosystem is the release's OSV ecosystem label, the one findings and

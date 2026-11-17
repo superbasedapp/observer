@@ -25,9 +25,10 @@ export function TourProvider({ children }: { children: ReactNode }) {
     [gov],
   );
   // The first-visit auto-start waits for the first-run capture view (T-922,
-  // components/FirstRunModal.tsx): until it has decided whether to open, and
-  // while it is open. The shared provider re-arms its auto-start when this
-  // flips back, so a fresh install sees the capture view, then the tour.
+  // components/FirstRunModal.tsx): until the shell's first read has answered
+  // (it carries the tour's daemon-kept dismissal), and while the dialog is
+  // open. The dialog no longer opens by itself (Getting started v2), so on a
+  // fresh install the tour starts once that read answers.
   const firstRun = useSyncExternalStore(subscribeFirstRun, firstRunSnapshot, firstRunSnapshot);
   // A tour finished or skipped is also kept on the daemon, so it stays
   // dismissed where this browser's own storage does not persist (WINNODE2

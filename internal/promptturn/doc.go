@@ -11,7 +11,7 @@
 // original prompt on every request of an OpenAI tool loop and handed EMPTY
 // text to the judge on every Anthropic tool-loop request.
 //
-// Classify answers three things about one request body:
+// Classify answers these things about one request body:
 //
 //   - Kind: user_prompt (the newest turn is something the developer typed),
 //     continuation (the newest turn is a tool result the agent is feeding
@@ -22,7 +22,12 @@
 //     never count; the developer did not type a tool's output);
 //   - Trailing: every new inbound item after the last assistant turn,
 //     user text AND tool results, which is what an all_calls admission
-//     scope judges.
+//     scope judges;
+//   - Generated: what the model or a tool produced in the newest exchange
+//     (the newest assistant turn and the trailing tool results, never the
+//     developer's text), which the prompt guard notes so a value the
+//     conversation already carried is not judged as typed when a side
+//     request re-sends it as user text.
 //
 // Branching is on WIRE SHAPE (a JSON schema), never on the client tool
 // (CLAUDE.md rule 3). Parsing is tolerant: a shape mismatch yields a

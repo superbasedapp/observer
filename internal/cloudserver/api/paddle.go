@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -19,6 +20,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/store"
+	"github.com/marmutapp/superbased-observer/internal/entitlements"
 )
 
 // paddle.go is the W9 Paddle billing webhook + the portal Billing read
@@ -166,6 +168,10 @@ type paddleWebhookEnvelope struct {
 		CustomData     struct {
 			AccountID     string `json:"account_id"`
 			CheckoutNonce string `json:"checkout_nonce"`
+			// OrgID is set by an org checkout (W14-D3,
+			// portal_orgs_billing.go). Untrusted: the store only
+			// cross-checks it against the checkout intent's org.
+			OrgID string `json:"org_id"`
 		} `json:"custom_data"`
 		CurrentBillingPeriod struct {
 			StartsAt string `json:"starts_at"`
@@ -213,6 +219,10 @@ type paddleWebhookItem struct {
 			Frequency int    `json:"frequency"`
 		} `json:"trial_period"`
 	} `json:"price"`
+	// Quantity is the item's quantity (subscription.* and transaction.*
+	// items both carry it; Paddle Billing data.items[].quantity). FR-22: the
+	// seat count a subscription is billed for, read server-side at bind.
+	Quantity int64 `json:"quantity"`
 	// TrialDates is present on subscription.* items while trialing/created
 	// for a trial price; transaction.* items never carry it.
 	TrialDates struct {
@@ -248,6 +258,23 @@ func paddleTransactionZeroTotal(grandTotal, total string) bool {
 		return paddleAmountIsZero(grandTotal)
 	}
 	return paddleAmountIsZero(total)
+}
+
+// paddleTransactionPaid reports whether a transaction event's
+// details.totals amount (grand_total, falling back to total when absent)
+// parses as a decimal greater than zero (FR-7). Empty or malformed amounts are
+// NOT paid: this is the re-open signal for a terminal subscription, so it
+// fails closed, unlike paddleTransactionZeroTotal.
+func paddleTransactionPaid(grandTotal, total string) bool {
+	raw := strings.TrimSpace(grandTotal)
+	if raw == "" {
+		raw = strings.TrimSpace(total)
+	}
+	if raw == "" {
+		return false
+	}
+	n, err := strconv.ParseFloat(raw, 64)
+	return err == nil && n > 0
 }
 
 // paddleItemsHaveTrialPeriod reports whether any item's price carries a
@@ -290,6 +317,7 @@ func paddleEventFromEnvelope(env paddleWebhookEnvelope, now time.Time) store.Pad
 		EventType:           env.EventType,
 		AccountID:           accountID,
 		CheckoutNonce:       strings.TrimSpace(env.Data.CustomData.CheckoutNonce),
+		OrgID:               strings.TrimSpace(env.Data.CustomData.OrgID),
 		CustomerID:          env.Data.CustomerID,
 		Status:              env.Data.Status,
 		ManagementUpdateURL: env.Data.ManagementURLs.UpdatePaymentMethod,
@@ -321,6 +349,12 @@ func paddleEventFromEnvelope(env paddleWebhookEnvelope, now time.Time) store.Pad
 	// Live-defect fix (2026-09-12): a $0 transaction.completed for a price
 	// that carries a Paddle-side trial must never be read as "money moved".
 	ev.TransactionZeroTotal = paddleTransactionZeroTotal(env.Data.Details.Totals.GrandTotal, env.Data.Details.Totals.Total)
+	// FR-7: only positive evidence of a charge may re-open a refunded or
+	// canceled subscription (data.details.totals.grand_total, else total).
+	ev.TransactionPaid = paddleTransactionPaid(env.Data.Details.Totals.GrandTotal, env.Data.Details.Totals.Total)
+	if len(env.Data.Items) > 0 {
+		ev.Quantity = env.Data.Items[0].Quantity
+	}
 	ev.TrialPeriodOnPrice = paddleItemsHaveTrialPeriod(env.Data.Items)
 	// TrialEndsAt ladder: items[0].trial_dates.ends_at (the most direct
 	// signal, subscription.* only) -> CurrentPeriodEnd -> NextBilledAt. May
@@ -415,6 +449,7 @@ func (s *Server) handlePaddleWebhook(w http.ResponseWriter, r *http.Request) {
 	// attribution into the security audit trail even for an event that was
 	// correctly refused.
 	s.audit(ctx, intake.AccountID, "paddle_"+ev.EventType+"_"+outcome)
+	s.logBindingRefusal(ev, intake)
 	status := "processed"
 	if intake.Duplicate {
 		status = "duplicate"
@@ -422,6 +457,36 @@ func (s *Server) handlePaddleWebhook(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status": status, "event_id": ev.EventID, "applied": intake.Applied, "outcome": outcome,
 	})
+}
+
+// paddleBindingRefusedLogKey is the stable value of the "alert" attribute on
+// the log line every refused Paddle binding writes (FR-2): the ops lane alerts
+// on it. The durable record is paddle_binding_refusals (cloud 0135).
+const paddleBindingRefusedLogKey = "paddle_binding_refused"
+
+// logBindingRefusal writes the alert log line of a refused binding: ERROR
+// when the price is one this deployment sells (a paying customer whose
+// subscription bound to nothing), WARN otherwise (a foreign or unknown
+// price). Nothing for any other outcome. No account id: on a refusal the
+// custom_data account is untrusted.
+func (s *Server) logBindingRefusal(ev store.PaddleEvent, intake store.BillingIntake) {
+	if intake.Reason == "" {
+		return
+	}
+	known := s.store != nil && s.store.PaddlePriceKnown(ev.PriceID)
+	s.metrics.BindingRefused(intake.Reason, known) // sbci_paddle_binding_refused_total (metrics.go)
+	attrs := []any{
+		"alert", paddleBindingRefusedLogKey,
+		"event_id", ev.EventID, "event_type", ev.EventType,
+		"subscription_id", ev.SubscriptionID, "customer_id", ev.CustomerID,
+		"price_id", ev.PriceID, "price_known", known,
+		"outcome", intake.Outcome, "reason", intake.Reason,
+	}
+	if known {
+		s.log.Error("cloudserver/api: paddle binding refused for a paid price", attrs...)
+		return
+	}
+	s.log.Warn("cloudserver/api: paddle binding refused", attrs...)
 }
 
 // parsePaddleTime parses an RFC3339 timestamp, returning the zero time on failure
@@ -443,19 +508,29 @@ func (s *Server) handlePortalBilling(w http.ResponseWriter, r *http.Request) {
 	p, _ := portalPrincipalFrom(r.Context())
 	view := map[string]any{"has_subscription": false}
 	sub, err := s.store.AccountSubscription(r.Context(), p.AccountID)
+	viaPersonalOrg := false
 	switch {
 	case err == nil:
 		view["has_subscription"] = true
 		view["subscription"] = sub
+		// FR-22: after migrate-personal the account's own subscription is
+		// billed through its personal org; its plan lives on the org, so
+		// the account's plan snapshot would read Free.
+		viaPersonalOrg = sub.OrgID != "" && paddleSubscriptionStatusIsLive(sub.Status)
 	case errors.Is(err, store.ErrNotFound):
 		// no subscription — free tier
 	default:
 		writeErr(w, http.StatusInternalServerError, "internal", "could not read billing")
 		return
 	}
-	// The current plan/allowance (so the page shows what they have now).
-	if snap, uerr := s.store.Usage(r.Context(), p.AccountID, store.FeatureSessionEnrichment, s.now()); uerr == nil {
-		view["plan"] = snap
+	view["paid_through_personal_org"] = viaPersonalOrg
+	// The current plan/allowance (so the page shows what they have now). Not
+	// sent when the plan is the personal org's (FR-22): the page then names
+	// the subscription's plan instead of the account's Free snapshot.
+	if !viaPersonalOrg {
+		if snap, uerr := s.store.Usage(r.Context(), p.AccountID, store.FeatureSessionEnrichment, s.now()); uerr == nil {
+			view["plan"] = snap
+		}
 	}
 	// A6: the checkout catalogue Wave B's Upgrade button reads — prices,
 	// environment, client token, trial length. "available" is the single
@@ -465,24 +540,31 @@ func (s *Server) handlePortalBilling(w http.ResponseWriter, r *http.Request) {
 	// struct any caller (including a zero-value Options in a test, or a
 	// deployment that never wires PaddleCheckout at all) can leave
 	// zero-valued, and a nil slice would encode as JSON null rather than [].
-	prices := s.paddleCheckout.Prices
-	if prices == nil {
-		prices = []PaddlePriceEntry{}
-	}
-	view["checkout"] = map[string]any{
-		"available":    s.paddleCheckout.Available(),
-		"environment":  s.paddleCheckout.Environment,
-		"client_token": s.paddleCheckout.ClientToken,
-		"prices":       prices,
-		"trial_days":   s.paddleCheckout.TrialDays,
-	}
+	//
+	// W14-D3: only the prices of ACCOUNT plans are offered here; a Team or
+	// Business price is sold from its org's page (portal_orgs_billing.go).
+	// With no org price configured this is the whole catalogue, as before.
+	//
+	// fu/billing-trial: an account that has had its trial is not shown one
+	// (trial_days 0, trial_used true); its checkout is trial-less.
+	view["checkout"] = s.checkoutCatalogForScope(r.Context(), entitlements.KindAccount, func(ctx context.Context) (bool, error) {
+		return s.store.AccountTrialUsed(ctx, p.AccountID)
+	})
+	view["portal_available"] = s.paddlePortal != nil && view["has_subscription"] == true
 	writeJSON(w, http.StatusOK, view)
 }
 
-// checkoutIntentTTL bounds how long a minted checkout nonce stays bindable. A
-// Paddle checkout is completed in minutes; 30m is generous and short enough that
-// a leaked nonce expires quickly.
-const checkoutIntentTTL = 30 * time.Minute
+// checkoutIntentTTL bounds how long a minted checkout nonce stays bindable,
+// judged at the binding event's occurred_at (FR-2). It was 30 minutes, which
+// refused for good a paid checkout whose first webhook was late (3-D Secure,
+// a held overlay, an outage); store.CheckoutIntentBindWindow says why 7 days.
+const checkoutIntentTTL = store.CheckoutIntentBindWindow
+
+// trialAlreadyUsedMessage is the answer to a checkout refused because its
+// scope has had its free trial (FR-10) and the plan's price has no trial-less
+// sibling configured (SBCI_PADDLE_NO_TRIAL_PRICES): every checkout of that
+// price would start the trial again, so support subscribes the customer.
+const trialAlreadyUsedMessage = "You have already used your free trial, and this checkout would start another. Contact support to subscribe."
 
 // paddleSubscriptionStatusIsLive mirrors migration 0034's
 // paddle_subscriptions_one_live partial unique index predicate exactly
@@ -545,12 +627,35 @@ func (s *Server) handlePortalCheckout(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	price := strings.TrimSpace(req.PriceID)
+	// W14-D3: an org plan's price is bought from its org's page, never on
+	// the account checkout (its webhook would bind it to no org).
+	if kind, ok := s.store.PaddlePriceKind(price); ok && kind != entitlements.KindAccount {
+		writeErr(w, http.StatusNotImplemented, "checkout_unavailable",
+			"that price is a team plan; buy it from the team's page")
+		return
+	}
 	if price == "" || !s.store.PaddlePriceKnown(price) {
 		// Dark posture: with no provisioned prices every price is unknown, so
 		// checkout is unavailable until the operator wires SBCI_PADDLE_PRICES
 		// (or the legacy single-price SBCI_PADDLE_PRICE_PLUS).
 		writeErr(w, http.StatusNotImplemented, "checkout_unavailable",
 			"no purchasable plan is configured for this deployment (SBCI_PADDLE_PRICES is unset, or the requested price is not a known plan price)")
+		return
+	}
+	// FR-10: one free trial per account. While the deployment advertises a
+	// trial, an account that has had one is offered the plan's trial-less
+	// price (paddle_trialoffer.go), or refused when none is configured. The
+	// intent records the price actually offered (FR-2's cross-check).
+	price, refused, terr := s.resolveCheckoutPrice(r.Context(), price, func(ctx context.Context) (bool, error) {
+		return s.store.AccountTrialUsed(ctx, p.AccountID)
+	})
+	if terr != nil {
+		s.log.Error("cloudserver/api: check trial use", "err", terr)
+		writeErr(w, http.StatusInternalServerError, "internal", "could not create checkout")
+		return
+	}
+	if refused {
+		writeErr(w, http.StatusConflict, "trial_already_used", trialAlreadyUsedMessage)
 		return
 	}
 	nonce, expiresAt, err := s.store.CreateCheckoutIntent(r.Context(), p.AccountID, price, checkoutIntentTTL, s.now())
@@ -562,6 +667,7 @@ func (s *Server) handlePortalCheckout(w http.ResponseWriter, r *http.Request) {
 	s.audit(r.Context(), p.AccountID, "paddle_checkout_intent_created")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"price_id":   price,
+		"quantity":   s.checkoutQuantity(price),
 		"expires_at": expiresAt.UTC().Format(time.RFC3339),
 		"custom_data": map[string]string{
 			"account_id":     p.AccountID,
@@ -633,6 +739,11 @@ type PaddleCheckoutEnv struct {
 	// is a NEW, additive refusal, never retroactively applied to a caller
 	// that hasn't wired it.
 	OriginIsPublic bool
+	// APIKeyEnvironment is the Paddle environment of the configured
+	// server-side API key by its prefix (paddleapi.KeyEnvironment: "live",
+	// "sandbox"), "unknown" for a key with no known prefix, and "" when no
+	// key is configured. Never the key itself.
+	APIKeyEnvironment string
 }
 
 // paddleCheckoutResolved is the normalized form paddleCheckoutValidations'
@@ -645,6 +756,7 @@ type paddleCheckoutResolved struct {
 	Prices            []PaddlePriceEntry
 	TrialDays         int
 	OriginIsPublic    bool
+	APIKeyEnvironment string
 }
 
 // paddleCheckoutValidation is one row of the table-driven startup-refusal
@@ -702,6 +814,21 @@ var paddleCheckoutValidations = []paddleCheckoutValidation{
 		fail: func(r paddleCheckoutResolved) error {
 			if r.Environment == "live" && len(r.Prices) == 0 {
 				return errors.New("SBCI_PADDLE_ENV=live requires at least one configured price (SBCI_PADDLE_PRICES or SBCI_PADDLE_PRICE_PLUS)")
+			}
+			return nil
+		},
+	},
+	{
+		// Wave 17: the server-side API key (portal sessions, the seat sync)
+		// must be a key of the same Paddle environment as the checkout. A
+		// sandbox key on a live deployment would fail every call; a live key
+		// on a sandbox deployment would change real subscriptions from a
+		// test deployment. An unset key is fine (those features stay off).
+		name: "api key environment",
+		fail: func(r paddleCheckoutResolved) error {
+			if r.APIKeyEnvironment != "" && r.APIKeyEnvironment != r.Environment {
+				return fmt.Errorf("SBCI_PADDLE_API_KEY_FILE holds a %s key but SBCI_PADDLE_ENV=%s (a live key starts pdl_live_, a sandbox key pdl_sdbx_)",
+					r.APIKeyEnvironment, r.Environment)
 			}
 			return nil
 		},
@@ -765,7 +892,7 @@ func ValidatePaddleCheckoutEnv(in PaddleCheckoutEnv) (PaddleCheckout, error) {
 	resolved := paddleCheckoutResolved{
 		Environment: env, ClientToken: strings.TrimSpace(in.ClientToken),
 		WebhookConfigured: in.WebhookConfigured, Prices: in.Prices, TrialDays: trialDays,
-		OriginIsPublic: in.OriginIsPublic,
+		OriginIsPublic: in.OriginIsPublic, APIKeyEnvironment: strings.TrimSpace(in.APIKeyEnvironment),
 	}
 	for _, v := range paddleCheckoutValidations {
 		if err := v.fail(resolved); err != nil {

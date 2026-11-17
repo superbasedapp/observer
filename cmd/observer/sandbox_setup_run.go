@@ -21,6 +21,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/componentsvc"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/dashapi"
+	"github.com/marmutapp/superbased-observer/internal/defaultworkspace"
 	"github.com/marmutapp/superbased-observer/internal/sandboxbackend"
 	"github.com/marmutapp/superbased-observer/internal/sandboxsetup"
 	"github.com/marmutapp/superbased-observer/internal/store"
@@ -34,7 +35,8 @@ import (
 // planner's derived pm argv or the remedy's compile-time constant); a run
 // request carries only the backend, the step, the action, the plan
 // fingerprint, the download consent echo, a local path and, for
-// hosted_connect only, a typed key that is never logged.
+// hosted_connect only, a typed key or typed credential fields that are never
+// logged.
 
 // sandboxSetupRunIO is the runner's injected I/O. The production value is
 // productionSandboxSetupRunIO; tests replace any field.
@@ -54,8 +56,9 @@ type sandboxSetupRunIO struct {
 	// directory the person names.
 	contentFetch  func(ctx context.Context, cfg config.Config, kinds []string) error
 	contentImport func(cfg config.Config, dir string) error
-	// hostedConnect stores a typed key for provider in the keychain.
-	hostedConnect func(ctx context.Context, provider, key string) error
+	// hostedConnect stores typed credential fields for provider in the
+	// keychain (a "" name is the one key of a provider with one field).
+	hostedConnect func(ctx context.Context, provider string, fields map[string]string) error
 	// observerBin is this binary's path (the CLI verbs a setup terminal
 	// runs).
 	observerBin func() string
@@ -73,6 +76,11 @@ type sandboxSetupRunIO struct {
 	// again after a setup record settled (sandboxProbeRefreshFor); nil
 	// refreshes nothing.
 	refreshProbe func(ctx context.Context, backend string) string
+	// defaultWorkspace reports the default workspace for cfg
+	// (defaultworkspace.Inspect): its folder, whether Observer finished
+	// setting it up, and what keeps it from being used. A consent step run
+	// with no folder falls back to it; nil means there is none.
+	defaultWorkspace func(cfg config.Config) defaultworkspace.Status
 }
 
 // productionSandboxSetupRunIO wires the real I/O for configPath.
@@ -105,8 +113,8 @@ func productionSandboxSetupRunIO(configPath string) sandboxSetupRunIO {
 			_, err := sandboxContentImport(env.store, env.trust.VendorKeys, dir)
 			return err
 		},
-		hostedConnect: func(ctx context.Context, provider, key string) error {
-			return hostedConnectStore(ctx, configPath, provider, map[string]string{"": key})
+		hostedConnect: func(ctx context.Context, provider string, fields map[string]string) error {
+			return hostedConnectStore(ctx, configPath, provider, fields)
 		},
 		observerBin: func() string {
 			p, err := os.Executable()
@@ -118,6 +126,9 @@ func productionSandboxSetupRunIO(configPath string) sandboxSetupRunIO {
 		goos:       sandboxSetupGOOS(),
 		fileSHA256: sandboxSetupFileSHA256,
 		removeFile: os.Remove,
+		defaultWorkspace: func(cfg config.Config) defaultworkspace.Status {
+			return defaultworkspace.Inspect(defaultWorkspaceEnv(cfg), cfg.Workspace.DefaultDir)
+		},
 	}
 }
 
@@ -922,16 +933,35 @@ func runOCIPull(ctx context.Context, rc runCtx) (dashapi.SandboxSetupStarted, er
 
 // runHostedConsent runs the provider's consent screen in a setup terminal,
 // where the person reads what leaves the machine and answers (the existing
-// `observer sandbox hosted consent` verb). from_file, when set, names the
-// workspace the consent is for.
+// `observer sandbox hosted consent` verb). from_file names the workspace the
+// consent is for. With none, the run falls back to the default workspace
+// when Observer has finished setting it up (review finding 6, 2026-11-12),
+// so `observer sandbox setup run <backend> --step <consent>` works with no
+// flag; otherwise it is refused naming the fix, because a setup terminal
+// starts in the home directory, which is never uploaded, so a consent
+// without a project could only fail (upload_scope_home; seen live on
+// 2026-11-12).
 func runHostedConsent(ctx context.Context, rc runCtx) (dashapi.SandboxSetupStarted, error) {
-	argv := []string{rc.s.run.observerBin(), "sandbox", "hosted", "consent", rc.si.in.Row.ID}
-	if ws := strings.TrimSpace(rc.req.FromFile); ws != "" {
-		if !filepath.IsAbs(ws) {
-			return dashapi.SandboxSetupStarted{}, setupErr(http.StatusBadRequest, dashapi.SandboxSetupCodeStepNotRunnable, "the workspace must be an absolute path")
+	ws := strings.TrimSpace(rc.req.FromFile)
+	if ws == "" {
+		var st defaultworkspace.Status
+		if rc.s.run.defaultWorkspace != nil {
+			st = rc.s.run.defaultWorkspace(rc.si.cfg)
 		}
-		argv = append(argv, "--workspace", ws)
+		if !st.Ready || st.Dir == "" {
+			why := ""
+			if st.Problem != "" {
+				why = " (" + strings.TrimSuffix(st.Problem, ".") + ")"
+			}
+			return dashapi.SandboxSetupStarted{}, setupErr(http.StatusBadRequest, dashapi.SandboxSetupCodeStepNotRunnable,
+				"the default workspace is not ready%s: set it up in Terminals > Settings > Default workspace (or restart Observer), or pick the folder the consent is for (--from-file <folder>)", why)
+		}
+		ws = st.Dir
 	}
+	if !filepath.IsAbs(ws) {
+		return dashapi.SandboxSetupStarted{}, setupErr(http.StatusBadRequest, dashapi.SandboxSetupCodeStepNotRunnable, "the workspace must be an absolute path")
+	}
+	argv := []string{rc.s.run.observerBin(), "sandbox", "hosted", "consent", rc.si.in.Row.ID, "--workspace", ws}
 	rec := sandboxInstallRecord{Name: rc.recordName(), Backend: rc.si.in.Row.ID, Channel: string(sandboxsetup.ChConsent), Argv: argv, Display: toolinstall.DisplayArgv(argv)}
 	return rc.spawnRecorded(ctx, rec, argv)
 }
@@ -944,13 +974,30 @@ func runOrgShellLogin(ctx context.Context, rc runCtx) (dashapi.SandboxSetupStart
 	return rc.spawnRecorded(ctx, rec, argv)
 }
 
-// runHostedConnect stores the typed key in the keychain. The key is never
-// logged, never echoed and never recorded.
+// runHostedConnect stores the typed credential in the keychain: the one key
+// (Key) of a provider that needs one, or each named field (Fields) of a
+// provider that needs several, through the same store the Hosted sandboxes
+// panel and `observer sandbox hosted connect` use. A value is never logged,
+// never echoed and never recorded; a refusal names a field, never a value.
 func runHostedConnect(ctx context.Context, rc runCtx) (dashapi.SandboxSetupStarted, error) {
-	if strings.TrimSpace(rc.req.Key) == "" {
+	fields := make(map[string]string, len(rc.req.Fields)+1)
+	for k, v := range rc.req.Fields {
+		if k == "" {
+			return dashapi.SandboxSetupStarted{}, setupErr(http.StatusBadRequest, dashapi.SandboxSetupCodeStepNotRunnable, "a credential field has no name")
+		}
+		fields[k] = v
+	}
+	if rc.req.Key != "" {
+		fields[""] = rc.req.Key
+	}
+	typed := false
+	for _, v := range fields {
+		typed = typed || strings.TrimSpace(v) != ""
+	}
+	if !typed {
 		return dashapi.SandboxSetupStarted{}, setupErr(http.StatusBadRequest, dashapi.SandboxSetupCodeStepNotRunnable, "type the provider's API key to store it")
 	}
-	if err := rc.s.run.hostedConnect(ctx, rc.si.in.Row.ID, rc.req.Key); err != nil {
+	if err := rc.s.run.hostedConnect(ctx, rc.si.in.Row.ID, fields); err != nil {
 		return dashapi.SandboxSetupStarted{}, setupErr(http.StatusBadRequest, dashapi.SandboxSetupCodeStepNotRunnable, "%v", err)
 	}
 	return rc.fresh(ctx)

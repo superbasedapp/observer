@@ -137,6 +137,12 @@ type sandboxStatusReport struct {
 	// Seccomp is [terminal.sandbox].seccomp in force (tracker F-002, lane
 	// FU4): Observer's syscall filter on the rows that load it.
 	Seccomp bool `json:"seccomp"`
+	// SeccompAllowSeize is [terminal.sandbox].seccomp_allow_seize (lane
+	// ptrace, PT-96), and SeizeRows what it gives each row that loads
+	// Observer's filter on this host now (its containment ground, or why
+	// PTRACE_SEIZE stays denied).
+	SeccompAllowSeize bool                      `json:"seccomp_allow_seize"`
+	SeizeRows         []dashapi.SandboxSeizeRow `json:"seize_rows,omitempty"`
 	// Managed is the org's managed pull on this node (`observer sandbox
 	// status` only; nil in doctor).
 	Managed *sandboxManagedRailStatus `json:"managed,omitempty"`
@@ -186,7 +192,27 @@ func sandboxStatus(ctx context.Context, cfg config.Config) sandboxStatusReport {
 
 		LiveRunUpdatePolicy: normalizeLiveRunPolicy(tcfg.LiveRunUpdatePolicy),
 		Seccomp:             tcfg.Seccomp,
+		SeccompAllowSeize:   tcfg.SeccompAllowSeize,
+		SeizeRows:           sandboxSeizeHostNow().Rows,
 	}
+}
+
+// seizeStatusLine is the status line of [terminal.sandbox]
+// .seccomp_allow_seize: off, or which rows it lifts PTRACE_SEIZE on here and
+// on which ground, and why not on the others.
+func seizeStatusLine(on bool, rows []dashapi.SandboxSeizeRow) string {
+	if !on {
+		return "strace in a sandbox (PTRACE_SEIZE): blocked under the filter (seccomp_allow_seize off, the default; turn it on in the dashboard, Terminals > Settings)"
+	}
+	parts := make([]string, 0, len(rows))
+	for _, r := range rows {
+		if r.Lifted {
+			parts = append(parts, r.Backend+": allowed ("+r.Ground+")")
+			continue
+		}
+		parts = append(parts, r.Backend+": "+r.Reason)
+	}
+	return "strace in a sandbox (PTRACE_SEIZE): seccomp_allow_seize on; " + strings.Join(parts, "; ")
 }
 
 // liveRunPolicyLine is the status and doctor line for the policy.
@@ -232,6 +258,9 @@ func renderSandboxStatus(w io.Writer, st sandboxStatusReport) error {
 	}
 	if st.Enabled {
 		fmt.Fprintln(w, seccompStatusLine(st.Seccomp))
+	}
+	if st.Enabled && st.Seccomp {
+		fmt.Fprintln(w, seizeStatusLine(st.SeccompAllowSeize, st.SeizeRows))
 	}
 	if st.Managed != nil {
 		fmt.Fprintln(w, sandboxManagedStatusLine(*st.Managed))

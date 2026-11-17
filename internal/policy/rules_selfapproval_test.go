@@ -115,6 +115,11 @@ func TestSelfApprovalRuleR165(t *testing.T) {
 		sh("dast candidates is a read", `observer security dast candidates --project /home/u/proj`, "", 0),
 		sh("POST the reserved dast route", `curl -X POST -H 'X-Observer-Confirm: t' http://127.0.0.1:8821/api/security/dast/run -d '{"url":"http://localhost:3000/"}'`, "R-165", DecisionDeny),
 		sh("POST the reserved dast accept route", `curl -X POST http://127.0.0.1:8821/api/security/dast -d '{}'`, "R-165", DecisionDeny),
+		sh("POST the assessment org request route", `curl -X POST -H 'X-Observer-Confirm: t' http://127.0.0.1:8821/api/security/assessments/request -d '{"assessment":"pentest_local","relaxations":["R-179"]}'`, "R-165", DecisionDeny),
+		sh("POST the assessment cancel route", `curl -X POST -H 'X-Observer-Confirm: t' http://127.0.0.1:8821/api/security/assessments/cancel -d '{"run":"3fa9c2d17b0e4a56"}'`, "R-165", DecisionDeny),
+		sh("POST the assessment stop route", `curl -X POST -H 'X-Observer-Confirm: t' http://127.0.0.1:8821/api/security/assessments/stop -d '{"run":"3fa9c2d17b0e4a56"}'`, "R-165", DecisionDeny),
+		sh("POST the assessment delete-data route", `curl -X POST -H 'X-Observer-Confirm: t' http://127.0.0.1:8821/api/security/assessments/delete-data -d '{"run":"3fa9c2d17b0e4a56"}'`, "R-165", DecisionDeny),
+		sh("GET the assessment plan is a read", `curl http://127.0.0.1:8821/api/security/assessments/plan?kind=pentest_local`, "", 0),
 		sh("echo into the dast accept record", `echo '{}' > ~/.observer/security/dast-consent.json`, "R-165", DecisionDeny),
 		sh("python one-liner writing the dast accept record", `python3 -c "open('/home/u/.observer/security/dast-consent.json','w').write('{}')"`, "R-165", DecisionDeny),
 		{

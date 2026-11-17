@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/marmutapp/superbased-observer/internal/cloudserver/portalmfa"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/store"
 )
 
@@ -118,6 +119,13 @@ func (s *Server) handleExchange(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, store.ErrDeviceRevoked):
 		s.audit(ctx, "", "exchange_device_revoked")
 		writeErr(w, http.StatusForbidden, "device_revoked", "this device has been revoked")
+		return
+	case errors.Is(err, store.ErrDeviceApprovalRequired):
+		// FR-6: the account holds a passkey; a new device needs a passkey
+		// session's approval of its thumbprint (portal Security page).
+		s.audit(ctx, "", "exchange_device_approval_required")
+		writeErr(w, http.StatusForbidden, portalmfa.CodeDeviceApprovalRequired,
+			"this account uses a passkey: approve this device in the portal (Security, Approve a device) with device id "+store.Thumbprint(pub)+", then sign in again")
 		return
 	case errors.Is(err, store.ErrAccountSuspended):
 		// The broker token verified, but the account behind the identity has been

@@ -339,19 +339,16 @@ func (s *Server) handleGuardRecipePreview(w http.ResponseWriter, r *http.Request
 
 // guardRecipeReplay runs the simulate route's recipe=1 comparison: the same
 // captured actions under the policy as it is and as the selection leaves it.
-// It returns nil (and no error) when the query names no recipe.
-func (s *Server) guardRecipeReplay(r *http.Request, inputs []guard.ActionInput) (*guardrecipesvc.Replay, int, error) {
-	if r.URL.Query().Get("recipe") != "1" {
-		return nil, 0, nil
-	}
-	sel, status, err := s.parseGuardRecipeQuery(r)
-	if err != nil {
-		return nil, status, err
-	}
-	env, err := s.guardRecipeEnv(r.Context())
+// The selection was parsed (and its project root checked) by the request that
+// started the run; ctx is the run's own context, not a request's, because one
+// run serves every identical request (guard_simulate_job.go). rfs and eval are
+// the run's shared filesystem memo and its progress-counting evaluator.
+func (s *Server) guardRecipeReplay(ctx context.Context, sel guardRecipeQuery, inputs []guard.ActionInput, rfs *guard.ReplayFS, eval func(*guard.Guard, []guard.ActionInput) []guard.ActionVerdict) (*guardrecipesvc.Replay, int, error) {
+	env, err := s.guardRecipeEnv(ctx)
 	if err != nil {
 		return nil, http.StatusInternalServerError, err
 	}
+	env.ReplayFS, env.Evaluate = rfs, eval
 	set, err := guardrecipesvc.Catalog(env)
 	if err != nil {
 		return nil, http.StatusInternalServerError, err

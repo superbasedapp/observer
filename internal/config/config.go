@@ -76,6 +76,10 @@ type Config struct {
 	// ShellWrap is the opt-in [shell_wrap] "wrapped command" shell
 	// integration (backlog item 7); see ShellWrapConfig. Zero value = off.
 	ShellWrap ShellWrapConfig `toml:"shell_wrap"`
+	// Workspace is the [workspace] block: Observer's default workspace
+	// folder (see WorkspaceConfig). Zero value = the built-in
+	// <home>/observer-workspace.
+	Workspace WorkspaceConfig `toml:"workspace"`
 	// Security is the security pillar's [security] block (component
 	// `security`); see SecurityConfig. Validated only while the module is
 	// active (component_sections.go).
@@ -2472,6 +2476,19 @@ type TerminalSandboxConfig struct {
 	// whose engine applies its own default filter (the OCI rows) are not
 	// affected. An absent key changes nothing.
 	Seccomp bool `toml:"seccomp"`
+	// SeccompAllowSeize lifts PTRACE_SEIZE from that filter, and nothing
+	// else, so `strace <cmd>` works inside a sandboxed terminal with strace
+	// 6.14 and later (lane ptrace, PT-96, operator ruling 2026-11-10).
+	// Default FALSE. Authority-expanding and set only from the dashboard
+	// (Terminals > Settings, the sandbox card's strace switch, POST
+	// /api/terminal/sandbox/ptrace-seize): `observer config set`, the
+	// generic keys route and the sandbox settings save never write it, and
+	// an organization can neither pin nor raise it. It takes effect only on
+	// a launch whose seize cannot reach a process outside the sandbox (the
+	// sandbox's own pid namespace, or Yama ptrace_scope 1 or more, read at
+	// launch); otherwise the launch keeps observer_default and says why.
+	// PTRACE_ATTACH stays denied either way. Read on the next launch.
+	SeccompAllowSeize bool `toml:"seccomp_allow_seize"`
 	// Backends is the backend preference order (sandbox plan v2 section 10),
 	// for example ["bwrap"]. When set it wins over Backend; empty means
 	// Backend as a one-element list. Each entry is a registry backend id; an
@@ -2643,8 +2660,16 @@ type TerminalSandboxHostedConfig struct {
 	E2B    TerminalSandboxHostedProviderConfig `toml:"e2b"`
 	Modal  TerminalSandboxHostedProviderConfig `toml:"modal"`
 	Vercel TerminalSandboxHostedProviderConfig `toml:"vercel"`
+	// Docker is the Docker Sandboxes table (lane SBX-DOCKER).
+	Docker TerminalSandboxHostedProviderConfig `toml:"docker"`
 	// OpenShellOrg is the org-hosted OpenShell row's block (lane G4).
 	OpenShellOrg TerminalSandboxHostedOrgShellConfig `toml:"openshell-org"`
+	// InstaBox is the InstaBox row's provider table (region, template and
+	// box_binary; InstaBox takes no region, so only the empty one resolves).
+	InstaBox TerminalSandboxHostedProviderConfig `toml:"instabox"`
+	// Daytona is the Daytona row's provider table (a hosted vendor;
+	// its template is a Daytona snapshot name).
+	Daytona TerminalSandboxHostedProviderConfig `toml:"daytona"`
 }
 
 // TerminalSandboxHostedProviderConfig is one provider's table.
@@ -3770,12 +3795,10 @@ type OrgClientShareConfig struct {
 	// (docs/plans/plane-a-p0-6-effective-policy-state-plan.md §2.3) onto a
 	// dedicated POST /api/agent/policy-ack. CONTENT-FREE — the report carries
 	// only hash/version/enum/timestamp rows (attribution empty-on-wire,
-	// server-stamped). Its own consent toggle, default false. On an
-	// INDIVIDUAL node the org cannot raise it; on a MANAGED node whose grant
-	// carries the strict `extract.policy_state` authority the org's
-	// node.governance body MAY raise it (the enterprise default body does),
-	// and a directive may lower it off on either — see
-	// internal/govern/sharetiers.go and the Privacy card's source column.
+	// server-stamped). Its own consent toggle, default false, and it gates
+	// an INDIVIDUAL node only (the org cannot raise it there). A MANAGED node
+	// reports whatever this says (2026-11-12 ruling, govern
+	// managedpolicytiers.go).
 	PolicyState bool `toml:"policy_state"`
 	// --- Plane A: general observability of an admin/org-hosted LLM app ---
 	// Org-tier observability opt-ins live under the nested
@@ -7240,7 +7263,7 @@ func validateTerminalSandboxHosted(c TerminalSandboxHostedConfig) error {
 	default:
 		return fmt.Errorf("config: terminal.sandbox.hosted.memory_images %q not in {avoid, refuse}", c.MemoryImages)
 	}
-	for name, p := range map[string]TerminalSandboxHostedProviderConfig{"e2b": c.E2B, "modal": c.Modal, "vercel": c.Vercel} {
+	for name, p := range map[string]TerminalSandboxHostedProviderConfig{"e2b": c.E2B, "modal": c.Modal, "vercel": c.Vercel, "docker": c.Docker, "instabox": c.InstaBox, "daytona": c.Daytona} {
 		if r := p.Region; r != "" && !hostedRegionRE.MatchString(r) {
 			return fmt.Errorf("config: terminal.sandbox.hosted.%s.region %q must be a region name (letters, digits and dashes)", name, r)
 		}

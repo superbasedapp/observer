@@ -1,5 +1,5 @@
 import { type ReactNode, useState } from "react";
-import { Link } from "react-router-dom";
+import { GatedLink } from "@/components/GatedLink";
 import {
   Button,
   ChartShell,
@@ -117,9 +117,9 @@ export function EgressPage() {
             Plane-A policy egress routing: route a hosted app's end-user requests to another resource by admission
             verdict, end-user budget, or cohort. This audit log is node-local - it never rides the org push - so this
             page (and observer obs egress) is its only view. Read-only here; author the policy on{" "}
-            <Link to="/policies?tab=routing" className="text-accent hover:underline">
+            <GatedLink to="/policies?tab=routing" managed="Policies > Routing (managed by your organization)" className="text-accent hover:underline">
               Policies &gt; Routing
-            </Link>
+            </GatedLink>
             .
           </>
         }
@@ -188,9 +188,9 @@ export function EgressPage() {
               sub={
                 <>
                   The installed (compiled) policy. Edit it on{" "}
-                  <Link to="/policies?tab=routing" className="text-accent hover:underline">
+                  <GatedLink to="/policies?tab=routing" managed="Policies > Routing (managed by your organization)" className="text-accent hover:underline">
                     Policies &gt; Routing
-                  </Link>{" "}
+                  </GatedLink>{" "}
                   (saved to [observability.egress]).
                 </>
               }
@@ -312,9 +312,9 @@ function PolicyTables({ rules, targets }: { rules: EgressRule[]; targets: Egress
       {rules.length === 0 ? (
         <p className="py-2 text-[12px] text-fg-3">
           No rules yet - add them on{" "}
-          <Link to="/policies?tab=routing" className="text-accent hover:underline">
+          <GatedLink to="/policies?tab=routing" managed="Policies > Routing (managed by your organization)" className="text-accent hover:underline">
             Policies &gt; Routing
-          </Link>
+          </GatedLink>
           .
         </p>
       ) : (
@@ -492,9 +492,9 @@ function EgressDisabled() {
     <EmptyCard title="No egress policy installed">
       <p>
         Egress is off by default. Author a policy with at least one rule on{" "}
-        <Link to="/policies?tab=routing" className="text-accent hover:underline">
+        <GatedLink to="/policies?tab=routing" managed="Policies > Routing (managed by your organization)" className="text-accent hover:underline">
           Policies &gt; Routing
-        </Link>{" "}
+        </GatedLink>{" "}
         and save it (that turns egress on, [observability.egress] enabled); egress composes on the admission
         verdict, so admission must be on too (the Policies page turns it on when it is off). A policy that fails to
         compile is also reported

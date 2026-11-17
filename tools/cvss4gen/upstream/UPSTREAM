@@ -1,0 +1,34 @@
+# UPSTREAM: provenance of the vendored copy of FIRST's CVSS 4.0 calculator data
+# that tools/cvss4gen turns into internal/secassess/cvss4/tables_gen.go.
+#
+# repo        https://github.com/FIRSTdotorg/cvss-v4-calculator (the calculator
+#             FIRST publishes for the CVSS 4.0 specification)
+# commit      the one commit these bytes were fetched at; the head of `main`
+#             on 2026-11-15, unchanged since 2024-08-19 (decision D30)
+# license     BSD-2-Clause. LICENSE in this directory is FIRST's file,
+#             unchanged. Its notice is kept in the generated Go source and in
+#             THIRD_PARTY_NOTICES.md at the repository root.
+#
+# Lines: repo, branch, commit, commit-date, license, then one `file` line per
+# upstream file: name and the sha256 of its exact bytes, in the order below.
+# tools/cvss4gen refuses to run on a file that does not match its line, and
+# its drift test checks the generated file against these hashes.
+#
+# Refresh: edit `commit` below, run `bash tools/cvss4gen/upstream/fetch.sh`
+# (it downloads each file at that commit, prints the new sha256 lines and
+# does not overwrite UPSTREAM), paste the lines in, then
+# `go generate ./internal/secassess/cvss4` and re-run the oracle tests
+# (docs/code-security.md "CVSS 4.0 base scores on findings"). A new commit is a deliberate
+# act: read the diff of cvss_score.js first; the generator's anchors fail
+# when a rule the Go scorer reproduces has changed.
+repo https://github.com/FIRSTdotorg/cvss-v4-calculator
+branch main
+commit c5b0d409ae9f57c44264c6ce5f27d89298e1d32a
+commit-date 2024-08-19T18:50:45Z
+license BSD-2-Clause
+file LICENSE 5d672639189da9bda914dd8c847069cc6959135000b17c45262bb742e5d3b392
+file cvss_lookup.js d533fe625d95e15b7b488a4bf93dab5f7df16b7e38b0c8ee01281d7b31a8165e
+file max_composed.js be707cc82c17993a04a84e47b1a8aaa1d0d212b56852254659ce77fd7d959f63
+file max_severity.js f838ecb41bfd5114456e7fa7df8a8449ca2735c176867886fa34bd011dee0b24
+file cvss_config.js 9e01e899638826d882e44c5ea51efd882ccd2dc89aee7701d9e955631250ec03
+file cvss_score.js 453ce6767b5c3939b51d1f21315f2649e47b5abeca674be287e94b524472a1bc

@@ -426,6 +426,10 @@ type Component struct {
 	RestartClass string
 	// Note carries anything the row needs to say that has no field yet.
 	Note string
+	// Reach is which deployment shapes the component reaches and how far it
+	// is on by default in pooled SaaS (plan 06 18.3.3). A grandfathered row
+	// gets it at build time (reach.go); a new row sets ReachOf(stability).
+	Reach Reach
 }
 
 // BuildTag returns the opt-out build tag for the component ("" for core):

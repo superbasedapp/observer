@@ -1,8 +1,8 @@
 {
   "name": "superbased-observer",
   "displayName": "SuperBased",
-  "description": "Local-first AI coding agent observability in your editor: Claude Code token usage, Codex cost and Cursor spend across 50 adapters, provider-exact via a local proxy. No account needed.",
-  "version": "1.38.0",
+  "description": "Local-first AI coding observability in your editor: Claude Code token usage, Codex cost and Cursor spend across 50 adapters, provider-exact via a local proxy. Works with no account; sign in to see all your machines online and join your team.",
+  "version": "1.39.0",
   "publisher": "superbased",
   "license": "Apache-2.0",
   "author": "Santosh Kathira <contact@superbased.app>",
@@ -112,8 +112,16 @@
         "title": "SuperBased: Launch Codex (proxied)"
       },
       {
-        "command": "observer.enroll",
-        "title": "SuperBased: Enroll in Org"
+        "command": "observer.connect",
+        "title": "SuperBased: Sign in and connect"
+      },
+      {
+        "command": "observer.connectTeam",
+        "title": "SuperBased: Connect to a team..."
+      },
+      {
+        "command": "observer.accountStatus",
+        "title": "SuperBased: Account status"
       },
       {
         "command": "observer.refreshTrees",
@@ -187,12 +195,24 @@
       {
         "id": "observer.getStarted",
         "title": "Get Started with SuperBased",
-        "description": "Connect SuperBased to your AI coding workflow in about 5 minutes.",
+        "description": "Sign in to see all your machines online, then set up SuperBased in your editor in about 5 minutes.",
         "steps": [
+          {
+            "id": "connect",
+            "title": "Sign in and connect",
+            "description": "SuperBased Observer is running and capturing your AI sessions. Sign in to see all your machines online and join your team. You choose what is shared in your browser before anything is sent.\n[Sign in and connect](command:observer.connect)\nJoining a team? [Connect to a team...](command:observer.connectTeam)\nNo account needed to use SuperBased on this machine.",
+            "media": {
+              "markdown": "walkthroughs/00-connect.md"
+            },
+            "completionEvents": [
+              "onCommand:observer.connect",
+              "onCommand:observer.connectTeam"
+            ]
+          },
           {
             "id": "welcome",
             "title": "Welcome to SuperBased",
-            "description": "SuperBased captures, normalises, and analyses every AI coding tool's activity, locally, with no account needed.\n[Open Sidebar](command:workbench.view.extension.observer)",
+            "description": "SuperBased captures, normalises, and analyses every AI coding tool's activity on this machine. No account needed.\n[Open Sidebar](command:workbench.view.extension.observer)",
             "media": {
               "markdown": "walkthroughs/01-welcome.md"
             },
@@ -225,7 +245,7 @@
           {
             "id": "daemon",
             "title": "Pick a daemon mode",
-            "description": "Decide whether the extension attaches to a daemon you start manually (`detect`, default), spawns + supervises its own (`managed`), or auto-detects (`auto`).\n[Open observer.daemon.mode setting](command:workbench.action.openSettings?%22observer.daemon.mode%22)",
+            "description": "Decide whether the extension uses a running daemon or starts one when none runs (`auto`, default), always starts and supervises its own (`managed`), or only uses one you start yourself (`detect`).\n[Open observer.daemon.mode setting](command:workbench.action.openSettings?%22observer.daemon.mode%22)",
             "media": {
               "markdown": "walkthroughs/03-daemon.md"
             },
@@ -299,6 +319,10 @@
         {
           "command": "observer.showSecurityFindings",
           "when": "!observer.securityInactive"
+        },
+        {
+          "command": "observer.accountStatus",
+          "when": "false"
         }
       ],
       "view/title": [

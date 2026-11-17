@@ -74,6 +74,9 @@ type MatchContext struct {
 	// each SQL file read once, the read budget spent across the
 	// evaluation). nil until a database rule first needs it.
 	sqlEval *sqlEvalState
+	// evalMemo holds the per-unit and per-path derivations the rows share
+	// (evalmemo.go). nil until a row first needs it.
+	evalMemo *evalMemo
 }
 
 // MatchFn is an event-scoped matcher: it inspects the whole
@@ -85,17 +88,19 @@ type MatchFn func(*MatchContext) (hit bool, detail string)
 
 // MatchCmdFn is a command-unit-scoped matcher for shell rules. The
 // ENGINE iterates command units and consults the rule's safe patterns
-// per unit before calling this — the safe-pattern-first ordering is
-// structural, a rule author cannot forget it (the dcg lesson, spec
-// §4.3).
+// for every unit this reports a hit on, so a safe unit never reports —
+// the safe-pattern exemption is structural, a rule author cannot forget
+// it (the dcg lesson, spec §4.3). It must be pure: the engine may ask it
+// about a unit a safe pattern exempts (engine.go applyRule).
 type MatchCmdFn func(ctx *MatchContext, cmd *Command) (hit bool, detail string)
 
 // SafeFn is a safe-pattern predicate: true means the candidate is an
 // explicitly-safe variant and the owning rule must NOT fire on it
 // (e.g. `rm -rf /tmp/...`, `--force-with-lease`, `crontab -l`). For
-// command-unit rules (MatchCmd set) the engine calls SafeFns once per
-// unit with that unit; for event-scoped rules (Match set) it calls
-// them once with cmd == nil.
+// command-unit rules (MatchCmd set) the engine calls SafeFns per unit
+// the matcher hits, with that unit; for event-scoped rules (Match set)
+// it calls them once with cmd == nil when the matcher hits. It must be
+// pure, so asking it after the matcher answers what asking it first did.
 type SafeFn func(ctx *MatchContext, cmd *Command) bool
 
 // Rule is one ordered table row of the built-in policy (spec §4.3).
@@ -127,9 +132,10 @@ type Rule struct {
 	// Enforce is the verdict decision in enforce mode — the right
 	// side of the catalog column.
 	Enforce Decision
-	// SafePat are the rule's safe-variant predicates, evaluated by
-	// the engine BEFORE the matcher (per command unit for MatchCmd
-	// rows).
+	// SafePat are the rule's safe-variant predicates: a candidate any
+	// of them exempts never hits (per command unit for MatchCmd rows).
+	// The engine asks them only for a candidate the matcher hits
+	// (engine.go applyRule), which answers what asking them first did.
 	SafePat []SafeFn
 	// Doc is the catalog one-liner. It doubles as the Reason
 	// prefix: Verdict.Reason = Doc + ": " + match detail.

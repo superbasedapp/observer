@@ -1,0 +1,36 @@
+-- 253: guard_events records the project the gate matched grants on
+-- (ledger GRANT-20, docs/security.md; docs/access-grants.md).
+--
+-- An org access grant (and a local guard approval) for a guard rule is
+-- matched on the project the guard resolves for each call: the event's
+-- ProjectRoot, else the boundary's ProjectLookupRoot (the call's cwd, the
+-- main repository for a linked worktree), else the session's project
+-- (internal/guard grantProject). A request drafted from a verdict row
+-- (store.GuardEventRequestDraft) took its project from the SESSION
+-- (guard_events -> sessions -> projects), fixed when the session started. A
+-- session that works in another repository than the one it started in got
+-- a request, and so a grant, for the wrong project; the grant never matched
+-- the next call and the developer requested again.
+--
+--   project_root_hash - the guard.HashProjectRoot digest the gate matched
+--                       (sha256 hex of the root), the value a request's
+--                       ProjectRootHash and so the grant is scoped on
+--   project_root      - the raw root, for the node request form only
+--
+-- Both nullable. Rows written before this step, and rows from a lane that
+-- resolved no project, stay NULL; the draft then falls back to the
+-- session's project, exactly as before.
+--
+-- One writer: store.InsertGuardEvents (fed by PersistGuardVerdicts from
+-- guard.ActionVerdict.GrantProject). Neither column is part of the hash
+-- chain input (store.GuardEventRow.canonicalBytes), so no chain version
+-- changes and every existing chain verifies unchanged.
+--
+-- NODE-LOCAL columns: the org push (orgpush.go::SelectUnpushedSince) never
+-- selects either; the raw root is pinned off the wire by
+-- tests/invariant/privacy_test.go. The org's guard_events row has no project
+-- field, so shipping the hash would need a server migration (not taken
+-- here). NO server pair.
+
+ALTER TABLE guard_events ADD COLUMN project_root_hash TEXT;
+ALTER TABLE guard_events ADD COLUMN project_root TEXT;

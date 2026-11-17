@@ -1,0 +1,1 @@
+{"items":[{"id":"sandbox123","name":"observer-r1","labels":{"observer-run":"r1"},"state":"started","target":"us","toolboxProxyUrl":"https://proxy.app.daytona.io/toolbox"},{"id":"sandbox124","name":"observer-r2","labels":{"observer-run":"r2"},"state":"stopped","target":"eu","toolboxProxyUrl":"https://proxy.app.daytona.io/toolbox"}],"nextCursor":""}

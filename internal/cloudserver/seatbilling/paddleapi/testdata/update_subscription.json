@@ -1,0 +1,27 @@
+{
+  "data": {
+    "id": "sub_01jc0000000000000000000000",
+    "status": "active",
+    "customer_id": "ctm_01jc0000000000000000000000",
+    "currency_code": "USD",
+    "collection_mode": "automatic",
+    "billing_cycle": { "interval": "month", "frequency": 1 },
+    "next_billed_at": "2026-12-01T00:00:00Z",
+    "scheduled_change": null,
+    "items": [
+      {
+        "status": "active",
+        "quantity": 7,
+        "recurring": true,
+        "price": { "id": "pri_01jcseat000000000000000000", "product_id": "pro_01jcteam000000000000000000" }
+      },
+      {
+        "status": "active",
+        "quantity": 1,
+        "recurring": true,
+        "price": { "id": "pri_01jcaddon00000000000000000", "product_id": "pro_01jcaddon00000000000000000" }
+      }
+    ]
+  },
+  "meta": { "request_id": "22222222-3333-4444-5555-666666666666" }
+}

@@ -59,6 +59,14 @@ const (
 	ReasonPolicyRequired Reason = "policy_required"
 	// ReasonGranted: a verified component access grant activates it.
 	ReasonGranted Reason = "granted"
+
+	// Availability and entitlement reasons (plan 06 18.3.2, layers 2 and 3).
+
+	// ReasonNotAvailable: the platform operator has not cleared the component
+	// to run for this org here (the availability ceiling, layer 2).
+	ReasonNotAvailable Reason = "not_available"
+	// ReasonNotEntitled: the org has not paid for the component (layer 3).
+	ReasonNotEntitled Reason = "not_entitled"
 )
 
 // ResolveInput is everything the dependency resolver needs. It is pure
@@ -98,6 +106,13 @@ type Governance struct {
 	// the unlisted rule, and never overrides the ceiling or a missing build
 	// (plan 6.2.1 conflict table).
 	Granted []string
+	// Availability is the layer-2 availability ceiling (plan 06 18.3.2): nil
+	// means none (single mode, private deployments). A compiled non-core id
+	// outside it is blocked, not_available.
+	Availability *Availability
+	// Entitled is the layer-3 entitlement set: nil means none. A compiled
+	// non-core id outside it is blocked, not_entitled.
+	Entitled *Entitlement
 }
 
 // PolicySets is one node.components policy resolved to exact ids, each id at
@@ -183,6 +198,10 @@ type resolveCtx struct {
 	policyRequired map[string]string
 	// granted: ids a component grant activates.
 	granted map[string]bool
+	// unavailable: compiled non-core ids outside the availability ceiling.
+	unavailable map[string]bool
+	// unentitled: compiled non-core ids outside the entitlement set.
+	unentitled map[string]bool
 }
 
 // blockedOwn reports whether a component is blocked by its own row (local
@@ -192,7 +211,7 @@ func (ctx *resolveCtx) blockedOwn(c Component) bool {
 	if c.Class == ClassCore {
 		return false
 	}
-	return ctx.denied[c.ID] || ctx.aboveCeiling[c.ID] || ctx.policyDenied[c.ID] || ctx.unlisted(c)
+	return ctx.denied[c.ID] || ctx.unavailable[c.ID] || ctx.unentitled[c.ID] || ctx.aboveCeiling[c.ID] || ctx.policyDenied[c.ID] || ctx.unlisted(c)
 }
 
 // unlisted reports a compiled, non-core component a policy in force does
@@ -237,6 +256,14 @@ var resolveRules = []resolveRule{
 	{
 		name: "not compiled", state: StateAbsent, reason: ReasonNotCompiled,
 		match: func(ctx *resolveCtx, c Component) bool { return !ctx.compiled[c.ID] },
+	},
+	{
+		name: "not cleared by the availability ceiling", state: StateBlocked, reason: ReasonNotAvailable,
+		match: func(ctx *resolveCtx, c Component) bool { return ctx.unavailable[c.ID] },
+	},
+	{
+		name: "not entitled", state: StateBlocked, reason: ReasonNotEntitled,
+		match: func(ctx *resolveCtx, c Component) bool { return ctx.unentitled[c.ID] },
 	},
 	{
 		name: "outside the local ceiling", state: StateBlocked, reason: ReasonAboveCeiling,
@@ -438,6 +465,10 @@ func selectionErrors(ctx *resolveCtx, res ResolveResult, by map[string]Component
 			why = " (required by " + ctx.wantedBy[d.ID] + ")"
 		}
 		switch d.Reason {
+		case ReasonNotAvailable:
+			errs = append(errs, fmt.Sprintf("%s%s: not available here (the platform operator has not cleared it)", d.ID, why))
+		case ReasonNotEntitled:
+			errs = append(errs, fmt.Sprintf("%s%s: not included in this organization's plan", d.ID, why))
 		case ReasonAboveCeiling:
 			errs = append(errs, fmt.Sprintf("%s%s: outside this machine's local component ceiling", d.ID, why))
 		case ReasonPolicyDenied:
@@ -472,9 +503,15 @@ func applyGovernance(ctx *resolveCtx, g *Governance, rows []Component, closure f
 	ctx.policyDenied = map[string]bool{}
 	ctx.policyAllowed = map[string]bool{}
 	ctx.policyRequired = map[string]string{}
+	ctx.unavailable = map[string]bool{}
+	ctx.unentitled = map[string]bool{}
 	ctx.granted = map[string]bool{}
 	if g == nil {
 		return
+	}
+	layerBlock(ctx, g.Availability, rows, ctx.unavailable)
+	if g.Entitled != nil {
+		layerBlock(ctx, &Availability{Allow: g.Entitled.Allow}, rows, ctx.unentitled)
 	}
 	if g.CeilingPinned {
 		ceiling := toSet(g.Ceiling)
@@ -575,4 +612,18 @@ func sortedKeys(m map[string]bool) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// layerBlock marks into dst every compiled non-core row a pinned allow-set
+// layer does not clear. A nil layer marks nothing.
+func layerBlock(ctx *resolveCtx, layer *Availability, rows []Component, dst map[string]bool) {
+	if layer == nil {
+		return
+	}
+	allow := toSet(layer.Allow)
+	for _, c := range rows {
+		if c.Class != ClassCore && ctx.compiled[c.ID] && !allow[c.ID] {
+			dst[c.ID] = true
+		}
+	}
 }

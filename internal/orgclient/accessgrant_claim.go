@@ -181,6 +181,18 @@ type GrantClaim struct {
 	// Unverified: the node holds a grant document that no longer verifies,
 	// so every grant in it was ignored.
 	Unverified bool
+	// ScopeMissID: nothing covered the call, but the node holds an honoured
+	// grant for this rule pinned to another lane, command or project
+	// (accessgrant.MatchResult.ScopeMissID).
+	ScopeMissID int64
+	// Err is set when the question could not be ANSWERED (the database
+	// could not be read in time, or a use-limited grant's use could not be
+	// counted). The answer is still "no grant", so enforcement stands, but
+	// it is not the same fact as "no grant covers this": the guard writes it
+	// on the verdict, so a developer who holds a grant can see why the rule
+	// still stopped them instead of asking for the same grant again
+	// (operator report 2026-11-13).
+	Err error
 }
 
 // maxClaimAttempts bounds the re-read after a lost race: each attempt that
@@ -188,33 +200,62 @@ type GrantClaim struct {
 // another process took no longer matches on the next read.
 const maxClaimAttempts = 4
 
+// readGrantsForDecision is the one read behind a claim and a peek: the
+// enrolment, then the re-verified document. done=true means c is the answer
+// (not enrolled, nothing cached, unverified, or the read failed).
+func readGrantsForDecision(ctx context.Context, s *store.Store) (v VerifiedAccessGrants, c GrantClaim, done bool) {
+	enr, err := s.LoadEnrolment(ctx)
+	if err != nil {
+		return v, GrantClaim{Err: fmt.Errorf("the enrolment could not be read: %w", err)}, true
+	}
+	if enr == nil {
+		return v, GrantClaim{}, true
+	}
+	v, err = LoadVerifiedAccessGrants(ctx, s)
+	switch {
+	case errors.Is(err, ErrGrantCacheUnverified):
+		return v, GrantClaim{Unverified: true}, true
+	case err != nil:
+		return v, GrantClaim{Err: err}, true
+	case !v.Present:
+		return v, GrantClaim{}, true
+	}
+	return v, GrantClaim{}, false
+}
+
 // ClaimAccessGrant answers the guard's grant question for one call AND
-// counts the use (design §3.2 rows 2-3). The use is counted by one
-// conditional UPDATE (store.ConsumeAccessGrantUse) bounded by the
-// SIGNED max_uses, so two hook processes racing on the last use cannot both
-// win: SQLite serialises the writes and the loser's UPDATE changes nothing,
-// after which it re-reads and finds the grant spent. Every failure is "no
-// grant" (enforcement stands); nothing here touches the network.
+// counts the use (design §3.2 rows 2-3). Nothing here touches the network.
+//
+// The decision is made from READS only (the signed document and the local
+// counters). What the write then does depends on the grant:
+//
+//	| grant               | the use-count write           | a write that fails          |
+//	|---------------------|-------------------------------|-----------------------------|
+//	| use-limited         | decides (conditional UPDATE)  | no grant, Err set           |
+//	| unlimited (0 uses)  | local bookkeeping only        | the grant still applies     |
+//
+// A use-limited grant is counted by one conditional UPDATE
+// (store.ConsumeAccessGrantUse) bounded by the SIGNED max_uses, so two hook
+// processes racing on the last use cannot both win: SQLite serialises the
+// writes and the loser's UPDATE changes nothing, after which it re-reads and
+// finds the grant spent. An unlimited grant has no limit a write could
+// protect: its local counter is what the node's own pages show, and the org
+// counts its uses from the guard events the node ships (each carries the
+// grant id). Before 2026-11-13 a counter or clock write that had to wait for
+// the daemon's write lock past the hook's budget read as "no grant", with
+// nothing recorded, so a granted rule intermittently stopped the developer.
 func ClaimAccessGrant(ctx context.Context, s *store.Store, q accessgrant.Query, now time.Time) GrantClaim {
 	if s == nil || q.RuleID == "" {
 		return GrantClaim{}
 	}
-	enr, err := s.LoadEnrolment(ctx)
-	if err != nil || enr == nil {
-		return GrantClaim{}
-	}
-	_ = s.NoteAccessGrantClock(ctx, now.UnixNano())
 	for attempt := 0; attempt < maxClaimAttempts; attempt++ {
-		v, err := LoadVerifiedAccessGrants(ctx, s)
-		if err != nil {
-			return GrantClaim{Unverified: errors.Is(err, ErrGrantCacheUnverified)}
-		}
-		if !v.Present {
-			return GrantClaim{}
+		v, c, done := readGrantsForDecision(ctx, s)
+		if done {
+			return c
 		}
 		res := accessgrant.MatchDetail(q, v.Grants, v.Receipt, now)
 		if !res.OK {
-			return GrantClaim{LockRefused: res.LockRefused}
+			return GrantClaim{LockRefused: res.LockRefused, ScopeMissID: res.ScopeMissID}
 		}
 		maxUses := int64(0)
 		for _, c := range v.Grants {
@@ -223,10 +264,19 @@ func ClaimAccessGrant(ctx context.Context, s *store.Store, q accessgrant.Query, 
 			}
 		}
 		counted, err := s.ConsumeAccessGrantUse(ctx, res.Hit.GrantID, maxUses)
+		if maxUses == 0 {
+			if err == nil {
+				// The high-water mark is unsigned bookkeeping too: advanced
+				// when the database takes a write, never waited for twice.
+				_ = s.NoteAccessGrantClock(ctx, now.UnixNano())
+			}
+			return GrantClaim{Hit: res.Hit, OK: true}
+		}
 		if err != nil {
-			return GrantClaim{}
+			return GrantClaim{Err: fmt.Errorf("a use of G-%d could not be counted: %w", res.Hit.GrantID, err)}
 		}
 		if counted {
+			_ = s.NoteAccessGrantClock(ctx, now.UnixNano())
 			hit := res.Hit
 			if hit.UsesLeft > 0 {
 				hit.UsesLeft--
@@ -240,25 +290,39 @@ func ClaimAccessGrant(ctx context.Context, s *store.Store, q accessgrant.Query, 
 // PeekAccessGrant is ClaimAccessGrant without counting a use: the same
 // re-verified read and the same match, for the guard's "is there a grant at
 // all" question (a soften grant offered on a host that cannot ask counts
-// nothing until the developer confirms). It never writes a counter.
+// nothing until the developer confirms). It writes nothing at all, so it
+// never waits for the database's write lock.
 func PeekAccessGrant(ctx context.Context, s *store.Store, q accessgrant.Query, now time.Time) GrantClaim {
 	if s == nil || q.RuleID == "" {
 		return GrantClaim{}
 	}
-	enr, err := s.LoadEnrolment(ctx)
-	if err != nil || enr == nil {
-		return GrantClaim{}
-	}
-	_ = s.NoteAccessGrantClock(ctx, now.UnixNano())
-	v, err := LoadVerifiedAccessGrants(ctx, s)
-	if err != nil {
-		return GrantClaim{Unverified: errors.Is(err, ErrGrantCacheUnverified)}
-	}
-	if !v.Present {
-		return GrantClaim{}
+	v, c, done := readGrantsForDecision(ctx, s)
+	if done {
+		return c
 	}
 	res := accessgrant.MatchDetail(q, v.Grants, v.Receipt, now)
-	return GrantClaim{Hit: res.Hit, OK: res.OK, LockRefused: res.LockRefused}
+	return GrantClaim{Hit: res.Hit, OK: res.OK, LockRefused: res.LockRefused, ScopeMissID: res.ScopeMissID}
+}
+
+// AlreadyGranted reports the grant in force on this machine that already
+// gives everything the prepared request asks for (accessgrant.CoveredBy over
+// the re-verified cache), so the request form can say so before anything is
+// sent. An unverified or absent cache covers nothing: the org then decides.
+func AlreadyGranted(ctx context.Context, s *store.Store, n accessgrant.Normalized, now time.Time) (accessgrant.Held, bool) {
+	if s == nil {
+		return accessgrant.Held{}, false
+	}
+	v, err := LoadVerifiedAccessGrants(ctx, s)
+	if err != nil || !v.Present {
+		return accessgrant.Held{}, false
+	}
+	var held []accessgrant.Held
+	for _, c := range v.Grants {
+		if ok, _ := accessgrant.Honoured(c.Grant, c.UsesUsed, v.Receipt, now); ok {
+			held = append(held, accessgrant.HeldFromWire(c.Grant))
+		}
+	}
+	return accessgrant.CoveredBy(accessgrant.AskFromRequest(n, now), held)
 }
 
 // SoftenGrantForRule reports a verified, honoured soften grant naming ruleID
@@ -322,9 +386,17 @@ func verifiedGrantsView(ctx context.Context, s *store.Store, now time.Time) (sto
 		}
 		return out, true, nil
 	}
+	var held []accessgrant.Held
 	for _, c := range v.Grants {
 		h, why := accessgrant.Honoured(c.Grant, c.UsesUsed, v.Receipt, now)
 		out.Grants = append(out.Grants, store.AccessGrantView{Grant: c.Grant, UsesUsed: c.UsesUsed, Honoured: h, Reason: why})
+		if h {
+			held = append(held, accessgrant.HeldFromWire(c.Grant))
+		}
+	}
+	redundant := accessgrant.Redundant(held)
+	for i := range out.Grants {
+		out.Grants[i].CoveredBy = redundant[out.Grants[i].Grant.ID]
 	}
 	return out, true, nil
 }

@@ -62,6 +62,111 @@ type DeletionRequest struct {
 // gone at 'done'; this governs only the opaque tombstone row + retained audit.
 const deletionAccountTombstoneTTL = 24 * 30 * 24 * time.Hour // ~24 months
 
+// ErrDeletionPaysForLiveOrg is the sentinel a refused account deletion wraps
+// when the account pays for an org that is still live (C2.front-door-5 A,
+// wave 15; docs/security.md PORTALORG-9). The error is a
+// *PaysForLiveOrgError naming the orgs.
+var ErrDeletionPaysForLiveOrg = errors.New("cloudserver/store: the account pays for a live org")
+
+// PaidLiveOrg is one org whose subscription a deleting account pays for.
+// Slug and DisplayName are empty when the org is not visible to the account
+// any more (it still counts: see paidLiveOrgsTx).
+type PaidLiveOrg struct {
+	OrgID       string
+	Slug        string
+	DisplayName string
+}
+
+// PaysForLiveOrgError is a refused account deletion: the account pays for
+// these live orgs.
+type PaysForLiveOrgError struct {
+	Orgs []PaidLiveOrg
+}
+
+func (e *PaysForLiveOrgError) Error() string {
+	return fmt.Sprintf("cloudserver/store: the account pays for %d live org(s); end or move that billing before deleting the account", len(e.Orgs))
+}
+
+// Unwrap makes errors.Is(err, ErrDeletionPaysForLiveOrg) true.
+func (e *PaysForLiveOrgError) Unwrap() error { return ErrDeletionPaysForLiveOrg }
+
+// paidLiveOrgsSQL lists the orgs the account pays for that are still live: an
+// org-scoped subscription of the account that occupies the org's live slot
+// (the 0090 rule, liveSubscriptionStatus: not canceled, refunded or charged
+// back, and not empty), for an org being created, active or suspended. An
+// org the account can no longer see (no membership, so RLS hides the row)
+// counts too: billing that cannot be shown is still billing, and the purge
+// would delete the row Paddle bills against (PORTALORG-9). An org scheduled
+// for deletion, being purged or purged is not live.
+const paidLiveOrgsSQL = `SELECT DISTINCT ps.org_id::text, coalesce(o.slug, ''), coalesce(o.display_name, '')
+	   FROM paddle_subscriptions ps
+	   LEFT JOIN orgs o ON o.org_id = ps.org_id
+	  WHERE ps.account_id = $1::uuid
+	    AND ps.org_id IS NOT NULL
+	    AND ps.status NOT IN ('', 'canceled', 'refunded', 'charged_back')
+	    AND (o.org_id IS NULL OR o.status IN ('provisioning', 'active', 'suspended'))
+	  ORDER BY 1`
+
+// paidLiveOrgsTx runs paidLiveOrgsSQL inside the caller's account
+// transaction.
+func paidLiveOrgsTx(ctx context.Context, tx pgx.Tx, accountID string) ([]PaidLiveOrg, error) {
+	rows, err := tx.Query(ctx, paidLiveOrgsSQL, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("paid live orgs: %w", err)
+	}
+	defer rows.Close()
+	var out []PaidLiveOrg
+	for rows.Next() {
+		var o PaidLiveOrg
+		if err := rows.Scan(&o.OrgID, &o.Slug, &o.DisplayName); err != nil {
+			return nil, fmt.Errorf("paid live orgs: %w", err)
+		}
+		out = append(out, o)
+	}
+	return out, rows.Err()
+}
+
+// refuseIfPaysForLiveOrgTx returns a *PaysForLiveOrgError when the account
+// pays for a live org.
+func refuseIfPaysForLiveOrgTx(ctx context.Context, tx pgx.Tx, accountID string) error {
+	orgs, err := paidLiveOrgsTx(ctx, tx, accountID)
+	if err != nil {
+		return err
+	}
+	if len(orgs) > 0 {
+		return &PaysForLiveOrgError{Orgs: orgs}
+	}
+	return nil
+}
+
+// lockAccountBillingTx takes the Paddle webhook's per-account advisory lock
+// (paddle.go, F4: every billing apply for the account holds it), taken first
+// as the webhook takes it first, so the two never wait on each other in a
+// cycle.
+func lockAccountBillingTx(ctx context.Context, tx pgx.Tx, accountID string) error {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, accountID); err != nil {
+		return fmt.Errorf("account billing lock: %w", err)
+	}
+	return nil
+}
+
+// PaidLiveOrgs returns the live orgs accountID pays for (empty: the account
+// may be deleted as far as org billing goes). The console asks before it
+// sends the user through a step-up re-authentication that the deletion
+// would then refuse; the deletion itself re-checks inside its transaction.
+func (s *Store) PaidLiveOrgs(ctx context.Context, accountID string) ([]PaidLiveOrg, error) {
+	var out []PaidLiveOrg
+	err := s.WithAccount(ctx, accountID, func(ctx context.Context, tx pgx.Tx) error {
+		o, err := paidLiveOrgsTx(ctx, tx, accountID)
+		out = o
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("cloudserver/store.PaidLiveOrgs: %w", err)
+	}
+	return out, nil
+}
+
 // CreateDeletionRequest records and executes an account deletion (dev-auth
 // body-reauth path). It fails closed if no deletion journal is configured — a
 // deletion must never run without a durable, restore-surviving record.
@@ -106,6 +211,27 @@ func (s *Store) runDeletion(ctx context.Context, accountID string, now time.Time
 
 	var req DeletionRequest
 	err := s.WithAccount(ctx, accountID, func(ctx context.Context, tx pgx.Tx) error {
+		// C2.front-door-5 A: an account that pays for a live org is not
+		// deleted (its purge would delete the subscription row the org's
+		// billing runs on, PORTALORG-9). Checked before the step-up is
+		// consumed and before the journal's "accepted" record, so a refused
+		// deletion is never re-applied by a restore and the step-up stays
+		// usable. The Paddle webhook's per-account lock serialises this with
+		// a concurrent binding of a new subscription: whichever commits
+		// second sees the other (the webhook refuses a closed account).
+		if e := lockAccountBillingTx(ctx, tx, accountID); e != nil {
+			return e
+		}
+		if e := refuseIfPaysForLiveOrgTx(ctx, tx, accountID); e != nil {
+			return e
+		}
+		// M6.9: the account's orgs. A team org it is the billing owner or the
+		// only owner of blocks the deletion until ownership or billing moves
+		// or the team is deleted (orgdeletion.Precheck); checked with the
+		// billing rule, before the step-up is consumed and before the journal.
+		if e := refuseIfOrgsBlockTx(ctx, tx, accountID); e != nil {
+			return e
+		}
 		if su != nil {
 			if e := consumeStepUpTx(ctx, tx, accountID, su.sessionID, StepUpActionDeletion, su.authzID, now); e != nil {
 				return e // refused step-up: rolls back, no journal write
@@ -126,6 +252,14 @@ func (s *Store) runDeletion(ctx context.Context, accountID string, now time.Time
 	if err != nil {
 		if errors.Is(err, ErrStepUpInvalid) {
 			return DeletionRequest{}, ErrStepUpInvalid
+		}
+		var paid *PaysForLiveOrgError
+		if errors.As(err, &paid) {
+			return DeletionRequest{}, paid
+		}
+		var blocked *AccountDeletionBlockedError
+		if errors.As(err, &blocked) {
+			return DeletionRequest{}, blocked
 		}
 		return DeletionRequest{}, fmt.Errorf("cloudserver/store.CreateDeletionRequest: %w", err)
 	}
@@ -162,6 +296,14 @@ func deletionCompleteTx(ctx context.Context, tx pgx.Tx, accountID string, now ti
 		 VALUES ($1::uuid, 'account', 'processing') RETURNING id::text, state`,
 		accountID).Scan(&req.ID, &req.State); e != nil {
 		return DeletionRequest{}, fmt.Errorf("record request: %w", e)
+	}
+
+	// M6.9: the org-side half (personal org, memberships, subject
+	// deactivation, the WorkOS user) is a follow-up the worker drives; it is
+	// written here, before identity_links is purged below, so it holds the
+	// subjects, and so a journal replay after a restore writes it again.
+	if e := recordAccountFollowupTx(ctx, tx, accountID, req.ID, now); e != nil {
+		return DeletionRequest{}, e
 	}
 
 	// Cancel non-terminal jobs first: releases reservations and deletes their
@@ -209,6 +351,9 @@ func deletionCompleteTx(ctx context.Context, tx pgx.Tx, accountID string, now ti
 		{"evidence_blobs", `DELETE FROM evidence_blobs WHERE account_id = $1::uuid`},
 		{"usage_reservations", `DELETE FROM usage_reservations WHERE account_id = $1::uuid`},
 		{"usage_cycles", `DELETE FROM usage_cycles WHERE account_id = $1::uuid`},
+		// R-AI1 (0078): the per-account token windows. The per-session token
+		// ledger is a column of cloud_sessions and goes with it.
+		{"usage_token_windows", `DELETE FROM usage_token_windows WHERE account_id = $1::uuid`},
 		{"cloud_sessions", `DELETE FROM cloud_sessions WHERE account_id = $1::uuid`},
 		{"cloud_projects", `DELETE FROM cloud_projects WHERE account_id = $1::uuid`},
 		// Structural rail (structural_snapshots references device_registrations,
@@ -221,6 +366,20 @@ func deletionCompleteTx(ctx context.Context, tx pgx.Tx, accountID string, now ti
 		{"browser_sessions", `DELETE FROM browser_sessions WHERE account_id = $1::uuid`},
 		{"pop_replay", `DELETE FROM pop_replay WHERE account_id = $1::uuid`},
 		{"step_up_authorizations", `DELETE FROM step_up_authorizations WHERE account_id = $1::uuid`},
+		// C2 (0131): the portal passkeys, their ceremonies and the recovery
+		// code hashes. Account-keyed, order-free.
+		{"portal_passkey_ceremonies", `DELETE FROM portal_passkey_ceremonies WHERE account_id = $1::uuid`},
+		{"portal_recovery_codes", `DELETE FROM portal_recovery_codes WHERE account_id = $1::uuid`},
+		{"portal_passkeys", `DELETE FROM portal_passkeys WHERE account_id = $1::uuid`},
+		// FR-6 / FR-24 (0145): the single-use new-device approvals and the
+		// recovery-code failure counter. Account-keyed, order-free; purged now
+		// rather than at the 24-month sweep's ON DELETE CASCADE.
+		{"device_approvals", `DELETE FROM device_approvals WHERE account_id = $1::uuid`},
+		{"portal_recovery_failures", `DELETE FROM portal_recovery_failures WHERE account_id = $1::uuid`},
+		// Getting started v2 (0150, CONNECT-1): the account's resolved connect
+		// requests (machine names, masked networks). The request is a system
+		// table keyed by account once resolved; its poll proofs cascade.
+		{"connect_requests", `DELETE FROM connect_requests WHERE account_id = $1::uuid`},
 		// Plans / entitlements / portal preferences / billing linkage.
 		// paddle_subscriptions references only accounts (NO ACTION), independent of
 		// the FK cluster; the Paddle-side billing lifecycle is not the node's concern.
@@ -241,6 +400,10 @@ func deletionCompleteTx(ctx context.Context, tx pgx.Tx, accountID string, now ti
 		// the pseudonymized account row — 24 months too late for the one row that
 		// holds a plain-text email address.
 		{"account_profiles", `DELETE FROM account_profiles WHERE account_id = $1::uuid`},
+		// The provider-asserted address the OIDC issuer signs (0074, A4): the
+		// same reasoning as account_profiles, a plain-text address purged now
+		// rather than at the 24-month sweep.
+		{"account_verified_emails", `DELETE FROM account_verified_emails WHERE account_id = $1::uuid`},
 		// Identity last of the purges — the subject store, gone with the profile
 		// row above, leaves nothing that names the human behind the account.
 		{"identity_links", `DELETE FROM identity_links WHERE account_id = $1::uuid`},
@@ -258,6 +421,10 @@ func deletionCompleteTx(ctx context.Context, tx pgx.Tx, accountID string, now ti
 	// fact, like consent_receipts, but authorizes no further upload):
 	//   consent_receipts, consent_events, portal_consent_events,
 	//   analysis_usage_ledger, security_audit_events, deletion_requests.
+	// org_usage_days is org-scoped, not the account's, so an account deletion
+	// never reaches it: it is kept 10 years from its day, after the org is
+	// deleted too, with its member ids minimised at 13 months (W16-D9,
+	// orgusage.go; the deletion matrix in docs/cloud-intelligence.md).
 	if _, e := tx.Exec(ctx,
 		`UPDATE structural_grants SET revoked_at = $2, updated_at = $2
 		  WHERE account_id = $1::uuid AND revoked_at IS NULL`,

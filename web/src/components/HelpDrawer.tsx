@@ -26,6 +26,14 @@ const CATEGORIES: readonly HelpDrawerCategory[] = (Object.keys(CATEGORY_LABEL) a
   label: CATEGORY_LABEL[id],
 }));
 
+// HELP_DRAWER_Z stacks the drawer above the overlays help can be opened
+// from: the New Terminal dialog (85, whose sandbox setup steps carry help
+// links), the terminal workspace's floating panels (90 to 110) and its
+// expanded-terminal backdrop (80); below the guided tour (120 and 130),
+// which the drawer's own Tour button closes it for. SlideOver's zIndex note
+// names 112 as the level that clears that band.
+export const HELP_DRAWER_Z = 112;
+
 export function HelpDrawer({
   open,
   onClose,
@@ -63,6 +71,7 @@ export function HelpDrawer({
       entries={registry}
       categories={CATEGORIES}
       onTour={startTour}
+      zIndex={HELP_DRAWER_Z}
     />
   );
 }

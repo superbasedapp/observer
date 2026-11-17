@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/agentlaunch"
 	"github.com/marmutapp/superbased-observer/internal/db"
@@ -188,8 +189,19 @@ func TestRealResolverReadsAChildsMarker(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
 	li := launchInitiator{ancestors: peerproc.Ancestors, envMarker: readSessionMarker}
-	got := li.origin(context.Background(), agentlaunch.FrontCLI, cmd.Process.Pid, false, "")
-	if got != (termrun.Origin{Initiator: termrun.InitiatorAgent, ParentSessionID: "sess-child"}) {
+	want := termrun.Origin{Initiator: termrun.InitiatorAgent, ParentSessionID: "sess-child"}
+	// Start returns once the child is forked, which can be before it has
+	// exec'd sleep; until then /proc/<pid>/environ is still the parent's,
+	// without the marker (a loaded gate box, 2026-11-12). Wait for the exec.
+	var got termrun.Origin
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		got = li.origin(context.Background(), agentlaunch.FrontCLI, cmd.Process.Pid, false, "")
+		if got == want || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got != want {
 		t.Fatalf("origin = %+v", got)
 	}
 	ok, why, _ := agentlaunch.MayConfirm(agentlaunch.ConfirmFacts{Origin: got})

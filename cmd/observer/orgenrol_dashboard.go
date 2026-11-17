@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/marmutapp/superbased-observer/internal/attachrule"
 	"github.com/marmutapp/superbased-observer/internal/dashapi"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
@@ -41,7 +42,7 @@ import (
 //
 // The CLI's --wire-clients step (hooks + MCP + proxy routing for every
 // detected AI client) is deliberately NOT run from here: those writes have
-// their own per-write consent surface in Settings > Setup, and the outcome
+// their own per-write consent surface in Settings > Connected tools, and the outcome
 // says so instead of rewriting AI-client configs from a single click.
 type enrolDashboard struct {
 	configPath string
@@ -63,6 +64,12 @@ type enrolDashboard struct {
 	// once instead of at the next push cycle (T-718). nil in a process with
 	// no push loop.
 	retired func(ctx context.Context)
+	// refetch, when set, wakes the daemon's own policy-resource and guard
+	// bundle polls (demo finding #23) and its push loop: a push-now, an
+	// enrol, a grant decision or a leave made here fetches the org's policy
+	// and pushes now instead of at the next poll or after a failure pause.
+	// nil in a process with no poll loops.
+	refetch func()
 
 	mu     sync.Mutex
 	offers map[string]*pendingGrantOffer
@@ -85,6 +92,8 @@ type pendingIdPFlow struct {
 	deadline   time.Time
 	interval   time.Duration
 	nextPoll   time.Time
+	// dropUnsent is the "Switch anyway" this flow was started with (R3-78).
+	dropUnsent bool
 }
 
 // newEnrolDashboard wires the manager for `observer start` / `observer
@@ -125,6 +134,14 @@ func (d *enrolDashboard) withIdentityChanged(fn func()) *enrolDashboard {
 func (d *enrolDashboard) withRetire(c *orgclient.Client) *enrolDashboard {
 	if c != nil {
 		d.retired = c.RetireIdentity
+		d.refetch = func() {
+			c.KickPolicyResourcePoll()
+			c.KickPolicyBundlePoll()
+			// An enrol, a grant decision or a push-now made here also runs
+			// the daemon's own push loop at once, past any failure pause
+			// (round 3 bug 2: `observer org push-now` could not wake it).
+			c.WakePushLoop()
+		}
 	}
 	return d
 }
@@ -135,6 +152,9 @@ func (d *enrolDashboard) withRetire(c *orgclient.Client) *enrolDashboard {
 func (d *enrolDashboard) changed() {
 	if d.identityChanged != nil {
 		d.identityChanged()
+	}
+	if d.refetch != nil {
+		d.refetch()
 	}
 }
 
@@ -388,7 +408,7 @@ func (d *enrolDashboard) Enrol(ctx context.Context, req dashapi.EnrolRequest) (d
 	if err != nil {
 		return dashapi.EnrolOutcome{}, err
 	}
-	return d.enrolWithToken(ctx, orgURL, token, true)
+	return d.enrolWithToken(ctx, orgURL, token, true, req.DropUnsent)
 }
 
 // classifyEnrolErr maps an orgclient.Enroll error onto the vocabulary.
@@ -399,6 +419,9 @@ func classifyEnrolErr(orgURL string, err error) error {
 	case errors.Is(err, orgclient.ErrAuthFailed):
 		return orgenrol.Fail(orgenrol.CodeTokenRejected,
 			"the organization refused this enrolment code: it is invalid, expired, or already used. Ask your admin for a new one, or sign in with your organization account instead")
+	case errors.Is(err, orgclient.ErrUnsentRows):
+		msg, _ := unsentRefusal(err, false, dashDrainSurface)
+		return orgenrol.Fail(orgenrol.CodeUnsentRows, "%s", msg)
 	case errors.Is(err, orgclient.ErrMemberNotActive):
 		return orgenrol.Fail(orgenrol.CodeMemberNotActive,
 			"your organization account is not active yet. Open the set-password link from your invitation first, set your password and sign in to the organization dashboard once, then enrol again with the same code - it is still valid")
@@ -413,7 +436,7 @@ func classifyEnrolErr(orgURL string, err error) error {
 // exchange, managed machine bind, default [org_client] block, then the grant
 // (settled now when the organization's IdP approval already was the consent,
 // parked for the consent screen otherwise).
-func (d *enrolDashboard) enrolWithToken(ctx context.Context, orgURL, token string, probe bool) (dashapi.EnrolOutcome, error) {
+func (d *enrolDashboard) enrolWithToken(ctx context.Context, orgURL, token string, probe, dropUnsent bool) (dashapi.EnrolOutcome, error) {
 	b, err := d.bundle(ctx)
 	if err != nil {
 		return dashapi.EnrolOutcome{}, err
@@ -427,7 +450,7 @@ func (d *enrolDashboard) enrolWithToken(ctx context.Context, orgURL, token strin
 	// T-642: the one enrolment sequence `observer enroll` also runs
 	// (exchange, managed bind, default [org_client] block). What follows only
 	// renders it and runs the dashboard's side of the consent conversation.
-	seq, err := runEnrolSequence(ctx, b, d.configPath, orgURL, token, true)
+	seq, err := runEnrolSequence(ctx, b, d.configPath, orgURL, token, true, dropUnsent)
 	if err != nil {
 		return dashapi.EnrolOutcome{}, classifyEnrolErr(orgURL, err)
 	}
@@ -441,6 +464,14 @@ func (d *enrolDashboard) enrolWithToken(ctx context.Context, orgURL, token strin
 		Tenancy:         orgcontract.TenancyIndividual,
 		Managed:         managed,
 		RestartRequired: !d.pushLoop,
+	}
+	// R3-78: what was sent to (or left for) the previous organization.
+	if text, warn := seq.drainNote(); text != "" {
+		level := "ok"
+		if warn {
+			level = "warn"
+		}
+		out.Notes = append(out.Notes, dashapi.EnrolNote{Level: level, Text: plainDashes(text)})
 	}
 	if managed {
 		out.Tenancy = orgcontract.TenancyManaged
@@ -492,7 +523,7 @@ func (d *enrolDashboard) enrolWithToken(ctx context.Context, orgURL, token strin
 	}
 	out.Notes = append(out.Notes, dashapi.EnrolNote{
 		Level: "info",
-		Text:  "AI tools were not rewired from here. To route them through this observer and register hooks, use Settings > Setup (the CLI's --wire-clients step, one consent per file).",
+		Text:  "AI tools were not rewired from here. To route them through this observer and register hooks, use Settings > Connected tools (each tool's Set up button; the CLI's --wire-clients step, one consent per file).",
 	})
 
 	if offer == nil {
@@ -599,7 +630,7 @@ func (d *enrolDashboard) DecideGrant(ctx context.Context, offerID string, accept
 }
 
 // StartIdP implements dashapi.EnrolmentManager (`observer enroll --idp`).
-func (d *enrolDashboard) StartIdP(ctx context.Context, rawURL string) (dashapi.IdPStart, error) {
+func (d *enrolDashboard) StartIdP(ctx context.Context, rawURL string, opts dashapi.SwitchOptions) (dashapi.IdPStart, error) {
 	if strings.TrimSpace(rawURL) == "" {
 		return dashapi.IdPStart{}, orgenrol.Fail(orgenrol.CodeInvalidInput, "the organization server URL is required")
 	}
@@ -615,14 +646,24 @@ func (d *enrolDashboard) StartIdP(ctx context.Context, rawURL string) (dashapi.I
 		return dashapi.IdPStart{}, err
 	}
 	defer b.cleanup()
+	// M8.6: a company-config lock refuses before the sign-in, as the CLI's
+	// --idp does (runEnrolSequence refuses again at redemption).
+	if err := gateManagedAttach(ctx, b, attachrule.IntentAttach, orgURL); err != nil {
+		return dashapi.IdPStart{}, err
+	}
 	if f := classifyReachability(orgURL, b.client.ProbeServer(ctx, orgURL)); f != nil {
 		return dashapi.IdPStart{}, f
+	}
+	// R3-78: settle the switch drain BEFORE the sign-in, so a refusal never
+	// costs the person a browser approval (the CLI's --idp does the same).
+	if _, derr := b.client.DrainBeforeSwitch(ctx, orgURL, switchDrainOptions(&b.cfg, opts.DropUnsent)); derr != nil {
+		return dashapi.IdPStart{}, classifyEnrolErr(orgURL, derr)
 	}
 	start, err := b.client.StartIdPEnrol(ctx, orgURL)
 	if err != nil {
 		if errors.Is(err, orgclient.ErrIdPEnrolUnavailable) {
 			return dashapi.IdPStart{}, orgenrol.Fail(orgenrol.CodeIdPUnavailable,
-				"this organization does not offer sign-in enrolment (it may be switched off, or the server may be older than the feature). Ask an administrator for an enrolment code or link instead")
+				"%s", idpUnavailableMessage(orgURL, false))
 		}
 		return dashapi.IdPStart{}, orgenrol.Fail(orgenrol.CodeUpstream, "%v", err)
 	}
@@ -635,6 +676,7 @@ func (d *enrolDashboard) StartIdP(ctx context.Context, rawURL string) (dashapi.I
 	d.flows = map[string]*pendingIdPFlow{id: {
 		orgURL: orgURL, deviceCode: start.DeviceCode, userCode: start.UserCode,
 		deadline: now.Add(life), interval: interval, nextPoll: now.Add(interval),
+		dropUnsent: opts.DropUnsent,
 	}}
 	d.mu.Unlock()
 	return dashapi.IdPStart{
@@ -702,7 +744,7 @@ func (d *enrolDashboard) PollIdP(ctx context.Context, flowID string) (dashapi.Id
 		return dashapi.IdPPoll{Status: status, Message: msg}, nil
 	case step.token != "":
 		drop()
-		out, eerr := d.enrolWithToken(ctx, f.orgURL, step.token, false)
+		out, eerr := d.enrolWithToken(ctx, f.orgURL, step.token, false, f.dropUnsent)
 		if eerr != nil {
 			return dashapi.IdPPoll{}, eerr
 		}
@@ -780,6 +822,11 @@ func (d *enrolDashboard) PushNow(ctx context.Context) (dashapi.PushNowReport, er
 	}
 	defer b.cleanup()
 	rep, err := performPushNow(ctx, b)
+	if err == nil && d.refetch != nil {
+		// The push ran in this process on its own client, so its
+		// acknowledgment cannot nudge the daemon's polls: wake them here.
+		d.refetch()
+	}
 	switch {
 	case errors.Is(err, orgclient.ErrNotEnrolled):
 		return dashapi.PushNowReport{}, orgenrol.Fail(orgenrol.CodeNotEnrolled, "this machine is not enrolled in an organization, so there is nothing to push to")
@@ -872,15 +919,18 @@ func (d *enrolDashboard) Resync(ctx context.Context, confirm bool) (dashapi.Resy
 }
 
 // Leave implements dashapi.EnrolmentManager (`observer unenroll`).
-func (d *enrolDashboard) Leave(ctx context.Context) (dashapi.LeaveReport, error) {
+func (d *enrolDashboard) Leave(ctx context.Context, opts dashapi.SwitchOptions) (dashapi.LeaveReport, error) {
 	defer d.changed()
 	b, err := d.bundle(ctx)
 	if err != nil {
 		return dashapi.LeaveReport{}, err
 	}
 	defer b.cleanup()
-	rep, err := performUnenrol(ctx, b, d.configPath)
+	rep, err := performUnenrol(ctx, b, d.configPath, opts.DropUnsent)
 	if err != nil {
+		if msg, ok := unsentRefusal(err, true, dashDrainSurface); ok {
+			return dashapi.LeaveReport{}, orgenrol.Fail(orgenrol.CodeUnsentRows, "%s", msg)
+		}
 		return dashapi.LeaveReport{}, err
 	}
 	if d.retired != nil {

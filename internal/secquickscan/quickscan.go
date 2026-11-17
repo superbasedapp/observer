@@ -182,8 +182,13 @@ type Result struct {
 	// CoveredDirty is the dirty counter value a clean answer covers (the
 	// request's DirtySeen); zero otherwise.
 	CoveredDirty uint64
-	// Elapsed is the scan's wall time.
+	// Elapsed is the scan's wall time, Budget the time it was given.
 	Elapsed time.Duration
+	Budget  time.Duration
+	// GitRoute names the git that read the change when it was not the
+	// host's own (R3-86): a policy.QuickScanGit* value the injected GitFunc
+	// noted (NoteGitRoute), "" otherwise.
+	GitRoute string
 	// Retained are the parsed diffs of the files Engine.Retain accepts (at
 	// most MaxRetained), for a caller that reads more out of a file than
 	// the scan does (the install gate's S-747 at commit, lane SEC-D1FIX2).
@@ -261,8 +266,10 @@ func (e *Engine) Scan(ctx context.Context, req Request) Result {
 		budget = IndividualBudget
 	}
 	deadline := start.Add(budget)
+	ctx, note := withGitRouteNote(ctx)
 	res := e.scan(ctx, req, deadline, now)
-	res.Elapsed = now().Sub(start)
+	res.Elapsed, res.Budget = now().Sub(start), budget
+	res.GitRoute = note.get()
 	if res.Verdict == VerdictClean {
 		res.CoveredDirty = req.DirtySeen
 	}

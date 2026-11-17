@@ -1,0 +1,52 @@
+{
+  "issued_at": "2026-11-13T12:00:00Z",
+  "components": [
+    {
+      "component": "org.enrichment",
+      "reach": "named",
+      "orgs": [
+        "0b5c3f1e-2d4a-4c6b-9e8f-1a2b3c4d5e6f"
+      ],
+      "reason": "beta",
+      "author": "staff:ops-1"
+    },
+    {
+      "component": "org.gateway",
+      "reach": "off",
+      "reason": "incident 42",
+      "author": "staff:ops-1"
+    }
+  ],
+  "org_controls": [
+    {
+      "org": "0b5c3f1e-2d4a-4c6b-9e8f-1a2b3c4d5e6f",
+      "ingest": {
+        "mode": "throttle",
+        "rate_per_minute": 600
+      },
+      "reason": "noisy neighbour",
+      "author": "staff:ops-2"
+    },
+    {
+      "org": "*",
+      "inference": [
+        {
+          "route": "luna",
+          "admission": "paused",
+          "dispatch": "on"
+        }
+      ],
+      "reason": "provider brownout",
+      "author": "system"
+    }
+  ],
+  "release_flags": [
+    {
+      "flag": "rf-new-ingest-path",
+      "reach": "cohort",
+      "cohort": "ring-5pct",
+      "reason": "rollout",
+      "author": "staff:ops-1"
+    }
+  ]
+}

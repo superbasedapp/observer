@@ -63,6 +63,8 @@ var noBareUSDAllow = map[string]noBareUSDEntry{
 		"the token view leaves the column out (printCostSummaryAs)."},
 	"cmd/observer/predict.go": {reason: "predictBandRow prints the dollar row only in the dollar view; the token " +
 		"view returns before it."},
+	"cmd/observer/predict_projection_cli.go": {reason: "projUSD is reached only when the token-usage display is " +
+		"off (every caller checks !tokens first); the token view prints tokens or a share instead."},
 	"cmd/observer/advisor_digest.go": {reason: "the session-start digest is masked with costtext.MaskDollars under " +
 		"the resolved display before it is injected."},
 	"cmd/observer/admission.go": {reason: "Plane A admission caps (observer obs admission): an admin-hosted app's " +

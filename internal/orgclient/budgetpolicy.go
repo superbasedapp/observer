@@ -448,6 +448,13 @@ func (c *Client) classifyBudgetResponse(ctx context.Context, resp *http.Response
 			return budgetFetchOutcome(identity, orgcontract.BudgetFetchUnverified, orgcontract.BudgetPolicyBody{}, false, cached.witness), true,
 				errors.New("orgclient.FetchBudgetPolicy: 304 without a current enrollment-bound cache")
 		}
+		// The org re-confirmed the body: record when, so a status read in
+		// another process can say "last confirmed at" rather than the time
+		// the body first arrived (demo bug #4). Best effort - a failed touch
+		// leaves only an older timestamp, never a different cap.
+		if err := c.store.TouchOrgBudgetConfirmed(ctx, identity.Binding, c.budgetClock()); err != nil {
+			c.logger.Debug("org budget: record the 304 confirmation", "err", err)
+		}
 		return budgetFetchOutcome(identity, orgcontract.BudgetFetchOK, cached.body, true, cached.witness), true, nil
 	case resp.StatusCode == http.StatusNotFound:
 		// A 404 NEVER clears (D-016, Sol A5-01). It is unsigned, so a reverse

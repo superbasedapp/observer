@@ -119,6 +119,21 @@ var (
 		// whose nodes refuse a whole body naming a key they do not know
 		// (audit FU4-A1).
 		"terminal.sandbox.seccomp": 6,
+		// the agent-run security assessments (plan section 13.3).
+		"security.assessments.relax_pentest_local":             6,
+		"security.assessments.relax_red_team_local":            6,
+		"security.assessments.scoped_approval":                 6,
+		"security.assessments.max_network_tier":                6,
+		"security.assessments.relaxation_max_minutes":          6,
+		"security.assessments.time_box_threat_model_minutes":   6,
+		"security.assessments.time_box_pentest_local_minutes":  6,
+		"security.assessments.time_box_red_team_local_minutes": 6,
+		"security.assessments.time_box_action":                 6,
+		// the depth work's pen test limits (W4).
+		"security.assessments.workspace_secret_mode":  6,
+		"security.assessments.pentest_request_budget": 6,
+		"security.assessments.pentest_pace_rps":       6,
+		"security.assessments.probe_helper":           6,
 	}
 	shareSince = map[string]int{
 		"full_tool_bodies":            2, // v1.32.0
@@ -134,6 +149,10 @@ var (
 		"obs.egress":                  3, // v1.33.0
 		// lane w5-wire (per-session hook liveness, DEC-5).
 		"hook_activity": 5,
+		// R3-85 (the project-scope raise directives), generation 6: a
+		// v1.37.x node refuses a whole body naming a key it does not know.
+		"scope.unrestricted":    6,
+		"scope.denylist_remove": 6,
 	}
 	featureSince = map[string]int{}
 )

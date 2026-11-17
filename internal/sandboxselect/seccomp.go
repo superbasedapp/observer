@@ -56,8 +56,10 @@ func SeccompRunState(keyOn bool, layers []sandboxbackend.Capability) vocab.Secco
 // reach is named, never silently unfiltered). The other states print
 // nothing, so a launch with the key off reads as it did before.
 var seccompLabels = map[vocab.SeccompRun]string{
-	vocab.SeccompRunObserverDefault: "seccomp filter observer_default",
-	vocab.SeccompRunNotApplicable:   "seccomp not applicable on this backend (Observer's filter does not run there and no engine filter is grounded); this run is not filtered by Observer",
+	vocab.SeccompRunObserverDefault:    "seccomp filter observer_default",
+	vocab.SeccompRunObserverSeizePIDNS: "seccomp filter observer_seize_pidns (strace allowed: PTRACE_SEIZE lifted, the sandbox has its own process list)",
+	vocab.SeccompRunObserverSeizeYama:  "seccomp filter observer_seize_yama (strace allowed: PTRACE_SEIZE lifted, Yama limits it to the run's own child processes)",
+	vocab.SeccompRunNotApplicable:      "seccomp not applicable on this backend (Observer's filter does not run there and no engine filter is grounded); this run is not filtered by Observer",
 }
 
 // SeccompLabel is the launch line's seccomp part for state ("" for none).

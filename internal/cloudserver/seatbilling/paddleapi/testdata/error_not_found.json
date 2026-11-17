@@ -1,0 +1,9 @@
+{
+  "error": {
+    "type": "request_error",
+    "code": "not_found",
+    "detail": "Entity sub_01jc0000000000000000000000 not found",
+    "documentation_url": "https://developer.paddle.com/v1/errors/shared/not_found"
+  },
+  "meta": { "request_id": "33333333-4444-5555-6666-777777777777" }
+}

@@ -342,13 +342,18 @@ type Step struct {
 	// Class is after the input's switches: elevated becomes guide when
 	// AllowElevated is false, a pinned download becomes guide with an owed
 	// pin or no source, everything becomes guide when AllowInstall is false.
-	Class      Class
-	Channel    Channel
-	Display    string
-	Reason     string
-	Disclosure string
-	After      string
-	Docs       string
+	Class   Class
+	Channel Channel
+	Display string
+	// DisplayIsCommand: Display is a command line a person can paste into a
+	// terminal (a derived package-manager argv, a remedy's constant argv),
+	// not a sentence. A surface offers "Copy command" only for such a
+	// display. Not part of the Fingerprint.
+	DisplayIsCommand bool
+	Reason           string
+	Disclosure       string
+	After            string
+	Docs             string
 	// Package and Argv are what the runner executes (the derived pm argv,
 	// the remedy's constant argv), server-side only; never from a request.
 	Package string

@@ -14,6 +14,8 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/jobs"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/store"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
+	"github.com/marmutapp/superbased-observer/internal/llmwire"
+	"github.com/marmutapp/superbased-observer/internal/netguard"
 )
 
 // Provider selection (12-factor, env). Exactly ONE provider family is wired
@@ -36,7 +38,16 @@ const (
 	envAnthropicPromptCache = "SBCI_ANTHROPIC_PROMPT_CACHE"
 	// envFoundryAPIKey is the Foundry key (foundry family only).
 	envFoundryAPIKey = "SBCI_FOUNDRY_API_KEY" //nolint:gosec // env var NAME, not a credential
+	// envOpenAICompatibleAPIKey / envOpenAICompatibleAPIKeyFile carry the key
+	// for the openai_compatible family (OVH AI Endpoints). The _FILE form reads
+	// it from a mounted file, as for Anthropic.
+	envOpenAICompatibleAPIKey     = "SBCI_OPENAI_COMPATIBLE_API_KEY"      //nolint:gosec // env var NAME, not a credential
+	envOpenAICompatibleAPIKeyFile = "SBCI_OPENAI_COMPATIBLE_API_KEY_FILE" //nolint:gosec // env var NAME, not a credential
 )
+
+// openAICompatibleHTTPTimeout bounds one openai_compatible call at the
+// transport. A job's own Timeout (a context deadline) is normally shorter.
+const openAICompatibleHTTPTimeout = 3 * time.Minute
 
 // chooseProviderFamily resolves SBCI_INFERENCE_PROVIDER. Unset means
 // anthropic; an unknown value is a startup error (never a silent default).
@@ -47,7 +58,7 @@ func chooseProviderFamily() (inference.Family, error) {
 	}
 	f, ok := inference.ParseFamily(raw)
 	if !ok {
-		return "", fmt.Errorf("%s=%q is not a known provider (anthropic or foundry)", envInferenceProvider, raw)
+		return "", fmt.Errorf("%s=%q is not a known provider (anthropic, foundry or openai_compatible)", envInferenceProvider, raw)
 	}
 	return f, nil
 }
@@ -90,6 +101,21 @@ var familyWirings = map[inference.Family]familyWiring{
 			return &foundry.AzureClient{}, nil
 		},
 	},
+	inference.FamilyOpenAICompatible: {
+		keyEnv: envOpenAICompatibleAPIKey, keyFileEnv: envOpenAICompatibleAPIKeyFile,
+		newClient: newOpenAICompatibleClient,
+	},
+}
+
+// newOpenAICompatibleClient builds the openai_compatible provider: the shared
+// llmwire client over netguard's SSRF-guarded HTTP client (plan 07 E1.1).
+func newOpenAICompatibleClient(log *slog.Logger) (inference.Provider, error) {
+	c, err := llmwire.NewClient(netguard.Client(openAICompatibleHTTPTimeout))
+	if err != nil {
+		return nil, fmt.Errorf("observer-cloud: openai_compatible client: %w", err)
+	}
+	log.Info("observer-cloud: inference provider openai_compatible")
+	return &inference.OpenAICompatible{Client: c}, nil
 }
 
 func newAnthropicClient(log *slog.Logger) (inference.Provider, error) {

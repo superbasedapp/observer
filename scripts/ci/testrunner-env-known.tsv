@@ -1,0 +1,24 @@
+# testrunner-env-known.tsv - tests that fail on a tools/testrunner provider
+# because of that provider's environment, not because of the code. When
+# EVERY failing test of a unit is listed here for the provider the unit ran
+# on, the unit ends env_known: shown in the summary, recorded in the ledger,
+# not counted as a gate failure (and not rerun by --rerun-failed). A unit
+# with one failing test that is not listed is a plain fail. CI does not read
+# this file; known-red.txt is the list for the local merge gates.
+#
+# Columns (tab separated; '#' lines and blank lines are ignored):
+#   provider   a provider name (modal, dockersbx, local, ssh:<host>) or *
+#   package    module-relative package path
+#   test       top-level test name, or a prefix ending in *
+#   reason     why the environment fails it
+#
+# Add a row only for a failure that is the environment's, with the reason;
+# remove it when the environment or the test changes and it passes.
+*	deploy/observer-org/production	TestPreflightAgentAccess	the image has no docker compose (every provider)
+modal	cmd/observer	TestOCIEnterRawDropsTheCanonicalEOF	Modal runs boxes under gVisor: the OCI runtime path does not behave as on a kernel (Modal gate 2026-11-12)
+modal	cmd/observer	TestOCIInitPID1Contract	Modal gVisor: the OCI init PID 1 contract does not hold in the sandbox (Modal gate 2026-11-12)
+modal	internal/extrun/host	TestExecMemoryCap	Modal gVisor: no cgroup memory cap to enforce (Modal gate 2026-11-12)
+modal	internal/intervention	TestInspectDistinguishesGoneFromExistingZombie	Modal gVisor: /proc does not show the zombie the test inspects (Modal gate 2026-11-12)
+modal	internal/mcpgw/pdp	TestAgentAccessHAPDP*	Modal: capacity checks of the HA PDP miss their thresholds on the shared box (Modal gate 2026-11-12)
+modal	internal/retention	TestPruneDoesNotStallWriters	Modal: a contention timing bound fails on the shared box (Modal gate 2026-11-12)
+modal	internal/processobs/poll	TestReadProcSelfMetrics	Modal gVisor: /proc/self CPU counters do not advance as on a kernel (Modal gate 2026-11-12)

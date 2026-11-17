@@ -1546,12 +1546,22 @@ func buildHookGuard(cfg config.Config, stderr io.Writer) *guard.Guard {
 	// toward enforcement) and the guard records it on the verdict
 	// (P-232).
 	g.SetApprovalLookup(hookApprovalLookup(cfg.Observer.DBPath, cfg.Observer.Hooks.HookTimeout()))
+	g.SetApprovalCoverLookup(hookApprovalCoverLookup(cfg.Observer.DBPath, cfg.Observer.Hooks.HookTimeout()))
+	// CG-16: where the dashboard Security page is hidden (the managed
+	// default), the block texts name the CLI. Same lazy, read-only,
+	// blocking-path-only open as the approval lookup above.
+	g.SetApprovalPageHidden(approvalPageHiddenLookup(cfg, hookStoreOpener(cfg.Observer.DBPath, cfg.Observer.Hooks.HookTimeout()), nil))
 	// Org access grants (request-grants G3): the org's signed, time-bound
 	// exceptions, read from the SAME re-verified cache the daemon reads and
 	// counted through the same conditional UPDATE, so a hook process and
-	// the daemon racing on a grant's last use cannot both win. Lazy DB open
-	// on the blocking path only; any failure is "no grant".
-	g.SetOrgGrantClaim(newOrgGrantClaim(hookOrgGrantOpener(cfg.Observer.DBPath), cfg.Observer.Hooks.HookTimeout()))
+	// the daemon racing on a grant's last use cannot both win. Lazy,
+	// migration-free DB open on the blocking path only; any failure is "no
+	// grant", recorded on the verdict (orggrant_wire.go).
+	// The question has its own budget (hookOrgGrantBudget: at most 4 s, and
+	// what is left on this invocation's watchdog minus 1 s), not the 500 ms
+	// timeout_ms of the approval read, and the peek and the claim of one
+	// verdict share one open (newOrgGrantSession).
+	g.SetOrgGrantSession(newOrgGrantSession(hookOrgGrantOpener(cfg.Observer.DBPath), hookOrgGrantQuestionBudget))
 	// Request-grants G4: the org-locked deny line links the node request
 	// form under the dashboard origin (the daemon's guard stamps the same).
 	g.SetRequestAccessBase(requestAccessBase(cfg))

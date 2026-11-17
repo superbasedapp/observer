@@ -20,7 +20,7 @@ import { Bug, Check, Github, Heart, Share2 } from "lucide-react";
 // TESTIMONIALS array below is empty by default and the section falls back to a
 // "be the first" CTA; drop real quotes in when we have consent to publish.
 //
-// Matches the OnboardingCard idiom (raw section, calm body, one pixel-chip
+// Matches the old onboarding card idiom (raw section, calm body, one pixel-chip
 // accent) rather than a chart shell — it's a persistent footer-style card, not
 // a data panel, so it is not dismissable.
 //

@@ -84,6 +84,21 @@ type Turn struct {
 	// seam that already judged one exact block elsewhere (the hook lane)
 	// matches it here by equality, never by substring. Nil for other kinds.
 	Blocks []string
+	// Generated is the content the model or a tool produced in the newest
+	// exchange, never anything the developer typed: the newest assistant
+	// turn (its text and its tool-call inputs) and every tool result in the
+	// trailing run (Anthropic tool_result blocks, Chat Completions role:"tool"
+	// messages, Responses function_call_output items, Gemini functionResponse
+	// parts), joined with newlines and capped at MaxTrailingBytes. Every
+	// model turn and tool result is newest in exactly one request of a
+	// conversation, so a caller that notes Generated on every request sees
+	// all of it once. The prompt guard uses it to tell a value the
+	// conversation already carried from one the developer typed: a side
+	// request (an agent's own safety classifier, a summarizer) re-sends
+	// tool output as the text of a fresh user message (live 2026-11-15).
+	// The developer's typed text, including text riding next to a
+	// tool_result, is never part of it.
+	Generated string
 }
 
 // Provider names as the node proxy resolves them (models.Provider*). They are
@@ -193,6 +208,7 @@ type anthropicBlock struct {
 	Type    string          `json:"type"`
 	Text    string          `json:"text"`
 	Content json.RawMessage `json:"content"`
+	Input   json.RawMessage `json:"input"`
 }
 
 // FromAnthropicMessages classifies an already-decoded Messages-API slice.
@@ -209,13 +225,18 @@ func FromAnthropicMessages(msgs []AnthropicMessage) Turn {
 			lastAssistant = i
 		}
 	}
-	var trail textJoiner
+	var trail, gen textJoiner
+	if lastAssistant >= 0 {
+		anthropicModelContent(&gen, msgs[lastAssistant].Content)
+	}
 	for i := lastAssistant + 1; i < len(msgs); i++ {
 		if msgs[i].Role == "user" {
 			anthropicTrailing(&trail, msgs[i].Content)
+			anthropicToolResults(&gen, msgs[i].Content)
 		}
 	}
 	t.Trailing = capTrailing(trail.String())
+	t.Generated = capTrailing(gen.String())
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role != "user" {
 			continue
@@ -308,6 +329,56 @@ func anthropicTrailing(j *textJoiner, content json.RawMessage) {
 	}
 }
 
+// anthropicModelContent adds one assistant message's own output: its text
+// blocks and each tool_use block's input (the call the model wrote).
+// Thinking blocks are skipped.
+func anthropicModelContent(j *textJoiner, content json.RawMessage) {
+	var s string
+	if json.Unmarshal(content, &s) == nil {
+		j.add(s)
+		return
+	}
+	var blocks []anthropicBlock
+	if json.Unmarshal(content, &blocks) != nil {
+		return
+	}
+	for _, b := range blocks {
+		switch b.Type {
+		case "text":
+			j.add(b.Text)
+		case "tool_use", "server_tool_use":
+			j.add(rawJSONText(b.Input))
+		}
+	}
+}
+
+// anthropicToolResults adds one user message's tool_result content, never its
+// text blocks (those are the developer's, or ride with the developer's turn).
+func anthropicToolResults(j *textJoiner, content json.RawMessage) {
+	var blocks []anthropicBlock
+	if json.Unmarshal(content, &blocks) != nil {
+		return
+	}
+	for _, b := range blocks {
+		if b.Type == "tool_result" {
+			j.add(blockContentText(b.Content))
+		}
+	}
+}
+
+// rawJSONText renders a raw JSON value for scanning: a string's own text,
+// else the value's JSON form; null or absent is empty.
+func rawJSONText(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	return string(raw)
+}
+
 // blockContentText flattens a content field that is a string or an array of
 // blocks carrying "text".
 func blockContentText(content json.RawMessage) string {
@@ -334,7 +405,8 @@ func blockContentText(content json.RawMessage) string {
 type ChatToolCall struct {
 	ID       string `json:"id"`
 	Function struct {
-		Name string `json:"name"`
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
 	} `json:"function"`
 }
 
@@ -359,13 +431,23 @@ func FromChatMessages(msgs []ChatMessage) Turn {
 			lastAssistant = i
 		}
 	}
-	var trail textJoiner
+	var trail, gen textJoiner
+	if lastAssistant >= 0 {
+		gen.add(blockContentText(msgs[lastAssistant].Content))
+		for _, tc := range msgs[lastAssistant].ToolCalls {
+			gen.add(tc.Function.Arguments)
+		}
+	}
 	for i := lastAssistant + 1; i < len(msgs); i++ {
 		if msgs[i].Role == "user" || msgs[i].Role == "tool" {
 			trail.add(blockContentText(msgs[i].Content))
 		}
+		if msgs[i].Role == "tool" {
+			gen.add(blockContentText(msgs[i].Content))
+		}
 	}
 	t.Trailing = capTrailing(trail.String())
+	t.Generated = capTrailing(gen.String())
 	lastUser := -1
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role == "user" {
@@ -396,12 +478,13 @@ func FromChatMessages(msgs []ChatMessage) Turn {
 // ResponsesItem is the minimal Responses-API input item shape (exported for
 // the same single-decode reason as AnthropicMessage).
 type ResponsesItem struct {
-	Type    string          `json:"type"`
-	Role    string          `json:"role"`
-	Name    string          `json:"name"`
-	CallID  string          `json:"call_id"`
-	Output  json.RawMessage `json:"output"`
-	Content json.RawMessage `json:"content"`
+	Type      string          `json:"type"`
+	Role      string          `json:"role"`
+	Name      string          `json:"name"`
+	CallID    string          `json:"call_id"`
+	Output    json.RawMessage `json:"output"`
+	Content   json.RawMessage `json:"content"`
+	Arguments json.RawMessage `json:"arguments"`
 }
 
 // fromResponsesInput classifies a Responses-API input field: a bare string
@@ -439,16 +522,33 @@ func FromResponsesItems(items []ResponsesItem) Turn {
 			lastAssistant = i
 		}
 	}
-	var trail textJoiner
+	var trail, gen textJoiner
+	// The newest assistant-side run: the contiguous model items that end at
+	// lastAssistant (calls, assistant messages; reasoning is skipped).
+	first := lastAssistant
+	for first > 0 && responsesModelItem(&items[first-1]) {
+		first--
+	}
+	for i := first; i >= 0 && i <= lastAssistant; i++ {
+		switch {
+		case items[i].Type == "function_call":
+			gen.add(rawJSONText(items[i].Arguments))
+		case items[i].Role == "assistant":
+			gen.add(blockContentText(items[i].Content))
+		}
+	}
 	for i := lastAssistant + 1; i < len(items); i++ {
 		switch {
 		case items[i].Type == "function_call_output":
-			trail.add(responsesOutputText(items[i].Output))
+			out := responsesOutputText(items[i].Output)
+			trail.add(out)
+			gen.add(out)
 		case items[i].Role == "user":
 			trail.add(blockContentText(items[i].Content))
 		}
 	}
 	t.Trailing = capTrailing(trail.String())
+	t.Generated = capTrailing(gen.String())
 	lastUser := -1
 	for i := len(items) - 1; i >= 0; i-- {
 		if items[i].Role == "user" {
@@ -475,6 +575,12 @@ func FromResponsesItems(items []ResponsesItem) Turn {
 	return t
 }
 
+// responsesModelItem reports whether a Responses-API item is the model's own
+// (the same set FromResponsesItems counts as assistant-side).
+func responsesModelItem(it *ResponsesItem) bool {
+	return it.Type == "function_call" || it.Role == "assistant" || it.Type == "reasoning"
+}
+
 // responsesOutputText renders a function_call_output: a string, else the
 // structured output's JSON form.
 func responsesOutputText(out json.RawMessage) string {
@@ -494,6 +600,7 @@ func responsesOutputText(out json.RawMessage) string {
 type GeminiPart struct {
 	Text             string          `json:"text"`
 	FunctionResponse json.RawMessage `json:"functionResponse"`
+	FunctionCall     json.RawMessage `json:"functionCall"`
 }
 
 // GeminiContent is the minimal generateContent request content shape.
@@ -515,16 +622,24 @@ func FromGeminiContents(contents []GeminiContent) Turn {
 			lastModel = i
 		}
 	}
-	var trail textJoiner
+	var trail, gen textJoiner
+	if lastModel >= 0 {
+		for _, p := range contents[lastModel].Parts {
+			gen.add(p.Text)
+			gen.add(rawJSONText(p.FunctionCall))
+		}
+	}
 	for i := lastModel + 1; i < len(contents); i++ {
 		for _, p := range contents[i].Parts {
 			trail.add(p.Text)
 			if len(p.FunctionResponse) > 0 && string(p.FunctionResponse) != "null" {
 				trail.add(string(p.FunctionResponse))
+				gen.add(string(p.FunctionResponse))
 			}
 		}
 	}
 	t.Trailing = capTrailing(trail.String())
+	t.Generated = capTrailing(gen.String())
 	for i := len(contents) - 1; i >= 0; i-- {
 		c := contents[i]
 		switch c.Role {

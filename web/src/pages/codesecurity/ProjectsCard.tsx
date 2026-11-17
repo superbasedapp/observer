@@ -22,13 +22,16 @@ import {
 } from "@/lib/codeSecurity";
 import { toneOf, type Tone } from "../../../../shared/lib/tone";
 import { NodeLink } from "./NodeLink";
+import { SbomExportButton } from "./SbomExportButton";
 
 // ProjectsCard is the Projects tab's table: each row NAMES its project
 // (linked to its Projects-page detail; the root path in the tooltip), its
 // commit gate, open findings (worst severity, linking to the Findings tab),
 // the ecosystems scanned, last scan, the scanners that failed (in words;
 // setup facts such as "not installed" are one notice above the table, not a
-// pill per row), and a Scan button that opens the page's Scan dialog. Rows
+// pill per row), an Export SBOM button once a dependency scan stored the
+// project's packages (SbomExportButton), and a Scan button that opens the
+// page's Scan dialog. Rows
 // needing attention sort first. The list is paged on the client (25 a page);
 // a header sort orders ALL rows before paging, and returns to page 1.
 
@@ -191,6 +194,9 @@ export function ProjectsCard({
           if (!p.project_id) return null;
           return (
             <div className="flex justify-end gap-1.5">
+              {/* Export SBOM once a dependency scan stored the project's
+                  packages (its ecosystems are known). */}
+              {(ecosystems?.[p.project_root_hash]?.length ?? 0) > 0 && <SbomExportButton hash={p.project_root_hash} />}
               <Button
                 size="sm"
                 variant="secondary"

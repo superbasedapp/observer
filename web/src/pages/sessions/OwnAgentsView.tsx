@@ -8,7 +8,7 @@
 // view shows the setup snippet instead of an empty table, so the page is
 // never a dead end.
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { GatedLink } from "@/components/GatedLink";
 import { ChartState } from "@/components/ChartState";
 import { CopyOnClick } from "@/components/CopyOnClick";
 import { SegmentedControl, Table } from "@/components/primitives";
@@ -128,9 +128,9 @@ function OwnAgentSetup({ data, first }: { data: OwnAgentsResponse; first: boolea
             <p className="mt-1 text-[11.5px] text-fg-2">
               An agent traced with OpenTelemetry can send its spans instead of (or as well as) using the proxy: turn on
               this node&apos;s OTLP receiver (<code className="font-mono">[ingest.otel]</code>, under More settings in{" "}
-              <Link to="/settings?section=otel" className="text-accent hover:underline">
+              <GatedLink to="/settings?section=otel" managed="Settings > OTel export (managed by your organization)" className="text-accent hover:underline">
                 Settings &gt; OTel export
-              </Link>
+              </GatedLink>
               ), export OTLP to it and set the resource attribute{" "}
               <code className="font-mono">{data.agent_attr}</code> to the agent&apos;s name (see the own agents guide).
             </p>

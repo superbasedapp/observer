@@ -28,6 +28,10 @@ type eventSweepRule struct {
 	// Days resolves this rule's configured horizon out of the caller's
 	// options. Zero (or negative) means keep forever.
 	Days func(EventSweepDays) int
+	// SessionColumn, when set, names the column carrying the row's session:
+	// a row of a session under a local hold (local_session_holds) is kept.
+	// Empty for a table whose rows carry no session.
+	SessionColumn string
 	// Note is the operator-facing reason this table has a horizon at all,
 	// quoted in the returned EventSweepCounts key comments and in the docs.
 	Note string
@@ -78,8 +82,9 @@ const maxEventSweepBatchesPerPass = 100
 // the rules are independent, each bounded on its own.
 var eventSweepRules = []eventSweepRule{
 	{
-		Table:      "compaction_events",
-		TimeColumn: "timestamp",
+		Table:         "compaction_events",
+		TimeColumn:    "timestamp",
+		SessionColumn: "session_id",
 		// Small batch, very large rows: file_state_snapshot averages
 		// ~900 KB and ghost_files_after ~240 KB on the live node
 		// (1.4 GiB in 1,333 rows), so a 2k-row batch is already a
@@ -141,11 +146,17 @@ func (p *Pruner) deleteEventBatches(ctx context.Context, rule eventSweepRule, cu
 	// maxEventSweepBatchesPerPass batches a full table scan plus a temp
 	// b-tree sort over ~1 MB rows. Unordered, SQLite stops as soon as it has
 	// found BatchSize matching rows.
+	// A rule with a SessionColumn keeps the rows of a session under a local
+	// hold (local_session_holds, `observer sessions hold`).
+	held := ""
+	if rule.SessionColumn != "" {
+		held = fmt.Sprintf(" AND %s NOT IN (SELECT session_id FROM local_session_holds)", rule.SessionColumn)
+	}
 	//nolint:gosec // G201: identifiers come from the package-private eventSweepRule table above, never caller input; the cutoff is bound.
 	stmt := fmt.Sprintf(
 		`DELETE FROM %s WHERE rowid IN (
-		     SELECT rowid FROM %s WHERE %s < ? LIMIT %d)`,
-		rule.Table, rule.Table, rule.TimeColumn, rule.BatchSize)
+		     SELECT rowid FROM %s WHERE %s < ?%s LIMIT %d)`,
+		rule.Table, rule.Table, rule.TimeColumn, held, rule.BatchSize)
 
 	var total int
 	for i := 0; i < maxEventSweepBatchesPerPass; i++ {

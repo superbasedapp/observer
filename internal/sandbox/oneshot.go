@@ -105,13 +105,21 @@ func BuildOneShot(req OneShotRequest) (Plan, error) {
 
 	// 2. Blind the home, then ~/.observer itself when the home tmpfs does
 	//    not already cover it.
+	//    A home on a masked drive has its mask first, as for a terminal.
+	masksAbove, masksRest := splitMasksAboveHome(req.Home, req.MaskPaths)
+	for _, m := range masksAbove {
+		if err := validateOneShotAbs(m, false); err != nil {
+			return Plan{}, fmt.Errorf("sandbox.BuildOneShot: mask path: %w", err)
+		}
+		add(flagTmpfs, m)
+	}
 	add(flagTmpfs, req.Home)
 	if !isWithin(req.ObserverDir, req.Home) {
 		add(flagTmpfs, req.ObserverDir)
 	}
 
 	// 3. Foreign-OS masks and host sockets, as for a terminal.
-	for _, m := range req.MaskPaths {
+	for _, m := range masksRest {
 		if err := validateOneShotAbs(m, false); err != nil {
 			return Plan{}, fmt.Errorf("sandbox.BuildOneShot: mask path: %w", err)
 		}

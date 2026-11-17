@@ -1,5 +1,6 @@
-import { useState } from "react";
-import { Link } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { useLocation } from "react-router-dom";
+import { GatedLink } from "@/components/GatedLink";
 import { Select } from "@/components/primitives";
 import type { ConfigResponse } from "@/lib/types";
 import { markRestartPending } from "@/lib/restartPending";
@@ -65,7 +66,8 @@ function SettingRow({
     );
   }
   return (
-    <div>
+    // The row's config key is its element id, so a link can open the card on one switch (#security.assessments.probe_helper).
+    <div id={row.key}>
       <Select
         label={row.label}
         help={row.help}
@@ -98,13 +100,24 @@ export function CodeSecurityCard({
   readOnly?: boolean;
   onSaved: () => void;
 }) {
+  // A link to one setting (the fragment is the row's config key, lib/secAssess's ASSESS_HELPER_SETTING for one) scrolls that row into view and puts focus on its picker, once the daemon's config has loaded so the row is a picker and not a placeholder.
+  const { hash } = useLocation();
+  const loaded = config != null;
+  useEffect(() => {
+    const id = decodeURIComponent(hash.replace(/^#/, ""));
+    if (id === "" || !loaded) return;
+    const row = document.getElementById(id);
+    if (!row || !row.closest("[data-testid='code-security-card']")) return;
+    row.scrollIntoView({ block: "center" });
+    row.querySelector<HTMLElement>("select, input, button")?.focus({ preventScroll: true });
+  }, [hash, loaded]);
   return (
     <div className="mt-4 rounded-3 border border-line-2 bg-bg-2 p-4 text-[11.5px]" data-testid="code-security-card">
       <div className="flex flex-wrap items-center gap-2">
         <div className="text-[12px] font-semibold text-fg-1">Code security</div>
-        <Link to="/code-security" className="text-accent hover:underline">
+        <GatedLink to="/code-security" className="text-accent hover:underline">
           Open Code security
-        </Link>
+        </GatedLink>
       </div>
       <p className="m-0 mt-1 text-fg-3">
         Settings of the security module (component security). Changes take effect after the daemon restarts, except the custom scanner schedule rows, which apply within 15 minutes.

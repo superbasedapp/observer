@@ -98,6 +98,13 @@ type OrgGrantResult struct {
 	LockRefused bool
 	// Unverified: the node holds a grant document that no longer verifies.
 	Unverified bool
+	// ScopeMissID: no grant covered the call, but the node holds an honoured
+	// grant for this rule pinned to another lane, command or project.
+	ScopeMissID int64
+	// Failed is why the question could not be ANSWERED ("" when it was): the
+	// grant list could not be read in time, or a use could not be counted.
+	// The answer is still "no grant", and the verdict says so.
+	Failed string
 }
 
 // OrgGrantClaim answers (and, with Consume, counts) one grant question. It
@@ -109,6 +116,40 @@ type OrgGrantClaim func(OrgGrantQuery) OrgGrantResult
 // composition.
 func (g *Guard) SetOrgGrantClaim(fn OrgGrantClaim) {
 	g.orgGrants = fn
+	g.orgGrantSession = nil
+}
+
+// OrgGrantSession begins one grant conversation: the questions one verdict
+// asks (the peek, then the claim that counts the use) go through the returned
+// claim, and done releases whatever the conversation held (a hook process's
+// database handle, so the claim does not open the database a second time
+// right after the peek). done is called exactly once.
+type OrgGrantSession func() (claim OrgGrantClaim, done func())
+
+// SetOrgGrantSession wires the org access-grant claim as a session (the hook
+// process): it replaces SetOrgGrantClaim, a lone question (the prompt lane's
+// two sends) is a session of its own, and nil disables org grants. Set once
+// at composition.
+func (g *Guard) SetOrgGrantSession(fn OrgGrantSession) {
+	g.orgGrantSession = fn
+	g.orgGrants = nil
+	if fn != nil {
+		g.orgGrants = func(q OrgGrantQuery) OrgGrantResult {
+			claim, done := fn()
+			defer done()
+			return claim(q)
+		}
+	}
+}
+
+// beginOrgGrants opens the conversation one verdict's grant questions share:
+// the session's when one is wired, else the plain claim with nothing to
+// release.
+func (g *Guard) beginOrgGrants() (OrgGrantClaim, func()) {
+	if g.orgGrantSession != nil {
+		return g.orgGrantSession()
+	}
+	return g.orgGrants, func() {}
 }
 
 // approvalOutcome is what the exception layer (approvals.go) did to a
@@ -218,14 +259,58 @@ func grantWindowNote(r OrgGrantResult) string {
 	return s
 }
 
+// grantNoteRule is one row of the "no grant applied, and here is why" table,
+// walked top down; the first row that holds writes its note.
+type grantNoteRule struct {
+	holds func(r OrgGrantResult) bool
+	note  func(r OrgGrantResult) string
+}
+
+// maxGrantFailureLen bounds the failure text a reason carries: a reason is
+// written for the agent and lands in guard_events.reason.
+const maxGrantFailureLen = 160
+
+var grantNoteRules = []grantNoteRule{
+	{
+		func(r OrgGrantResult) bool { return r.Failed != "" },
+		func(r OrgGrantResult) string {
+			msg := r.Failed
+			if len(msg) > maxGrantFailureLen {
+				msg = msg[:maxGrantFailureLen] + "..."
+			}
+			return " [org grants: this machine's grant list could not be consulted (" + msg + "), so no grant was applied to this call; if you hold a grant for this rule it is still in force, so retry the call rather than requesting it again]"
+		},
+	},
+	{
+		func(r OrgGrantResult) bool { return r.Unverified },
+		func(OrgGrantResult) string {
+			return " [org grants: this machine's grant list could not be verified, so no grant applies; it refreshes on the next sync]"
+		},
+	},
+	{
+		func(r OrgGrantResult) bool { return r.LockRefused },
+		func(OrgGrantResult) string {
+			return " [org grants: a grant covers this rule but was not issued under the locked-rule approval, so the organization's lock stands]"
+		},
+	},
+	{
+		func(r OrgGrantResult) bool { return r.ScopeMissID != 0 },
+		func(r OrgGrantResult) string {
+			return fmt.Sprintf(" [org grants: G-%d covers this rule only for another project, command or lane, so it does not apply to this call; request access for this one]", r.ScopeMissID)
+		},
+	},
+}
+
 // grantNoteFor is the reason suffix for a grant question that changed
-// nothing but is worth telling the developer (and the audit row) about.
+// nothing but is worth telling the developer (and the audit row) about. A
+// granted rule that still stops a call always says why here: a silent miss
+// is what made a developer ask for the same grant again (operator report
+// 2026-11-13).
 func grantNoteFor(r OrgGrantResult) string {
-	switch {
-	case r.Unverified:
-		return " [org grants: this machine's grant list could not be verified, so no grant applies; it refreshes on the next sync]"
-	case r.LockRefused:
-		return " [org grants: a grant covers this rule but was not issued under the locked-rule approval, so the organization's lock stands]"
+	for _, rule := range grantNoteRules {
+		if rule.holds(r) {
+			return rule.note(r)
+		}
 	}
 	return ""
 }
@@ -240,7 +325,11 @@ func (g *Guard) applyOrgGrant(es *engineSet, v policy.Verdict, ev *policy.Event,
 		return v, approvalOutcome{}, false
 	}
 	q := g.orgGrantQuery(es, v, ev, lane, locked)
-	peek := g.orgGrants(q)
+	// One conversation for the peek and the claim: a hook process opens
+	// the database once for both (orggrant_wire.go).
+	claim, done := g.beginOrgGrants()
+	defer done()
+	peek := claim(q)
 	if !peek.OK || !grantActs(peek.Effect, v.Decision) {
 		v.Reason += grantNoteFor(peek)
 		return v, approvalOutcome{}, false
@@ -255,7 +344,7 @@ func (g *Guard) applyOrgGrant(es *engineSet, v policy.Verdict, ev *policy.Event,
 		return v, approvalOutcome{degradedFrom: out.marker, softenedBy: peek.GrantID}, true
 	}
 	q.Consume = true
-	r := g.orgGrants(q)
+	r := claim(q)
 	if !r.OK || !grantActs(r.Effect, v.Decision) {
 		// The last use went to another process between the peek and the
 		// claim: no grant, enforcement stands.

@@ -8,6 +8,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/models"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
+	"github.com/marmutapp/superbased-observer/internal/orgintel"
 )
 
 func outboxRow(session, digest, trigger string) OrgIntelSubmission {
@@ -119,6 +120,60 @@ func seedOrgCandidate(t *testing.T, s *Store, id string, startedAt, lastActionAt
 	if len(actions) > 0 {
 		if _, err := s.InsertActions(ctx, actions); err != nil {
 			t.Fatal(err)
+		}
+	}
+}
+
+// TestOrgIntelSweepSkipsSessionsFromAPreviousEnrolment pins the org key on
+// the background sweep (agent migration 250, D-43; it replaced the B6
+// enrolment-start floor): after a node leaves org A and enrols in org B, a
+// session captured under A inside the sweep window is ORG authority too, but
+// it is keyed to A, so B's sweep never offers it, even over the full window.
+// A re-enrolment into A offers A's earlier sessions again (the B6 floor used
+// to skip them).
+func TestOrgIntelSweepSkipsSessionsFromAPreviousEnrolment(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s := intelTestStore(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	enrolA := Enrolment{OrgID: "org-A", OrgName: "A", OrgServerURL: "https://a.example", UserID: "u1"}
+	enrolB := Enrolment{OrgID: "org-B", OrgName: "B", OrgServerURL: "https://b.example", UserID: "u1"}
+	if err := s.WriteEnrolment(ctx, enrolA); err != nil {
+		t.Fatal(err)
+	}
+	seedOrgCandidate(t, s, "under-a", now.Add(-5*time.Hour), now.Add(-4*time.Hour), 4)
+	if err := s.WriteEnrolment(ctx, enrolB); err != nil {
+		t.Fatal(err)
+	}
+	seedOrgCandidate(t, s, "under-b", now.Add(-90*time.Minute), now.Add(-60*time.Minute), 4)
+	if auth, ok, _ := s.SessionAuthority(ctx, "under-a"); !ok || auth.Authority != "org" {
+		t.Fatalf("precondition: under-a authority = %+v", auth)
+	}
+	window := orgintel.SweepSince(now, orgintel.DefaultSweepMaxAge)
+	cases := []struct {
+		name  string
+		enrol Enrolment
+		org   string
+		want  []string
+	}{
+		{"enrolled in B: only B's session", enrolB, "org-B", []string{"under-b"}},
+		{"enrolled in B, asked for A: nothing", enrolB, "org-A", nil},
+		{"re-enrolled in A: only A's session", enrolA, "org-A", []string{"under-a"}},
+	}
+	for _, tc := range cases {
+		if err := s.WriteEnrolment(ctx, tc.enrol); err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.ListOrgIntelSubmitCandidates(ctx, tc.org, window, 30*time.Minute, 3, 10, now)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		var ids []string
+		for _, c := range got {
+			ids = append(ids, c.SessionID)
+		}
+		if fmt.Sprint(ids) != fmt.Sprint(tc.want) {
+			t.Errorf("%s: candidates = %v, want %v", tc.name, ids, tc.want)
 		}
 	}
 }

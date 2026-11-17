@@ -46,12 +46,22 @@ func eval(t *testing.T, p Program, d seccompData) Action {
 // and for an argument-filtered row, every listed value gets it and an
 // unlisted value is allowed.
 func TestProfileRows(t *testing.T) {
-	rows, _ := Rules(ProfileObserverDefault)
+	for _, id := range Profiles() {
+		testProfileRows(t, id)
+	}
+}
+
+// testProfileRows is TestProfileRows for one profile.
+func testProfileRows(t *testing.T, id ProfileID) {
+	rows, _ := Rules(id)
 	for _, goarch := range []string{ArchAMD64, ArchARM64} {
-		p := buildProgram(t, goarch)
+		p, err := Build(id, goarch)
+		if err != nil {
+			t.Fatalf("Build(%s, %s): %v", id, goarch, err)
+		}
 		spec := archs[goarch]
 		for _, r := range rows {
-			t.Run(goarch+"/"+r.Syscall, func(t *testing.T) {
+			t.Run(string(id)+"/"+goarch+"/"+r.Syscall, func(t *testing.T) {
 				if !r.appliesTo(goarch) {
 					if _, ok := spec.nr[r.Syscall]; ok {
 						t.Fatalf("row %s is limited to %v but %s has the syscall", r.Syscall, r.Archs, goarch)

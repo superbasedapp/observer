@@ -37,11 +37,11 @@ test("capturePillView: one row per verdict, from the file verdict and the observ
     [
       "CLI proxied, desktop bypassing is Partly bypassed",
       setup("oauth_ready", true, [surface("cli", 5, 5), surface("desktop", 3, 0)]),
-      "Partly bypassed: desktop",
+      "Proxy partly bypassed",
       "paused",
     ],
-    ["a partly proxied CLI is Partly bypassed", setup("oauth_ready", true, [surface("cli", 2, 1)]), "Partly bypassed: cli", "paused"],
-    ["nothing proxied on a routed file is Bypassed", setup("oauth_ready", true, [surface("cli", 4, 0)]), "Bypassed: cli", "paused"],
+    ["a partly proxied CLI is Partly bypassed", setup("oauth_ready", true, [surface("cli", 2, 1)]), "Proxy partly bypassed", "paused"],
+    ["nothing proxied on a routed file is Bypassed", setup("oauth_ready", true, [surface("cli", 4, 0)]), "Proxy bypassed", "paused"],
     ["an installed, unrouted, unobserved tool is Not routed", setup("oauth_ready", false, []), "Not routed", "paused"],
     // Node 1, 2026-10-06: Claude Code is not installed there; the pill read
     // "Paused" while every other tool was being captured.
@@ -116,4 +116,14 @@ test("an extension-only Claude Code reports its route, not absence", () => {
   assert.equal(proxied.label, "Active");
   const unrouted = capturePillView(setup("extension_ready", false));
   assert.equal(unrouted.label, "Not routed");
+});
+
+// Demo bug #11: the live node's only bypass verdict was the tool-level reading
+// of sessions with no surface stamp, and the pill read "Bypassed: unstamped".
+test("capturePillView: an unstamped bypass reads in plain words, never the placeholder", () => {
+  const v = capturePillView(setup("api_key_ready", true, [surface("", 6, 0)]));
+  assert.equal(v.label, "Proxy bypassed");
+  assert.doesNotMatch(v.label + v.tooltip, /unstamped/);
+  assert.match(v.tooltip, /^Some Claude Code sessions did not go through this machine's proxy/);
+  assert.match(v.tooltip, /sessions with no surface stamp \(older, imported or captured on another OS\): 6 of 6 sessions did not reach the proxy/);
 });

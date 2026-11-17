@@ -208,6 +208,15 @@ func TestSandboxSetupKeyNeverEchoed(t *testing.T) {
 	if len(f.runs) != 1 || f.runs[0].Key != key {
 		t.Fatalf("the key did not reach the seam once: %+v", f.runs)
 	}
+	// A provider with several credential fields sends them by name; they
+	// reach the seam and are never quoted back either.
+	rec = componentsPost(h, "/api/terminal/sandbox/setup/modal/run", `{"step":"hosted-key","fingerprint":"fp","fields":{"MODAL_TOKEN_ID":"ak-1","MODAL_TOKEN_SECRET":"`+key+`"}}`, true)
+	if strings.Contains(rec.Body.String(), key) {
+		t.Fatalf("a field was echoed: %s", rec.Body.String())
+	}
+	if len(f.runs) != 2 || f.runs[1].Fields["MODAL_TOKEN_SECRET"] != key || f.runs[1].Fields["MODAL_TOKEN_ID"] != "ak-1" {
+		t.Fatalf("the fields did not reach the seam: %+v", f.runs)
+	}
 }
 
 // TestSandboxSetupRefusalsMapToCodes: each seam refusal keeps its status and

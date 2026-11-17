@@ -113,6 +113,9 @@ var agentLaunchRoutes = []struct {
 	{match: func(p string) bool { return p == "/api/arena/runs" }, desc: "the Agent Arena run route, which starts one agent per candidate"},
 	{match: sessionLaunchRoute.MatchString, desc: "the dashboard's session continue and resume routes"},
 	{match: func(p string) bool { return p == "/api/tools/launch" }, desc: "the Tools card's launch route, which opens a terminal window running the agent"},
+	{match: func(p string) bool { return p == "/api/security/fix/launch" }, desc: "the Code security page's Fix with an agent route, which starts an agent on findings"},
+	{match: func(p string) bool { return p == "/api/security/assessments/launch" }, desc: "the Code security page's Security assessments route, which starts an agent on an assessment of a project"},
+	{match: func(p string) bool { return p == "/api/security/assessments/fix" }, desc: "the Code security page's fix route for a security assessment item, which starts an agent that edits the project"},
 	{match: pendingConfirmRoute.MatchString, desc: "the held launches' confirm route, which starts the held launch"},
 	{
 		match: func(p string) bool { return p == "/api/benchmarks/run" }, desc: "the Benchmarks spend run, which drives agent harnesses",

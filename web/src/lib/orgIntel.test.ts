@@ -82,7 +82,7 @@ test("the banner shows only for a pending individual node", () => {
   assert.equal(orgIntelBanner(st({})), null);
   assert.equal(orgIntelBanner(st({ class: "managed", pending: true })), null);
   const b = orgIntelBanner(st({ pending: true, pending_reason: "not_accepted" }));
-  assert.ok(b && b.text.startsWith("Acme now requires Cloud Intelligence. Accept, or leave the organization."));
+  assert.ok(b && b.text.startsWith("Acme now requires AI summaries. Accept, or leave the team."));
   const late = orgIntelBanner(st({ pending: true, deadline_passed: true }));
   assert.ok(late && /deadline has passed/.test(late.text));
   const changed = orgIntelBanner(st({ pending: true, pending_reason: "terms_changed" }));
@@ -161,8 +161,8 @@ test("enrich plane: an org-stamped session goes to the org plane, everything els
   assert.equal(sessionEnrichPlane({ enrich_plane: "org" }), "org");
   assert.equal(sessionEnrichPlane({}), "personal");
   assert.equal(sessionEnrichPlane({ enrich_plane: "other" }), "personal");
-  assert.equal(orgPlaneEnrichAction({}), "Org enrichment");
-  assert.equal(orgPlaneEnrichAction({ org_title: "T" }), "View org enrichment");
+  assert.equal(orgPlaneEnrichAction({}), "Team AI summaries");
+  assert.equal(orgPlaneEnrichAction({ org_title: "T" }), "View team AI summaries");
   for (const plane of ["org", "personal"] as const) {
     const c = SESSION_ENRICH_PLANE_COPY[plane];
     for (const text of [c.tooltip, c.drawerTitle, c.drawerNote]) {
@@ -170,7 +170,7 @@ test("enrich plane: an org-stamped session goes to the org plane, everything els
       assert.ok(!text.includes("—"), `em dash in ${text}`);
     }
   }
-  assert.match(SESSION_ENRICH_PLANE_COPY.org.drawerNote, /organization/);
+  assert.match(SESSION_ENRICH_PLANE_COPY.org.drawerNote, /team/);
   assert.match(SESSION_ENRICH_PLANE_COPY.personal.drawerNote, /personal/);
 });
 
@@ -212,7 +212,7 @@ test("ruling Q6: the Sessions banner follows the plane of the listed sessions", 
     assert.equal(b.state, want);
     assert.equal(ORG_SESSIONS_BANNER_STATES[i], want);
     assert.equal(b.mode, "org");
-    assert.equal(b.title, `Org enrichment · ${want}`);
+    assert.equal(b.title, `Team AI summaries · ${want}`);
     assert.equal(b.link, "/settings?section=intel");
     assert.ok(!/sign in/i.test(b.text), `org banner mentions personal sign-in: ${b.text}`);
     assert.ok(!/—/.test(b.text + b.terms), "no em dash in copy");
@@ -227,7 +227,7 @@ test("ruling Q6: the Sessions banner follows the plane of the listed sessions", 
 
   const mixed = orgIntelSessionsBanner(st({ effective_opt_in: true }), ["org", "personal"])!;
   assert.equal(mixed.mode, "mixed");
-  assert.match(mixed.text, /Sessions marked personal use your own Cloud Intelligence/);
+  assert.match(mixed.text, /Sessions marked personal use your own AI summaries/);
 });
 
 // Review M4-14: the org name goes through orgDisplayLabel, so an id-shaped

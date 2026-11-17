@@ -15,4 +15,12 @@
 // for a given binary: no wall-clock timestamp unless the caller passes one
 // (the release passes SOURCE_DATE_EPOCH), and a serial number derived from
 // the binary's own content.
+//
+// RenderInventory (inventory.go) is the second document this package owns,
+// the project SBOM export (security coverage gaps plan 2026-11-13, section
+// 3): a CycloneDX 1.5 document for one project's dependency inventory,
+// sharing the document types above. It takes plain InventoryPackage rows
+// with their purls already computed by the caller through the one purl
+// table in internal/secsbom; this package imports neither secsbom nor
+// depscan, so it stays pure and linked into every edition.
 package sbom

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -23,6 +24,8 @@ type fakeRequests struct {
 	sent      []orgcontract.AccessRequestCreate
 	queued    []orgcontract.AccessRequestCreate
 	withdrawn []int64
+	// held are the grants in force on the fake node (AlreadyGranted).
+	held []accessgrant.Held
 }
 
 func (f *fakeRequests) Status(context.Context) (orgclient.EnrolmentState, error) {
@@ -76,6 +79,11 @@ func (f *fakeRequests) CancelQueuedAccessRequest(context.Context, int64) (bool, 
 }
 
 func (f *fakeRequests) RequestContextShipsRaw(context.Context) bool { return false }
+
+// AlreadyGranted answers from f.held, the grants in force on the fake node.
+func (f *fakeRequests) AlreadyGranted(_ context.Context, n accessgrant.Normalized) (accessgrant.Held, bool) {
+	return accessgrant.CoveredBy(accessgrant.AskFromRequest(n, time.Now()), f.held)
+}
 
 func (f *fakeRequests) RequestableBudgets() []orgclient.RequestableBudget {
 	return []orgclient.RequestableBudget{{BudgetID: "b-u1", Scope: "member:u1", Period: "calendar_month", CapTokens: 1_000_000}}
@@ -161,5 +169,56 @@ func TestRequestsPageListsPreviewsSendsAndQueues(t *testing.T) {
 	}
 	if rr := doRequests(t, s, http.MethodPost, "/api/requests/77/withdraw", ""); rr.Code != http.StatusConflict {
 		t.Fatalf("withdraw closed: %d", rr.Code)
+	}
+}
+
+// TestRequestsAlreadyGrantedIsNotSent pins the node half of the 2026-11-13
+// operator report (the same rule requested and granted three times): a
+// request a grant in force on this machine already covers is shown as such
+// in the preview and never leaves the machine; a request the grant does not
+// cover still goes.
+func TestRequestsAlreadyGrantedIsNotSent(t *testing.T) {
+	const body = `{"request":{"request_type":"guard_exemption","message":"again","payload":%s,"requested_duration_s":2592000}}`
+	held := []accessgrant.Held{{
+		ID: 11, Type: accessgrant.TypeGuardExemption, Effect: orgcontract.AccessGrantEffectExempt,
+		SubjectKind: orgcontract.AccessGrantSubjectMember, RuleID: "S-793", ProjectRootHash: "p1",
+	}}
+	cases := []struct {
+		name    string
+		payload string
+		covered bool
+	}{
+		{"the same rule and project again", `{"rule_id":"S-793","project_root_hash":"p1","breadth":"rule"}`, true},
+		{"one exact command under the rule-wide grant", `{"rule_id":"S-793","project_root_hash":"p1","operand_hash":"op","command_class":"/shell_exec","breadth":"exact"}`, true},
+		{"another project", `{"rule_id":"S-793","project_root_hash":"p2","breadth":"rule"}`, false},
+		{"another rule", `{"rule_id":"S-794","project_root_hash":"p1","breadth":"rule"}`, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s, _ := newTestServer(t)
+			fake := &fakeRequests{enrolled: true, held: held}
+			s.opts.Requests = fake
+			req := fmt.Sprintf(body, c.payload)
+			rr := doRequests(t, s, http.MethodPost, "/api/requests/preview", req)
+			var pv requestPreview
+			if err := json.Unmarshal(rr.Body.Bytes(), &pv); err != nil || rr.Code != http.StatusOK {
+				t.Fatalf("preview: %d %s", rr.Code, rr.Body)
+			}
+			named := len(pv.Problems) == 1 && pv.Problems[0].Code == accessgrant.CodeAlreadyGranted && strings.Contains(pv.Problems[0].Message, "G-11")
+			if named != c.covered || (!c.covered && len(pv.Problems) != 0) {
+				t.Fatalf("preview problems = %+v, want covered=%v", pv.Problems, c.covered)
+			}
+			rr = doRequests(t, s, http.MethodPost, "/api/requests", req)
+			wantCode, wantSent := http.StatusCreated, 1
+			if c.covered {
+				wantCode, wantSent = http.StatusBadRequest, 0
+			}
+			if rr.Code != wantCode || len(fake.sent) != wantSent {
+				t.Fatalf("send: %d (sent %d) %s", rr.Code, len(fake.sent), rr.Body)
+			}
+			if c.covered && !strings.Contains(rr.Body.String(), "G-11 already covers this") {
+				t.Fatalf("the refusal does not name the grant: %s", rr.Body)
+			}
+		})
 	}
 }

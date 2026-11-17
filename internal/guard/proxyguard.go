@@ -378,6 +378,7 @@ func (g *Guard) scanEgress(es *engineSet, res *ProxyRequestResult, body []byte, 
 	}
 	g.stampOrgOverride(es, &av)
 	appr.stamp(&av)
+	g.stampGrantProject(&av, &ev)
 
 	em := ResolveEmission(verdict, proxyRequestCaps)
 	action := g.resolveEgressAction(em, anyCertain)
@@ -668,14 +669,20 @@ func proxyPromptHouseMessage(pv PromptVerdict, sessionID string) string {
 // (never parsed by parseProxyBody) and any shape parseProxyBody's
 // stricter structs failed to decode.
 func (g *Guard) scanPrompt(res *ProxyRequestResult, tool, provider string, body []byte, parsed proxyParsedBody, sessionID string, now time.Time) {
-	text, ok := parsed.latestUserText, parsed.latestUserTextOK
+	text, ok, generated := parsed.latestUserText, parsed.latestUserTextOK, parsed.generated
 	if !ok {
-		text, ok = extractLatestUserPromptText(provider, body)
+		text, ok, generated = classifyPromptTurn(provider, body)
 	}
+	// The newest exchange's model and tool content is noted BEFORE the
+	// prompt is judged, on every request (a continuation included), and
+	// the judge then drops a value the session's model or tools already
+	// produced: the developer did not type it (promptprovenance.go; a
+	// side request re-sends tool output as user text).
+	g.noteGenerated(sessionID, generated, now)
 	if !ok {
 		return
 	}
-	secrets, pii, truncated := g.BuildPromptFindings(text)
+	secrets, pii, truncated := g.buildPromptFindings(text, g.generatedSkip(sessionID))
 	if len(secrets) == 0 && len(pii) == 0 && !truncated {
 		g.markPromptPreSend(res, sessionID, text, false)
 		return
@@ -1267,15 +1274,34 @@ func (g *Guard) scanInjection(es *engineSet, res *ProxyRequestResult, parsed pro
 //
 // Returns record-worthy verdicts for the adapter to persist + alert.
 // ProjectRoot is unknown at the proxy (the hook-path precedent) —
-// boundary/cross-project rules stay watcher-path; Dialect is posix
-// (Claude Code's Bash tool runs POSIX shells on every platform;
-// nested powershell/cmd payloads switch dialect mid-parse anyway).
+// boundary/cross-project rules stay watcher-path (R-150 and R-151 need
+// the event's own root and are inert here; before 2026-11-16 R-151 was
+// not, and flagged every write an agent made into its own project);
+// Dialect is posix (Claude Code's Bash tool runs POSIX shells on every
+// platform; nested powershell/cmd payloads switch dialect mid-parse
+// anyway).
+//
+// With the proxy prompt lane on, the tool calls' inputs are also noted
+// as model-produced content for the session (promptprovenance.go), so a
+// side request that re-sends the call before the next main-conversation
+// request carries it is not judged as typed. That runs whatever
+// response_scan says: it is the prompt lane's, not this inspection's.
 func (g *Guard) InspectProxyResponse(sessionID string, tools []ProxyToolUse, now time.Time) []ActionVerdict {
-	if !g.cfg.Proxy.ResponseScan || len(tools) == 0 {
-		return nil
-	}
 	if now.IsZero() {
 		now = time.Now().UTC()
+	}
+	if g.cfg.Prompt.Enabled && g.cfg.Prompt.ProxyLane && len(tools) > 0 {
+		var calls strings.Builder
+		for i := range tools {
+			if calls.Len() > 0 {
+				calls.WriteByte('\n')
+			}
+			calls.Write(tools[i].Input)
+		}
+		g.noteGenerated(sessionID, calls.String(), now)
+	}
+	if !g.cfg.Proxy.ResponseScan || len(tools) == 0 {
+		return nil
 	}
 	// One snapshot for every tool_use in this response (NIT contract).
 	es := g.set.Load()
@@ -1311,6 +1337,7 @@ func (g *Guard) InspectProxyResponse(sessionID string, tools []ProxyToolUse, now
 		}
 		g.stampOrgOverride(es, &av)
 		appr.stamp(&av)
+		g.stampGrantProject(&av, &ev)
 		// §6.2: the channel can't block — record what the verdict
 		// wanted via the degradation marker (emission seams only
 		// overwrite DegradedFrom when non-empty, preserving the

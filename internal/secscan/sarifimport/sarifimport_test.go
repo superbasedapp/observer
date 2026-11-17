@@ -196,3 +196,48 @@ func TestDriverRowRegisters(t *testing.T) {
 		t.Fatalf("scan: %+v %v", res, err)
 	}
 }
+
+// taggedDoc is one run whose rules carry the given properties JSON, with a
+// result by rule id (G101) and one by ruleIndex (no ruleId).
+func taggedDoc(props string) []byte {
+	loc := `"locations":[{"physicalLocation":{"artifactLocation":{"uri":"src/a.go"},"region":{"startLine":3}}}]`
+	return []byte(`{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"x","rules":[` +
+		`{"id":"G101","defaultConfiguration":{"level":"error"},"properties":` + props + `},` +
+		`{"id":"G102","properties":` + props + `}]}},"results":[` +
+		`{"ruleId":"G101","level":"error",` + loc + `},{"ruleIndex":1,"level":"error",` + loc + `}]}]}`)
+}
+
+// TestImportCarriesRuleCWE: the CWE tags of a rule reach References.CWE of
+// its findings through the import's rule-id rewrite (tool/id), by rule id and
+// by ruleIndex, and tagging changes nothing else of a finding. The SARIF an
+// agent-run assessment writes comes through this same import, so this is the
+// contract that its canonical external/cwe/cwe-N tags rely on (depth plan
+// D31).
+func TestImportCarriesRuleCWE(t *testing.T) {
+	t.Parallel()
+	in := func(props string) []secfinding.Finding {
+		t.Helper()
+		res, err := Import(Input{Data: taggedDoc(props), Tool: "other", ProjectRoot: root, ProjectRootHash: "h"})
+		if err != nil || len(res.Findings) != 2 {
+			t.Fatalf("props %s: got %+v, %v", props, res.Findings, err)
+		}
+		return res.Findings
+	}
+	bare := in(`{}`)
+	tagged := in(`{"tags":["security","external/cwe/cwe-79","CWE-89: SQL","cwe-bad"]}`)
+	for i, f := range tagged {
+		if want := []string{"CWE-79", "CWE-89"}; strings.Join(f.References.CWE, ",") != strings.Join(want, ",") {
+			t.Errorf("finding %d (%s): CWE = %v, want %v", i, f.Rule.ID, f.References.CWE, want)
+		}
+		b := bare[i]
+		b.References.CWE = f.References.CWE
+		if fmt.Sprintf("%+v", b) != fmt.Sprintf("%+v", f) {
+			t.Errorf("finding %d: tags changed more than the CWE:\n%+v\n%+v", i, bare[i], f)
+		}
+	}
+	for _, f := range bare {
+		if len(f.References.CWE) != 0 {
+			t.Errorf("an untagged rule gave CWE %v", f.References.CWE)
+		}
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/db"
@@ -161,6 +162,12 @@ func TestAPIGuardProjectPolicy(t *testing.T) {
 	}
 	if string(onDisk) != validTrustedPolicy {
 		t.Errorf("on-disk trusted policy drifted: %q", onDisk)
+	}
+	// The root record beside the hashed file names the project (review
+	// finding 10), so the trusted layer can report its own roots.
+	recPath := strings.TrimSuffix(saveResp.Path, ".toml") + ".root"
+	if got, err := os.ReadFile(recPath); err != nil || strings.TrimSpace(string(got)) != filepath.Clean(root) {
+		t.Errorf("root record %s = %q (%v), want %q", recPath, got, err, filepath.Clean(root))
 	}
 
 	// GET view: an EDITABLE trusted_project row for this root, with content.

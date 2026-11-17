@@ -15,6 +15,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/componentstate"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/diag"
+	"github.com/marmutapp/superbased-observer/internal/frontdoor"
 	"github.com/marmutapp/superbased-observer/internal/handoffsvc"
 	"github.com/marmutapp/superbased-observer/internal/hook"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/alignment"
@@ -52,7 +53,8 @@ type ExtraRoute struct {
 type Options struct {
 	// DB is the observer database.
 	DB *sql.DB
-	// DBPath is displayed in the header; not used to open anything.
+	// DBPath is displayed in the header and names this daemon's database to
+	// a CLI that asks (dashapi.DBIdentity, L-125); not used to open anything.
 	DBPath string
 	// ProcessArchive serves process capture that has moved to cold storage
 	// (corpus archival Bucket B, design §4.3). Nil - the default, and the
@@ -240,6 +242,12 @@ type Options struct {
 	// Claude Code is not reported as absent (WINNODE2 16b). Nil reports
 	// none.
 	InstallSignalTools func() []string
+	// WorkspaceGitInit makes a new Observer default workspace a git
+	// repository (cmd/observer defaultworkspace.go: a fixed `git init`, no
+	// hooks, no templates, a timeout). The Default workspace card's save runs
+	// it through defaultworkspace.Ensure, only on a folder Observer marked.
+	// Nil leaves the folder without a repository and the save reports it.
+	WorkspaceGitInit func(ctx context.Context, dir string) error
 	// ProxyPort is the resolved observer-proxy port (cfg.Proxy.Port).
 	// Used by /api/setup/codex to compute the desired
 	// ~/.codex/config.toml base_url. Zero falls back to 8820.
@@ -297,6 +305,13 @@ type Options struct {
 	// the point: a node must be able to enrol from here). Nil = not wired; the
 	// management routes answer 501.
 	EnrolManager EnrolmentManager
+	// ConnectStatus builds the front door's one-sentence status (plan 07
+	// M8.4, internal/frontdoor) from this machine's enrolment and company
+	// lock, given the sign-in state the dashboard already probes through
+	// CloudAccount. cmd/observer owns the mapping so `observer status`,
+	// `observer connect --status` and GET /api/connect/status say the same
+	// sentence. Nil = not wired: the route answers 501.
+	ConnectStatus func(ctx context.Context, id frontdoor.Identity) frontdoor.Status
 	// Components serves Settings > Components and the route guard (modular
 	// packaging P1, lane MP-DASH, components_manage.go): the node's component
 	// state, the preview / apply of a new selection, teardown and purge,
@@ -609,6 +624,11 @@ type Options struct {
 	// on the Settings card. nil (the default, and every build without the
 	// sandbox) reads as not forbidden.
 	SandboxSignInForbidden func() bool
+	// SandboxSeize, when non-nil, reports what the strace switch
+	// ([terminal.sandbox].seccomp_allow_seize, lane ptrace) gives each
+	// sandbox on this host now, for GET /api/terminal/sandbox/ptrace-seize.
+	// nil (every build without the sandbox) answers no rows.
+	SandboxSeize func() SandboxSeizeHost
 	// SandboxEgressHostCheck, when non-nil, is the egress gateway's own host
 	// check for a [terminal.sandbox] block (OpenShell lane N5): it returns
 	// the gateway rule that refuses host under ts, or "" when the gateway
@@ -718,6 +738,15 @@ type Options struct {
 	// selected scanners and one manual run of one of them on one project.
 	// Nil leaves the page's scan job with its own history step only.
 	SecurityScanNow *SecurityScanNow
+	// SecurityDAST is the Scanners tab's DAST card seam (component
+	// security.dast, wired from cmd/observer/security_dast_dashboard.go):
+	// state, candidates, the accept and one run. Nil answers 404 on
+	// /api/security/dast*.
+	SecurityDAST *SecurityDAST
+	// SecurityProjectSBOM is the Projects tab's SBOM export seam (component
+	// security.deps, cmd/observer/security_sbom_dashboard.go). Nil answers
+	// 404 on /api/security/sbom.
+	SecurityProjectSBOM SecurityProjectSBOM
 	// Opengrep is the code rules' seam (component security.scan.opengrep,
 	// lane SEC-G2): the Code rules card's state and the guided install.
 	// Nil answers 404 on /api/security/code/install.
@@ -784,6 +813,36 @@ type Options struct {
 	// Nil makes those write routes answer 503; every delivery read still
 	// works from the local database.
 	DeliveryService DeliveryService
+
+	// RuleRelaxation, when non-nil, answers for the agent-run security
+	// assessments (docs/plans/security-assessments-module-plan-2026-11-13.md
+	// section 13.4): for one project root and a list of guard rule ids, the
+	// org lock on each rule and what it decides now, read from a guard built
+	// the way the daemon builds its own (the enrolment key pin and tenancy), so
+	// the module never judges a lock from a second derivation. Injected by cmd
+	// (the dashboard package keeps no guard construction of its own for this).
+	// Nil, or a rule missing from the answer, reads as locked and undecided: the
+	// module then offers no local approval (fail closed).
+	RuleRelaxation func(ctx context.Context, projectRoot string, ruleIDs []string) map[string]RuleRelaxationFact
+
+	// SandboxGatewayPort, when non-nil, maps the proxy's port to the port
+	// the sandbox's in-box egress gateway listens on (internal/sandbox
+	// owns the number). Injected by cmd, so the dashboard keeps no
+	// internal/sandbox import (the isolation component's L1 boundary); the
+	// security assessments' E5 rule refuses that port as a target. Nil (a
+	// build without the sandbox) leaves the gateway port unknown (0).
+	SandboxGatewayPort func(proxyPort int) int
+}
+
+// RuleRelaxationFact is Options.RuleRelaxation's answer for one rule: the
+// lock (untouched, overridable or locked), its cause, the rule's decision in
+// the running mode (allow, flag, ask, deny; "" when unknown) and whether the
+// project's engine carries it.
+type RuleRelaxationFact struct {
+	Lock     string
+	Cause    string
+	Decision string
+	Known    bool
 }
 
 // TerminalSessionLink is the resolved identity of a live terminal launch token

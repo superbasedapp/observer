@@ -27,6 +27,7 @@ func TestRunPushLoopSchedule(t *testing.T) {
 	tests := []struct {
 		name      string
 		kicks     []kick
+		wakes     []kick
 		results   []PushResult
 		errs      []error
 		serverMin time.Duration
@@ -79,6 +80,22 @@ func TestRunPushLoopSchedule(t *testing.T) {
 			},
 		},
 		{
+			// `observer org push-now` against a running daemon: the
+			// operator's wake runs a cycle at once, past the oversized-batch
+			// circuit's hour-long pause (round 3 bug 2).
+			name:   "an operator wake runs a cycle at once past the oversized-batch pause",
+			errs:   []error{ErrBatchTooLarge, nil},
+			wakes:  []kick{{10 * time.Second}},
+			cycles: 2,
+			want:   []pushCall{{0, true, false}, {10 * time.Second, true, false}},
+		},
+		{
+			name:   "an operator wake on an idle loop runs a cycle at once, not at the ceiling",
+			wakes:  []kick{{50 * time.Second}},
+			cycles: 2,
+			want:   []pushCall{{0, true, false}, {50 * time.Second, true, false}},
+		},
+		{
 			name:   "a failed first rail cycle is retried as a rail cycle on the backoff",
 			errs:   []error{errors.New("org down"), nil},
 			cycles: 2,
@@ -97,6 +114,12 @@ func TestRunPushLoopSchedule(t *testing.T) {
 					go func(d time.Duration) {
 						time.Sleep(d)
 						c.NotePushActivity()
+					}(k.at)
+				}
+				for _, k := range tc.wakes {
+					go func(d time.Duration) {
+						time.Sleep(d)
+						c.WakePushLoop()
 					}(k.at)
 				}
 				var got []pushCall

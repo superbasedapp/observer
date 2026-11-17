@@ -89,7 +89,9 @@ var daemonLoopComponents = map[string][]string{
 
 	"governance-sidecar":     {"org.client"},
 	"budget-warn":            {"org.client"},
+	"policy-state-inputs":    {"org.client"},
 	"policy-state-reporter":  {"org.client"},
+	"policy-state-switch":    {"org.client"},
 	"org-push":               {"org.client"},
 	"policy-freshness":       {"org.client"},
 	"activity-stamp":         {"org.client"},
@@ -458,7 +460,7 @@ var moduleGates = []moduleGate{
 		// a bad [security] value of an inactive module is set aside by
 		// config.Load (component_sections.go).
 		component: "security",
-		loops:     []string{"security.posture", "security.quickscan", "security.exceptions", "security.notify"},
+		loops:     []string{"security.posture", "security.quickscan", "security.exceptions", "security.notify", "security.assessrelax"},
 	},
 	{
 		// Secret detection (security Phase C): the post-write feed, which

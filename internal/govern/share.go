@@ -214,6 +214,36 @@ func (e Effective) RaiseList(key string, current []string) []string {
 // sentinel and vice versa.
 const scopeUnrestrictedSentinel = true
 
+// The node.governance share keys that carry the scope raise (R3-85). They are
+// DIRECTIVE keys, not the [org_client.scope] list fields themselves: the
+// allowlist raise is the bool sentinel above over a []string field, and the
+// denylist raise is a list of entries to REMOVE (not a replacement list), so
+// neither could honestly be published as the field it acts on. The
+// node.governance vocabulary (nodegov.ShareKeys) carries one row for each.
+const (
+	// ScopeUnrestrictedShareKey: `true` lifts the node's project allowlist
+	// (RaiseScopeUnrestricted).
+	ScopeUnrestrictedShareKey = "scope.unrestricted"
+	// ScopeDenylistRemoveShareKey: a list of entries removed from the node's
+	// project denylist (RaiseScopeDenylistRemoval).
+	ScopeDenylistRemoveShareKey = "scope.denylist_remove"
+)
+
+// RaiseScope is the org's governed project-scope raise as the push seam
+// applies it, and the one place the dashboard's transparency card reads it
+// from: on a managed node holding extract.scope, the unrestricted directive
+// clears the allowlist and the removal directive takes entries off the
+// denylist. Anywhere else (an individual node, no extract.scope, a refused
+// grant) both lists come back unchanged: the directives can only ever widen
+// what a node shares, so off the managed plane they are inert.
+func (e Effective) RaiseScope(allow, deny []string) ([]string, []string) {
+	if !e.GrantsScopeExtraction() {
+		return allow, deny
+	}
+	return e.RaiseScopeUnrestricted(ScopeUnrestrictedShareKey, allow),
+		e.RaiseScopeDenylistRemoval(ScopeDenylistRemoveShareKey, deny)
+}
+
 // RaiseScopeUnrestricted implements the explicit unscoped-override: when the
 // org directive for key is the literal sentinel `true`, the node's own
 // allowlist is cleared to nil — "no scoping, observe everything" — which is
@@ -344,6 +374,10 @@ func (e Effective) MergeBool(key string, local bool) bool {
 // ExtractionAuthorized, so it behaves like an ungated key on the individual
 // plane — the raise never fires.
 func (e Effective) MergeBoolGated(key string, local bool) bool {
+	// A managed policy tier is on by force (managedpolicytiers.go).
+	if e.ManagedPolicyTier(key) {
+		return true
+	}
 	lowered := e.LowerBool(key, local)
 	if !ExtractionAuthorized(e, key) {
 		return lowered
@@ -394,6 +428,14 @@ func (e Effective) SourceForBool(key string, local bool) ShareSource {
 // directive did not move anything, so the node's own setting is the whole
 // story, exactly as SourceForBool already treats every other inert case.
 func (e Effective) SourceForBoolGated(key string, local bool) ShareSource {
+	// A managed policy tier is on by the organization's tenancy, whatever the
+	// node says (managedpolicytiers.go).
+	if e.ManagedPolicyTier(key) {
+		if local {
+			return ShareSourceBoth
+		}
+		return ShareSourceOrgRaised
+	}
 	src := e.SourceForBool(key, local)
 	if src == ShareSourceOrgRaised && !ExtractionAuthorized(e, key) {
 		return ShareSourceLocal

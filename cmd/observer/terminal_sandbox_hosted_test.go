@@ -342,6 +342,12 @@ func TestHostedBoxMinutesPlanCap(t *testing.T) {
 		{sandboxremote.VendorVercel, 30, 30},
 		{sandboxremote.VendorE2B, 240, 60},
 		{sandboxremote.VendorModal, 240, 240},
+		{sandboxremote.VendorDockerSandboxes, 2000, 1440},
+		{sandboxremote.VendorInstaBox, 600, 480},
+		{sandboxremote.VendorInstaBox, 60, 60},
+		// Daytona documents no plan cap: the row holds Observer's own 1440.
+		{sandboxremote.VendorDaytona, 240, 240},
+		{sandboxremote.VendorDaytona, 2000, 1440},
 	} {
 		v, _ := sandboxremote.VendorFor(tc.vendor)
 		if got := hostedBoxMinutes(v, tc.planned); got != tc.want {
@@ -388,6 +394,12 @@ var sandboxHostedSettingsInventory = map[string]adminHome{
 	"e2b":    {Floor: "allowed_regions"},
 	"modal":  {Floor: "allowed_regions"},
 	"vercel": {Floor: "allowed_regions"},
+	"docker": {Floor: "allowed_regions"},
+	// InstaBox takes no region, so its table's region only ever resolves
+	// empty; the floor still governs it.
+	"instabox": {Floor: "allowed_regions"},
+	// The Daytona row's table (a hosted vendor), like the others.
+	"daytona": {Floor: "allowed_regions"},
 	// The org-hosted row's table: its admin home is the managed body's
 	// org_openshell field (the published gateway); the member's two keys
 	// (laptop_relay, hold_on_end) live on the Org-hosted OpenShell card.

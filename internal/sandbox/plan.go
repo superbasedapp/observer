@@ -131,6 +131,14 @@ type Request struct {
 	// reads the program from SeccompFD, which the host helper fills, so a
 	// plan with a profile always runs the helper (seccomp.go).
 	Seccomp string
+	// SecretMask, when non-nil, hides the secret files of the workspace
+	// (WorkspaceSecretRules: .env variants, key files, registry credentials)
+	// behind /dev/null, after every overlay (secretmask.go states what it
+	// does not cover). The workspace is read through SecretMask.ReadDir,
+	// bounded by SecretMask.Limits; what the walk could not cover is in
+	// Plan.SecretMaskReport. nil is the default and leaves the argv exactly
+	// as it was before the option existed.
+	SecretMask *SecretMaskOption
 }
 
 // RelayRequest is the relay input of a plan.
@@ -380,9 +388,22 @@ type Plan struct {
 	// placeholders are the overlays whose path the host helper must create
 	// before bwrap runs (Plan.HostArgv carries them).
 	placeholders []Overlay
-	HomeMode     string
+	// secretMask is the workspace secret mask discovery of the plan (the zero
+	// report when the request did not ask for one).
+	secretMask SecretMaskReport
+	HomeMode   string
 	// Egress is the resolved network tier row the plan was built for.
 	Egress EgressProfile
+}
+
+// SecretMaskReport returns what the request's SecretMask option found and
+// could not cover (a copy). The zero report (Enabled false) is a plan that
+// did not ask for the mask.
+func (p Plan) SecretMaskReport() SecretMaskReport {
+	r := p.secretMask
+	r.Masked = append([]string(nil), r.Masked...)
+	r.Gaps = append([]SecretMaskGap(nil), r.Gaps...)
+	return r
 }
 
 // Placeholders returns the protected paths the host helper will create
@@ -457,9 +478,19 @@ func BuildPlan(req Request) (Plan, error) {
 	if req.HomeMode == homeModeReadonly {
 		homeMode = homeModeReadonly
 	}
+	masksAbove, masksRest := []string(nil), req.MaskPaths
 	if homeMode == homeModeTmpfs {
 		if err := validateAbs(req.Home, false); err != nil {
 			return Plan{}, fmt.Errorf("sandbox.BuildPlan: home: %w", err)
+		}
+		// A home that lies on a masked drive (a scratch HOME on /mnt/d):
+		// its mask goes first, or it would hide the home tmpfs just made.
+		masksAbove, masksRest = splitMasksAboveHome(req.Home, req.MaskPaths)
+		for _, m := range masksAbove {
+			if err := validateAbs(m, false); err != nil {
+				return Plan{}, fmt.Errorf("sandbox.BuildPlan: mask path: %w", err)
+			}
+			add(flagTmpfs, m)
 		}
 		add(flagTmpfs, req.Home)
 	}
@@ -467,8 +498,11 @@ func BuildPlan(req Request) (Plan, error) {
 	// 3. A1: mask foreign-OS mounts (/mnt/c-class) that ro-bind / / would leave
 	//    readable — after the home tmpfs, BEFORE the punch-backs, so a tool or
 	//    workspace path legitimately under a masked root is re-bound explicitly
-	//    by the later ordered binds.
-	for _, m := range req.MaskPaths {
+	//    by the later ordered binds (the workspace of a project on /mnt/d is
+	//    punched back in step 6, below the tmpfs that hides the rest of /mnt/d;
+	//    bwrap resolves every bind source against the host, not the new root,
+	//    so the mask never hides a later bind's source).
+	for _, m := range masksRest {
 		if err := validateAbs(m, false); err != nil {
 			return Plan{}, fmt.Errorf("sandbox.BuildPlan: mask path: %w", err)
 		}
@@ -572,6 +606,21 @@ func BuildPlan(req Request) (Plan, error) {
 	}
 	pre = append(pre, ov...)
 
+	// 10b. Opt-in workspace secret mask: the secret files the workspace
+	//      holds are hidden behind /dev/null after everything above, so no
+	//      bind re-opens one. The observer dir is not walked (its own
+	//      protection above covers it, and a workspace that is a parent of it
+	//      would otherwise be walked into it).
+	var maskRep SecretMaskReport
+	if req.SecretMask != nil {
+		maskRep = DiscoverWorkspaceSecrets(req.WorkspaceRoot, req.SecretMask.ReadDir, req.SecretMask.Limits, []string{req.ObserverDir})
+		maskArgs, err := secretMaskArgs(maskRep, req.Overlays)
+		if err != nil {
+			return Plan{}, fmt.Errorf("sandbox.BuildPlan: secret mask: %w", err)
+		}
+		pre = append(pre, maskArgs...)
+	}
+
 	// 11. Drop the environment that points at host sockets / interop, or
 	//     carries an Observer secret (GuestUnsetEnv).
 	pre = append(pre, unsetEnvArgs()...)
@@ -587,7 +636,7 @@ func BuildPlan(req Request) (Plan, error) {
 	add(flagChdir, req.WorkspaceRoot)
 	add(flagDieWithParent)
 
-	return Plan{pre: pre, guest: guest, net: req.Net, relay: req.Relay, seccomp: req.Seccomp, placeholders: placeholdersOf(req.Overlays), HomeMode: homeMode, Egress: prof}, nil
+	return Plan{pre: pre, guest: guest, net: req.Net, relay: req.Relay, seccomp: req.Seccomp, placeholders: placeholdersOf(req.Overlays), secretMask: maskRep, HomeMode: homeMode, Egress: prof}, nil
 }
 
 // roBinaryArgs is BuildPlan's step 4: the derived read-only binaries and
@@ -1039,6 +1088,22 @@ func containsAny(p string, targets []string) bool {
 		}
 	}
 	return false
+}
+
+// splitMasksAboveHome splits the foreign-OS masks into those that hold the
+// home directory (the home equals the mask or lies under it) and the rest,
+// each in its given order. A mask that holds the home must be applied before
+// the home's own tmpfs, or it would hide it; every other mask keeps its place
+// after the home tmpfs, so a plan with no such mask is unchanged.
+func splitMasksAboveHome(home string, masks []string) (above, rest []string) {
+	for _, m := range masks {
+		if m != "" && isWithin(home, m) {
+			above = append(above, m)
+		} else {
+			rest = append(rest, m)
+		}
+	}
+	return above, rest
 }
 
 // isWithin reports whether p equals root or is a descendant of it (clean,

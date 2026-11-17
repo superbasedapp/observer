@@ -11,8 +11,9 @@ import (
 // category code_vuln, scope manual, baseline unknown, status open. redact
 // is the caller's scrubber (evidence passes through it before the cap);
 // nil keeps the evidence as built (it holds no body text). The project hash
-// is "" because a dev server is not a project; the local key is keyed on
-// the target's origin instead, so the same check on two servers differs.
+// is left "" here: the cmd seam stamps the project the run is recorded
+// against (secsvc.RecordRun). The local key is keyed on the target's
+// origin, so the same check on two servers of one project differs.
 func Findings(t Target, hits []Hit, now time.Time, redact func(string) string) []secfinding.Finding {
 	out := make([]secfinding.Finding, 0, len(hits))
 	scope := "dast:" + t.Origin()

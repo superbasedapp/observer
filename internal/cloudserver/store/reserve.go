@@ -7,6 +7,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/marmutapp/superbased-observer/internal/cloudserver/enrichbudget"
+	"github.com/marmutapp/superbased-observer/internal/reserve"
 )
 
 // Feature identifiers. Only session_enrichment ships this arc.
@@ -29,8 +32,9 @@ const (
 )
 
 // concurrencyWindowKey is the fixed window key for the live-in-flight counter
-// row (a counter that goes up on reserve and down on settle/release).
-const concurrencyWindowKey = "live"
+// row (a counter that goes up on reserve and down on settle/release): the
+// reserve core's one WindowLive bucket.
+const concurrencyWindowKey = reserve.LiveKey
 
 // Reservation-cap sentinels — the API maps these to 429.
 var (
@@ -43,6 +47,26 @@ var (
 	// api/jobs.go maps it to 503 budget_exhausted.
 	ErrGlobalBudget  = errors.New("cloudserver/store: plan budget pool exhausted")
 	ErrNoEntitlement = errors.New("cloudserver/store: no entitlement for feature")
+
+	// Token-budget refusals (ruling R-AI1). The daily and monthly ones wrap
+	// the count sentinels, so a caller that only knows "the daily allowance
+	// is exhausted" still reads them that way; the API names them apart.
+	ErrDailyTokenBudget   = fmt.Errorf("%w: daily token budget", ErrDailyLimit)
+	ErrMonthlyTokenBudget = fmt.Errorf("%w: monthly token budget", ErrMonthlyLimit)
+	// ErrSessionTokenBudget means THIS session has used its cumulative
+	// enrichment budget; other sessions of the account are unaffected.
+	ErrSessionTokenBudget = errors.New("cloudserver/store: session token budget spent")
+	// ErrTokenHoldMissing means a submission on a token-budgeted plan came
+	// without a worst-case hold, or without the session it charges. It is a
+	// caller fault and fails closed.
+	ErrTokenHoldMissing = errors.New("cloudserver/store: token hold missing for a token-budgeted plan")
+)
+
+// Budget units a reservation records (usage_reservations.budget_unit,
+// migration 0078). Closed vocabulary; finalize refuses anything else.
+const (
+	budgetUnitCount  = "count"
+	budgetUnitTokens = "tokens"
 )
 
 // seedEntitlementsTx enables the feature for a new account. The row records
@@ -67,9 +91,62 @@ func seedEntitlementsTx(ctx context.Context, tx pgx.Tx, accountID string) error 
 }
 
 // DailyWindowKey / MonthlyWindowKey define the UTC-anchored windows (Sol SD6:
-// daily is UTC-defined; monthly cycle rollover is by calendar month).
-func DailyWindowKey(now time.Time) string   { return now.UTC().Format("2006-01-02") }
-func MonthlyWindowKey(now time.Time) string { return now.UTC().Format("2006-01") }
+// daily is UTC-defined; monthly cycle rollover is by calendar month). The
+// bucketing is the reserve core's (reserve.WindowKey on the UTC calendar);
+// both windows are in its vocabulary, so its second return is always true.
+func DailyWindowKey(now time.Time) string {
+	k, _ := reserve.WindowKey(now, reserve.WindowDaily, time.UTC)
+	return k
+}
+
+// MonthlyWindowKey is DailyWindowKey's calendar-month window.
+func MonthlyWindowKey(now time.Time) string {
+	k, _ := reserve.WindowKey(now, reserve.WindowMonthly, time.UTC)
+	return k
+}
+
+// capRefusals maps a refused cap (the reserve core's Breach.Name, which this
+// ledger sets to the cycle kind or "pool") to the sentinel the API maps to
+// its status. A name not in the table is a concurrency refusal, the old
+// default.
+func capRefusals() map[string]error {
+	return map[string]error{
+		"daily":       ErrDailyLimit,
+		"monthly":     ErrMonthlyLimit,
+		"concurrency": ErrConcurrency, // also enrichbudget.LimitConcurrency
+		"pool":        ErrGlobalBudget,
+		// The token path (reserve_tokens.go).
+		enrichbudget.LimitDaily:   ErrDailyTokenBudget,
+		enrichbudget.LimitMonthly: ErrMonthlyTokenBudget,
+		enrichbudget.LimitSession: ErrSessionTokenBudget,
+	}
+}
+
+// unitHold is one reservation's hold against one count cap: the reserve
+// core's OverCap boundary with an estimate of one unit, so `used` reaching
+// the cap refuses and the hold that lands exactly on the cap is admitted.
+func unitHold(name string, capUnits, used int64) reserve.Limit {
+	return reserve.Limit{
+		Name:      name,
+		Unit:      reserve.UnitCount,
+		Cap:       float64(capUnits),
+		Committed: float64(used),
+		Estimate:  1,
+	}
+}
+
+// refusal asks the reserve core whether one hold fits and returns the
+// ledger's sentinel when it does not.
+func refusal(l reserve.Limit) error {
+	b, breached := reserve.Check(l)
+	if !breached {
+		return nil
+	}
+	if err, ok := capRefusals()[b.Name]; ok {
+		return err
+	}
+	return ErrConcurrency
+}
 
 // ReserveAllowance atomically enforces daily (≤cap, UTC day) + monthly (≤cap,
 // calendar month) + per-account concurrency + the account's plan budget pool in
@@ -104,6 +181,12 @@ func reserveAllowanceTx(ctx context.Context, tx pgx.Tx, accountID, feature strin
 	}
 	if feature == FeatureProjectDigest && !allow.Plan.DigestWeekly {
 		return "", ErrNoEntitlement
+	}
+	if allow.Tier != nil {
+		// A token-budgeted plan reserves through SubmitJob (reserveSubmitTx),
+		// which knows the session and the worst-case hold; a bare unit
+		// reservation has neither and must not slip past the token budgets.
+		return "", ErrTokenHoldMissing
 	}
 	return reserveForAllowanceTx(ctx, tx, accountID, feature, allow, now, ceilings)
 }
@@ -155,8 +238,8 @@ func reserveForAllowanceTx(ctx context.Context, tx pgx.Tx, accountID, feature st
 	if e != nil {
 		return "", fmt.Errorf("lock budget pool %s: %w", allow.BudgetPool, e)
 	}
-	if gUsed >= gCap {
-		return "", ErrGlobalBudget
+	if err := refusal(unitHold("pool", gCap, gUsed)); err != nil {
+		return "", err
 	}
 	if err := checkSpendCeilingTx(ctx, tx, ceilings, allow.BudgetPool, now); err != nil {
 		return "", err
@@ -185,8 +268,8 @@ func reserveForAllowanceTx(ctx context.Context, tx pgx.Tx, accountID, feature st
 	return reservationID, nil
 }
 
-// reserveCycle ensures the counter row exists, locks it, checks used < the LIVE
-// cap, and increments. The per-cycle sentinel is chosen by kind so the API can
+// reserveCycle ensures the counter row exists, locks it, asks the reserve core
+// whether one more unit fits under the LIVE cap, and increments. The per-cycle sentinel is chosen by kind so the API can
 // tell the user which window blocked them.
 //
 // W4 / review finding 12: `cap` is the caller's freshly-resolved plan cap, and
@@ -213,15 +296,8 @@ func reserveCycle(ctx context.Context, tx pgx.Tx, accountID, feature, kind, wind
 		accountID, feature, kind, windowKey).Scan(&used); e != nil {
 		return fmt.Errorf("lock %s cycle: %w", kind, e)
 	}
-	if used >= cap {
-		switch kind {
-		case "daily":
-			return ErrDailyLimit
-		case "monthly":
-			return ErrMonthlyLimit
-		default:
-			return ErrConcurrency
-		}
+	if err := refusal(unitHold(kind, int64(cap), int64(used))); err != nil {
+		return err
 	}
 	if _, e := tx.Exec(ctx,
 		`UPDATE usage_cycles SET used = used + 1, cap = $5, updated_at = now()
@@ -250,6 +326,33 @@ func (s *Store) ReleaseReservation(ctx context.Context, accountID, reservationID
 	return s.finalizeReservation(ctx, accountID, reservationID, state, true)
 }
 
+// closeOutcome is one row of closeOutcomes.
+type closeOutcome struct {
+	state   string
+	refund  bool
+	outcome reserve.Outcome
+}
+
+// closeOutcomes maps a terminal reservation state and its refund flag to the
+// reserve core's outcome. Every pair the callers pass is a row; anything else
+// is refused rather than guessed.
+func closeOutcomes() []closeOutcome {
+	return []closeOutcome{
+		{state: "settled", refund: false, outcome: reserve.OutcomeSettle},
+		{state: "released", refund: true, outcome: reserve.OutcomeRelease},
+		{state: "expired", refund: true, outcome: reserve.OutcomeExpire},
+	}
+}
+
+func closeOutcomeFor(newState string, refundUnit bool) (reserve.Outcome, error) {
+	for _, r := range closeOutcomes() {
+		if r.state == newState && r.refund == refundUnit {
+			return r.outcome, nil
+		}
+	}
+	return "", fmt.Errorf("cloudserver/store.finalizeReservation: no close for state %q with refund=%t", newState, refundUnit)
+}
+
 func (s *Store) finalizeReservation(ctx context.Context, accountID, reservationID, newState string, refundUnit bool) error {
 	return s.WithAccount(ctx, accountID, func(ctx context.Context, tx pgx.Tx) error {
 		return finalizeReservationTx(ctx, tx, accountID, reservationID, newState, refundUnit)
@@ -258,22 +361,87 @@ func (s *Store) finalizeReservation(ctx context.Context, accountID, reservationI
 
 // finalizeReservationTx is the reservation-finalize logic on an existing tenant
 // transaction (so a terminal job transition can settle/release atomically).
+// A token reservation settled through it books its whole hold (the actual is
+// unknown here); completeJobWithResultTx passes the provider's actual through
+// finalizeReservationActualTx instead.
 func finalizeReservationTx(ctx context.Context, tx pgx.Tx, accountID, reservationID, newState string, refundUnit bool) error {
-	var state, feature, daily, monthly, pool string
-	var units int
+	return finalizeReservationActualTx(ctx, tx, accountID, reservationID, newState, refundUnit, -1)
+}
+
+// lockAccountForCloseTx takes the accounts row FOR KEY SHARE at the START of
+// a close, the first step of the canonical lock order (reserve_tokens.go).
+// Every close ends by inserting a ledger row whose foreign key takes this
+// same lock; taken there, after the session and window rows, it waits behind
+// a submission that holds the account FOR UPDATE (the FE4 fence) and waits on
+// a row the close holds. Taken first, the close simply queues behind the
+// submission. KEY SHARE never blocks another close or the deletion fence's
+// status UPDATE. A missing row (the account was purged) is not an error here:
+// the reservation read that follows reports it.
+func lockAccountForCloseTx(ctx context.Context, tx pgx.Tx, accountID string) error {
+	var one int
 	e := tx.QueryRow(ctx,
-		`SELECT state, feature, user_units, daily_window, monthly_window, budget_pool
+		`SELECT 1 FROM accounts WHERE account_id = $1::uuid FOR KEY SHARE`, accountID).Scan(&one)
+	if e != nil && !errors.Is(e, pgx.ErrNoRows) {
+		return fmt.Errorf("lock account for close: %w", e)
+	}
+	return nil
+}
+
+// heldReservation is one usage_reservations row as finalize reads it.
+type heldReservation struct {
+	id, state, feature, daily, monthly, pool, unit string
+	units                                          int
+	tokenHold                                      int64
+	sessionPK                                      *string
+}
+
+// finalizeReservationActualTx closes a reservation. actualTokens is what a
+// token reservation's work cost (enrichbudget.ActualTokens; negative =
+// unknown, which books the hold); a count reservation ignores it. The close
+// is dispatched on the reservation's own recorded unit, never on the plan the
+// account holds now.
+func finalizeReservationActualTx(ctx context.Context, tx pgx.Tx, accountID, reservationID, newState string, refundUnit bool, actualTokens float64) error {
+	if err := lockAccountForCloseTx(ctx, tx, accountID); err != nil {
+		return err
+	}
+	r := heldReservation{id: reservationID}
+	e := tx.QueryRow(ctx,
+		`SELECT state, feature, user_units, daily_window, monthly_window, budget_pool,
+		        budget_unit, token_hold, session_pk::text
 			   FROM usage_reservations WHERE account_id = $1::uuid AND id = $2::uuid FOR UPDATE`,
-		accountID, reservationID).Scan(&state, &feature, &units, &daily, &monthly, &pool)
+		accountID, reservationID).Scan(&r.state, &r.feature, &r.units, &r.daily, &r.monthly, &r.pool,
+		&r.unit, &r.tokenHold, &r.sessionPK)
 	if errors.Is(e, pgx.ErrNoRows) {
 		return ErrNotFound
 	}
 	if e != nil {
 		return fmt.Errorf("lock reservation: %w", e)
 	}
-	if state != "reserved" {
+	outcome, err := closeOutcomeFor(newState, refundUnit)
+	if err != nil {
+		return err
+	}
+	if r.unit == budgetUnitTokens {
+		return finalizeTokenReservationTx(ctx, tx, accountID, r, newState, outcome, refundUnit, actualTokens)
+	}
+	if r.unit != budgetUnitCount {
+		return fmt.Errorf("cloudserver/store.finalizeReservation: reservation %s has unknown budget unit %q", reservationID, r.unit)
+	}
+	state, feature, daily, monthly, pool, units := r.state, r.feature, r.daily, r.monthly, r.pool, r.units
+	hold := reserve.Hold{State: reserve.HoldFinal, Estimate: float64(units)}
+	if state == "reserved" {
+		hold.State = reserve.HoldOpen
+	}
+	// A settle consumes the held units (actual == the hold); a release or
+	// expiry refunds them. The core decides; this ledger writes it back.
+	settlement, err := reserve.Settle(hold, reserve.Close{Outcome: outcome, Actual: float64(units)})
+	if err != nil {
+		return fmt.Errorf("cloudserver/store.finalizeReservation: %w", err)
+	}
+	if settlement.Noop {
 		return nil // already finalized — idempotent no-op
 	}
+	refund := int(settlement.Refund)
 	if _, e := tx.Exec(ctx,
 		`UPDATE usage_reservations SET state = $3, updated_at = now()
 			  WHERE account_id = $1::uuid AND id = $2::uuid`,
@@ -281,30 +449,33 @@ func finalizeReservationTx(ctx context.Context, tx pgx.Tx, accountID, reservatio
 		return fmt.Errorf("update reservation: %w", e)
 	}
 	// Acquire the counter-row locks in the SAME canonical order as
-	// reserveAllowanceTx — daily → monthly → concurrency → global (FB4). A
-	// settle (refundUnit=false) touches only concurrency; a release/expire
-	// (refundUnit=true) touches daily/monthly first, then concurrency, then the
-	// budget pool, matching the reserve path exactly so a concurrent
-	// reserve-vs-release pair can never deadlock on an inverted lock order.
-	if refundUnit {
-		if e := decrementCycle(ctx, tx, accountID, feature, "daily", daily, units); e != nil {
+	// reserveAllowanceTx — daily → monthly → concurrency → global (FB4), the
+	// tail of the one order every submit and close shares (accounts row first,
+	// taken above by lockAccountForCloseTx; see reserve_tokens.go). A
+	// settle (no refund) touches only concurrency; a release/expire (a refund)
+	// touches daily/monthly first, then concurrency, then the budget pool,
+	// matching the reserve path exactly so a concurrent reserve-vs-release
+	// pair can never deadlock on an inverted lock order.
+	if refund > 0 {
+		if e := decrementCycle(ctx, tx, accountID, feature, "daily", daily, refund); e != nil {
 			return e
 		}
-		if e := decrementCycle(ctx, tx, accountID, feature, "monthly", monthly, units); e != nil {
+		if e := decrementCycle(ctx, tx, accountID, feature, "monthly", monthly, refund); e != nil {
 			return e
 		}
 	}
-	// Always free the concurrency slot.
-	if e := decrementCycle(ctx, tx, accountID, feature, "concurrency", concurrencyWindowKey, units); e != nil {
-		return e
+	if settlement.FreesSlot {
+		if e := decrementCycle(ctx, tx, accountID, feature, "concurrency", concurrencyWindowKey, units); e != nil {
+			return e
+		}
 	}
-	if refundUnit {
+	if refund > 0 {
 		// Refund the pool the reservation actually drew from (recorded on the
 		// row), never the account's CURRENT plan pool — a plan change between
 		// reserve and release must not move spend between pools.
 		if _, e := tx.Exec(ctx,
 			`UPDATE budget_pools SET used = greatest(used - $2, 0), updated_at = now() WHERE pool = $1`,
-			pool, units); e != nil {
+			pool, refund); e != nil {
 			return fmt.Errorf("refund budget pool %s: %w", pool, e)
 		}
 	}

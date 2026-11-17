@@ -122,6 +122,18 @@ const (
 	// from the authenticated route, never from the wire.
 	secReportedVia = "SECRET_REPORTEDVIA_cst_floccinaucinihilipilification"
 
+	// Org attribution (agent migration 250, managed SaaS M8.1, operator
+	// ruling D-43): a session keyed to ANOTHER organization than the one the
+	// node is enrolled in must never reach the wire, nor any of its rows.
+	// Its session id and its token row's source_event_id are fields that
+	// ALWAYS ship for an own-org row, so their absence proves the selection
+	// dropped the rows (not a strip). sessions.authority_org_key itself is
+	// node-local: neither the destination's key nor the other org's key may
+	// appear in the payload.
+	secForeignOrgSession = "SECRET_FOREIGNORGSESSION_quockerwodger_fo"
+	secForeignOrgEvent   = "SECRET_FOREIGNORGEVENT_quockerwodger_fe"
+	secForeignOrgKey     = "SECRET_FOREIGNORGKEY_quockerwodger_fk"
+
 	// User-attachment metadata (migration 126): actions.user_attachments is
 	// NODE-LOCAL — never selected by the push seam, in ANY share mode (like
 	// the lineage/tool_version columns above, unlike git_branch it does not
@@ -255,6 +267,12 @@ const (
 	secGuardReason  = "SECRET_GUARDREASON_balderdash_kk"
 	secGuardExcerpt = "SECRET_GUARDEXCERPT_rigmarole_jj"
 	secGuardTaint   = "SECRET_GUARDTAINT_skulduggery_mm"
+	// guard_events.project_root (agent migration 253, GRANT-20): the raw
+	// root of the project the gate matched grants on, for the node request
+	// form only. NODE-LOCAL in EVERY share mode: the seam never selects it
+	// (nor its project_root_hash twin; the org's guard_events row has no
+	// project field), so it must not ship even under full_content.
+	secGuardProjectRoot = "SECRET_GUARDPROJECTROOT_lollygag_gg"
 
 	// Native-console (otel_content) addition: the captured content body is
 	// content-bearing — it ships ONLY under full_content / admin_managed, with
@@ -317,7 +335,7 @@ var allSentinels = []string{
 	secForkedFrom, secThreadSource,
 	secReportedVia,
 	secUserAttachments,
-	secGuardReason, secGuardExcerpt, secGuardTaint,
+	secGuardReason, secGuardExcerpt, secGuardTaint, secGuardProjectRoot,
 	secOTelContent,
 	secAdmTenant, secAdmUser, secAdmReason,
 	secEvalInput, secEvalExpected, secEvalOutput, secEvalRational,
@@ -444,6 +462,7 @@ func TestPushPayloadCarriesNoContent(t *testing.T) {
 		TargetHash:    "sha256:guard-target-canary",
 		TargetExcerpt: secGuardExcerpt,
 		TaintOrigin:   secGuardTaint,
+		ProjectRoot:   secGuardProjectRoot,
 	}}); err != nil {
 		t.Fatalf("seed guard event: %v", err)
 	}
@@ -481,6 +500,27 @@ func TestPushPayloadCarriesNoContent(t *testing.T) {
 		UserID: "scim-1", UserEmail: "dev@acme.example", BearerKeyID: "k",
 	}); err != nil {
 		t.Fatalf("WriteEnrolment (url): %v", err)
+	}
+	// Org attribution (agent migration 250, D-43): the corpus above was
+	// captured before this enrolment, so it is stamped personal and none of
+	// it would ship. Key it to the enrolled org so every assertion below
+	// scans a full payload, then add one session of ANOTHER org, with a token
+	// row, that must never reach the wire.
+	destOrgKey := orgclient.OrgKey(srv.URL, "org-1")
+	if _, err := database.ExecContext(ctx, `UPDATE sessions SET authority_org_key = ?`, destOrgKey); err != nil {
+		t.Fatalf("key the corpus to the enrolled org: %v", err)
+	}
+	if _, err := database.ExecContext(ctx,
+		`INSERT INTO sessions (id, project_id, tool, started_at, authority, authority_org_key)
+		 VALUES (?, ?, 'claude-code', ?, 'org', ?)`,
+		secForeignOrgSession, projectIDs[0], time.Now().UTC().Format(time.RFC3339), secForeignOrgKey); err != nil {
+		t.Fatalf("seed the other org's session: %v", err)
+	}
+	if _, err := database.ExecContext(ctx,
+		`INSERT INTO token_usage(session_id, timestamp, tool, model, input_tokens, output_tokens, source, source_file, source_event_id)
+		 VALUES(?, ?, 'claude-code', 'claude', 1, 1, 'jsonl', 'foreign.jsonl', ?)`,
+		secForeignOrgSession, time.Now().UTC().Format(time.RFC3339), secForeignOrgEvent); err != nil {
+		t.Fatalf("seed the other org's token row: %v", err)
 	}
 
 	// Obs input-admission (T6): wire a fake obs provider that yields one verdict
@@ -557,6 +597,12 @@ func TestPushPayloadCarriesNoContent(t *testing.T) {
 	for _, s := range allSentinels {
 		if bytes.Contains(raw, []byte(s)) {
 			t.Errorf("content secret %q leaked into the push payload", s)
+		}
+	}
+	// D-43: no row of another org's session, and no attribution key, ships.
+	for _, s := range []string{secForeignOrgSession, secForeignOrgEvent, secForeignOrgKey, destOrgKey} {
+		if bytes.Contains(raw, []byte(s)) {
+			t.Errorf("org attribution marker %q reached the push payload", s)
 		}
 	}
 
@@ -776,6 +822,9 @@ func TestPushPayloadCarriesContentWhenOptedIn(t *testing.T) {
 		// User-attachment metadata (migration 126) is node-local in EVERY
 		// share mode — org-wire promotion is a documented follow-up.
 		secUserAttachments,
+		// The gate's matched project root on guard_events (agent 253) is
+		// node-local in EVERY share mode.
+		secGuardProjectRoot,
 	}
 
 	for _, tc := range []struct {
@@ -844,6 +893,7 @@ func TestPushPayloadCarriesContentWhenOptedIn(t *testing.T) {
 				TargetHash:    "sha256:guard-target-canary",
 				TargetExcerpt: secGuardExcerpt,
 				TaintOrigin:   secGuardTaint,
+				ProjectRoot:   secGuardProjectRoot,
 			}}); err != nil {
 				t.Fatalf("seed guard event: %v", err)
 			}
@@ -3660,6 +3710,12 @@ var forbiddenCacheTables = []string{
 	// captured tokens. Same posture as the other four: node-local by table
 	// name, no share key, no server pair.
 	"plan_usage_daily",
+	// local_session_holds (agent migration 251, plan 07 M8.8): the sessions
+	// this node's own retention keeps (`observer sessions hold`). The
+	// developer's local choice; the org's holds are set on the org
+	// (session_holds, org PostgreSQL 0230). Node-local by table name, no
+	// share key, no server pair.
+	"local_session_holds",
 	// Delivery, commit to PR to merge (agent migrations 166 to 172, D-689,
 	// docs/plans/commit-pr-merge-tracking-plan-2026-10-15.md 6.1). All
 	// NODE-LOCAL BY TABLE NAME: orgpush.go must never reference them.
@@ -3936,10 +3992,13 @@ var forbiddenCacheTables = []string{
 	// lane N1): one row per refused egress attempt of a sandboxed run, at
 	// most one per (run, host) per minute, naming the refused host, the
 	// closed rule and the deciding config key, plus the run's project root.
-	// Decision D6 keeps refusal events on the node in v1: no wire row, no
-	// share key, no server pair. Single writer internal/store/sandboxegress.go,
-	// fed only by the daemon's refusal receiver (a host helper never opens
-	// SQLite).
+	// Decision D6 keeps refusal events on the node: no per-refusal wire row.
+	// The org sees only per (day, tier, closed rule) COUNTS, from a managed
+	// node only (audit CG-15, decision D-11), composed by
+	// internal/store/sandboxegress_org.go through a function call, so the
+	// name stays forbidden here (TestSandboxEgressCountsCarryNoHost). Single
+	// writer internal/store/sandboxegress.go, fed only by the daemon's
+	// refusal receiver (a host helper never opens SQLite).
 	"sandbox_egress_refusals",
 	// The dropped count beside the refusal audit (agent migration 231,
 	// OpenShell build lane OC, audit finding O3-W2): per run, how many
@@ -4318,6 +4377,65 @@ var forbiddenOrgControlPlaneTables = []string{
 	// the agent key it enrolled with. The node sends its key once at
 	// enrolment, never this table.
 	"org_member_node_keys",
+	// In-flight OIDC sign-in transactions (server migration 313, bug-fix
+	// lane B5, ledger AUTHTXN-1): server-only control state; no node ever
+	// sends or receives it.
+	"org_auth_pending_txns",
+	// The one-step attach grant's single-use record (server migration 316 /
+	// PG 0478, Getting started v2 lane 8, ledger ONB-9): server-only control
+	// state; a node presents its grant once at enrolment, never this table.
+	"org_attach_grant_uses",
+	// Managed-SaaS pooled host state (org PostgreSQL only; plan 07). The
+	// request host map (0240) and the fenced periodic scheduler's lease rows
+	// (0220); the host's per-tenant provisioning record (0261, wave 10 L1,
+	// ledger TENANTPROV-1) and every organization's keyset sealed under the
+	// platform KEK (0265, wave 10 L3). Server-only: no node ever sends or
+	// receives a row, and tenant_keys holds key material. The pooled
+	// apply's parked push records (0295, wave 12 lane apply, ledger
+	// APPLYPARK-1) hold push bodies the node already sent; nothing ever
+	// selects them back onto the wire.
+	"tenant_hosts",
+	"tenant_job_state",
+	"tenant_lifecycle",
+	"tenant_keys",
+	// The availability layer on a pooled host (org PostgreSQL 0300, plan 07
+	// M7a.6): the verified entitlements document per tenant, the platform
+	// availability envelope, and what the reconciler applied per org. Server-
+	// only: a node never sees the envelope (plan 06 18.3.3) and never names
+	// these tables.
+	"tenant_entitlements",
+	"platform_availability",
+	"org_availability_applied",
+	// The org admin's own module switches (org PostgreSQL 0450, wave 17):
+	// server-only; a node never sees them.
+	"org_component_choice",
+	"apply_parked",
+	// Quotas and capacity admission on a pooled host (org PostgreSQL 0318,
+	// plan 07 M7a.3): per-org quota state and the host's admission level.
+	// Server-only: a node is answered ingest_paused, never shown the state.
+	"org_quota_state",
+	"platform_capacity",
+	"platform_capacity_events",
+	// The mounted host API's state on a pooled host (org PostgreSQL 0315,
+	// W13 host-listeners): its call record, replay cache and idempotency
+	// record. Server-only: the host API is the control plane's, never a
+	// node's.
+	"host_api_calls",
+	"host_api_nonces",
+	"host_api_idempotency",
+	// The platform AI ledger and the consent-at-login and digest-mail
+	// records (org PostgreSQL 0337, plan 07 M9.1/M9.2, W14 intel-provider).
+	// Server-only: the platform's spend is never a node's, and a member's
+	// login decision travels on no wire (the node reports its own consent
+	// on its own rail).
+	"platform_intel_spend",
+	"platform_intel_holds",
+	"org_intel_login_consent",
+	"org_intel_digest_mail",
+	// The org purge's run record on a pooled host (org PostgreSQL 0470, plan
+	// 07 M7a.1): counts per (org, lifecycle generation). Server-only: the
+	// purge is the host's, and no node ever names it.
+	"org_purge_runs",
 	// The org AI tool settings policy documents (server migration 201) and
 	// managed nodes' applied state as the server stores it (202). The node
 	// RECEIVES the composed policy on its own signed rail and ships its
@@ -4539,6 +4657,11 @@ var forbiddenOrgControlPlaneTables = []string{
 	// through internal/store/sandboxposture.go.
 	"sandbox_posture_days",
 	"sandbox_node_capability",
+	// Sandbox egress refusal counts (server migration 314 / PG lineage 0184,
+	// audit CG-15): the org landing table for SandboxEgressRefusalDayRow.
+	// Server-only; the node composes the wire through
+	// internal/store/sandboxegress_org.go.
+	"sandbox_egress_refusal_days",
 	// Org stored-cost re-price (server migration 187 / PG lineage 0053, lane
 	// G-REPRICE): the org admin's re-price run record and its per-row change
 	// log. Server-only; the node has its own node-local pair (agent 145) and
@@ -4949,6 +5072,38 @@ func TestForbiddenOrgControlPlaneTablesExpectedSet(t *testing.T) {
 		"org_auth_sessions",
 		// Per-node agent keys (server migration 312, lane fl32).
 		"org_member_node_keys",
+		// In-flight OIDC sign-in transactions (server migration 313, B5).
+		"org_auth_pending_txns",
+		// The attach grant's single-use record (server migration 316, lane 8).
+		"org_attach_grant_uses",
+		// Managed-SaaS pooled host state (org PostgreSQL 0220, 0240, 0261,
+		// 0265, 0295).
+		"tenant_hosts",
+		"tenant_job_state",
+		"tenant_lifecycle",
+		"tenant_keys",
+		// The availability layer (org PostgreSQL 0300, M7a.6).
+		"tenant_entitlements",
+		"platform_availability",
+		"org_availability_applied",
+		// The org admin's own module switches (org PostgreSQL 0450, wave 17).
+		"org_component_choice",
+		"apply_parked",
+		// Quotas and capacity admission (org PostgreSQL 0318, M7a.3).
+		"org_quota_state",
+		"platform_capacity",
+		"platform_capacity_events",
+		// The mounted host API (org PostgreSQL 0315).
+		"host_api_calls",
+		"host_api_nonces",
+		"host_api_idempotency",
+		// The platform AI ledger, consent at login, digest mail (0337, M9).
+		"platform_intel_spend",
+		"platform_intel_holds",
+		"org_intel_login_consent",
+		"org_intel_digest_mail",
+		// The org purge's run record (0470, M7a.1).
+		"org_purge_runs",
 	}
 	have := make(map[string]struct{}, len(forbiddenOrgControlPlaneTables))
 	for _, n := range forbiddenOrgControlPlaneTables {
@@ -5605,15 +5760,20 @@ func TestCloudLocalTablesPinnedOutOfPush(t *testing.T) {
 	// are the free-text columns; ok/sent/waiting_provider/reconfirm/failed/
 	// results/sign_in_expired/digest_weekly/results_retention_days/
 	// daily_cap/monthly_cap are plain integers with a closed or numeric
-	// meaning — no sentinel needed there.
+	// meaning — no sentinel needed there. Migration 254 adds two more text
+	// columns (budget_unit, enrichment_tier) that get the sentinel, and the
+	// token-budget integers (evidence_token_budget and the token windows).
 	execSeed(`INSERT INTO cloud_sync_last
 		  (id, started_at, finished_at, ok, sent, waiting_provider, reconfirm, failed, results,
 		   sign_in_expired, error_class, plan_name, plan_label, digest_weekly,
-		   results_retention_days, daily_cap, monthly_cap)
-		VALUES (1, ?, ?, 1, 0, 0, 0, 0, 0, 0, ?, ?, ?, 1, 30, 50, 500)`,
+		   results_retention_days, daily_cap, monthly_cap,
+		   budget_unit, enrichment_tier, evidence_token_budget, session_token_budget,
+		   daily_tokens_used, daily_token_budget, monthly_tokens_used, monthly_token_budget)
+		VALUES (1, ?, ?, 1, 0, 0, 0, 0, 0, 0, ?, ?, ?, 1, 30, 50, 500, ?, ?, 4000, 60000, 10, 250000, 20, 3000000)`,
 		s("cloud_sync_last", "started_at"), s("cloud_sync_last", "finished_at"),
 		s("cloud_sync_last", "error_class"), s("cloud_sync_last", "plan_name"),
-		s("cloud_sync_last", "plan_label"))
+		s("cloud_sync_last", "plan_label"), s("cloud_sync_last", "budget_unit"),
+		s("cloud_sync_last", "enrichment_tier"))
 
 	// Migration 118: cloud_digests, the weekly project digest a pulled
 	// result kind="project_digest" record carries. cloud_project_id/
@@ -5916,6 +6076,55 @@ func TestProjectCommitTablesPinnedOutOfPush(t *testing.T) {
 		if bytes.Contains(raw, []byte(sentinel)) {
 			t.Errorf("project_commit_* table content leaked into the push payload under %s — commit "+
 				"capture is node-local (R1/R12) and has no wire surface yet", p.name)
+		}
+	}
+}
+
+// TestLocalSessionHoldsPinnedOutOfPush (agent migration 251, plan 07 M8.8):
+// local_session_holds is in forbiddenCacheTables, and a hold's note never
+// reaches a marshaled push payload in any share posture. The hold is the
+// developer's choice about THIS machine's retention, never org data.
+func TestLocalSessionHoldsPinnedOutOfPush(t *testing.T) {
+	found := false
+	for _, n := range forbiddenCacheTables {
+		found = found || n == "local_session_holds"
+	}
+	if !found {
+		t.Fatal("local_session_holds is not in forbiddenCacheTables — the source-level sentinel is missing")
+	}
+	const sentinel = "SBLOCALHOLDSENT"
+	ctx := context.Background()
+	database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "agent.db")})
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer func() { _ = database.Close() }()
+	st := store.New(database)
+	seed(ctx, t, st)
+	if _, err := st.HoldSession(ctx, "sess-cc-1", sentinel, time.Now().UTC()); err != nil {
+		t.Fatalf("HoldSession: %v", err)
+	}
+	for _, p := range []struct {
+		name  string
+		share store.ShareOptions
+	}{
+		{"metadata_only", store.ShareOptions{}},
+		{"full_content", store.ShareOptions{FullContent: true}},
+		{"admin_managed", store.ShareOptions{AdminManaged: true}},
+	} {
+		batch, err := st.SelectUnpushedSince(ctx, store.PushCursor{}, 1<<20, "org-1", "dev@x", p.share, store.ScopeOptions{})
+		if err != nil {
+			t.Fatalf("SelectUnpushedSince(%s): %v", p.name, err)
+		}
+		raw, err := json.Marshal(batch)
+		if err != nil {
+			t.Fatalf("marshal batch(%s): %v", p.name, err)
+		}
+		if !bytes.Contains(raw, []byte("sess-cc-1")) {
+			t.Fatalf("the held session is missing from the %s payload — the absence assertion would be vacuous", p.name)
+		}
+		if bytes.Contains(raw, []byte(sentinel)) {
+			t.Errorf("a local hold leaked into the push payload under %s", p.name)
 		}
 	}
 }
@@ -6769,10 +6978,70 @@ func TestPolicyStateRowWireShapeIsHashOnly(t *testing.T) {
 		}
 	}
 	lg := reflect.TypeOf(orgcontract.LocalGuardPosture{})
-	lgAllowed := map[string]bool{"Enabled": true, "Mode": true, "PromptEnabled": true, "PromptMode": true, "DetectorModes": true, "AllowListCount": true}
+	lgAllowed := map[string]bool{
+		"Enabled": true, "Mode": true, "PromptEnabled": true, "PromptMode": true, "DetectorModes": true, "AllowListCount": true,
+		// gen9 (managed policy visibility, 2026-11-12): the machine's own
+		// rule changes (LocalRuleChange, pinned field by field below), a
+		// truncation bool, and the rule ids the daemon removed from a managed
+		// machine's config with an RFC3339 time. orgcontract.ValidLocalRuleReport
+		// refuses a rule id outside ReportableLocalRuleID's shape on both
+		// sides, so no matcher, regex, doc line or path can travel.
+		"RuleChanges": true, "RuleChangesTruncated": true, "RemovedDisables": true, "RemovedDisablesAt": true,
+		// gen9: the guard engine inputs as list shapes, counts, closed enums
+		// and bools (LocalGuardInputs, pinned field by field below).
+		"Inputs": true,
+		// gen9: the node-local settings that shape policy (LocalNodePosture,
+		// pinned by kind below): switches, shaped config tokens, counts.
+		"Node": true,
+	}
+	lnp := reflect.TypeOf(orgcontract.LocalNodePosture{})
+	lnpStrings := map[string]bool{
+		"GuardLevel": true, "BudgetWindow": true, "RoutingMode": true, "RoutingPolicy": true, "DefaultWorkspace": true,
+		"HooksPeriodicRegister": true, "SandboxBackend": true, "SandboxEgress": true, "SandboxMinIsolation": true,
+		"MCPRelayMode": true, "MCPRelayAuditMode": true,
+	}
+	for i := 0; i < lnp.NumField(); i++ {
+		f := lnp.Field(i)
+		switch {
+		case f.Type.Kind() == reflect.Bool, f.Type.Kind() == reflect.Int:
+		case f.Type.Kind() == reflect.String && lnpStrings[f.Name]:
+			// A config enum or id checked by shape (orgcontract.LocalNodeTokenOK).
+		case f.Name == "SandboxBackends" && f.Type.Kind() == reflect.Slice:
+		case f.Name == "Share" && f.Type.Kind() == reflect.Map && f.Type.Elem().Kind() == reflect.Bool:
+		default:
+			t.Errorf("LocalNodePosture gained field %q (%s) - it is switch/shaped-token/count ONLY (gen9)", f.Name, f.Type)
+		}
+	}
 	for i := 0; i < lg.NumField(); i++ {
 		if !lgAllowed[lg.Field(i).Name] {
-			t.Errorf("LocalGuardPosture gained non-allow-listed field %q - it is bool/enum/detector-id/count ONLY", lg.Field(i).Name)
+			t.Errorf("LocalGuardPosture gained non-allow-listed field %q - it is bool/enum/detector-id/rule-id/count ONLY", lg.Field(i).Name)
+		}
+	}
+	lrc := reflect.TypeOf(orgcontract.LocalRuleChange{})
+	lrcAllowed := map[string]bool{
+		"RuleID": true, "Layer": true, "Kind": true, "Observe": true, "Enforce": true,
+		"Enforced": true, "EnforceOff": true, "Loosens": true, "Applied": true,
+		// The project identity hash the push wire already ships as
+		// project_root_hash, never the root path.
+		"ProjectRootHash": true,
+	}
+	lgi := reflect.TypeOf(orgcontract.LocalGuardInputs{})
+	for i := 0; i < lgi.NumField(); i++ {
+		f := lgi.Field(i)
+		switch f.Type.Kind() {
+		case reflect.Bool, reflect.Int:
+		case reflect.String:
+			// Only the closed-enum fields may be strings.
+			if f.Name != "BoundaryAllowPaths" && f.Name != "ProtectedBranches" && f.Name != "EgressAction" {
+				t.Errorf("LocalGuardInputs gained string field %q - strings there are closed enums ONLY (gen9)", f.Name)
+			}
+		default:
+			t.Errorf("LocalGuardInputs gained field %q of kind %s - it is shape/count/enum/bool ONLY (gen9)", f.Name, f.Type.Kind())
+		}
+	}
+	for i := 0; i < lrc.NumField(); i++ {
+		if !lrcAllowed[lrc.Field(i).Name] {
+			t.Errorf("LocalRuleChange gained non-allow-listed field %q - it is rule-id/closed-enum/bool/project-hash ONLY (gen9)", lrc.Field(i).Name)
 		}
 	}
 	typ := reflect.TypeOf(orgcontract.PolicyStateRow{})
@@ -7286,6 +7555,78 @@ func TestSandboxPostureCarriesNoRunIdentity(t *testing.T) {
 					}
 				}
 			}
+		}
+	}
+}
+
+// TestSandboxEgressCountsCarryNoHost pins the sandbox egress refusal counts
+// (audit CG-15, decision D-11): a MANAGED node ships per (day, tier, closed
+// rule) counts and nothing else, even with every content tier on; the seeded
+// refusal's host, port, deciding key, project root, run id and an
+// out-of-vocabulary rule never appear; an individual node ships none in any
+// posture; and SandboxEgressRefusalDayRow has no field that could carry one.
+func TestSandboxEgressCountsCarryNoHost(t *testing.T) {
+	const secret = "SECRET_SBXEGRESS_quixotic_zz"
+	ctx := context.Background()
+	database, err := dbtemplate.Open(ctx, db.Options{Path: filepath.Join(t.TempDir(), "agent.db")})
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer func() { _ = database.Close() }()
+	st := store.New(database)
+	for i, rule := range []string{"allow-list-miss", secret} {
+		if _, err := st.InsertSandboxEgressRefusal(ctx, store.SandboxEgressRefusal{
+			RunID: secret, ProjectRoot: "/home/dev/" + secret, Backend: "bwrap", Tier: "proxy_only",
+			Host: secret + "-" + string(rune('a'+i)) + ".example", Port: 31337, Rule: rule, Key: "terminal.sandbox." + secret,
+		}); err != nil {
+			t.Fatalf("InsertSandboxEgressRefusal: %v", err)
+		}
+	}
+	if err := st.AddSandboxEgressRefusalDrops(ctx, secret, 2, 0, time.Time{}); err != nil {
+		t.Fatalf("AddSandboxEgressRefusalDrops: %v", err)
+	}
+	wide := store.ShareOptions{FullContent: true, AdminManaged: true, EnterpriseGranted: true, FullToolBodies: true, TerminalDetail: true}
+	ind, err := store.New(database).SelectUnpushedSince(ctx, store.PushCursor{}, 1<<20, "org-1", "dev@x", wide, store.ScopeOptions{})
+	if err != nil {
+		t.Fatalf("SelectUnpushedSince: %v", err)
+	}
+	if len(ind.SandboxEgressRefusals) != 0 {
+		t.Fatalf("an individual node shipped refusal counts: %+v", ind.SandboxEgressRefusals)
+	}
+	wide.Managed = true
+	batch, err := store.New(database).SelectUnpushedSince(ctx, store.PushCursor{}, 1<<20, "org-1", "dev@x", wide, store.ScopeOptions{})
+	if err != nil {
+		t.Fatalf("SelectUnpushedSince: %v", err)
+	}
+	var refusals, dropped int64
+	for _, r := range batch.SandboxEgressRefusals {
+		refusals += r.Refusals
+		dropped += r.Dropped
+	}
+	if refusals != 2 || dropped != 2 {
+		t.Fatalf("counts %+v, want 2 refusals and 2 dropped", batch.SandboxEgressRefusals)
+	}
+	raw, err := json.Marshal(batch.SandboxEgressRefusals)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, leak := range []string{secret, "31337", "bwrap", "/home/dev"} {
+		if bytes.Contains(raw, []byte(leak)) {
+			t.Errorf("%q leaked into the sandbox egress counts: %s", leak, raw)
+		}
+	}
+	allowed := map[string]reflect.Kind{
+		"OrgID": reflect.String, "UserEmail": reflect.String, "Day": reflect.String,
+		"Tier": reflect.String, "Rule": reflect.String, "Refusals": reflect.Int64, "Dropped": reflect.Int64,
+	}
+	rt := reflect.TypeOf(orgcontract.SandboxEgressRefusalDayRow{})
+	if rt.NumField() != len(allowed) {
+		t.Errorf("SandboxEgressRefusalDayRow has %d fields, the reviewed set has %d", rt.NumField(), len(allowed))
+	}
+	for i := 0; i < rt.NumField(); i++ {
+		f := rt.Field(i)
+		if k, ok := allowed[f.Name]; !ok || k != f.Type.Kind() {
+			t.Errorf("SandboxEgressRefusalDayRow.%s (%s) is not in the reviewed enum-and-count field set", f.Name, f.Type.Kind())
 		}
 	}
 }

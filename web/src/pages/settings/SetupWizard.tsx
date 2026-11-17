@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CSSProperties, RefObject } from "react";
 import clsx from "clsx";
-import { Link } from "react-router-dom";
+import { GatedLink } from "@/components/GatedLink";
 import { Button, ConfirmButton, Icon } from "@/components/primitives";
 import { ObsLanding } from "@shared/primitives/ObsFlight";
 import { useApi } from "@/lib/useApi";
@@ -423,9 +423,9 @@ function WizardStep({
           {spec.noteLink && (
             <>
               {" "}
-              <Link to={spec.noteLink.to} className="font-medium text-accent hover:text-accent-strong">
+              <GatedLink to={spec.noteLink.to} managed={null} className="font-medium text-accent hover:text-accent-strong">
                 {spec.noteLink.label}
-              </Link>
+              </GatedLink>
             </>
           )}
         </p>

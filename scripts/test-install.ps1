@@ -101,9 +101,10 @@ public static class P {
     # T-744: the minimal edition's next steps never claim a proxy.
     $claimsProxy = $r.out -match "proxy \+ watcher"
     if (($ed -eq "minimal") -eq $claimsProxy) { Bad "edition $ed next steps (proxy claim = $claimsProxy)" $r.out } else { Ok "edition $ed next steps match its proxy" }
-    # T-746: the managed next step is the real enrol command.
+    # T-746: the managed next step is the real command (Getting started
+    # v2: `observer connect <server>`, never the retired enroll words).
     if ($ed -eq "managed") {
-      if ($r.out -match "observer enroll --link" -and $r.out -notmatch "observer org enroll") { Ok "managed next step names observer enroll --link" } else { Bad "managed enrol next step" $r.out }
+      if ($r.out -match "observer connect <server>" -and $r.out -notmatch "observer (org )?enroll") { Ok "managed next step names observer connect <server>" } else { Bad "managed connect next step" $r.out }
     }
   }
 
@@ -242,6 +243,26 @@ public static class P {
   # An archive with no mxc\ leaves an installed set alone.
   $r = Run @("-FromDir", $rel, "-Prefix", $pM, "-Edition", "developer", "-Yes")
   if ($r.rc -eq 0 -and [IO.File]::ReadAllText("$pM\mxc\wxc-exec.exe") -eq "fake exe!") { Ok "an archive without mxc\ leaves the installed sandbox files alone" } else { Bad "no mxc in the archive" $r.out }
+
+  # -Connect (Getting started v2): the default edition is developer, the
+  # stub's `connect <team> --wire-clients=false` runs before the daemon is
+  # started (`setup launch --open`), and the dashboard lines close it. The
+  # sign-in entry is written to a stand-in Run key path, never the real one.
+  $r = Run @("-FromDir", $rel, "-Prefix", "$T\pc1", "-Connect", "acme", "-Yes") @{ OBSERVER_INSTALL_TEST_RUNKEY = "HKCU:\Software\SuperBasedObserverInstallTest\Run" }
+  $calls = @(Get-Content $log)
+  $ci = [array]::IndexOf($calls, "connect acme --wire-clients=false")
+  $li = [array]::IndexOf($calls, "setup launch --open")
+  if ($r.rc -eq 0 -and $r.out -match "developer edition" -and $ci -ge 0 -and $li -gt $ci -and $r.out -match "Local dashboard http://127.0.0.1:8081" -and $r.out -match "Online dashboard https://cloud.superbased.app") {
+    Ok "-Connect acme: developer edition, connect before the daemon starts, dashboard lines"
+  } else { Bad "-Connect acme" ($r.out + ($calls -join "`n")) }
+  Remove-Item -Path "HKCU:\Software\SuperBasedObserverInstallTest" -Recurse -Force -ErrorAction SilentlyContinue
+
+  $r = Run @("-FromDir", $rel, "-Prefix", "$T\pc2", "-Connect", "-Edition", "minimal", "-Yes")
+  if ($r.rc -ne 0 -and $r.out -match "needs the developer or full edition" -and -not (Test-Path "$T\pc2\observer.exe")) { Ok "-Connect refuses the minimal edition" } else { Bad "-Connect minimal" $r.out }
+  $r = Run @("-FromDir", $rel, "-Prefix", "$T\pc3", "-Connect", "Bad_Team", "-Yes")
+  if ($r.rc -ne 0 -and $r.out -match "is not a team name") { Ok "-Connect refuses a bad team name" } else { Bad "-Connect bad team" $r.out }
+  $r = Run @("-Prefix", "$T\pc4", "-Connect", "-Uninstall", "-Yes")
+  if ($r.rc -ne 0 -and $r.out -match "does not go with -Uninstall") { Ok "-Connect refuses -Uninstall" } else { Bad "-Connect -Uninstall" $r.out }
 
   $r = Run @("-Uninstall", "-Prefix", "$T\p2", "-Yes")
   if ($r.rc -eq 0 -and -not (Test-Path "$T\p2\observer.exe") -and (Get-Content $log) -contains "uninstall --all") { Ok "uninstall runs observer uninstall --all and removes the binaries" } else { Bad "uninstall" $r.out }

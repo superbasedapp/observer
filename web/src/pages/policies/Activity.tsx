@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { GatedLink } from "@/components/GatedLink";
 import type { ColumnDef } from "@tanstack/react-table";
 import { DataTable } from "@/components/DataTable";
 import { ChartShell, EmptyState, HostMark, InlineLoading, ModelId, Pill, Tooltip } from "@/components/primitives";
@@ -229,7 +229,7 @@ export function ActivityTab() {
 
       <ChartShell
         title="Recent egress decisions"
-        right={<Link to="/egress" className="text-caption font-medium text-accent hover:underline">Full audit on Egress →</Link>}
+        right={<GatedLink to="/egress" managed={null} className="text-caption font-medium text-accent hover:underline">Full audit on Egress →</GatedLink>}
         sub="Routing directives the egress policy produced. Advise-mode rows are recorded but never routed; enforce rows carry the proxy's realized outcome."
       >
         {egress.loading && egRows.length === 0 ? (

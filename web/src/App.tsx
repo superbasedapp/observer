@@ -57,7 +57,8 @@ import {
   useGovernanceVisibility,
   type Governance,
 } from "@/lib/governance";
-import { FLOOR_NAV_IDS, navSource, type GovernancePosture } from "@/lib/visibility";
+import { FLOOR_NAV_IDS, type GovernancePosture } from "@/lib/visibility";
+import { ManagedNotice } from "@/components/ManagedNotice";
 
 // HelpDrawer carries the 164-entry registry — defer until first
 // open so it doesn't bloat the shell chunk.
@@ -90,53 +91,6 @@ function navIdForPath(pathname: string): string | null {
 function componentForPath(pathname: string): string | undefined {
   const rel = pathname.replace(/^\/+/, "").replace(/\/+$/, "");
   return PAGE_ROUTES.find((r) => r.path === rel)?.component;
-}
-
-// ManagedNotice renders instead of the page when the current route is
-// hidden on this machine (the resolved visibility: the org's directives plus
-// the managed-node defaults) - a direct-URL visit to a hidden page must say
-// so, not blank out or 404.
-function ManagedNotice({ gov, navId }: { gov: Governance | null; navId: string }) {
-  const notice = gov?.notice;
-  const byDefault = navSource(gov, navId) === "default";
-  return (
-    <div className="flex h-full items-center justify-center p-12" data-testid="managed-notice">
-      <div className="max-w-md text-center">
-        <h2 className="text-[15px] font-semibold text-fg-1">
-          Managed by your organization
-        </h2>
-        <p className="mt-2 text-[12.5px] text-fg-3">
-          This page is managed by {governedOrgLabel(gov)} and is not available on
-          this machine.
-          {byDefault &&
-            " It is hidden by default on organization-managed machines; your administrator can make it available."}
-        </p>
-        {(notice?.contact || notice?.policy_url) && (
-          <p className="mt-3 text-[11.5px] text-fg-3">
-            {notice?.contact && (
-              <a
-                href={`mailto:${notice.contact}`}
-                className="text-accent hover:underline"
-              >
-                {notice.contact}
-              </a>
-            )}
-            {notice?.contact && notice?.policy_url && " · "}
-            {notice?.policy_url && (
-              <a
-                href={notice.policy_url}
-                target="_blank"
-                rel="noreferrer"
-                className="text-accent hover:underline"
-              >
-                {notice.policy_url}
-              </a>
-            )}
-          </p>
-        )}
-      </div>
-    </div>
-  );
 }
 
 // PostureUnresolved renders instead of a governed page until this machine's

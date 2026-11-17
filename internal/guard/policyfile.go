@@ -340,8 +340,14 @@ func lintParsed(pf *policyFile, layer string) []string {
 		extra, overrides, _, mergeIssues = mergeLayers(nil, nil, nil, pf)
 		problems = append(problems, mergeIssues...)
 	case layerOrg:
+		// An org bundle is authored for every node, not for this host: it
+		// is linted against the FULL security pillar pack (orgLintPack), so
+		// an override on any S-7xx rule some node can evaluate gets the
+		// built-in one-way checks instead of the "not loaded" refusal the
+		// host's own (usually empty) pack would give it (audit CG-1). The
+		// same pass runs at the server's publish and at a node's accept.
 		var mergeIssues []string
-		extra, overrides, _, mergeIssues = mergeLayers(pf, nil, nil, nil)
+		extra, overrides, _, mergeIssues = mergeLayersWithPack(orgLintPack(), pf, nil, nil, nil)
 		problems = append(problems, mergeIssues...)
 	default:
 		// The user layer has no relaxation check to fail in isolation

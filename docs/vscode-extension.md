@@ -49,6 +49,8 @@ and install via `code --install-extension <file>.vsix`.
 | Surface | Description |
 |---|---|
 | **Status bar** | Today's spend in the bottom-right (`$(graph) ▞ superbased $313.85`), updated every 60 s. Click → open dashboard. Hover for delta vs yesterday, top model, burn rate, month projection. The `▞ superbased` wordmark prefix is on by default; turn it off with `observer.statusBar.wordmark = false`. |
+| **Account item** | Left of today's spend: `$(account) SuperBased · not signed in` (click: sign in and connect), `SuperBased · signed in` (signed in, this machine not connected yet; click: connect) or `SuperBased · <name>` (click: open the online dashboard, else the local one). Reads `GET /api/connect/status` on activation, on every daemon change and every 60 s; hidden while the daemon is not running, when the daemon does not serve that route, or when it cannot read the sign-in state. A personal dashboard's address is never shown; the item reads "your personal dashboard" instead. |
+| **Sign-in suggestion** | On first activation, a notification: "SuperBased Observer is running and capturing your AI sessions. Sign in to see all your machines online and join your team." with **Sign in and connect**, **Open dashboard** and **Later**. It returns once, 7 days after it was last shown, and never again; it never appears while the machine is signed in, connected, or set by your company. |
 | **Activity bar** | An `observer` view container with four `TreeView`s: **Today**, **Sessions**, **Discovery**, **Costs (7 d)**. Right-click any session row for **Open in Dashboard** / **Copy Session ID**. |
 | **Dashboard webview** | `SuperBased: Open Dashboard` opens the full React analytics SPA inside an editor tab. Same surface as the standalone `http://127.0.0.1:8081/`. Remote-SSH / Codespaces work via `portMapping`. |
 | **File-freshness decorations** | A small dot in the explorer next to files your AI tools touched in the last 24 h, with a Markdown hover showing last-read-by, edit count, stale re-read count, and the tools that touched it. |
@@ -143,6 +145,8 @@ Open the command palette (`Ctrl+Shift+P` / `⌘⇧P`) and search for
 
 | Command | What it does |
 |---|---|
+| `SuperBased: Sign in and connect` | Run `observer connect --json --no-browser` with the resolved binary, open the approval page in your browser, and show "Waiting for approval in your browser, code KTRW-4821" with Cancel. On the page you pick your personal dashboard (summary only) or a team (full detail), or **Not now** to stay signed in without sending anything. Reports Connected, Signed in only, or what went wrong. An older binary without `--json` is reported as "update it, then try again". If no browser opens, it offers the code-entry page and the code. |
+| `SuperBased: Connect to a team...` | The same, with the team name your admin gave you preselected on the approval page. |
 | `SuperBased: Doctor` | Run `observer doctor` against the resolved binary in a new terminal. |
 | `SuperBased: Start Daemon` | Spawn `observer start` (only in `managed`/`auto` mode). |
 | `SuperBased: Stop Daemon` | SIGTERM the extension-managed daemon (graceful 5 s window before SIGKILL). |
@@ -170,7 +174,7 @@ shows everything as before.
 
 | Setting | Default | Purpose |
 |---|---|---|
-| `observer.daemon.mode` | `detect` | `detect` attaches only; `managed` spawns + kills with the editor; `auto` attaches if a daemon is running, otherwise spawns. |
+| `observer.daemon.mode` | `auto` | `detect` attaches only; `managed` spawns + kills with the editor; `auto` attaches if a daemon is running, otherwise spawns. |
 | `observer.binary.path` | empty | Absolute path to override binary auto-detection. **Machine-scoped and restricted in untrusted workspaces**; see "Workspace trust" below. |
 | `observer.binary.preferPathBinary` | `false` | Scan `$PATH` before the bundled binary. **Machine-scoped and restricted in untrusted workspaces**, same reason as `observer.binary.path`. |
 | `observer.dashboard.port` | `8081` | Where the dashboard listens. |
@@ -281,7 +285,11 @@ executable or read a secret off disk.
   no usage or crash data to SuperBased, and your content never leaves
   without your consent.
 - **No outbound network calls** except to GitHub Releases on first
-  install (for the binary, when none is found locally).
+  install (for the binary, when none is found locally). **Sign in and
+  connect** runs `observer connect`, whose own requests start only when
+  you run it: it sends this machine's name, OS and Observer version to
+  start the request, and nothing about your AI sessions until you
+  approve the share level in your browser.
 - **Your content stays on your machine.** All `/api/*` traffic is to
   `127.0.0.1:<dashboard.port>` on the workspace host. Under
   Remote-SSH / Codespaces the iframe `portMapping` routes the

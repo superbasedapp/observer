@@ -253,6 +253,19 @@ func lowerShareOptions(local store.ShareOptions, eff govern.Effective) store.Sha
 	// (govern.Effective), never cached, so a grant lapsing takes effect on
 	// the very next push — same posture as every other raise here.
 	out.EnterpriseGranted = eff.EnterpriseContentInForce()
+	// The managed policy tiers (govern/managedpolicytiers.go, 2026-11-12
+	// ruling): on a managed node the policy and enforcement tiers ship
+	// whatever the node's own share switch or the grant's tokens say.
+	for _, f := range shareRaiseFields {
+		if eff.ManagedPolicyTier(f.Key) {
+			f.Set(&out, true)
+		}
+	}
+	// The managed-only wires (the sandbox egress refusal counts, audit CG-15,
+	// decision D-11) ride the one managed predicate, read fresh every push
+	// like the grant above: never a config value, so an individual node
+	// cannot claim it and an unenrolment stops them on the next push.
+	out.Managed = eff.Managed
 	return out
 }
 

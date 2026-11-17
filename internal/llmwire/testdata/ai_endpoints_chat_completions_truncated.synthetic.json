@@ -1,0 +1,22 @@
+{
+  "id": "chatcmpl-synthetic-0002",
+  "object": "chat.completion",
+  "created": 1760000100,
+  "model": "gpt-oss-20b",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "reasoning_content": "synthetic reasoning text cut at the cap"
+      },
+      "finish_reason": "length"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 400,
+    "completion_tokens": 256,
+    "total_tokens": 656
+  }
+}

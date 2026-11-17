@@ -23,6 +23,7 @@ import { NodeLink } from "./NodeLink";
 import { NamedLoading } from "./NamedLoading";
 import { SEVERITY_TONE } from "./ProjectsCard";
 import { SignalLabels } from "./DependencyDetail";
+import { FixButton } from "./FixButton";
 
 // FindingsCard is the Findings tab's ungrouped list (Group by: None): one
 // row per finding, each linking its project and session and opening the
@@ -47,6 +48,7 @@ export function FindingsCard({
   onSorting,
   emptyHint = "No open findings. Run a scan to check again.",
   loadingLabel = "Loading findings",
+  onFix,
 }: {
   findings: ApiState<FindingsListPage>;
   projects: SecurityProject[];
@@ -58,6 +60,8 @@ export function FindingsCard({
   emptyHint?: string;
   /** What the loading line says while the first page loads. */
   loadingLabel?: string;
+  /** "Fix with an agent" on an open finding's row (absent: no column). */
+  onFix?: (id: string) => void;
 }) {
   const byHash = useMemo(() => new Map(projects.map((p) => [p.project_root_hash, p])), [projects]);
   const rows = findings.data?.findings ?? [];
@@ -156,8 +160,22 @@ export function FindingsCard({
         sortDescFirst: true,
         cell: ({ row }) => <span className="text-fg-3">{fmtRelative(row.original.first_seen)}</span>,
       },
+      ...(onFix
+        ? [
+            {
+              id: "fix",
+              header: "",
+              enableSorting: false,
+              accessorFn: (f: FindingsListRow) => f.id,
+              cell: ({ row }: { row: { original: FindingsListRow } }) =>
+                row.original.status === "open" ? (
+                  <FixButton iconOnly onClick={() => onFix(row.original.id)} testId="code-security-fix-finding" />
+                ) : null,
+            } satisfies ColumnDef<FindingsListRow>,
+          ]
+        : []),
     ],
-    [byHash],
+    [byHash, onFix],
   );
   const firstLoad = findings.loading && !findings.data;
   if (firstLoad) {

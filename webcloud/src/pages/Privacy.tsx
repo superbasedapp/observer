@@ -1,8 +1,8 @@
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useState } from "react";
-import { usePortalQuery } from "../lib/query";
+import { invalidatePortal, usePortalQuery } from "../lib/query";
 import { CardSkeleton, ErrorPanel } from "../components/LoadState";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import {
   ApiError,
   clearCsrf,
@@ -10,9 +10,11 @@ import {
   getAuthMode,
   getBrowserSessions,
   getConsents,
+  getAccountDeletionPrecheck,
   getDevices,
   getGrants,
   listExports,
+  refusalBlockers,
   requestDeletion,
   requestDeletionWithStepUp,
   requestExport,
@@ -21,6 +23,8 @@ import {
   revokeDevice,
 } from "../api";
 import type {
+  AccountDeletionBlocker,
+  AccountDeletionPrecheck,
   BrowserSessionsResult,
   ConsentsResult,
   DevicesResult,
@@ -36,6 +40,9 @@ import { fmtDateTime, fmtRelative, fmtShortId } from "@shared/lib/format";
 import { DELETION_STATE_LABELS, RETENTION_STATE_LABELS, labelFor } from "../lib/labels";
 import { Button } from "@shared/primitives/Button";
 import { ConfirmButton } from "@shared/primitives/ConfirmButton";
+import { DeletionError } from "../components/orgs/DeletionError";
+import { AccountDeletionPrecheckPanel } from "../components/orgs/AccountDeletionPrecheck";
+import { ACCOUNT_DELETION_BLOCKED, accountDeletionAllowed } from "../lib/deletionModel";
 import { Input } from "@shared/primitives/Input";
 import { SectionNav } from "@shared/primitives/SectionNav";
 import { RawIdHint } from "../components/RawIdHint";
@@ -76,7 +83,7 @@ type PrivacySectionId =
   | "export"
   | "delete";
 const PRIVACY_SECTIONS: { id: PrivacySectionId; label: string; icon: LucideIcon; tone?: "danger" }[] = [
-  { id: "devices", label: "Devices", icon: MonitorSmartphone },
+  { id: "devices", label: "Machines", icon: MonitorSmartphone },
   { id: "sessions", label: "Signed-in sessions", icon: LogIn },
   { id: "sharing", label: "Cloud sharing", icon: Share2 },
   { id: "consents", label: "Consents", icon: FileCheck },
@@ -104,6 +111,9 @@ const STEP_UP_START_URL =
 const EXPORT_STEP_UP_START_URL =
   "/portal/auth/workos/start?purpose=step_up&action=export&return_to=/portal/privacy";
 const STEP_UP_INTENT_KEY = "sbci_stepup_intent";
+
+// PRECHECK_KEY is the account deletion precheck's cache key.
+const PRECHECK_KEY = "privacy:deletion-precheck";
 
 function rememberStepUpIntent(intent: "deletion" | "export"): void {
   try {
@@ -151,14 +161,14 @@ function DevicesSection() {
 
   return (
     <Card className="mb-4" id="devices">
-      <CardHeader icon={SECTION_ICONS.devices} title="Devices" />
+      <CardHeader icon={SECTION_ICONS.devices} title="Machines" />
       {actionError && <div className="banner banner-error">{actionError}</div>}
       {q.error && !data && (
-        <ErrorPanel what="devices" error={q.error} onRetry={q.reload} />
+        <ErrorPanel what="your machines" error={q.error} onRetry={q.reload} />
       )}
       {q.loading && <CardSkeleton lines={3} />}
       {data && data.devices.length === 0 && (
-        <p className="muted small">No devices enrolled.</p>
+        <p className="muted small">No machines are signed in.</p>
       )}
       {data && data.devices.length > 0 && (
         <ul className="device-list">
@@ -175,18 +185,18 @@ function DevicesSection() {
               </div>
               {d.revoked ? (
                 <span className="inline-flex items-center gap-2">
-                  {revokedId === d.id && <SuccessCheck label="Device revoked" />}
+                  {revokedId === d.id && <SuccessCheck label="Machine removed" />}
                   <Pill variant="danger">Revoked</Pill>
                 </span>
               ) : revokedId === d.id ? (
-                <SuccessCheck label="Device revoked" />
+                <SuccessCheck label="Machine removed" />
               ) : (
                 <ConfirmButton
                   variant="danger-outline"
                   size="sm"
                   iconLeft={Ban}
                   loading={busyId === d.id}
-                  confirmLabel="Revoke device?"
+                  confirmLabel="Remove machine?"
                   armedNote="It will no longer be able to sync."
                   onConfirm={() => void onRevoke(d.id)}
                 >
@@ -428,7 +438,10 @@ function CloudSharingSection() {
         ))}
       {state !== null && state.choices === null && (
         <p className="muted small">
-          You have not been through the cloud-sharing setup screen yet.
+          You have not been through the cloud-sharing setup screen yet.{" "}
+          <Link to="/consent" className="text-accent hover:underline">
+            Set up cloud sharing
+          </Link>
         </p>
       )}
       {state !== null &&
@@ -508,7 +521,7 @@ function StandingGrantsSection() {
       {data && data.grants.length === 0 && (
         <p className="muted small">
           No standing grant has been registered on this account yet. One is
-          registered the first time a device syncs under a grant you made
+          registered the first time a machine syncs under a grant you made
           locally.
         </p>
       )}
@@ -596,7 +609,7 @@ function StandingGrantsSection() {
               <span>{data.stored_account_days}</span>
             </li>
             <li>
-              <span>Contributing devices</span>
+              <span>Contributing machines</span>
               <span>{data.contributing_device_count}</span>
             </li>
             <li>
@@ -802,8 +815,47 @@ function DeleteSection({
   const [subject, setSubject] = useState("");
   const [understood, setUnderstood] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // errorCode is the refusal's code, so a "pays for a live team" refusal
+  // can link to the teams (DeletionError).
+  const [errorCode, setErrorCode] = useState("");
+  // errorBlockers are the teams an account_deletion_blocked refusal names.
+  const [errorBlockers, setErrorBlockers] = useState<AccountDeletionBlocker[]>([]);
   const [result, setResult] = useState<DeletionResult | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // The precheck (plan 07 M6.9) runs before the step-up: the teams that
+  // block the deletion (each with its way out), the personal dashboard
+  // deleted with the account, and the memberships it removes. The delete
+  // action waits for it and stays off while a team blocks it; a failed
+  // precheck leaves the action on, since the server checks every blocker
+  // again and refuses with account_deletion_blocked.
+  const pre = usePortalQuery<AccountDeletionPrecheck>(PRECHECK_KEY, getAccountDeletionPrecheck);
+  const precheckLoading = !pre.data && !pre.error;
+  const blockedByPrecheck = !accountDeletionAllowed(pre.data);
+  const actionOff = precheckLoading || blockedByPrecheck;
+
+  // noteRefusal records a refusal; a blocked one carries its teams and
+  // re-reads the precheck so the panel above matches it.
+  function noteRefusal(err: unknown) {
+    const code = err instanceof ApiError ? err.code : "";
+    setErrorCode(code);
+    setErrorBlockers(refusalBlockers(err));
+    if (code === ACCOUNT_DELETION_BLOCKED) invalidatePortal(PRECHECK_KEY);
+  }
+
+  const precheckBlock = pre.data ? (
+    <AccountDeletionPrecheckPanel precheck={pre.data} />
+  ) : pre.error ? (
+    <p className="muted mb-3 text-[12px]">
+      Could not check what blocks deleting your account ({pre.error}). The deletion is checked again when you
+      confirm.{" "}
+      <button type="button" className="font-medium underline" onClick={pre.reload}>
+        Try again
+      </button>
+    </p>
+  ) : (
+    <InlineLoading size="sm" label="Checking what your account deletion affects" className="mb-3" />
+  );
 
   function onDeletionRequested(res: DeletionResult) {
     setResult(res);
@@ -829,11 +881,15 @@ function DeleteSection({
 
   function onSubmitDev(e: FormEvent) {
     e.preventDefault();
+    setErrorCode("");
+    setErrorBlockers([]);
     setError(devFormError());
   }
 
   async function onDeleteDev() {
     setError(null);
+    setErrorCode("");
+    setErrorBlockers([]);
     const invalid = devFormError();
     if (invalid !== null) {
       setError(invalid);
@@ -843,6 +899,7 @@ function DeleteSection({
     try {
       onDeletionRequested(await requestDeletion(subject.trim()));
     } catch (err) {
+      noteRefusal(err);
       setError(err instanceof Error ? err.message : "deletion request failed");
     } finally {
       setBusy(false);
@@ -863,6 +920,7 @@ function DeleteSection({
     try {
       onDeletionRequested(await requestDeletionWithStepUp(stepUpId));
     } catch (err) {
+      noteRefusal(err);
       if (err instanceof ApiError && err.code === "step_up_invalid") {
         // Expired/single-use-already-consumed: fall back to the re-auth
         // button with the server's own honest explanation, never a generic
@@ -891,7 +949,7 @@ function DeleteSection({
             {labelFor(DELETION_STATE_LABELS, result.state)}
           </RawIdHint>
           .
-          Jobs canceled: {result.jobs_canceled}. Devices revoked:{" "}
+          Jobs canceled: {result.jobs_canceled}. Machines removed:{" "}
           {result.devices_revoked}. Tokens revoked: {result.tokens_revoked}.
         </div>
         <InlineLoading size="sm" label="Signing you out" className="mt-2" />
@@ -904,15 +962,17 @@ function DeleteSection({
       <Card className="mb-4" tone="danger" id="delete">
         <CardHeader icon={SECTION_ICONS.delete} title="Delete my data" />
         <p className="muted">
-          This cancels your enrichment jobs and revokes your devices. It
+          This cancels your enrichment jobs and removes your machines. It
           requires re-authentication and a double confirmation.
         </p>
-        {error && <div className="banner banner-error">{error}</div>}
+        {precheckBlock}
+        {error && <DeletionError message={error} code={errorCode} blockers={errorBlockers} />}
         {stepUpId === null ? (
           <Button
             variant="danger-outline"
             size="sm"
             type="button"
+            disabled={actionOff}
             onClick={onReauthClick}
           >
             Re-authenticate to delete
@@ -923,6 +983,7 @@ function DeleteSection({
             size="sm"
             type="button"
             loading={busy}
+            disabled={actionOff}
             onClick={onConfirmStepUp}
           >
             {busy
@@ -938,10 +999,11 @@ function DeleteSection({
     <Card className="mb-4" tone="danger" id="delete">
       <CardHeader icon={SECTION_ICONS.delete} title="Delete my data" />
       <p className="muted">
-        This cancels your enrichment jobs and revokes your devices. It requires
+        This cancels your enrichment jobs and removes your machines. It requires
         re-authentication and a double confirmation.
       </p>
-      {error && <div className="banner banner-error">{error}</div>}
+      {precheckBlock}
+      {error && <DeletionError message={error} code={errorCode} blockers={errorBlockers} />}
       <form onSubmit={onSubmitDev}>
         <label htmlFor="del-subject" className="field-label">
           Re-enter developer subject
@@ -962,7 +1024,7 @@ function DeleteSection({
             disabled={busy}
             label={
               <span className="block text-left text-body leading-snug text-fg-1">
-                I understand this cancels jobs and revokes devices
+                I understand this cancels jobs and removes machines
               </span>
             }
           />
@@ -972,9 +1034,10 @@ function DeleteSection({
           size="sm"
           iconLeft={Trash2}
           loading={busy}
+          disabled={actionOff}
           requireConfirm={devFormError() === null}
           confirmLabel="Permanently delete?"
-          armedNote="This requests deletion of your data, cancels jobs, and revokes devices."
+          armedNote="This requests deletion of your data, cancels jobs, and removes machines."
           onConfirm={() => void onDeleteDev()}
         >
           {busy ? "Requesting" : "Request deletion"}
@@ -1016,7 +1079,7 @@ export function Privacy() {
   return (
     <div>
       <PageHeader
-        title="Privacy & devices"
+        title="Privacy & machines"
         icon={routeIcon("/privacy")}
         sub="This portal runs no analytics and no third-party scripts of its own - the only exception is Paddle.js, loaded on the Billing page and only at the moment you open a checkout."
         className="mb-6"

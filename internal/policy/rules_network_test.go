@@ -395,7 +395,7 @@ func TestNetworkScanner_R179(t *testing.T) {
 	t.Parallel()
 	obs := netEngine(t, ModeObserve, nil, nil)
 	enf := netEngine(t, ModeEnforce, nil, nil)
-	for _, base := range []string{"nmap", "masscan", "zmap", "rustscan", "naabu", "unicornscan", "hping3", "nikto", "nuclei", "sqlmap"} {
+	for _, base := range []string{"nmap", "masscan", "zmap", "rustscan", "naabu", "unicornscan", "hping3", "nikto", "nuclei", "sqlmap", "ffuf", "gobuster", "feroxbuster", "hydra", "wfuzz", "zaproxy", "zap.sh", "zap-baseline.py"} {
 		cmd := base + " 203.0.113.5"
 		t.Run("hit/"+base, func(t *testing.T) {
 			t.Parallel()
@@ -404,6 +404,25 @@ func TestNetworkScanner_R179(t *testing.T) {
 			}
 			if v := enf.Evaluate(netEvent(cmd)); v.RuleID != "R-179" || v.Decision != DecisionAsk {
 				t.Errorf("enforce %q = %s/%s, want R-179/ask", cmd, v.Decision, v.RuleID)
+			}
+		})
+	}
+	// One near-miss per base added by D33: the scanner name appears only as a
+	// file or path operand of an ordinary command, never as the command word.
+	for _, tc := range []struct{ base, cmd string }{
+		{"ffuf", "cat ffuf"},
+		{"gobuster", "ls gobuster"},
+		{"feroxbuster", "cat feroxbuster.toml"},
+		{"hydra", "cat hydra.txt"},
+		{"wfuzz", "grep wfuzz notes.md"},
+		{"zaproxy", "echo zaproxy"},
+		{"zap.sh", "cat zap.sh"},
+		{"zap-baseline.py", "cat zap-baseline.py"},
+	} {
+		t.Run("miss/operand only/"+tc.base, func(t *testing.T) {
+			t.Parallel()
+			if v := enf.Evaluate(netEvent(tc.cmd)); v.RuleID == "R-179" {
+				t.Errorf("%q hit R-179 (%s)", tc.cmd, v.Reason)
 			}
 		})
 	}

@@ -46,7 +46,7 @@ func TestBwrapWrapArgvSeccomp(t *testing.T) {
 			t.Fatal(err)
 		}
 		rt.applyDaemonConfig(cfg)
-		wrap, err := rt.buildWrapArgv("claude-code", ws, "runbwrapseccomp0001", true)
+		wrap, err := rt.buildWrapArgv("claude-code", ws, "runbwrapseccomp0001", true, "")
 		if err != nil {
 			t.Fatal(err)
 		}

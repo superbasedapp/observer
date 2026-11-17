@@ -166,11 +166,20 @@ func (s *Server) prepareRequest(w http.ResponseWriter, r *http.Request) (orgcont
 		if prepared.Payload != nil {
 			payload = *prepared.Payload
 		}
-		_, problems = accessgrant.Validate(accessgrant.Request{
+		var norm accessgrant.Normalized
+		norm, problems = accessgrant.Validate(accessgrant.Request{
 			Type: prepared.RequestType, Payload: payload, DurationS: prepared.RequestedDurationS,
 			Uses: prepared.RequestedUses, SubjectKind: prepared.SubjectKind, Machine: prepared.MachineIdentity,
 			Justification: prepared.Message,
 		}, accessgrant.DefaultSettings())
+		// A grant in force on this machine that already covers the ask is
+		// the answer: the preview says which, and nothing is sent (the org
+		// refuses the same request with the same sentence).
+		if len(problems) == 0 {
+			if g, covered := svc.AlreadyGranted(r.Context(), norm); covered {
+				problems = append(problems, accessgrant.AlreadyGrantedProblem(g, false))
+			}
+		}
 	}
 	if problems == nil {
 		problems = []accessgrant.Problem{}

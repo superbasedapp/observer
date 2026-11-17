@@ -83,17 +83,7 @@ func priceWithCostEngine(
 }
 
 func priceWithCostTable(table *cost.Table, model string, at time.Time, s store.PushTokenSplit) (float64, cost.PricingSource, bool) {
-	if table == nil {
-		return 0, cost.PricingSourceMiss, false
-	}
-	if !table.HasDated() {
-		at = time.Time{}
-	}
-	pricing, source, ok := table.LookupWithSourceAt(model, at)
-	if !ok {
-		return 0, source, false
-	}
-	return cost.ComputeBreakdown(pricing, cost.TokenBundle{
+	return table.PriceAt(model, at, cost.TokenBundle{
 		Input:             s.Input,
 		Output:            s.Output,
 		CacheRead:         s.CacheRead,
@@ -102,5 +92,5 @@ func priceWithCostTable(table *cost.Table, model string, at time.Time, s store.P
 		Reasoning:         s.Reasoning,
 		WebSearchRequests: s.WebSearchRequests,
 		Fast:              s.Fast,
-	}).Total, source, true
+	})
 }

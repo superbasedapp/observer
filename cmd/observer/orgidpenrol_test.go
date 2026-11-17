@@ -480,8 +480,9 @@ func TestIdPFlowUnavailableSuggestsTheCodeRail(t *testing.T) {
 	if !strings.Contains(msg, "switched off") || !strings.Contains(msg, "older") {
 		t.Fatalf("the message must cover BOTH indistinguishable causes: %v", err)
 	}
-	if !strings.Contains(msg, "observer enroll <org-url> <code>") {
-		t.Fatalf("the message must name the rail that always works: %v", err)
+	if !strings.Contains(msg, "observer enroll "+srv.URL+" <code>") || !strings.Contains(msg, srv.URL+"/me/install") ||
+		!strings.Contains(msg, "SBO_PAIR_CODE") {
+		t.Fatalf("the message must name the pairing-code and enrolment-code routes: %v", err)
 	}
 }
 

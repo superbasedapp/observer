@@ -64,14 +64,48 @@ var openShellLiteralFiles = []string{
 	"internal/orgserver/server_runtime.go",
 	"internal/orgserver/config/openshell.go",
 	"internal/orgserver/config/config.go",
-	"internal/orgserver/controlstore/schema_openshell.go",
+	"internal/orgserver/controlstore/schema_gen.go",
 	"internal/orgserver/controlstore/schema.go",
 	"internal/orgserver/rollup/audit.go",
 	// The device-approval page's form route in the cross-site table (live
 	// finding F-L3-3, lane FX1): the table is the one owner of those rows.
 	"internal/orgserver/auth/crosssite.go",
 	"internal/orgserver/retention/aged_rows.go",
+	// The tenancy manifest (plan 07 M3-0.2): one row per org table, the
+	// OpenShell tables included; it names tables, never the capability.
+	"internal/orgserver/tenancy/tables.go",
+	// The org-bound object store's namespace table (plan 07 M5.7): the
+	// OpenShell collect tree is one storage namespace; it names a key
+	// layout, never the capability.
+	"internal/orgserver/orgobj/rules.go",
+	// The background-loop classification (plan 07 M4.1): one row per loop,
+	// the OpenShell worker included; it names a loop, never the capability.
+	"internal/orgserver/periodic/loops.go",
+	// The retention hold path inventory (plan 07 M7a.4): one row per prune
+	// path, the OpenShell box prune included; it names a path, never the
+	// capability.
+	"internal/orgserver/retention/holdpaths.go",
+	// The pooled route inventory (plan 07 wave 10 L2): one row per mounted
+	// route, the OpenShell agent and admin routes included, each pattern
+	// spelt exactly as mounted so TestEveryRouteHasAPooledRow matches it; it
+	// names routes, never the capability.
+	"internal/orgserver/pooledroutes/routes.go",
 	"internal/components/catalog_server.go",
+	// The grandfathered Reach set (plan 06 18.3.3): one key per catalog
+	// component id that existed at catalog version 4, the OpenShell rows
+	// included; it names component ids, never the capability.
+	"internal/components/reach.go",
+	// The entitlements gate table (plan 07 M7b.1): one row per server
+	// catalog component id, the OpenShell row included, keyed by the
+	// component id (no second key space); it names a component id, never
+	// the capability.
+	"internal/entitlements/capability.go",
+	// The plain-language network lane table `observer privacy` prints
+	// (Getting started v2, internal/netlanes): one row per lane, the
+	// sandboxes row naming the org-hosted sandbox's egress lane id
+	// (sandbox.remote.openshell-org, declared in egress_lanes_test.go) and
+	// the provider in words; it names a lane, never the capability.
+	"internal/netlanes/netlanes.go",
 	"cmd/observer-org/openshell*",
 	"cmd/observer-org/components_build_no_openshell.go",
 	"cmd/observer-org/main.go",
@@ -92,7 +126,7 @@ var openShellLiteralFiles = []string{
 	"cmd/observer-org/doctor.go",
 	"cmd/observer-org/preflight.go",
 	"cmd/observer-org/supportbundle.go",
-	"internal/orgserver/controlstore/schema_openshell_gw.go",
+	"internal/orgserver/db/pgmigrations/gen/controlshadow/manifest.go",
 	"internal/orgserver/chat/admin_orgshell.go",
 	// The org gateway's live-check probe (lane G5, G-L1 and G-L2): its own
 	// module against the tagged SDK, never linked into a product binary.

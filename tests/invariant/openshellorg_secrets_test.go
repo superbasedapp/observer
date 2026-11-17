@@ -35,6 +35,11 @@ var openShellOrgSecretOwners = []string{
 	"internal/orgserver/openshellctl/",
 	"internal/orgserver/openshellgw/",
 	"internal/orgserver/server_openshell*",
+	// The pooled route inventory (plan 07 wave 10 L2): one row per mounted
+	// route, so it spells the agent token routes exactly as mounted
+	// (TestEveryRouteHasAPooledRow matches them); it holds no grant or token
+	// and logs nothing.
+	"internal/orgserver/pooledroutes/routes.go",
 }
 
 // openShellOrgSecretForbidden are files that must never name a needle, even

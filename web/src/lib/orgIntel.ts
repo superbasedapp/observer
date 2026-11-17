@@ -181,15 +181,15 @@ export function orgIntelBanner(s: OrgIntelStatus | null | undefined): { title: s
   if (s.pending_reason === "terms_changed") {
     return {
       title: "Updated terms",
-      text: `${org} changed its Cloud Intelligence terms. Enrichment continues under the terms you accepted until you review the new ones.`,
+      text: `${org} changed its AI summaries terms. Enrichment continues under the terms you accepted until you review the new ones.`,
     };
   }
   const deadline = s.deadline_passed
-    ? " The deadline has passed, so the organization may refuse this machine's data until you choose."
+    ? " The deadline has passed, so the team may refuse this machine's data until you choose."
     : "";
   return {
     title: "Consent required",
-    text: `${org} now requires Cloud Intelligence. Accept, or leave the organization.${deadline}`,
+    text: `${org} now requires AI summaries. Accept, or leave the team.${deadline}`,
   };
 }
 
@@ -228,27 +228,27 @@ const SESSIONS_BANNER_RULES: ReadonlyArray<{
   {
     state: "Off",
     match: (s) => !s.org_enabled,
-    text: (_s, org) => `${org} has org enrichment turned off. Nothing is sent from this machine.`,
+    text: (_s, org) => `${org} has team AI summaries turned off. Nothing is sent from this machine.`,
   },
   {
     state: "Not running",
     match: (s) => s.class === "managed" && !!s.managed_rail && !s.managed_rail.on,
-    text: (s, org) => s.managed_rail?.message || `Org enrichment is not running on this machine yet under ${org}'s terms.`,
+    text: (s, org) => s.managed_rail?.message || `Team AI summaries are not running on this machine yet under ${org}'s terms.`,
   },
   {
     state: "Running",
     match: (s) => s.class === "managed",
-    text: (_s, org) => `This machine is managed: ${org} decides, and org enrichment runs here under its terms. There is nothing to accept.`,
+    text: (_s, org) => `This machine is managed: ${org} decides, and team AI summaries run here under its terms. There is nothing to accept.`,
   },
   {
     state: "Terms changed",
     match: (s) => s.pending && s.pending_reason === "terms_changed",
-    text: (_s, org) => `${org} changed its terms. Enrichment continues under the terms you accepted until you review the new ones in Settings, Org enrichment.`,
+    text: (_s, org) => `${org} changed its terms. Enrichment continues under the terms you accepted until you review the new ones in Settings, Team AI summaries.`,
   },
   {
     state: "Your answer needed",
     match: (s) => s.pending,
-    text: (_s, org) => `${org} requires org enrichment. Accept, or leave the organization, in Settings, Org enrichment.`,
+    text: (_s, org) => `${org} requires team AI summaries. Accept, or leave the team, in Settings, Team AI summaries.`,
   },
   {
     state: "Accepted",
@@ -258,7 +258,7 @@ const SESSIONS_BANNER_RULES: ReadonlyArray<{
   {
     state: "Not accepted",
     match: () => true,
-    text: (_s, org) => `You have not accepted ${org}'s terms, so nothing is sent from this machine for these sessions. Review them in Settings, Org enrichment.`,
+    text: (_s, org) => `You have not accepted ${org}'s terms, so nothing is sent from this machine for these sessions. Review them in Settings, Team AI summaries.`,
   },
 ];
 
@@ -273,10 +273,10 @@ export function orgIntelSessionsBanner(s: OrgIntelStatus | null | undefined, pla
   const rule = SESSIONS_BANNER_RULES.find((r) => r.match(s))!;
   const mode = planes.includes("personal") ? "mixed" : "org";
   let text = rule.text(s, org);
-  if (mode === "mixed") text += " Sessions marked personal use your own Cloud Intelligence, described below.";
+  if (mode === "mixed") text += " Sessions marked personal use your own AI summaries, described below.";
   const r = s.requirement;
   const terms = r ? `${r.provider_label} / ${r.model} · ${orgIntelLevelLabel(r.evidence_level)} · Background: ${orgIntelBackgroundLine(r)}` : "";
-  return { mode, title: `Org enrichment · ${rule.state}`, state: rule.state, text, terms, link: "/settings?section=intel" };
+  return { mode, title: `Team AI summaries · ${rule.state}`, state: rule.state, text, terms, link: "/settings?section=intel" };
 }
 
 // ---------------------------------------------------------------------------
@@ -449,21 +449,21 @@ export function sessionEnrichPlane(row: { enrich_plane?: string }): SessionEnric
 // orgPlaneEnrichAction is the Sessions list button label for an org-plane
 // session (the personal plane keeps lib/cloudProgress's labels).
 export function orgPlaneEnrichAction(row: { org_title?: string }): string {
-  return row.org_title ? "View org enrichment" : "Org enrichment";
+  return row.org_title ? "View team AI summaries" : "Team AI summaries";
 }
 
 // SESSION_ENRICH_PLANE_COPY says, on the button tooltip and in the drawer,
 // which plane enriches the session.
 export const SESSION_ENRICH_PLANE_COPY: Record<SessionEnrichPlane, { tooltip: string; drawerTitle: string; drawerNote: string }> = {
   org: {
-    tooltip: "Captured while this machine was enrolled: enriched by your organization, on its own server and model",
-    drawerTitle: "Org enrichment",
+    tooltip: "Captured while this machine was connected to a team: summarized by your team, on its own server and model",
+    drawerTitle: "Team AI summaries",
     drawerNote:
-      "This session was captured while this machine was enrolled, so it belongs to your organization's plane: your organization enriches it on its own server and model, under the terms in Settings, Org enrichment.",
+      "This session was captured while this machine was connected to a team, so it belongs to the team: your team summarizes it on its own server and model, under the terms in Settings, Team AI summaries.",
   },
   personal: {
-    tooltip: "Open this session's personal Cloud Intelligence status and controls",
+    tooltip: "Open this session's personal AI summaries status and controls",
     drawerTitle: "Session enrichment",
-    drawerNote: "This session is on your personal Cloud Intelligence plane: you choose what is sent and when.",
+    drawerNote: "This session uses your personal AI summaries: you choose what is sent and when.",
   },
 };

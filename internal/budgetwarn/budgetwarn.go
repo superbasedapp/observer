@@ -58,10 +58,14 @@ type Notice struct {
 
 // WindowStatus is one window's current reading.
 type WindowStatus struct {
-	Window      string  `json:"window"`
-	Unit        string  `json:"unit"`
-	Subject     string  `json:"subject,omitempty"`
-	Period      string  `json:"period"`
+	Window  string `json:"window"`
+	Unit    string `json:"unit"`
+	Subject string `json:"subject,omitempty"`
+	Period  string `json:"period"`
+	// Timezone is the IANA zone Period is named in ("UTC" for a UTC cap,
+	// never empty from Evaluate), so a reader can place the period on the
+	// cap's own calendar instead of guessing UTC.
+	Timezone    string  `json:"timezone,omitempty"`
 	Cap         float64 `json:"cap"`
 	Spent       float64 `json:"spent"`
 	Ratio       float64 `json:"ratio"`
@@ -127,8 +131,8 @@ func Evaluate(windows []Window, prev State, now time.Time) (Status, State) {
 		}
 		crossed := highestRung(ladder(w.Thresholds), w.Unit, w.Spent, w.Cap)
 		ws := WindowStatus{
-			Window: w.Window, Unit: w.Unit, Subject: w.Subject, Period: period, Cap: w.Cap, Spent: w.Spent,
-			Ratio: ratio, Scope: w.Scope, Enforcement: w.Enforcement,
+			Window: w.Window, Unit: w.Unit, Subject: w.Subject, Period: period, Timezone: zoneName(w.Timezone),
+			Cap: w.Cap, Spent: w.Spent, Ratio: ratio, Scope: w.Scope, Enforcement: w.Enforcement,
 			Level: levelOf(crossed), Crossed: crossed,
 		}
 		had, seen := prev.Notified[key]
@@ -215,6 +219,16 @@ func PeriodKey(window, tz string, now time.Time) string {
 	default:
 		return ""
 	}
+}
+
+// zoneName is the zone a period is reported in: "" (the contract's UTC) is
+// written out as "UTC", so an empty value on disk can only mean a file from a
+// daemon that predates the field.
+func zoneName(tz string) string {
+	if tz == "" {
+		return "UTC"
+	}
+	return tz
 }
 
 // ladder normalises an authored ladder: positive fractions only, ascending,

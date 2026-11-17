@@ -11,6 +11,7 @@ import { categoryLabel, ecosystemLabel, FINDINGS_SLOW_LINE, groupColumnLabel } f
 import { toneOf } from "../../../../shared/lib/tone";
 import { NamedLoading } from "./NamedLoading";
 import { SEVERITY_TONE } from "./ProjectsCard";
+import { FixButton } from "./FixButton";
 
 // FindingGroupsTable is the Findings tab's grouped list: one row per issue
 // (the same advisory on the same package version, or the same rule on the
@@ -55,6 +56,7 @@ export function FindingGroupsTable({
   onDrill,
   emptyHint,
   loadingLabel,
+  onFix,
 }: {
   by: By;
   groups: ApiState<FindingGroupsPage>;
@@ -67,6 +69,8 @@ export function FindingGroupsTable({
   onDrill: (g: FindingGroup) => void;
   emptyHint: string;
   loadingLabel: string;
+  /** "Fix with an agent" on a group's row (absent: no column). */
+  onFix?: (g: FindingGroup) => void;
 }) {
   const projectName = useMemo(() => {
     const byHash = new Map(projects.map((p) => [p.project_root_hash, p]));
@@ -124,8 +128,17 @@ export function FindingGroupsTable({
         cell: ({ row }) => <span className="text-fg-3">{fmtRelative(row.original.last_seen)}</span>,
       },
     );
+    if (onFix) {
+      cols.push({
+        id: "fix",
+        header: "",
+        enableSorting: false,
+        accessorFn: (g) => g.key,
+        cell: ({ row }) => <FixButton iconOnly onClick={() => onFix(row.original)} testId="code-security-fix-group" />,
+      });
+    }
     return cols;
-  }, [by, projectName]);
+  }, [by, projectName, onFix]);
   if (groups.loading && !groups.data) {
     return (
       <NamedLoading active label={loadingLabel} slowLine={FINDINGS_SLOW_LINE}>

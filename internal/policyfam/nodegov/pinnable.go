@@ -316,6 +316,69 @@ var PinnableKeys = []PinnableKey{
 		Key: "terminal.sandbox.seccomp", Kind: "bool", Direction: DirRestrictiveOnly, Safe: true,
 		Label: "Sandbox syscall filter (seccomp) on the bwrap and process_lite backends",
 	},
+	// The agent-run security assessments' relaxation capability
+	// (docs/plans/security-assessments-module-plan-2026-11-13.md section 13.3).
+	// The three switches and the tier are restrictive-only: an org may turn the
+	// capability off or hold the tier at proxy_only, never switch it on for a
+	// developer. The window is a ceiling a pin may only lower.
+	{
+		Key: "security.assessments.relax_pentest_local", Kind: "bool", Direction: DirRestrictiveOnly, Safe: false,
+		Label: "Penetration tests may ask for relaxations",
+	},
+	{
+		Key: "security.assessments.relax_red_team_local", Kind: "bool", Direction: DirRestrictiveOnly, Safe: false,
+		Label: "Red team exercises may ask for relaxations",
+	},
+	{
+		Key: "security.assessments.scoped_approval", Kind: "bool", Direction: DirRestrictiveOnly, Safe: false,
+		Label: "Assessments may ask to lift a guard rule for one run",
+	},
+	{
+		Key: "security.assessments.max_network_tier", Kind: "string", Enum: []any{"proxy_only", "internet"},
+		Direction: DirRestrictiveOnly, Safe: "proxy_only", Label: "Widest sandbox network an assessment may run under",
+	},
+	{
+		Key: "security.assessments.relaxation_max_minutes", Kind: "int", Direction: DirLoweringOnly, Min: 5, Max: 240,
+		Label: "Longest a guard relaxation for an assessment may last (minutes; a ceiling)",
+	},
+	// The depth work's time boxes: ceilings a pin may only lower, and the
+	// action at the deadline, which a pin may only tighten to closing the
+	// terminal.
+	{
+		Key: "security.assessments.time_box_threat_model_minutes", Kind: "int", Direction: DirLoweringOnly, Min: 5, Max: 240,
+		Label: "Longest a threat model run may last (minutes; a ceiling)",
+	},
+	{
+		Key: "security.assessments.time_box_pentest_local_minutes", Kind: "int", Direction: DirLoweringOnly, Min: 5, Max: 240,
+		Label: "Longest a penetration test run may last (minutes; a ceiling)",
+	},
+	{
+		Key: "security.assessments.time_box_red_team_local_minutes", Kind: "int", Direction: DirLoweringOnly, Min: 5, Max: 240,
+		Label: "Longest a red team run may last (minutes; a ceiling)",
+	},
+	{
+		Key: "security.assessments.time_box_action", Kind: "string", Enum: []any{"stop_button", "auto_close"},
+		Direction: DirRestrictiveOnly, Safe: "auto_close", Label: "At the time box: offer a Stop button, or close the terminal",
+	},
+	// The depth work's pen test limits (W4): the request budget and pace are
+	// ceilings a pin may only lower; the .env handling may only be tightened to
+	// refusing the launch.
+	{
+		Key: "security.assessments.workspace_secret_mode", Kind: "string", Enum: []any{"off", "warn", "mask", "refuse"},
+		Direction: DirRestrictiveOnly, Safe: "refuse", Label: "Penetration test with .env files in the project: refuse the launch",
+	},
+	{
+		Key: "security.assessments.pentest_request_budget", Kind: "int", Direction: DirLoweringOnly, Min: 10, Max: 10000,
+		Label: "Most requests a penetration test run may send (a ceiling)",
+	},
+	{
+		Key: "security.assessments.pentest_pace_rps", Kind: "int", Direction: DirLoweringOnly, Min: 1, Max: 100,
+		Label: "Most requests per second a penetration test run may send (a ceiling)",
+	},
+	{
+		Key: "security.assessments.probe_helper", Kind: "bool", Direction: DirRestrictiveOnly, Safe: false,
+		Label: "Request helper for penetration tests (a pin may only switch it off)",
+	},
 	{
 		Key: "terminal.sandbox.allow_remote_clone", Kind: "bool", Direction: DirRestrictiveOnly, Safe: false,
 		Label: "Sandbox remote clone workspaces",
@@ -567,6 +630,48 @@ type ShareKey struct {
 	// ShareKeyConfigPath prepends the "org_client.share." prefix as before, so
 	// every existing row is unchanged (CLAUDE.md "additive, not invasive").
 	ConfigPath string
+	// Raise, when non-empty, marks a RAISE DIRECTIVE key rather than a share
+	// tier (R3-85): a key that does not mirror its config field but names an
+	// operation on it, applied only on a managed node holding the row's
+	// extraction authority and inert everywhere else (an individual node,
+	// no authority). The two rows are the project-scope raises
+	// (govern.Effective.RaiseScope). A raise directive accepts only a value
+	// that raises (`true`, a non-empty list): `false` or an empty list is a
+	// publish error, because it would read as a lowering the node never
+	// applies. The row's ConfigPath names the field it acts on.
+	Raise ShareRaise
+	// ConfigKind is the kind of the config field a Raise row acts on, when
+	// it differs from Kind (the unrestricted sentinel is a bool over a
+	// string_list field). Empty means Kind.
+	ConfigKind string
+	// Help is an optional plain-language note served with the vocabulary.
+	Help string
+}
+
+// ShareRaise names a raise directive's operation (ShareKey.Raise). The
+// empty value is an ordinary share tier.
+type ShareRaise string
+
+// The raise directive operations.
+const (
+	// ShareRaiseScopeUnrestricted: `true` lifts the node's project allowlist.
+	ShareRaiseScopeUnrestricted ShareRaise = "scope_unrestricted"
+	// ShareRaiseScopeDenylistRemoval: the listed entries come off the node's
+	// project denylist.
+	ShareRaiseScopeDenylistRemoval ShareRaise = "scope_denylist_removal"
+)
+
+// ShareDirectionManagedRaise is the vocabulary direction of a Raise row:
+// it raises on a managed node holding the authority and does nothing
+// anywhere else (every tier row is "lowering_only").
+const ShareDirectionManagedRaise = "managed_raise_only"
+
+// ConfigFieldKind is the kind of the config field the row resolves to.
+func (k ShareKey) ConfigFieldKind() string {
+	if k.ConfigKind != "" {
+		return k.ConfigKind
+	}
+	return k.Kind
 }
 
 // ShareKeys is the capture.pin allow-list — the [org_client.share] keys the
@@ -612,6 +717,21 @@ var ShareKeys = []ShareKey{
 	{Key: "obs.admission", Kind: "bool", Label: "Observability: admission verdicts"},
 	{Key: "obs.eval_items", Kind: "bool", Label: "Observability: per-item eval scores"},
 	{Key: "obs.egress", Kind: "bool", Label: "Observability: egress destinations"},
+	// The project-scope raise directives (R3-85). Their keys name the
+	// OPERATION, not the [org_client.scope] list field they act on: the
+	// allowlist raise is a bool sentinel over a list field and the denylist
+	// raise is a list of entries to remove, so neither is the field's own
+	// value. Authority extract.scope (govern.GrantsScopeExtraction).
+	{
+		Key: "scope.unrestricted", Kind: "bool", Label: "Project scope: share every project (lift the machine's project allowlist)",
+		ConfigPath: "org_client.scope.project_root_allowlist", ConfigKind: "string_list", Raise: ShareRaiseScopeUnrestricted,
+		Help: "Only true. On a managed machine holding extract.scope, its own project allowlist is cleared, so every project's activity is shared. No effect on an individually enrolled machine or without that authority.",
+	},
+	{
+		Key: "scope.denylist_remove", Kind: "string_list", Label: "Project scope: remove entries from the machine's project denylist",
+		ConfigPath: "org_client.scope.project_root_denylist", Raise: ShareRaiseScopeDenylistRemoval,
+		Help: "Entries that match the machine's own denylist exactly are removed from it on a managed machine holding extract.scope. No effect on an individually enrolled machine or without that authority.",
+	},
 }
 
 // ShareKeyConfigPath is the FULL dotted config path of a share key. It

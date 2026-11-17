@@ -98,6 +98,24 @@ func (r *securityRuntime) allowRoot(root string, now time.Time) bool {
 		if gitRoot, ok := git.FindRoot(sp); ok && filepath.Clean(gitRoot) == filepath.Clean(sp) {
 			return true
 		}
+		// A linked worktree's own checkout (a commit there records the
+		// worktree's index, which the hook now asks the scan to read): its
+		// project is the main repository (F0-14), which must itself be a
+		// known project or a working tree's root.
+		if co, ok := git.FindCheckoutRoot(sp); ok && filepath.Clean(co) == filepath.Clean(sp) {
+			if gitRoot, ok := git.FindRoot(sp); ok && filepath.Clean(gitRoot) != filepath.Clean(sp) {
+				main := []string{gitRoot}
+				if n := commitScanRoot(gitRoot); n != "" && n != gitRoot {
+					main = append(main, n)
+				}
+				if r.knownRoot(list, main, now) {
+					return true
+				}
+				if mr, ok := git.FindRoot(gitRoot); ok && filepath.Clean(mr) == filepath.Clean(gitRoot) {
+					return true
+				}
+			}
+		}
 	}
 	return false
 }
@@ -179,7 +197,7 @@ func securityIdentify(resolved string) func(typ, value string) string {
 // error, which the scan answers as unknown, never clean.
 func newSecurityQuickScanEngine(identify func(string, string) string) *secquickscan.Engine {
 	return &secquickscan.Engine{
-		Git:      gitview.RunReadOnlyNoLazyFetch,
+		Git:      securityQuickScanGit,
 		Version:  secrules.PackVersion,
 		Scanner:  secdetect.Scanner{Identify: identify},
 		ReadFile: securityReadWorkingFile,
@@ -187,6 +205,34 @@ func newSecurityQuickScanEngine(identify func(string, string) string) *secquicks
 		// commit (false without security.deps compiled in).
 		Retain: depsRetainPath,
 	}
+}
+
+// securityQuickScanGitRun is the quick scan's git envelope: read-only and
+// never lazily fetching (a seam for tests).
+var securityQuickScanGitRun = gitview.RunReadOnlyNoLazyFetchEnv
+
+// securityQuickScanGit runs one quick-scan git command in root, through
+// the git internal/gitroute chooses for it (R3-86, security_quickscan_gitroute.go).
+//
+// On a WSL daemon reading a checkout on a Windows drive (a DrvFs mount) that
+// is the Windows git.exe through interop, with the root's Windows spelling
+// as -C: a working-tree diff (`git commit -a`, a pathspec) from the WSL git
+// across the 9P bridge took 25 to 45 s on a 27,000-file repository even with
+// the minimal stat check (R3-66), over the 2 s budget, and git.exe reads it
+// in a few hundred milliseconds. git.exe also follows a linked worktree's
+// `.git` pointer (spelled D:/...) natively. When git.exe is not usable
+// (interop off, none installed) or fails to run, the WSL git reads the
+// drive with core.checkStat=minimal and core.trustctime=false (whole-second
+// mtime and size, which is what Windows git's own commit compares).
+//
+// With the host's own git, in a linked worktree's own checkout it names the
+// worktree's git directory and work tree explicitly (GIT_DIR,
+// GIT_WORK_TREE): a worktree a Windows git created carries a `.git` pointer
+// spelled `D:/...`, which a WSL daemon's git cannot follow ("not a git
+// repository"). Anywhere else it is the plain envelope, unchanged.
+func securityQuickScanGit(ctx context.Context, root string, maxBytes int, timeout time.Duration, args ...string) ([]byte, bool, error) {
+	plan := securityGitRouter().Plan(ctx, root, args)
+	return securityRunGitPlan(ctx, root, plan, maxBytes, timeout, args)
 }
 
 // securityReadWorkingFile reads a working-tree file for the quick scan's
@@ -1560,6 +1606,10 @@ func startSecurityPhaseC(ctx context.Context, ng *gatedGroup, configPath string,
 		// KiB (lane LEFT-SEC, SECP-18).
 		sec := cfg.Security
 		securityReflogBase.Store(&sec)
+		// Resolve the quick scan's Windows git now (a WSL daemon only;
+		// nothing elsewhere), so the first commit's scan does not pay for
+		// it (R3-86).
+		go securityGitRouter().Prime(ctx)
 		runSecurityPostWrite(ctx, store.New(database), resolved, func() int { return securityPostWriteCapInForce(sec) }, securityCommitSwitches{code: codeActive, secrets: cfg.Security.Secrets.CommitCheck}, newLogger(cfg.Observer.LogLevel))
 		return nil
 	})

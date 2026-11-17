@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { GatedLink } from "@/components/GatedLink";
 import { Check, LogOut, ShieldCheck, Undo2, type LucideIcon } from "lucide-react";
 import { Button, ChartShell, ConfirmButton, Pill } from "@/components/primitives";
 import { ChartState } from "@/components/ChartState";
@@ -85,14 +86,14 @@ export function OrgIntelSection({ icon, readOnly = false }: { icon?: LucideIcon;
   const unavailable = st.error != null && !st.data;
   return (
     <ChartShell
-      title="Org enrichment"
+      title="Team AI summaries"
       icon={icon}
-      sub="Cloud Intelligence run by the organization this machine is enrolled with, on the organization's own server and model. Personal Cloud Intelligence for sessions captured while not enrolled is the Cloud Intelligence section."
+      sub="AI summaries run by the team this machine is connected to, on the team's own server and model. Personal AI summaries, for sessions captured while not connected, are in the AI summaries section."
     >
       <ChartState loading={st.loading && !st.data} error={null} denied={false} empty={false} height={160}>
         {unavailable ? (
           <div className={`${BOX} border-line-1 bg-bg-2 text-fg-2`}>
-            Org enrichment status is not available here: {intelError(st.error)}. On the machine itself, `observer intel
+            Team AI summaries status is not available here: {intelError(st.error)}. On the machine itself, `observer intel
             status` shows the same.
           </div>
         ) : st.data ? (
@@ -127,11 +128,11 @@ function OrgIntelBody({
   if (phase === "unenrolled") {
     return (
       <p className="text-[12px] leading-relaxed text-fg-2">
-        This machine is not enrolled in an organization, so there is no organization session enrichment here. Personal
-        Cloud Intelligence is under{" "}
-        <Link to="/settings?section=cloud" className="font-medium text-accent hover:text-accent-strong">
-          Cloud Intelligence
-        </Link>
+        This machine is not connected to a team, so there are no team AI summaries here. Personal AI summaries are
+        under{" "}
+        <GatedLink to="/settings?section=cloud" managed="AI summaries (managed by your team)" className="font-medium text-accent hover:text-accent-strong">
+          AI summaries
+        </GatedLink>
         .
       </p>
     );
@@ -139,7 +140,7 @@ function OrgIntelBody({
   if (phase === "no_terms") {
     return (
       <p className="text-[12px] leading-relaxed text-fg-2">
-        {org} has not sent its Cloud Intelligence terms yet. Its server may predate this feature, or the next sync has
+        {org} has not sent its AI summaries terms yet. Its server may predate this feature, or the next sync has
         not run. Nothing is sent for enrichment from this machine.
       </p>
     );
@@ -243,7 +244,7 @@ function ConsentCard({
   const org = orgIntelOrgName(s);
   const accepted = phase === "accepted";
   const headline: Record<typeof phase, string> = {
-    pending_required: `${org} requires Cloud Intelligence. Accept, or leave the organization.`,
+    pending_required: `${org} requires AI summaries. Accept, or leave the team.`,
     terms_changed: "The terms widened since you accepted. Enrichment continues under the terms you accepted until you review these.",
     not_opted_in: "Not turned on. Nothing is sent for enrichment until you accept these terms.",
     accepted: `Accepted (terms version ${s.active?.requirement_version ?? 0}). Your sessions are enriched by ${org}.`,
@@ -374,7 +375,7 @@ function LedgerCard() {
       {rows.length === 0 ? (
         <p className="text-[11.5px] text-fg-3">
           Nothing has been submitted for enrichment from this machine. Sessions are submitted in the background once your
-          organization's terms allow it, or from a session's Org enrichment card.
+          team's terms allow it, or from a session's Team AI summaries card.
         </p>
       ) : (
         <ul className="space-y-1.5 text-[11.5px] text-fg-2">

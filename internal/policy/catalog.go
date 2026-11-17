@@ -37,6 +37,11 @@ type RuleInfo struct {
 	// EnforceCappedBy is Rule.EnforceCappedBy: the layer whose explicit
 	// `enforce = false` caps the row at FLAG, "" when uncapped.
 	EnforceCappedBy string
+	// Project is the organization project a rule is scoped to (the org
+	// project id of the org project section that defines it), "" for a rule
+	// in force on every project. Only the guard's rule listing sets it
+	// (guard.Guard.RuleListing); an engine's own rows are never scoped.
+	Project string
 }
 
 // Catalog returns summaries of the BUILT-IN rule rows in table order.
@@ -68,6 +73,13 @@ var (
 // rules removed. Powers `observer guard rules --effective`.
 func (e *Engine) RuleInfos() []RuleInfo {
 	return ruleInfos(e.rules)
+}
+
+// RuleInfosOf maps rule rows that are not in an engine (a policy layer's
+// compiled [[rule]] entries) to their read-only summaries, the same mapping
+// Engine.RuleInfos applies.
+func RuleInfosOf(rules []Rule) []RuleInfo {
+	return ruleInfos(rules)
 }
 
 // ruleInfos maps rule rows to their read-only summaries.

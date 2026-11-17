@@ -170,6 +170,7 @@ S-746 is reserved (the `--ignore-scripts` rewrite).
 | S-748 | code_security | warn | ask | ask | agent install the online package check could not answer in time ([security.deps] online_unknown_action = ask) |
 | S-748 | code_security | warn | ask | deny | agent install the online package check could not answer in time ([security.deps] online_unknown_action = deny) |
 | S-749 | code_security | high | flag | flag | agent install of a package some of whose versions are listed as malicious, without a pin outside them |
+| S-757 | code_security | high | flag | flag | agent install of a version that lacks the build provenance earlier versions carried (npm provenance, PyPI attestations) |
 
 ## Code security: commit gate
 

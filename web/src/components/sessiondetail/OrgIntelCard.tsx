@@ -126,10 +126,10 @@ export function OrgIntelCard({ sessionId }: { sessionId: string }) {
 
   return (
     <div className="flex flex-col gap-2">
-      <section className="rounded-2 border border-line-2 bg-bg-1 p-3" aria-label="Org enrichment">
+      <section className="rounded-2 border border-line-2 bg-bg-1 p-3" aria-label="Team AI summaries">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
-            <h4 className="text-body font-medium text-fg-1">Org enrichment</h4>
+            <h4 className="text-body font-medium text-fg-1">Team AI summaries</h4>
             {latestState && <Pill variant={latestState.tone} case="none">{latestState.label}</Pill>}
           </div>
           {mode === "actions" && (v.actions.preview || button.show) && (

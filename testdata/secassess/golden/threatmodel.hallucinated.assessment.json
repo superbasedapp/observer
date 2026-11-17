@@ -1,0 +1,354 @@
+{
+  "schema": "observer.threatmodel.v1",
+  "run_id": "GOLDEN",
+  "prompt_version": "tm.2",
+  "generator": {"tool": "golden-fixture", "model": "hand-written"},
+  "summary": "Golden threat model result (hallucinated): hand-written for the scorer's tests on a deliberately vulnerable fixture, local testing only. The run id is a placeholder. Elements that do not exist, references to missing files, and every credited mitigation sits on a comment or a function that validates nothing.",
+  "scope": {
+    "in_scope": ["server.py", "templates", "static", "notes.sqlite.seed.sql"],
+    "out_of_scope": [],
+    "assumptions": ["The application runs on a developer machine on loopback."]
+  },
+  "system": {
+    "components": [
+      {
+        "id": "http_server",
+        "name": "http_server",
+        "type": "service",
+        "description": "Request parsing, routing, cookies, CORS headers, error handling, the debug route.",
+        "paths": [{"path": "server.py", "line": 228, "needle": "class Handler(BaseHTTPRequestHandler):"}],
+        "tech": ["python3", "http.server"],
+        "zone": "app"
+      },
+      {
+        "id": "database",
+        "name": "database",
+        "type": "datastore",
+        "description": "In-memory SQLite: users, notes, sessions.",
+        "paths": [
+          {
+            "path": "server.py",
+            "line": 50,
+            "needle": "DB = sqlite3.connect(\":memory:\", check_same_thread=False)"
+          }
+        ],
+        "tech": ["sqlite3"],
+        "zone": "app"
+      }
+    ],
+    "zones": [
+      {
+        "id": "client",
+        "name": "client",
+        "description": "The browser and the network path to the server; untrusted."
+      },
+      {
+        "id": "app",
+        "name": "app",
+        "description": "The server process: request handling, the in-memory database and the static files."
+      },
+      {
+        "id": "internal",
+        "name": "internal",
+        "description": "The loopback-only sibling listener (internal console), meant for the host only."
+      }
+    ],
+    "actors": [
+      {"id": "visitor", "name": "visitor", "kind": "anonymous"},
+      {"id": "member", "name": "member", "kind": "end_user"},
+      {"id": "admin", "name": "admin", "kind": "admin"}
+    ],
+    "assets": [
+      {
+        "id": "user_credentials_and_password_hashes",
+        "name": "user credentials and password hashes",
+        "sensitivity": "restricted",
+        "data_classes": [],
+        "stored_in": ["database"]
+      },
+      {
+        "id": "private_notes",
+        "name": "private notes",
+        "sensitivity": "confidential",
+        "data_classes": [],
+        "stored_in": ["database"]
+      },
+      {
+        "id": "session_tokens",
+        "name": "session tokens",
+        "sensitivity": "restricted",
+        "data_classes": [],
+        "stored_in": ["database"]
+      },
+      {
+        "id": "internal_console_configuration",
+        "name": "internal console configuration",
+        "sensitivity": "confidential",
+        "data_classes": [],
+        "stored_in": ["internal_console"]
+      },
+      {
+        "id": "application_source_and_example_settings",
+        "name": "application source and example settings",
+        "sensitivity": "internal",
+        "data_classes": [],
+        "stored_in": ["file_store"]
+      }
+    ],
+    "entry_points": [
+      {
+        "id": "EP-1",
+        "component": "http_server",
+        "kind": "http_route",
+        "ref": {"path": "server.py", "line": 303, "needle": "def dispatch(self):"},
+        "authn": "none",
+        "exposure": "internet"
+      },
+      {
+        "id": "EP-2",
+        "component": "http_server",
+        "kind": "http_route",
+        "ref": {"path": "server.py", "line": 303, "needle": "def dispatch(self):"},
+        "authn": "none",
+        "exposure": "internet"
+      },
+      {
+        "id": "EP-3",
+        "component": "http_server",
+        "kind": "http_route",
+        "ref": {"path": "server.py", "line": 303, "needle": "def dispatch(self):"},
+        "authn": "none",
+        "exposure": "internet"
+      },
+      {
+        "id": "EP-4",
+        "component": "http_server",
+        "kind": "http_route",
+        "ref": {"path": "server.py", "line": 303, "needle": "def dispatch(self):"},
+        "authn": "none",
+        "exposure": "internet"
+      },
+      {
+        "id": "EP-5",
+        "component": "http_server",
+        "kind": "http_route",
+        "ref": {"path": "server.py", "line": 303, "needle": "def dispatch(self):"},
+        "authn": "none",
+        "exposure": "internet"
+      },
+      {
+        "id": "EP-6",
+        "component": "http_server",
+        "kind": "http_route",
+        "ref": {"path": "server.py", "line": 303, "needle": "def dispatch(self):"},
+        "authn": "session",
+        "exposure": "internet"
+      },
+      {
+        "id": "EP-7",
+        "component": "http_server",
+        "kind": "http_route",
+        "ref": {"path": "server.py", "line": 303, "needle": "def dispatch(self):"},
+        "authn": "none",
+        "exposure": "internet"
+      },
+      {
+        "id": "EP-8",
+        "component": "http_server",
+        "kind": "http_route",
+        "ref": {"path": "server.py", "line": 303, "needle": "def dispatch(self):"},
+        "authn": "session",
+        "exposure": "internet"
+      },
+      {
+        "id": "EP-9",
+        "component": "http_server",
+        "kind": "http_route",
+        "ref": {"path": "server.py", "line": 303, "needle": "def dispatch(self):"},
+        "authn": "session",
+        "exposure": "internet"
+      },
+      {
+        "id": "EP-10",
+        "component": "http_server",
+        "kind": "http_route",
+        "ref": {"path": "server.py", "line": 303, "needle": "def dispatch(self):"},
+        "authn": "session",
+        "exposure": "internet"
+      },
+      {
+        "id": "EP-11",
+        "component": "http_server",
+        "kind": "http_route",
+        "ref": {"path": "server.py", "line": 303, "needle": "def dispatch(self):"},
+        "authn": "none",
+        "exposure": "internet"
+      }
+    ],
+    "flows": [
+      {
+        "id": "requests",
+        "from": "visitor",
+        "to": "http_server",
+        "data": [],
+        "protocol": "http",
+        "crosses": ["client", "app"],
+        "authn": "none",
+        "encrypted": "no",
+        "personal_data": true
+      },
+      {
+        "id": "responses",
+        "from": "http_server",
+        "to": "visitor",
+        "data": [],
+        "protocol": "http",
+        "crosses": ["app", "client"],
+        "authn": "none",
+        "encrypted": "no",
+        "personal_data": true
+      }
+    ]
+  },
+  "threats": [
+    {
+      "id": "TH90",
+      "title": "Reflected script in the response page",
+      "framework": "stride",
+      "category": "spoofing",
+      "element": {"kind": "component", "id": "billing_service"},
+      "description": "The term parameter is placed in the page heading without escaping; the result list is escaped, the heading is not.",
+      "rating": {"likelihood": 3, "impact": 3},
+      "existing": [
+        {
+          "text": "Input is sanitised before rendering.",
+          "refs": [{"path": "server.py", "line": 443, "needle": "term is sanitised before it is rendered"}]
+        }
+      ],
+      "missing": [
+        {
+          "text": "Escape the term before it is placed in the page.",
+          "control": "input handling",
+          "effort": "s",
+          "refs": [{"path": "server.py", "line": 444, "needle": "Results for {term}"}]
+        }
+      ],
+      "cwe": ["CWE-79"],
+      "capec": [],
+      "asvs": [],
+      "status": "mitigated"
+    },
+    {
+      "id": "TH91",
+      "title": "Any signed-in user reads another user's note",
+      "framework": "stride",
+      "category": "repudiation",
+      "element": {"kind": "component", "id": "ledger"},
+      "description": "Any signed-in user can read any note by id, including other users' private notes. Delete and pin check the owner; read does not.",
+      "rating": {"likelihood": 4, "impact": 4},
+      "existing": [
+        {
+          "text": "Only the owner can read a note.",
+          "refs": [{"path": "server.py", "line": 462, "needle": "authz: only the owner can read a note"}]
+        }
+      ],
+      "missing": [
+        {
+          "text": "Check the note's owner before returning it.",
+          "control": "authorization",
+          "effort": "s",
+          "refs": [{"path": "server.py", "line": 464, "needle": "SELECT * FROM notes WHERE id = ?"}]
+        }
+      ],
+      "cwe": ["CWE-639"],
+      "capec": [],
+      "asvs": [],
+      "status": "mitigated",
+      "abuse_case": {
+        "actor": "member",
+        "goal": "Any signed-in user reads another user's note",
+        "steps": ["POST /api/login", "GET /api/notes/1"]
+      }
+    },
+    {
+      "id": "TH92",
+      "title": "SQL injection tampers with the notes query",
+      "framework": "stride",
+      "category": "denial_of_service",
+      "element": {"kind": "component", "id": "scheduler"},
+      "description": "The q parameter is concatenated into the SELECT. A UNION payload reads other tables (users, sessions). The helper that looks like input validation returns its argument unchanged.",
+      "rating": {"likelihood": 4, "impact": 5},
+      "existing": [
+        {
+          "text": "The query is validated.",
+          "refs": [{"path": "server.py", "line": 164, "needle": "def validate_query(value):"}]
+        }
+      ],
+      "missing": [
+        {
+          "text": "Bind q as a parameter.",
+          "control": "input handling",
+          "effort": "s",
+          "refs": [{"path": "server.py", "line": 431, "needle": "title LIKE '%{q}%'"}]
+        }
+      ],
+      "cwe": ["CWE-89"],
+      "capec": [],
+      "asvs": [],
+      "status": "mitigated",
+      "abuse_case": {
+        "actor": "visitor",
+        "goal": "SQL injection tampers with the notes query",
+        "steps": ["GET /notes?q=zz%27%20UNION%20SELECT%20id%2C%20username%2C%20role%20FROM%20users--%20"]
+      }
+    },
+    {
+      "id": "TH93",
+      "title": "Message queue poisoning",
+      "framework": "stride",
+      "category": "tampering",
+      "element": {"kind": "component", "id": "message_queue"},
+      "description": "An attacker poisons the queue.",
+      "rating": {"likelihood": 5, "impact": 5},
+      "existing": [],
+      "cwe": ["CWE-502"],
+      "capec": [],
+      "asvs": [],
+      "status": "identified",
+      "missing": [
+        {
+          "text": "Sign the messages.",
+          "control": "integrity",
+          "effort": "m",
+          "refs": [{"path": "app/queue.py", "line": 7, "needle": "queue.publish(message)"}]
+        }
+      ]
+    },
+    {
+      "id": "TH94",
+      "title": "Cloud bucket exposure",
+      "framework": "stride",
+      "category": "information_disclosure",
+      "element": {"kind": "component", "id": "object_store"},
+      "description": "A bucket is public.",
+      "rating": {"likelihood": 5, "impact": 5},
+      "existing": [],
+      "cwe": ["CWE-200"],
+      "capec": [],
+      "asvs": [],
+      "status": "identified",
+      "missing": [
+        {
+          "text": "Make it private.",
+          "control": "access",
+          "effort": "s",
+          "refs": [{"path": "server.py", "line": 99999, "needle": "bucket.public = True"}]
+        }
+      ]
+    }
+  ],
+  "no_threat": [],
+  "attack_trees": [],
+  "open_questions": [],
+  "limits": []
+}

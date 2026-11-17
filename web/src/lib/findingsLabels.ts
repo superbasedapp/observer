@@ -48,6 +48,7 @@ const CATEGORY_LABEL: Readonly<Record<string, string>> = {
   scope_drift: "Scope drift",
   git_bypass: "Git hook bypass",
   provenance: "Provenance",
+  license: "Licence",
 };
 
 /** categoryLabel is a finding category in words ("Dependency"). */
@@ -71,8 +72,10 @@ const DRIVER_LABEL: Readonly<Record<string, string>> = {
   actionlint: "actionlint",
   "sarif-import": "SARIF import",
   gitleaks: "Gitleaks",
-  "observer-dast": "Built-in web checks",
+  "observer-dast": "Passive DAST",
+  "sbom-import": "From an SBOM",
   "security.scan.custom": "Custom scanner",
+  license: "Licence check",
 };
 
 // The built-in verifier's detectors (internal/secverify Coverage.Detector):

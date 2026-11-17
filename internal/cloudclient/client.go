@@ -558,6 +558,26 @@ type UsageView struct {
 	// DigestsThisWeek is the count of project-digest results created in the
 	// account's current ISO week, present only when DigestWeekly is true.
 	DigestsThisWeek int `json:"digests_this_week,omitempty"`
+
+	// BudgetUnit is how enrichment is budgeted: "count" (DailyCap /
+	// MonthlyCap) or "tokens" (ruling R-AI1: the token budgets below, and
+	// DailyCap / MonthlyCap read 0). Empty on a server that predates it.
+	BudgetUnit string `json:"budget_unit,omitempty"`
+	// EnrichmentTier / EnrichmentTierVersion name the tier in force on a
+	// token-budgeted plan (empty / 0 on a count plan).
+	EnrichmentTier        string `json:"enrichment_tier,omitempty"`
+	EnrichmentTierVersion int    `json:"enrichment_tier_version,omitempty"`
+	// EvidenceTokenBudget is the most evidence tokens one envelope may carry
+	// (cloudcontract.EstimateEvidenceTokens). A node fits its envelope to it
+	// with cloudevidence.FitToBudget; the server refuses one that does not
+	// fit (413 evidence_over_budget). 0 = no evidence budget.
+	EvidenceTokenBudget int `json:"evidence_token_budget,omitempty"`
+	// The token budgets and what the current UTC day and month have used.
+	SessionTokenBudget int64 `json:"session_token_budget,omitempty"`
+	DailyTokensUsed    int64 `json:"daily_tokens_used,omitempty"`
+	DailyTokenBudget   int64 `json:"daily_token_budget,omitempty"`
+	MonthlyTokensUsed  int64 `json:"monthly_tokens_used,omitempty"`
+	MonthlyTokenBudget int64 `json:"monthly_token_budget,omitempty"`
 }
 
 // Usage fetches the authenticated account's current plan and allowances

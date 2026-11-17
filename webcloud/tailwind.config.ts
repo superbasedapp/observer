@@ -8,9 +8,13 @@ import preset from "../shared/styles/tailwind-preset";
 // shared components emit. See docs/app-design-system.md.
 export default {
   presets: [preset],
+  // src/staff is the staff console's own build (tailwind.staff.config.ts):
+  // its classes must not enter the portal's stylesheet, or every portal
+  // chunk's hash changes with each staff screen.
   content: [
     "./index.html",
     "./src/**/*.{ts,tsx}",
+    "!./src/staff/**",
     "../shared/**/*.{ts,tsx}",
   ],
   plugins: [],

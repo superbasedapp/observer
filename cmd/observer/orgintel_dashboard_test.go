@@ -37,7 +37,12 @@ func newOrgIntelFixture(t *testing.T, tenancy string, required bool) *orgIntelFi
 	st := idpTestStore(t)
 	client := idpTestOrgClient(t, st)
 	ctx := context.Background()
-	if err := st.WriteEnrolment(ctx, store.Enrolment{OrgID: "org-1", OrgName: "Acme", OrgServerURL: "https://org.invalid", UserID: "u1", Tenancy: tenancy}); err != nil {
+	if err := st.WriteEnrolment(ctx, store.Enrolment{
+		OrgID: "org-1", OrgName: "Acme", OrgServerURL: "https://org.invalid", UserID: "u1", Tenancy: tenancy,
+		// Enrolled a day ago: the seeded sessions start after it, as sessions
+		// a real node captured under this enrolment do (the sweep floors at it).
+		EnrolledAt: time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339),
+	}); err != nil {
 		t.Fatal(err)
 	}
 	body := orgcontract.IntelRequirementBody{

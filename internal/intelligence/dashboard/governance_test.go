@@ -422,3 +422,73 @@ func TestShareLocalTableCoversNodegovVocabulary(t *testing.T) {
 		}
 	}
 }
+
+// TestGovernanceShareScopeRaiseRows pins R3-85 on the Privacy card: the two
+// scope raise directives are rendered from the same govern RaiseScope the
+// push seam applies, labelled the org's raise on a managed node holding
+// extract.scope, and the developer's own lists everywhere else.
+func TestGovernanceShareScopeRaiseRows(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "config.toml")
+	body := "[org_client.scope]\nproject_root_allowlist = [\"/w/a\"]\nproject_root_denylist = [\"/w/secret\", \"/w/vendor\"]\n"
+	if err := os.WriteFile(cfg, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	share := map[string]any{
+		govern.ScopeUnrestrictedShareKey:   true,
+		govern.ScopeDenylistRemoveShareKey: []string{"/w/vendor"},
+	}
+	cases := []struct {
+		name      string
+		eff       govern.Effective
+		wantAllow bool
+		wantDeny  []any
+		source    govern.ShareSource
+	}{
+		{
+			"managed with extract.scope",
+			govern.Effective{Active: true, State: govern.StateApplied, Version: 4, Managed: true, Authority: []string{govern.AuthorityExtractScope}, Share: share},
+			true,
+			[]any{"/w/secret"},
+			govern.ShareSourceOrgRaised,
+		},
+		{
+			"individual node",
+			govern.Effective{Active: true, State: govern.StateApplied, Version: 4, Authority: []string{govern.AuthorityExtractScope}, Share: share},
+			false,
+			[]any{"/w/secret", "/w/vendor"},
+			govern.ShareSourceLocal,
+		},
+		{
+			"managed without extract.scope",
+			govern.Effective{Active: true, State: govern.StateApplied, Version: 4, Managed: true, Share: share},
+			false,
+			[]any{"/w/secret", "/w/vendor"},
+			govern.ShareSourceLocal,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			eff := tc.eff
+			s := newRemoteTestServer(t, Options{
+				ConfigPath: cfg,
+				Governance: func(context.Context) govern.Effective { return eff },
+			})
+			rec := httptest.NewRecorder()
+			s.guardedHandler("127.0.0.1:8081").ServeHTTP(rec, loopbackRequest(http.MethodGet, "/api/governance"))
+			var got struct {
+				Share map[string]governanceShareKey `json:"share"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode: %v (%s)", err, rec.Body.String())
+			}
+			allow := got.Share[govern.ScopeUnrestrictedShareKey]
+			if allow.Effective != tc.wantAllow || allow.Local != false || allow.Source != tc.source {
+				t.Errorf("scope.unrestricted = %+v, want effective %v local false source %q", allow, tc.wantAllow, tc.source)
+			}
+			deny := got.Share[govern.ScopeDenylistRemoveShareKey]
+			if !reflect.DeepEqual(deny.Effective, tc.wantDeny) || deny.Source != tc.source {
+				t.Errorf("scope.denylist_remove = %+v, want effective %v source %q", deny, tc.wantDeny, tc.source)
+			}
+		})
+	}
+}

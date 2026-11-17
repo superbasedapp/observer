@@ -74,6 +74,17 @@ const (
 	guardMaxReasonRunes  = 1024
 )
 
+// guardReasonMaxRunes is the most runes the Reason of a row with this rule id
+// keeps: guardMaxReasonRunes, except for the security assessment lifecycle
+// audit rows (SecAssessEventRuleID), whose launch line is longer by design
+// (secAssessReasonMaxRunes). Content-bounding stays at this seam, one table.
+func guardReasonMaxRunes(ruleID string) int {
+	if ruleID == SecAssessEventRuleID && secAssessReasonMaxRunes > guardMaxReasonRunes {
+		return secAssessReasonMaxRunes
+	}
+	return guardMaxReasonRunes
+}
+
 // GuardEventRow is one row of guard_events. ChainPrev/ChainHash are
 // OUTPUT fields — InsertGuardEvents computes and stamps them; any
 // caller-supplied values are ignored. ID is set on rows returned by
@@ -105,9 +116,21 @@ type GuardEventRow struct {
 	// G3): set when a grant turned an ask/deny into an allow-by-grant or a
 	// softened ask; 0 (NULL) otherwise. Part of the chain input from
 	// version 2 on.
-	GrantID   int64
-	ChainPrev string
-	ChainHash string
+	GrantID int64
+	// ProjectRootHash / ProjectRoot are the project the gate matched grants
+	// on for this verdict (guard.GrantProject; agent migration 253,
+	// GRANT-20): the guard.HashProjectRoot digest and the raw root. Both
+	// empty (NULL) when the lane recorded none and on every row written
+	// before 253; a request drafted from the row then takes the session's
+	// project (GuardEventRequestDraft). NOT part of the chain input: they
+	// steer a request draft the developer reviews and the org approves,
+	// never a verdict, and adding them would need a new chain version for
+	// no audit gain. NODE-LOCAL: the org push never selects either
+	// (orgpush.go; the raw root is pinned by tests/invariant/privacy_test.go).
+	ProjectRootHash string
+	ProjectRoot     string
+	ChainPrev       string
+	ChainHash       string
 	// ChainV is the chain-input version this row was hashed under (an OUTPUT
 	// field like ChainPrev/ChainHash on insert: InsertGuardEvents always
 	// writes guardChainVersionCurrent). 0 on a loaded row reads as 1.
@@ -321,8 +344,9 @@ INSERT INTO guard_events (
     ts, session_id, action_id, api_turn_id, tool, event_kind,
     rule_id, category, severity, decision, degraded_from, enforced,
     source, reason, target_hash, target_excerpt, taint_origin,
-    chain_prev, chain_hash, grant_id, chain_v, action_anchor
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    chain_prev, chain_hash, grant_id, chain_v, action_anchor,
+    project_root_hash, project_root
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 // InsertGuardEvents appends a batch of guard_events rows inside a
 // single transaction, computing the §10.4 hash chain link for each:
@@ -385,7 +409,7 @@ func insertGuardEventsTx(ctx context.Context, tx *sql.Tx, events []GuardEventRow
 
 	for i := range events {
 		ev := &events[i]
-		ev.Reason = truncateRunes(ev.Reason, guardMaxReasonRunes)
+		ev.Reason = truncateRunes(ev.Reason, guardReasonMaxRunes(ev.RuleID))
 		ev.TargetExcerpt = truncateRunes(ev.TargetExcerpt, guardMaxExcerptRunes)
 		ev.tsStored = timestamp(ev.TS)
 		ev.actionAnchor = nil
@@ -420,6 +444,8 @@ func insertGuardEventsTx(ctx context.Context, tx *sql.Tx, events []GuardEventRow
 			nullableGrantID(ev.GrantID),
 			ev.ChainV,
 			nullableInt64Ptr(ev.actionAnchor),
+			nullableString(ev.ProjectRootHash),
+			nullableString(ev.ProjectRoot),
 		); err != nil {
 			return fmt.Errorf("store.InsertGuardEvents: exec[%d]: %w", i, err)
 		}
@@ -591,7 +617,8 @@ const guardEventSelectColumns = `
 	       COALESCE(degraded_from,''), enforced, COALESCE(source,''),
 	       COALESCE(reason,''), COALESCE(target_hash,''),
 	       COALESCE(target_excerpt,''), COALESCE(taint_origin,''),
-	       chain_prev, chain_hash, COALESCE(grant_id, 0), chain_v, action_anchor
+	       chain_prev, chain_hash, COALESCE(grant_id, 0), chain_v, action_anchor,
+	       COALESCE(project_root_hash,''), COALESCE(project_root,'')
 	FROM guard_events`
 
 // scanGuardEventRow scans one guardEventSelectColumns row.
@@ -607,6 +634,7 @@ func scanGuardEventRow(sc rowScanner) (GuardEventRow, error) {
 		&r.Reason, &r.TargetHash,
 		&r.TargetExcerpt, &r.TaintOrigin,
 		&r.ChainPrev, &r.ChainHash, &r.GrantID, &r.ChainV, &anchor,
+		&r.ProjectRootHash, &r.ProjectRoot,
 	); err != nil {
 		return r, err
 	}
@@ -651,6 +679,10 @@ type GuardEventAnchoredRow struct {
 	GuardEventRow
 	MessageID string
 	TurnIndex *int64
+	// SubagentSessionID is the `<root>:agent:<agent>` session whose action
+	// this hook-path verdict judged, when the row is stored under the root
+	// (guardsubagent.go); "" for a row of the session itself.
+	SubagentSessionID string
 }
 
 // LoadGuardEventsForSessionWithMessageAnchor is LoadGuardEventsForSession's
@@ -661,7 +693,35 @@ type GuardEventAnchoredRow struct {
 // guessing from timestamps) uses this; every other caller (the Security
 // page's global timeline, `observer guard status`) keeps using
 // LoadGuardEventsForSession, which doesn't pay the join.
+//
+// Sub-agents (guardsubagent.go): for a `<root>:agent:<agent>` session the
+// read adds the root's hook-path verdicts that judged this sub-agent's
+// actions (SubagentSessionID set); for any other session it marks its own
+// rows that judged one of its sub-agents' actions. Order stays id
+// ascending.
 func (s *Store) LoadGuardEventsForSessionWithMessageAnchor(ctx context.Context, sessionID string) ([]GuardEventAnchoredRow, error) {
+	rows, err := s.loadGuardEventsAnchored(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if root, ok := subagentRoot(sessionID); ok {
+		extra, err := s.loadRootRowsForSubagent(ctx, root, sessionID)
+		if err != nil {
+			return nil, fmt.Errorf("store.LoadGuardEventsForSessionWithMessageAnchor: sub-agent rows: %w", err)
+		}
+		rows = append(rows, extra...)
+		sort.SliceStable(rows, func(i, j int) bool { return rows[i].ID < rows[j].ID })
+		return rows, nil
+	}
+	if err := s.attributeRootRows(ctx, sessionID, rows); err != nil {
+		return nil, fmt.Errorf("store.LoadGuardEventsForSessionWithMessageAnchor: sub-agent attribution: %w", err)
+	}
+	return rows, nil
+}
+
+// loadGuardEventsAnchored is the session's own rows with their message
+// anchors.
+func (s *Store) loadGuardEventsAnchored(ctx context.Context, sessionID string) ([]GuardEventAnchoredRow, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT ge.id, ge.ts, COALESCE(ge.session_id,''), ge.action_id, ge.api_turn_id,
 		       COALESCE(ge.tool,''), COALESCE(ge.event_kind,''), ge.rule_id,
@@ -741,6 +801,32 @@ func (s *Store) LoadRecentGuardEvents(ctx context.Context, since time.Time, limi
 		return nil, fmt.Errorf("store.LoadRecentGuardEvents: query: %w", err)
 	}
 	return loadGuardEventRows(rows, "store.LoadRecentGuardEvents")
+}
+
+// LoadRecentSessionlessGuardEvents returns guard_events rows that carry no
+// session id, newest first: the verdicts no session view can show (an org
+// bundle rejected (R-205), a posture change, a disabled hook, an invalid user
+// policy). It is the developer's list of them when the dashboard Security page
+// is hidden on a managed node (control-coverage audit CG-18; the
+// `observer guard events --session-less` CLI). since zero = no lower bound;
+// limit <= 0 = 200.
+func (s *Store) LoadRecentSessionlessGuardEvents(ctx context.Context, since time.Time, limit int) ([]GuardEventRow, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	q := guardEventSelectColumns + ` WHERE (session_id IS NULL OR session_id = '')`
+	args := []any{}
+	if !since.IsZero() {
+		q += ` AND ts >= ?`
+		args = append(args, timestamp(since))
+	}
+	q += ` ORDER BY id DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store.LoadRecentSessionlessGuardEvents: query: %w", err)
+	}
+	return loadGuardEventRows(rows, "store.LoadRecentSessionlessGuardEvents")
 }
 
 // loadGuardEventRows scans guardEventSelectColumns result rows into
@@ -1470,6 +1556,11 @@ func (s *Store) PersistGuardVerdicts(ctx context.Context, verdicts []guard.Actio
 			TargetExcerpt: v.Input.Target,
 			TaintOrigin:   v.TaintOrigin,
 			GrantID:       v.GrantID,
+			// The project the gate matched grants on (GRANT-20), so a
+			// request drafted from this row is scoped where the next call
+			// is matched.
+			ProjectRootHash: v.GrantProject.Hash,
+			ProjectRoot:     v.GrantProject.Root,
 		}
 		if v.Input.ActionID != 0 {
 			id := v.Input.ActionID
@@ -2018,6 +2109,29 @@ func (s *Store) PromptSessionStops(ctx context.Context, tool, sessionID string) 
 	return out, nil
 }
 
+// guardReplayDetailTypes are guard.ReplayDetailActionTypes, read once.
+var guardReplayDetailTypes = guard.ReplayDetailActionTypes()
+
+// guardReplayQuery is LoadGuardReplayInputs' query. Its two IN lists bind
+// guardReplayDetailTypes (in order, twice), then the window start and the
+// limit.
+var guardReplayQuery = func() string {
+	in := "(" + strings.TrimSuffix(strings.Repeat("?,", len(guardReplayDetailTypes)), ",") + ")"
+	return `
+		SELECT a.id, a.session_id, COALESCE(p.root_path, ''), a.tool,
+		       a.action_type,
+		       CASE WHEN a.action_type IN ` + in + ` THEN COALESCE(a.target, '') ELSE '' END,
+		       a.timestamp,
+		       CASE WHEN a.action_type IN ` + in + ` THEN COALESCE(a.turn_index, 0) ELSE 0 END,
+		       COALESCE(a.success, 1),
+		       CASE WHEN a.action_type = 'user_prompt' THEN COALESCE(a.raw_tool_input, '') ELSE '' END
+		FROM actions a
+		LEFT JOIN projects p ON a.project_id = p.id
+		WHERE a.timestamp >= ?
+		ORDER BY a.timestamp ASC, a.id ASC
+		LIMIT ?`
+}()
+
 // LoadGuardReplayInputs loads historical actions as guard evaluation
 // inputs for `observer guard simulate` / `observer guard rescan`
 // (§11.1: replay history against CURRENT policy — possible only
@@ -2026,6 +2140,18 @@ func (s *Store) PromptSessionStops(ctx context.Context, tool, sessionID string) 
 // replays faithfully. limit <= 0 defaults to 50k (a generous sweep
 // bound; the CLI reports when it was hit so a silent cap never reads
 // as full coverage).
+//
+// Every row in the window is returned, in order, so the scanned count and
+// the cap are unchanged. Target and TurnIndex are filled only for the
+// action types the guard reads them on (guard.ReplayDetailActionTypes);
+// every other row carries its identity (id, session, root, tool, type,
+// time, success) and leaves them zero, because EvaluateActions skips it
+// before reading anything else. That keeps those rows on the timestamp
+// index (idx_actions_ts_cover holds every other selected column): SQLite
+// defers the table seek until a column outside the index is read, and the
+// CASE reads one only for a detail type, so about half of a week's history
+// (post_tool_batch, assistant_message, ...) never touches the table (demo
+// bug #14, R3-5).
 func (s *Store) LoadGuardReplayInputs(ctx context.Context, since time.Time, limit int) ([]guard.ActionInput, error) {
 	if limit <= 0 {
 		limit = 50000
@@ -2033,17 +2159,14 @@ func (s *Store) LoadGuardReplayInputs(ctx context.Context, since time.Time, limi
 	// raw_tool_input is selected ONLY for user_prompt rows (the post-hoc
 	// prompt lane's full prompt text — already scrubbed at capture); every
 	// other action type replays on its target exactly as before.
-	const q = `
-		SELECT a.id, a.session_id, COALESCE(p.root_path, ''), a.tool,
-		       a.action_type, COALESCE(a.target, ''), a.timestamp,
-		       COALESCE(a.turn_index, 0), COALESCE(a.success, 1),
-		       CASE WHEN a.action_type = 'user_prompt' THEN COALESCE(a.raw_tool_input, '') ELSE '' END
-		FROM actions a
-		LEFT JOIN projects p ON a.project_id = p.id
-		WHERE a.timestamp >= ?
-		ORDER BY a.timestamp ASC, a.id ASC
-		LIMIT ?`
-	rows, err := s.db.QueryContext(ctx, q, timestamp(since), limit)
+	args := make([]any, 0, 2*len(guardReplayDetailTypes)+2)
+	for range 2 {
+		for _, t := range guardReplayDetailTypes {
+			args = append(args, t)
+		}
+	}
+	args = append(args, timestamp(since), limit)
+	rows, err := s.db.QueryContext(ctx, guardReplayQuery, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store.LoadGuardReplayInputs: query: %w", err)
 	}

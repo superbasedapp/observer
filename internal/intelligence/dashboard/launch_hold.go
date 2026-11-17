@@ -64,7 +64,65 @@ var agentLaunchRoutes = []agentLaunchRoute{
 	{pattern: "/api/arena/runs", path: pathIs("/api/arena/runs"), what: "Agent Arena run (one agent per candidate)"},
 	{pattern: "/api/session/", path: sessionLaunchPath.MatchString, what: "session continue or resume"},
 	{pattern: "/api/tools/launch", path: pathIs("/api/tools/launch"), what: "Tools card launch (a terminal window running the agent)"},
+	{pattern: "/api/security/fix/launch", path: pathIs("/api/security/fix/launch"), what: "Fix with an agent (Code security findings)"},
+	{pattern: "/api/security/assessments/launch", path: pathIs("/api/security/assessments/launch"), what: "Security assessment (an agent assesses a project)"},
+	{pattern: "/api/security/assessments/fix", path: pathIs("/api/security/assessments/fix"), what: "Fix a security assessment item (an agent edits the project)"},
 	{pattern: "/api/benchmarks/run", path: pathIs("/api/benchmarks/run"), body: benchmarkSpendBody, what: "Benchmarks spend run (drives agent harnesses)"},
+}
+
+// sandboxLineRoutes are the launch routes whose held card says whether the
+// launch is sandboxed (a body without a true sandbox member reads
+// "unsandboxed"): the routes that start one agent in a project folder. The
+// rows that run a harness of agents (the arena, the benchmark) carry no such
+// line.
+var sandboxLineRoutes = map[string]bool{
+	"/api/terminal/launch":             true,
+	"/api/session/":                    true,
+	"/api/tools/launch":                true,
+	"/api/security/fix/launch":         true,
+	"/api/security/assessments/launch": true,
+	"/api/security/assessments/fix":    true,
+}
+
+// routeChosenSandbox are the launch routes that decide the sandbox themselves
+// for some bodies: the answer says the route will run this body's launch in a
+// sandbox whatever its sandbox member says (a security assessment kind that
+// runs only in one; the dialog sends no sandbox member for it). The held card
+// reads it, so a launch the route will sandbox is never shown as "unsandboxed:
+// runs on this machine with your access".
+var routeChosenSandbox = map[string]func(body []byte) bool{
+	"/api/security/assessments/launch": securityAssessBodySandboxed,
+}
+
+// heldSandboxed says a held launch will run in a sandbox: its own sandbox
+// member is true, or its route sandboxes it itself.
+func heldSandboxed(row agentLaunchRoute, body []byte, member bool) bool {
+	if member {
+		return true
+	}
+	chosen, ok := routeChosenSandbox[row.pattern]
+	return ok && chosen(body)
+}
+
+// heldExtra is what a route adds to its hold beyond the body's own members.
+type heldExtra struct {
+	// Details are rows only the server can compute, shown before the body's
+	// members (the card's first rows are Observer's, never the agent's).
+	Details []dashapi.PendingLaunchDetail
+	// Body, when set, is the body the confirm replays in place of the agent's
+	// own, and the card shows its members. A route sets it to pin what the
+	// card showed (a digest the confirm must still match).
+	Body []byte
+	// Refuse, when set, answers the request in the route's own words and holds
+	// nothing: the launch could not run as asked.
+	Refuse func(w http.ResponseWriter)
+}
+
+// heldExtras are the routes whose hold computes more than the body's members:
+// the fix of an assessment item shows the exact prompt the confirm would start
+// and pins its digest into the replayed body (W6b-B1, M2).
+var heldExtras = map[string]func(s *Server, r *http.Request, body []byte) heldExtra{
+	"/api/security/assessments/fix": (*Server).securityAssessFixHeld,
 }
 
 // benchmarkSpendBody reports whether a benchmark run body asks to spend
@@ -159,6 +217,21 @@ func (s *Server) holdForHuman(w http.ResponseWriter, r *http.Request, row agentL
 			"an agent asked for this launch and it needs a human's confirm, but this dashboard has no launch hold; start the run yourself")
 		return
 	}
+	// A route that computes more than the body shows (the fix of an assessment
+	// item) answers, pins the body the confirm replays, and leads the card with
+	// rows of its own. It runs before the hold, on a request the hold may still
+	// refuse as full; a route bounds its own work (see its hook).
+	var extra heldExtra
+	if hook, ok := heldExtras[row.pattern]; ok {
+		extra = hook(s, r, body)
+		if extra.Refuse != nil {
+			extra.Refuse(w)
+			return
+		}
+		if extra.Body != nil {
+			body = extra.Body
+		}
+	}
 	method, target, header, remote := r.Method, r.URL.String(), r.Header.Clone(), r.RemoteAddr
 	local := r.Context().Value(http.LocalAddrContextKey)
 	start := func(ctx context.Context) (dashapi.PendingLaunchResult, error) {
@@ -179,6 +252,7 @@ func (s *Server) holdForHuman(w http.ResponseWriter, r *http.Request, row agentL
 		return dashapi.PendingLaunchResult{Status: rec.status, ContentType: rec.header.Get("Content-Type"), Body: rec.buf.Bytes()}, nil
 	}
 	p := heldSummary(row, r.URL.Path, body)
+	p.Details = append(append([]dashapi.PendingLaunchDetail(nil), extra.Details...), p.Details...)
 	p.Front, p.Initiator, p.ParentSessionID = "dashboard", initiator, parent
 	held, err := s.opts.PendingLaunches.Hold(p, start)
 	if err != nil {
@@ -210,7 +284,7 @@ func heldSummary(row agentLaunchRoute, path string, body []byte) dashapi.Pending
 	}
 	_ = json.Unmarshal(body, &b)
 	p := dashapi.PendingLaunch{Tool: b.Tool, Project: b.ProjectRoot}
-	if b.Sandbox {
+	if heldSandboxed(row, body, b.Sandbox) {
 		p.Sandbox = "auto"
 		if b.Backend != "" {
 			p.Sandbox = b.Backend
@@ -286,6 +360,12 @@ func heldDetails(row agentLaunchRoute, path string, body []byte) []dashapi.Pendi
 			}
 		case "workspace_remote", "confirm_spend", "allow_unpriced":
 			d.Warn = true
+		case "tier_relax":
+			// A wider sandbox network for this run (plan section 13.9).
+			d.Warn = m.value == "true"
+		case "relaxations":
+			// Guard rules lifted for this run (plan section 13.5).
+			d.Warn = len(m.items) > 0 || (m.value != "" && m.value != "[]" && m.value != "null")
 		}
 		// A secret-looking member's value is masked (fixes-3, audit L3);
 		// the confirm sends it as given.
@@ -294,8 +374,8 @@ func heldDetails(row agentLaunchRoute, path string, body []byte) []dashapi.Pendi
 		}
 		out = append(out, d)
 	}
-	if row.pattern == "/api/terminal/launch" || row.pattern == "/api/session/" || row.pattern == "/api/tools/launch" {
-		if sandboxed {
+	if sandboxLineRoutes[row.pattern] {
+		if heldSandboxed(row, body, sandboxed) {
 			out = append([]dashapi.PendingLaunchDetail{{Label: "sandbox", Value: "sandboxed"}}, out...)
 		} else {
 			out = append([]dashapi.PendingLaunchDetail{{Label: "sandbox", Value: unsandboxedDetail, Warn: true}}, out...)
@@ -308,7 +388,7 @@ func heldDetails(row agentLaunchRoute, path string, body []byte) []dashapi.Pendi
 // by their folded name (jsonFoldKey).
 var readMembers = func() map[string]string {
 	out := map[string]string{}
-	for _, n := range []string{"sandbox", "sign_in_seed", "kind", "workspace_remote", "confirm_spend", "allow_unpriced"} {
+	for _, n := range []string{"sandbox", "sign_in_seed", "kind", "workspace_remote", "confirm_spend", "allow_unpriced", "relaxations", "tier_relax"} {
 		out[jsonFoldKey(n)] = n
 	}
 	return out

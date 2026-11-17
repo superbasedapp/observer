@@ -118,16 +118,16 @@ var egressLanes = []egressLane{
 	// --- remote: may leave the machine ------------------------------------
 	{
 		ID: "cloud.client", Pkg: "internal/cloudclient", Kind: egressRemote,
-		Reaches:  "the Observer Cloud API at the configured cloud base URL",
+		Reaches:  "the Observer Cloud API at the configured cloud base URL, including organization discovery for `observer connect` with no address (GET /v1/orgs, POST /v1/orgs/personal:ensure; ledger IND-2) and the connect request (POST /v1/connect/requests with the device public key and machine description, GET /v1/connect/requests/{id} with a proof of possession; ledger ONB-5)",
 		Triggers: []egressTrigger{trigUserCommand, trigDaemonLoop},
-		Gate:     "reachable only through internal/cloudgateway, which checks a live consent receipt fail-closed (sign-in is the user's own action); the daemon tickers are opt-in and only spawn the CLI",
+		Gate:     "reachable only through internal/cloudgateway, which checks a live consent receipt fail-closed (sign-in, and discovery from `observer connect` with no server and no company pre-set, are the user's own command); the daemon tickers are opt-in and only spawn the CLI",
 		Pins:     []string{"cloud_egress_test.go"},
 	},
 	{
 		ID: "cloud.gateway", Pkg: "internal/cloudgateway", Kind: egressRemote,
-		Reaches:  "the Observer Cloud API, through internal/cloudclient",
+		Reaches:  "the Observer Cloud API, through internal/cloudclient; its Bootstrap family also lists the account's organizations and ensures its personal org (GET /v1/orgs, POST /v1/orgs/personal:ensure) for `observer connect` with no address, and creates and polls the connect request (POST /v1/connect/requests, GET /v1/connect/requests/{id}; ledger ONB-5)",
 		Triggers: []egressTrigger{trigUserCommand, trigDaemonLoop, trigUserAction},
-		Gate:     "the consent seam itself: no request without a live grant for the purpose",
+		Gate:     "the consent seam itself: no feature request without a live grant for the purpose; the Bootstrap family (sign-in, logout, deletion, organization discovery) is authorized by the user's own command (R2 F10), and discovery is called only by `observer connect` with no server and no company pre-set, never by a daemon loop (ledger IND-2)",
 		Pins:     []string{"cloud_egress_test.go"},
 	},
 	{
@@ -197,6 +197,24 @@ var egressLanes = []egressLane{
 		Gate:     "a user-launched sandboxed terminal on the openshell-org row (a managed node whose verified body publishes the gateway, the terminals.sandbox.openshell-org component active, signed in, opted in to the laptop relay, consent recorded) or an explicit `observer sandbox org-shell check`; the probe never calls it",
 		Pins:     []string{"sandbox_remote_egress_test.go"},
 	},
+	// Docker Sandboxes (lane SBX-DOCKER): three hosts, each with its own
+	// credential: Docker Hub's exchange, the Sandboxes API, and each box's
+	// endpoint (core.endpoint.uri, refused unless https under docker.com).
+	{
+		ID: "sandbox.remote.docker", Pkg: "internal/sandboxremote/dockersbx", Kind: egressRemote,
+		Reaches:  "Docker Hub's token exchange (hub.docker.com/v2/auth/token, the account's access token only), the Sandboxes API (connect.docker.com/sandboxes, the management token only) and each box's own endpoint under docker.com (a five-minute scoped grant, files over HTTPS and process streams over a WebSocket), with no redirects",
+		Triggers: []egressTrigger{trigUserAction},
+		Gate:     "a user-launched sandboxed terminal on the docker-sandboxes row (listed in backends, the terminals.sandbox.docker component active, consent recorded) or a user's confirm in the leftover-box list (I6); the probe never calls it",
+		Pins:     []string{"sandbox_remote_egress_test.go"},
+	},
+	// Daytona (a hosted vendor): REST plus its SSH access tokens.
+	{
+		ID: "sandbox.remote.daytona", Pkg: "internal/sandboxremote/daytona", Kind: egressRemote,
+		Reaches:  "Daytona's REST API (app.daytona.io/api) and per-sandbox toolbox (the toolboxProxyUrl a sandbox names, refused off daytona.io) over HTTPS with no redirects, and Daytona's SSH gateway (the host its SSH access answer names, refused off daytona.io) over SSH with a per-sandbox access token",
+		Triggers: []egressTrigger{trigUserAction},
+		Gate:     "a user-launched sandboxed terminal on the daytona row (listed in backends, the terminals.sandbox.daytona component active, consent recorded) or a user's confirm in the leftover-box list (I6); the probe never calls it",
+		Pins:     []string{"sandbox_remote_egress_test.go"},
+	},
 	// Sandbox setup's pinned download (sandbox installation lifecycle plan
 	// sections 3.5 and 8, lane sbxinstall-download, decision O2=B).
 	{
@@ -236,7 +254,7 @@ var egressLanes = []egressLane{
 	},
 	{
 		ID: "security.online", Pkg: "internal/secfeed/online", Kind: egressRemote,
-		Reaches:  "the OSV API (api.osv.dev), the public package registries in the ecosystem table and the vendor's signed content feed (superbased.app), over HTTPS to an exact host allow-list with no redirects; ecosystem, public package name and version only",
+		Reaches:  "the OSV API (api.osv.dev), the public package registries in the ecosystem table (for npm and PyPI also the per-version build provenance: npm's from the same abbreviated document, PyPI's from one more GET of pypi.org/simple/<name>/, under its own back-off key, never on the verdict's critical path; security coverage gaps plan item 3) and the vendor's signed content feed (superbased.app), over HTTPS to an exact host allow-list with no redirects; ecosystem, public package name and version only",
 		Triggers: []egressTrigger{trigDaemonLoop, trigUserCommand},
 		Gate:     "queries: `security.deps` active and `[security.deps] online` on (default on there), and the first-run disclosure accepted on the dashboard or the CLI (no query before it); never a private package name; the feed download: `security.deps` active on an individual node, whatever the online setting (plain GETs of public files, no package named); linked only into the daemon's security service; never used on a managed node or while the tenancy cannot be read (the security service is not handed the public client there; zero-request test); also the sandbox content kinds sandbox.image and sandbox.native_files (lane SBX-P3D, cmd/observer/sandbox_content*.go): plain GETs of public feed files, only on a node that is not enrolled, only while the kind's consuming sandbox driver is active, on `observer sandbox content fetch` or the daemon's first resolve that needs the kind",
 		Pins:     []string{"security_online_egress_test.go"},
@@ -311,6 +329,12 @@ var egressLanes = []egressLane{
 		Reaches:  "the configured OpenAI-compatible judge endpoint (local or remote; a non-loopback judge gets secret redaction and a payload cap)",
 		Triggers: []egressTrigger{trigDaemonLoop, trigUserAction, trigUserCommand},
 		Gate:     "a judge endpoint configured under [observability] (opt-in)",
+	},
+	{
+		ID: "llm.wire", Pkg: "internal/llmwire", Kind: egressRemote,
+		Reaches:  "the OpenAI-compatible endpoint its caller names (today the judge lane), through the caller's own HTTP client",
+		Triggers: []egressTrigger{trigDaemonLoop, trigUserAction, trigUserCommand},
+		Gate:     "a caller lane's configured endpoint (each caller's own row states its gate); the package builds no HTTP client and dials nothing on its own (E1.1c)",
 	},
 	{
 		ID: "guard.cloud", Pkg: "internal/guard/notify", Kind: egressRemote,
@@ -453,7 +477,7 @@ var egressLanes = []egressLane{
 		ID: "security.dast", Pkg: "internal/secdastnet", Kind: egressLocal,
 		Reaches:  "ONE development server the developer names on this machine: the host must be localhost or a loopback literal with a port, it is resolved once and every address must be loopback (127.0.0.0/8 or ::1, secdast.IsLoopbackAddr; a NAT64 or 6to4 form is refused), each connection dials that pinned address through a Control hook that refuses any non-loopback address; plain GETs only (at most 16 per run, 32 round trips with same-origin redirects), no proxy, cookie jar, credential or body, no redirect off the origin, bodies capped at 256 KiB, 5 s per request and 30 s per run",
 		Triggers: []egressTrigger{trigUserCommand},
-		Gate:     "security.dast selected (opt-in, plan 14.9 and 14.13), `observer security dast <url>` started by the developer (never an agent: R-165 denies the verb, the accept and the record) after its one-time signed accept (dast-consent.json); linked only into the cmd layer (lane M3L-5)",
+		Gate:     "security.dast selected (opt-in, plan 14.9 and 14.13), `observer security dast <url>` or the Code security DAST card's Run (POST /api/security/dast/run, owner-local, under the prefix R-165 reserves) started by the developer (never an agent: R-165 denies the verb, the accept, the record and the route prefix) after its one-time signed accept (dast-consent.json, version 2); linked only into the cmd layer, the dashboard reaching it through an injected seam (lane M3L-5; security coverage gaps plan item 1)",
 		Pins:     []string{"security_dast_egress_test.go"},
 	},
 
@@ -484,6 +508,15 @@ var egressLanes = []egressLane{
 	{ID: "processobs", Pkg: "internal/processobs", Kind: egressAddress, Reaches: "endpoint formatting"},
 	{ID: "processbridge.setup", Pkg: "internal/processbridge/setup", Kind: egressAddress, Reaches: "endpoint parsing"},
 	{ID: "ingest.hostguard", Pkg: "internal/ingest/hostguard", Kind: egressAddress, Reaches: "Host header and peer address checks"},
+	// The InstaBox hosted row: its REST API and the terminal WebSocket on
+	// the same origin (no SSH, no vendor CLI).
+	{
+		ID: "sandbox.remote.instabox", Pkg: "internal/sandboxremote/instabox", Kind: egressRemote,
+		Reaches:  "InstaBox's API (api.instabox.sh: the /v1 machine, operation, exec and file routes over HTTPS with no redirects, and the terminal WebSocket on the same origin)",
+		Triggers: []egressTrigger{trigUserAction},
+		Gate:     "a user-launched sandboxed terminal on the instabox row (listed in backends, the terminals.sandbox.instabox component active, consent recorded) or a user's confirm in the leftover-box list (I6); the probe never calls it",
+		Pins:     []string{"sandbox_remote_egress_test.go"},
+	},
 }
 
 // egressPlannedLane is a lane a plan of record names but that is not built.
@@ -502,7 +535,7 @@ type egressPlannedLane struct {
 var egressPlannedLanes = []egressPlannedLane{
 	{
 		ID: "sandbox.remote", Pkg: "",
-		Reaches:  "the hosted sandbox providers not built yet (Codespaces through gh, Coder, Kubernetes agent-sandbox, AWS AgentCore), one package per provider driver; E2B, Modal and Vercel Sandbox are live rows (sandbox.remote.*)",
+		Reaches:  "the hosted sandbox providers not built yet (Codespaces through gh, Coder, Kubernetes agent-sandbox, AWS AgentCore), one package per provider driver; E2B, Modal, Vercel Sandbox and Daytona are live rows (sandbox.remote.*)",
 		Triggers: []egressTrigger{trigUserAction},
 		Gate:     "a user-launched session or an explicit user action only (I6); probes stay local; the driver component active",
 		Source:   "sandbox plan section 11.3 and P7, invariant I6",

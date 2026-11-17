@@ -337,6 +337,11 @@ type PrepareRequest struct {
 	// caller can ask. Additive.
 	SignInSeed *bool
 	SignInAsk  bool
+	// MaskWorkspaceSecrets asks the sandbox to hide the workspace's secret
+	// files (.env variants, key files, registry credentials) inside the box
+	// (FreshRequest.MaskWorkspaceSecrets). A backend that cannot refuses the
+	// launch; check the backend's CanMaskWorkspaceSecrets first. Additive.
+	MaskWorkspaceSecrets bool
 }
 
 // PrepareResult is what a successful Sandboxer.Prepare returns.
@@ -369,6 +374,9 @@ type PrepareResult struct {
 	// SignInShared is CreateResult.SignInShared (operator ruling P-183).
 	// Additive.
 	SignInShared string
+	// SecretMask is AttachResult.SecretMask: what the workspace secret mask
+	// covered, nil when the launch did not ask for it. Additive.
+	SecretMask *SecretMaskOutcome
 }
 
 // Launcher spawns a PTY-backed launcher and returns its opaque handle. It is
@@ -720,9 +728,24 @@ type FreshRequest struct {
 	// starting unseeded. Ignored when Sandbox is false. Additive.
 	SignInSeed *bool
 	SignInAsk  bool
+	// MaskWorkspaceSecrets asks the sandbox to hide the workspace's secret
+	// files (WorkspaceSecretRules in internal/sandbox: .env variants, key
+	// files, registry credentials) inside the box. Opt-in, default false (the
+	// launch is exactly as before). The mask is bounded and reports what it
+	// could not cover; files created after the launch are not masked. A
+	// backend whose registry row has no CanMaskWorkspaceSecrets refuses the
+	// launch, so a caller checks it first and falls back to a warning.
+	// Ignored when Sandbox is false. Additive.
+	MaskWorkspaceSecrets bool
 	// Origin is who started the run (lane cli-2, migration 220), recorded
 	// on its terminal_run row. The zero value records nothing. Additive.
 	Origin termrun.Origin
+	// TaskPrompt is a server-built first prompt (dashapi.FreshLaunchSpec
+	// .TaskPrompt). LaunchFresh places it LAST on the tool's argv by
+	// integration.TaskSeedFor and fails closed (integration.ErrTaskSeed)
+	// when the tool has no seed or the prompt cannot be passed. Ignored when
+	// Shell. Additive.
+	TaskPrompt string
 }
 
 // SignInConsentError re-exports termcore's consent question (lane
@@ -733,6 +756,18 @@ type SignInConsentError = termcore.SignInConsentError
 type LaunchResult struct {
 	Handle string
 	RunID  string
+	// SecretMask says what the workspace secret mask covered; nil unless the
+	// launch asked for it (FreshRequest.MaskWorkspaceSecrets) and the
+	// backend built it. Additive.
+	SecretMask *SecretMaskOutcome
+	// Backend is the sandbox backend that built the box: the outermost layer
+	// of the isolation the Sandboxer reported (its id, the same word the
+	// request's backend choice and the run's isolation stack use). "" for a
+	// launch that was not sandboxed or a Sandboxer that named none. It is what
+	// ran, not what was asked for: an Automatic choice is resolved by the
+	// Sandboxer, and a caller that records "in a sandbox" reads it from here.
+	// Additive.
+	Backend string
 }
 
 // ShellTool is the reserved pseudo-tool name a plain-shell fresh launch is
@@ -777,6 +812,13 @@ func (s *Service) LaunchFresh(ctx context.Context, req FreshRequest) (LaunchResu
 	tool := req.Tool
 	if req.Shell {
 		tool = ShellTool
+	}
+	// A task prompt the tool cannot take refuses the launch before any
+	// workspace is prepared (it is placed on argv below).
+	if req.TaskPrompt != "" && !req.Shell {
+		if _, serr := integration.TaskSeedArgs(integration.TaskSeedFor(tool), nil, req.TaskPrompt); serr != nil {
+			return LaunchResult{}, serr
+		}
 	}
 
 	// B9 sandbox seam — AFTER ValidateProjectRoot, BEFORE the run is minted
@@ -835,7 +877,16 @@ func (s *Service) LaunchFresh(ctx context.Context, req FreshRequest) (LaunchResu
 		}
 		extraArgs = integration.AppendNativeArgs(extraArgs, switchArgs)
 	}
-	return s.launch(ctx, run, LaunchRequest{
+	// A task prompt goes LAST, after the model and native-switch args, so a
+	// trailing seed stays trailing.
+	if req.TaskPrompt != "" && !req.Shell {
+		seeded, serr := integration.TaskSeedArgs(integration.TaskSeedFor(tool), extraArgs, req.TaskPrompt)
+		if serr != nil {
+			return LaunchResult{}, serr
+		}
+		extraArgs = seeded
+	}
+	res, err := s.launch(ctx, run, LaunchRequest{
 		Subcommand: req.Subcommand,
 		Kind:       termrun.KindFresh,
 		Dir:        dir,
@@ -853,6 +904,23 @@ func (s *Service) LaunchFresh(ctx context.Context, req FreshRequest) (LaunchResu
 		SandboxAllowOSC52:   prepared.AllowOSC52Clipboard,
 		SandboxSignInShared: prepared.SignInShared,
 	})
+	if err == nil {
+		// What the workspace secret mask covered, when the launch asked for it.
+		res.SecretMask = prepared.SecretMask
+		// The backend that built the box (the evidence the run records).
+		res.Backend = isolationBackend(sandboxed, iso)
+	}
+	return res, err
+}
+
+// isolationBackend is the backend id of a launch's box: the outermost layer of
+// the isolation stack, "" when the launch was not sandboxed or the stack names
+// none.
+func isolationBackend(sandboxed bool, iso termrun.Isolation) string {
+	if !sandboxed || len(iso.Stack) == 0 {
+		return ""
+	}
+	return iso.Stack[0]
 }
 
 // prepareSandbox resolves a sandboxed fresh launch's workspace + wrap argv
@@ -883,6 +951,8 @@ func (s *Service) prepareSandbox(ctx context.Context, req FreshRequest, tool, va
 		DeferSlowPrep:   true,
 		SignInSeed:      req.SignInSeed,
 		SignInAsk:       req.SignInAsk,
+		// The per-launch workspace secret mask (bwrap only; others refuse).
+		MaskWorkspaceSecrets: req.MaskWorkspaceSecrets,
 	})
 	if err != nil {
 		return PrepareResult{}, fmt.Errorf("%w: %w", ErrWorkspacePrepFailed, err)

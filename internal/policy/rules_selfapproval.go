@@ -771,6 +771,16 @@ var guardGrantRoutes = []guardGrantRoute{
 	// Reserved for the local DAST checker's dashboard card (plan 14.9,
 	// M3L-5): its accept and its runs, under one prefix (a GET is a read).
 	{path: "/api/security/dast", prefix: true, desc: "the local DAST checker's accept and run routes"},
+	// The agent-run assessments: filing or taking back the organization request
+	// of a held run (plan section 13.6). An agent that sends either is asking to
+	// start a run under a lifted guardrail, which is the developer's call.
+	{path: "/api/security/assessments/request", desc: "the security assessment organization request route"},
+	{path: "/api/security/assessments/cancel", desc: "the held security assessment cancel route"},
+	// Stopping a run and deleting the evidence stored for one are the developer's:
+	// an agent that ends its own run record or removes the checked model and git
+	// snapshots of its own run is hiding what it did.
+	{path: "/api/security/assessments/stop", desc: "the security assessment stop route"},
+	{path: "/api/security/assessments/delete-data", desc: "the security assessment stored-evidence delete route"},
 	// The HTTP forms of `observer config set guard.*` and `security.*`.
 	{path: "/api/config/section/guard", dotted: true, desc: "the [guard] settings section"},
 	{path: "/api/config/section/security", dotted: true, desc: "the [security] settings section"},
@@ -811,6 +821,11 @@ var guardGrantRoutes = []guardGrantRoute{
 	// The dashboard form of `observer sandbox credentials add` (lane
 	// GATES-SBX, G24): its POST stores a provider key for injection.
 	{path: "/api/terminal/sandbox/credentials", desc: "the sandbox credential injection key route"},
+	// The sandbox card's strace switch (lane ptrace, PT-96): its POST lifts
+	// PTRACE_SEIZE from the sandbox's syscall filter, the person's call on
+	// this machine. The config file itself is R-160's, and `observer config
+	// set` refuses the key (it is owned by this route).
+	{path: "/api/terminal/sandbox/ptrace-seize", desc: "the sandbox strace switch, which lets sandboxed runs trace processes they start"},
 	// The dashboard forms of `observer sandbox readopt --end`, `checkpoint`
 	// and `restore` (lane GATES-SBX, audit F5): each POST under this prefix
 	// ends, checkpoints or restores a run (the GET list is a read).
@@ -1691,9 +1706,17 @@ func matchSelfApprovalInlineHTTP(ctx *MatchContext, cmd *Command) (bool, string)
 // opening quote.
 const sqlSchemaPrefix = `(?:["'\x60\[]?\w+["'\x60\]]?\s*\.\s*)?["'\x60\[]?`
 
+// guardRegisterTables are the registers guardGrantSQL guards, and
+// findingTables the ones findingDropSQL does. Every name must satisfy
+// mayNameGuardRegister (TestGuardRegisterTablesCarryTheHint).
+var (
+	guardRegisterTables = []string{"guard_approvals", "sec_config_baseline", "sec_finding_exceptions", "sec_baselines", "sec_findings", "sec_finding_commits", "sec_change_consent", "sec_change_keys"}
+	findingTables       = []string{"sec_findings", "sec_finding_commits"}
+)
+
 // guardGrantSQL finds SQL that writes a grant into the approvals register.
 var guardGrantSQL = regexp.MustCompile(`(?i)\b(?:insert(?:\s+or\s+\w+)?\s+into|replace\s+into|update(?:\s+or\s+\w+)?)\s+` + sqlSchemaPrefix +
-	`(guard_approvals|sec_config_baseline|sec_finding_exceptions|sec_baselines|sec_findings|sec_finding_commits|sec_change_consent|sec_change_keys)\b`)
+	`(` + strings.Join(guardRegisterTables, "|") + `)\b`)
 
 // findingDropSQL finds SQL that deletes findings outright (lane sec-gate2,
 // decision log P-025): a deleted open finding leaves the commit gate's
@@ -1701,14 +1724,42 @@ var guardGrantSQL = regexp.MustCompile(`(?i)\b(?:insert(?:\s+or\s+\w+)?\s+into|r
 // exception revokes it, which never loosens anything, so only the findings
 // table is named.
 var findingDropSQL = regexp.MustCompile(`(?i)\b(?:delete\s+from|drop\s+table(?:\s+if\s+exists)?|truncate(?:\s+table)?)\s+` + sqlSchemaPrefix +
-	`(?:sec_findings|sec_finding_commits)\b`)
+	`(?:` + strings.Join(findingTables, "|") + `)\b`)
+
+// mayNameGuardRegister is the cheap necessary condition of guardGrantSQL
+// and findingDropSQL (demo bug #14, R3-5): both end in a register table
+// name, and every name holds "ec_" or "_approval", so a text holding
+// neither cannot match either expression. The test is ASCII
+// case-insensitive, which is the regexes' (?i) for these letters exactly:
+// no rune outside ASCII case-folds to e, c, a, p, r, o, v or l (only k and
+// s have non-ASCII fold partners, and the hints avoid both;
+// TestGuardRegisterHintFoldsAreASCII). Before it, two case-insensitive
+// regexes with a leading word boundary scanned every unit's text, a tenth
+// of a week's replay.
+func mayNameGuardRegister(s string) bool {
+	for i := 0; i < len(s); {
+		j := strings.IndexByte(s[i:], '_')
+		if j < 0 {
+			return false
+		}
+		u := i + j
+		if u >= 2 && s[u-2]|0x20 == 'e' && s[u-1]|0x20 == 'c' {
+			return true
+		}
+		if hasFoldPrefix(s[u+1:], "approval") {
+			return true
+		}
+		i = u + 1
+	}
+	return false
+}
 
 // matchSelfApprovalSQL is the R-165 database matcher: a command line,
 // heredoc or interpreter one-liner writing into guard_approvals (or a
 // register beside it), or deleting findings.
 func matchSelfApprovalSQL(_ *MatchContext, cmd *Command) (bool, string) {
 	for _, text := range []string{cmd.Raw, cmd.Heredoc, cmd.Payload} {
-		if text != "" && (guardGrantSQL.MatchString(text) || findingDropSQL.MatchString(text)) {
+		if text != "" && mayNameGuardRegister(text) && (guardGrantSQL.MatchString(text) || findingDropSQL.MatchString(text)) {
 			return true, "SQL writing a grant into the guard exception, repository trust or code security finding register (" + clampDetail(cmd.Base) + ")"
 		}
 	}
@@ -1926,7 +1977,7 @@ func matchGuardEnvPersistFile(ctx *MatchContext) (bool, string) {
 	if !isWriteEvent(ctx.Event) {
 		return false, ""
 	}
-	desc, ok := pathPatternMatch(ctx.Path, ctx.Cfg.Home, shellStartupPatterns)
+	desc, ok := homePathPatternMatch(ctx, ctx.Path, shellStartupPatterns)
 	if !ok {
 		return false, ""
 	}

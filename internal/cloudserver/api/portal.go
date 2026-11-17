@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/store"
@@ -27,8 +28,9 @@ func csrfHash(raw string) string {
 // The portal (app.superbased.app) is the signed-in-free BROWSER surface (plan
 // §6 CI-P5 + the ZDR amendment §3.2). It shares this Server (one public
 // ingress) with the device /v1 API but authenticates completely differently: a
-// __Host-sbci session COOKIE (HttpOnly/Secure/SameSite=Strict), a double-submit
-// CSRF token on every mutation, and NO bearer token in the browser at all. The
+// __Host-sbci session COOKIE (HttpOnly/Secure/SameSite=Lax, ruling A7a), a
+// double-submit CSRF token and an exact-Origin check on every mutation, and NO
+// bearer token in the browser at all. The
 // device-API PoP/jti machinery is deliberately NOT reused here — a browser
 // cannot hold a device private key.
 
@@ -75,32 +77,58 @@ func portalPrincipalFrom(ctx context.Context) (portalPrincipal, bool) {
 	return p, ok
 }
 
+// portalCookieSameSite is the portal session cookie's SameSite mode: Lax
+// (operator ruling A7a, 2026-11-13). SameSite was never the control between
+// same-site tenant subdomains, which a Strict cookie rides to as well; the
+// controls are the double-submit CSRF header and the exact-Origin check on
+// every mutation (portalAuth), and every cookie-authenticated GET staying
+// free of side effects that matter cross-site (the CSRF-rotating
+// /portal/api/session and the export download additionally refuse a
+// cross-site or same-site initiator by Sec-Fetch-Site). The staff cookie
+// stays Strict (staff.go).
+const portalCookieSameSite = http.SameSiteLaxMode
+
 // setSessionCookie writes the session cookie. HttpOnly (no JS access — the token
-// never enters browser storage), SameSite=Strict, Path=/. Secure is on whenever
-// we use the __Host- name (required by the prefix).
+// never enters browser storage), SameSite=Lax (portalCookieSameSite), Path=/.
+// Secure is on whenever we use the __Host- name (required by the prefix).
 func (s *Server) setSessionCookie(w http.ResponseWriter, raw string, expires time.Time) {
-	http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124: HttpOnly and SameSite=Strict; Secure follows the deployment (always on with the __Host- name)
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124: HttpOnly and SameSite=Lax by ruling A7a (CSRF header + Origin check guard mutations); Secure follows the deployment (always on with the __Host- name)
 		Name:     s.portalCookieName(),
 		Value:    raw,
 		Path:     "/",
 		Expires:  expires,
 		HttpOnly: true,
 		Secure:   s.portalSecureCookie,
-		SameSite: http.SameSiteStrictMode,
+		SameSite: portalCookieSameSite,
 	})
 }
 
 // clearSessionCookie expires the session cookie.
 func (s *Server) clearSessionCookie(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124: HttpOnly and SameSite=Strict; Secure follows the deployment (always on with the __Host- name)
+	http.SetCookie(w, &http.Cookie{ //nolint:gosec // G124: HttpOnly and SameSite=Lax by ruling A7a; Secure follows the deployment (always on with the __Host- name)
 		Name:     s.portalCookieName(),
 		Value:    "",
 		Path:     "/",
 		MaxAge:   -1,
 		HttpOnly: true,
 		Secure:   s.portalSecureCookie,
-		SameSite: http.SameSiteStrictMode,
+		SameSite: portalCookieSameSite,
 	})
+}
+
+// portalOriginAllowed is the portal's Origin check on a cookie-authenticated
+// mutation (ruling A7a; the staff surface has had the same check since
+// M6.8). A browser sends Origin on every non-GET fetch, and script on
+// another origin cannot change it, so a present Origin must be exactly the
+// portal origin (scheme and host compared case-insensitively). An ABSENT
+// Origin is allowed: non-browser clients (curl, tests) send none, and the
+// double-submit CSRF header, which no cross-origin page can read or set,
+// still has to match.
+func (s *Server) portalOriginAllowed(origin string) bool {
+	if origin == "" {
+		return true
+	}
+	return s.portalBaseURL != "" && strings.EqualFold(strings.TrimRight(origin, "/"), s.portalBaseURL)
 }
 
 // portalDevAuth reports whether the configured broker verifier is the dev-auth
@@ -138,7 +166,11 @@ func (s *Server) handlePortalLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "unauthorized", "broker credential invalid")
 		return
 	}
-	sess, err := s.store.PortalLogin(r.Context(), id.Provider, id.Subject, s.portalSessionTTL, s.now(), store.WithIdleTTL(s.portalSessionIdleTTL))
+	// The dev stub has no provider session to reuse: presenting the dev
+	// credential IS the authentication, so the session records it as one (the
+	// platform OIDC issuer's auth_time; store.WithFreshAuthentication).
+	sess, err := s.store.PortalLogin(r.Context(), id.Provider, id.Subject, s.portalSessionTTL, s.now(),
+		store.WithIdleTTL(s.portalSessionIdleTTL), store.WithFreshAuthentication())
 	if errors.Is(err, store.ErrAccountSuspended) {
 		s.audit(r.Context(), "", "portal_login_account_suspended")
 		writeErr(w, http.StatusForbidden, "account_suspended",
@@ -158,6 +190,7 @@ func (s *Server) handlePortalLogin(w http.ResponseWriter, r *http.Request) {
 	s.rememberProfile(r.Context(), sess.AccountID, profile)
 	s.audit(r.Context(), sess.AccountID, "portal_login_ok")
 	s.setSessionCookie(w, sess.RawSession, sess.ExpiresAt)
+	s.ensurePersonalAfterSignIn(sess.AccountID)
 	body := map[string]any{
 		"account_id": sess.AccountID,
 		"csrf_token": sess.RawCSRFToken,
@@ -223,6 +256,12 @@ func (s *Server) portalAuth(next http.Handler) http.Handler {
 			return
 		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			// Origin (ruling A7a): a browser-sent Origin must be the portal's.
+			if !s.portalOriginAllowed(r.Header.Get("Origin")) {
+				s.audit(ctx, bp.AccountID, "portal_origin_refused")
+				writeErr(w, http.StatusForbidden, "origin_mismatch", "cross-origin portal request refused")
+				return
+			}
 			// Double-submit CSRF: the header must hash to the session's stored
 			// csrf_hash. Constant-time compare of the hex digests.
 			presented := csrfHash(r.Header.Get(headerCSRF))
@@ -253,6 +292,12 @@ func (s *Server) portalAuth(next http.Handler) http.Handler {
 		ctx = context.WithValue(ctx, portalPrincipalKey, portalPrincipal{
 			AccountID: bp.AccountID, SessionID: bp.SessionID, CSRFHash: bp.CSRFHash, Raw: c.Value,
 		})
+		// C2: a session whose passkey second factor is pending reaches only
+		// the routes that finish it (portalmfa.go).
+		ctx, ok := s.gateSecondFactor(w, r.WithContext(ctx), bp.AccountID, bp.SessionID)
+		if !ok {
+			return
+		}
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -537,6 +582,11 @@ func (s *Server) handlePortalDeletionRequest(w http.ResponseWriter, r *http.Requ
 		writeErr(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
 		return
 	}
+	// C2.front-door-5 A: an account that pays for a live team is refused
+	// before any re-authentication is asked for or consumed.
+	if !s.refuseDeletionWhilePaying(w, r, p.AccountID) {
+		return
+	}
 	if !s.portalDevAuth() {
 		// WorkOS mode. With the browser leg dark (R7) there is no way to
 		// re-authenticate, so the honest 501 stands; with it active, deletion
@@ -554,6 +604,9 @@ func (s *Server) handlePortalDeletionRequest(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		dr, err := s.store.CreateDeletionRequestWithStepUp(r.Context(), p.AccountID, p.SessionID, req.StepUpAuthorizationID, s.now())
+		if s.deletionRefused(w, r, p.AccountID, err) {
+			return
+		}
 		if errors.Is(err, store.ErrStepUpInvalid) {
 			s.audit(r.Context(), p.AccountID, "portal_step_up_invalid")
 			writeErr(w, http.StatusForbidden, "step_up_invalid",
@@ -584,6 +637,9 @@ func (s *Server) handlePortalDeletionRequest(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	dr, err := s.store.CreateDeletionRequest(r.Context(), p.AccountID, s.now())
+	if s.deletionRefused(w, r, p.AccountID, err) {
+		return
+	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal", "could not record deletion request")
 		return

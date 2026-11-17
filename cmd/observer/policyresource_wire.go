@@ -983,7 +983,14 @@ func logLinkedFamilyConflicts(logger *slog.Logger) []string {
 // dashboard. gw may be nil (gateway.providers not appliable on this node,
 // e.g. the no_obs build or a node with no proxy wired) — every downstream
 // call is nil-safe.
-func runPolicyResourcePoller(ctx context.Context, cfg config.Config, oc *orgclient.Client, handle *obsAdmissionHandle, gw *gatewayProvidersHandle, ngov *nodeGovernanceHandle, nf *nodeFeaturesHandle, sink policyResourceOutcomeSink, logger *slog.Logger) {
+//
+// configPath is the config.toml the lists were loaded from: every cycle
+// re-reads [org_client.policy] from it when it changed, and a watcher wakes
+// the poll when those lists or the enrolment identity change, so an
+// enrolment made while the daemon runs takes effect without a restart
+// (demo finding #23, policyresource_livelists.go). Empty keeps the lists cfg
+// carries for the poller's lifetime.
+func runPolicyResourcePoller(ctx context.Context, cfg config.Config, configPath string, oc *orgclient.Client, handle *obsAdmissionHandle, gw *gatewayProvidersHandle, ngov *nodeGovernanceHandle, nf *nodeFeaturesHandle, sink policyResourceOutcomeSink, logger *slog.Logger) {
 	if oc == nil || (handle == nil && gw == nil && ngov == nil && nf == nil) {
 		return
 	}
@@ -991,11 +998,14 @@ func runPolicyResourcePoller(ctx context.Context, cfg config.Config, oc *orgclie
 		logger = slog.Default()
 	}
 	logLinkedFamilyConflicts(logger)
-	opts := policyResourceOptionsFor(cfg, nodeLiveCapabilitiesFor(handle, componentSnapshotForConfig(cfg).ModuleActive))
+	lists := newLivePolicyLists(cfg, configPath, nodeLiveCapabilitiesFor(handle, componentSnapshotForConfig(cfg).ModuleActive), logger)
 	ident := orgIdentityGateFor(ctx, oc)
 	adopter := newPolicyLayerAdopter()
 	logger.Debug("policy resource poller: starting", "families", policyfam.SupportedFamilies)
-	_ = oc.PolicyResourcePollLoop(ctx, opts, func(pr orgclient.PolicyResourcePollResult) {
+	if configPath != "" {
+		go watchPolicyListsAndIdentity(ctx, lists, orgClientPolicyIdentity(oc), oc.KickPolicyResourcePoll, policyListsCheckInterval, logger)
+	}
+	_ = oc.PolicyResourcePollLoopLive(ctx, lists.options, func(pr orgclient.PolicyResourcePollResult) {
 		switch {
 		case errors.Is(pr.Err, orgclient.ErrNotEnrolled):
 			// Plan §6.9 + Codex SF4: clear Org layer AND let Classify emit

@@ -296,7 +296,8 @@ func Accept(c Conn, p Params, lookup func(runID string) ([]byte, error)) (*Sessi
 		return nil, fmt.Errorf("sandboxrelay.Accept: preamble: %w", err)
 	}
 	if err := c.SetReadDeadline(now().Add(p.Conn.FrameDeadline)); err != nil {
-		return nil, err
+		// A peer that read the preamble and hung up refuses the deadline too.
+		return nil, fmt.Errorf("sandboxrelay.Accept: hello: %w: %w", ErrNoHello, err)
 	}
 	var fixed [helloFixed]byte
 	if _, err := io.ReadFull(c, fixed[:]); err != nil {

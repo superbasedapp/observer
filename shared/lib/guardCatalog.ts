@@ -191,6 +191,11 @@ export type GuardRuleCatalogEntry = {
   // rule id; a row without it falls back to its category's lanes
   // (CATEGORY_COVERAGE_LANES, guardRuleCoverageLanes).
   coverageLanes?: GuardCoverageLane[];
+  // module, when set, names the optional module whose rule pack carries the
+  // row (the security pillar's S-7xx rows: "Code security"). A node
+  // evaluates the rule only while that module is on there; an org override
+  // on it is valid fleet policy either way.
+  module?: string;
 };
 
 // Lane sets the catalog rows below name explicitly.
@@ -249,7 +254,7 @@ export const GUARD_RULE_CATALOG: GuardRuleCatalogEntry[] = [
   { id: "R-154", category: "boundary", severity: "critical", observe: "flag", enforce: "deny", doc: "Write to a shell rc/profile file (persistence vector)." },
   { id: "R-155", category: "boundary", severity: "critical", observe: "flag", enforce: "deny", doc: "Write to an autostart/persistence location, or a persistence-installing command (cron, systemd, LaunchAgents, Startup, schtasks, Run key)." },
   { id: "R-156", category: "boundary", severity: "high", observe: "flag", enforce: "ask", doc: "Write to .git/hooks (in-repo persistence vector)." },
-  { id: "R-157", category: "boundary", severity: "high", observe: "flag", enforce: "ask", doc: "Wrapper whose inner command could not be analysed (fails closed)." },
+  { id: "R-157", category: "boundary", severity: "high", observe: "flag", enforce: "deny", doc: "Wrapper whose inner command could not be analysed (fails closed)." },
   { id: "R-160", category: "boundary", severity: "critical", observe: "flag", enforce: "deny", doc: "Agent modifying observer/guard/hook configuration." },
   { id: "R-161", category: "boundary", severity: "high", observe: "flag", enforce: "flag", doc: "Agent modifying the project guard policy file." },
   { id: "R-162", category: "boundary", severity: "critical", observe: "flag", enforce: "deny", doc: "Agent write, edit or shell command that turns a coding agent's hooks off (disableAllHooks and its siblings) in a hook-bearing settings file." },
@@ -289,6 +294,9 @@ export const GUARD_RULE_CATALOG: GuardRuleCatalogEntry[] = [
   { id: "R-303", category: "mcp", severity: "high", observe: "flag", enforce: "flag", doc: "MCP tool description carries a poisoning-shaped pattern." },
   { id: "R-304", category: "mcp", severity: "critical", observe: "flag", enforce: "deny", doc: "Agent modifying an MCP server registry file.", coverageLanes: CL_TOOL },
   { id: "R-305", category: "mcp", severity: "critical", observe: "flag", enforce: "flag", doc: "Pinned MCP server's command/binary or URL changed under the same name." },
+  // MCP access: internal/policy/rules_mcp.go (the tools.mcp_access table; the org sets the grants on the Agent Access pages)
+  { id: "R-306", category: "mcp", severity: "high", observe: "flag", enforce: "deny", doc: "MCP tool call to a server not approved by the node's compiled tools.mcp_access table.", coverageLanes: CL_TOOL },
+  { id: "R-307", category: "mcp", severity: "critical", observe: "flag", enforce: "deny", doc: "MCP tool call denied by the organization's tools.mcp_access grant.", coverageLanes: CL_TOOL },
   // Anomaly — internal/policy/rules_anomaly.go (anomaly rules never deny, §12.2/F6)
   { id: "A-610", category: "anomaly", severity: "warn", observe: "flag", enforce: "flag", doc: "Identical tool call repeated consecutively past the stuck-loop threshold." },
   { id: "A-613", category: "anomaly", severity: "high", observe: "flag", enforce: "flag", doc: "Repeated attempts at a denied action in different shapes (policy evasion); off until [guard.rules].evasion_window_seconds is set." },
@@ -303,10 +311,51 @@ export const GUARD_RULE_CATALOG: GuardRuleCatalogEntry[] = [
   { id: "B-602", category: "budget", severity: "high", observe: "flag", enforce: "flag", doc: "Daily cost (all sessions) exceeded [guard.budget].daily_usd." },
   { id: "B-603", category: "budget", severity: "high", observe: "flag", enforce: "flag", doc: "Calendar-month cost (all sessions) exceeded [guard.budget].monthly_usd." },
   { id: "B-604", category: "budget", severity: "high", observe: "flag", enforce: "flag", doc: "Rolling-7-day cost (all sessions) exceeded [guard.budget].weekly_usd." },
+  // Token and subject budgets: internal/policy/rules_budget.go (the org sets caps and enforcement on the Budgets page)
+  { id: "B-621", category: "budget", severity: "high", observe: "flag", enforce: "flag", doc: "Session token usage exceeded [guard.budget].session_tokens." },
+  { id: "B-622", category: "budget", severity: "high", observe: "flag", enforce: "flag", doc: "Daily token usage (all sessions) exceeded [guard.budget].daily_tokens." },
+  { id: "B-623", category: "budget", severity: "high", observe: "flag", enforce: "flag", doc: "Calendar-month token usage (all sessions) exceeded [guard.budget].monthly_tokens." },
+  { id: "B-624", category: "budget", severity: "high", observe: "flag", enforce: "flag", doc: "Rolling-7-day token usage (all sessions) exceeded [guard.budget].weekly_tokens." },
+  { id: "B-625", category: "budget", severity: "high", observe: "flag", enforce: "deny", doc: "The organization requires a budget on this managed node and none has been verified." },
+  { id: "B-626", category: "budget", severity: "high", observe: "flag", enforce: "deny", doc: "Per-tool spend exceeded the organization's tool budget cap." },
+  { id: "B-627", category: "budget", severity: "high", observe: "flag", enforce: "deny", doc: "Per-tool token usage exceeded the organization's tool budget cap." },
+  { id: "B-628", category: "budget", severity: "high", observe: "flag", enforce: "deny", doc: "Per-model spend exceeded the organization's model budget cap." },
+  { id: "B-629", category: "budget", severity: "high", observe: "flag", enforce: "deny", doc: "Per-model token usage exceeded the organization's model budget cap." },
   { id: "B-610", category: "limit", severity: "warn", observe: "flag", enforce: "flag", doc: "5h usage window utilization reached [guard.budget.window].util_5h_warn." },
   { id: "B-611", category: "limit", severity: "high", observe: "flag", enforce: "deny", doc: "5h usage window utilization reached [guard.budget.window].util_5h_deny." },
   { id: "B-612", category: "limit", severity: "warn", observe: "flag", enforce: "flag", doc: "Weekly usage window utilization reached [guard.budget.window].util_weekly_warn." },
   { id: "B-613", category: "limit", severity: "high", observe: "flag", enforce: "deny", doc: "Weekly usage window utilization reached [guard.budget.window].util_weekly_deny." },
+  // Code security pack: internal/secrules (trust.go, secrets.go, deps.go,
+  // gates.go). The rows are composed into a node's guard only while Code
+  // security (and the row's part of it) is on there; an org override on one
+  // is valid fleet policy either way and applies once the module is on.
+  // Repository trust: internal/secrules/trust.go
+  { id: "S-701", category: "code_security", severity: "high", observe: "flag", enforce: "ask", doc: "Agent launch in an untrusted repository that makes the agent run commands, or holds config files nothing could judge, that nobody accepted yet. Needs Code security on the node.", module: "Code security" },
+  { id: "S-702", category: "code_security", severity: "critical", observe: "flag", enforce: "deny", doc: "Agent launch in an untrusted repository that redirects the agent's API, its config or Observer's own binary, or injects code into its process. Needs Code security on the node.", module: "Code security" },
+  { id: "S-703", category: "code_security", severity: "critical", observe: "flag", enforce: "deny", doc: "Agent launch in an untrusted repository that switches off the agent's approvals, its folder trust or its hooks. Needs Code security on the node.", module: "Code security" },
+  { id: "S-704", category: "code_security", severity: "high", observe: "flag", enforce: "ask", doc: "Agent launch in an untrusted repository that hides instructions or code, links its config outside the tree, or sets git to run a program. Needs Code security on the node.", module: "Code security" },
+  { id: "S-705", category: "code_security", severity: "warn", observe: "flag", enforce: "flag", doc: "Agent launch in a repository with accepted commands or warnings. Needs Code security on the node.", module: "Code security" },
+  // Secrets: internal/secrules/secrets.go
+  { id: "S-721", category: "secrets", severity: "high", observe: "flag", enforce: "deny", doc: "Agent write that adds a secret (asks for one in a fixture path). Needs Code security on the node.", module: "Code security", coverageLanes: CL_TOOL },
+  // Package installs: internal/secrules/deps.go
+  { id: "S-741", category: "code_security", severity: "critical", observe: "ask", enforce: "deny", doc: "Agent install of a package an authenticated source lists as malicious. Needs Code security on the node.", module: "Code security", coverageLanes: CL_TOOL },
+  { id: "S-742", category: "code_security", severity: "high", observe: "ask", enforce: "ask", doc: "Agent install of a package one edit from a popular name (a possible typosquat). Needs Code security on the node.", module: "Code security", coverageLanes: CL_TOOL },
+  { id: "S-743", category: "code_security", severity: "warn", observe: "flag", enforce: "flag", doc: "Agent install of a package published more recently than the minimum package age. Needs Code security on the node.", module: "Code security", coverageLanes: CL_TOOL },
+  { id: "S-744", category: "code_security", severity: "warn", observe: "ask", enforce: "deny", doc: "Agent install of a package the registry does not know, or that no usable index could check; also the once-per-session note that package checks are not set up. Needs Code security on the node.", module: "Code security", coverageLanes: CL_TOOL },
+  { id: "S-745", category: "code_security", severity: "warn", observe: "flag", enforce: "flag", doc: "Agent install that names a custom registry or package index (dependency confusion). Needs Code security on the node.", module: "Code security", coverageLanes: CL_TOOL },
+  { id: "S-747", category: "code_security", severity: "warn", observe: "flag", enforce: "flag", doc: "Agent manifest edit that adds a dependency the install gate flags. Needs Code security on the node.", module: "Code security", coverageLanes: CL_TOOL },
+  { id: "S-748", category: "code_security", severity: "warn", observe: "ask", enforce: "deny", doc: "Agent install the online package check could not answer in time. Needs Code security on the node.", module: "Code security", coverageLanes: CL_TOOL },
+  { id: "S-749", category: "code_security", severity: "high", observe: "flag", enforce: "flag", doc: "Agent install of a package some of whose versions are listed as malicious, without a pin outside them. Needs Code security on the node.", module: "Code security", coverageLanes: CL_TOOL },
+  { id: "S-757", category: "code_security", severity: "high", observe: "flag", enforce: "flag", doc: "Agent install of a version that lacks the build provenance earlier versions of the package carried (npm provenance, a PyPI attestation). Needs Code security on the node.", module: "Code security", coverageLanes: CL_TOOL },
+  // Commit gate: internal/secrules/gates.go gateTable. Each id is two rows:
+  // the individual gate (asks even in observe mode) and the org's commit
+  // gate floor twin (denies). The pair here is the stricter of both, as for
+  // every split id, because that is the reference an org override is checked
+  // against.
+  { id: "S-791", category: "code_security", severity: "high", observe: "deny", enforce: "deny", doc: "Agent commit while a new high-confidence finding is open in this project. Asks on an individual node; denies under the org's commit gate floor. Needs Code security on the node.", module: "Code security", coverageLanes: CL_TOOL },
+  { id: "S-792", category: "code_security", severity: "high", observe: "deny", enforce: "deny", doc: "Agent push while a new high-confidence finding is open in this project, or held by a commit the push's remote does not have yet. Asks on an individual node; denies under the org's commit gate floor. Needs Code security on the node.", module: "Code security", coverageLanes: CL_TOOL },
+  { id: "S-793", category: "code_security", severity: "warn", observe: "deny", enforce: "deny", doc: "Agent commit with agent changes that the quick scan did not find clean. Asks on an individual node; denies under the org's commit gate floor. Needs Code security on the node.", module: "Code security", coverageLanes: CL_TOOL },
+  { id: "S-794", category: "code_security", severity: "warn", observe: "deny", enforce: "deny", doc: "Agent commit while this project's security state is unknown. Asks on an individual node; denies under the org's commit gate floor. Needs Code security on the node.", module: "Code security", coverageLanes: CL_TOOL },
 ];
 
 const DECISION_ORDER: Record<Decision, number> = { allow: 0, flag: 1, ask: 2, deny: 3 };
@@ -360,69 +409,47 @@ export function emptyGuardOverride(): GuardOverrideRow {
   return { rule: "", decision: "", enforce: true };
 }
 
-// composeGuardToml turns override rows into the bare `[[override]]` blocks
-// internal/guard/policyfile.go::tomlOverride parses — no wrapping table
-// header, matching the shape of both shipped starter bundles and the
-// dashboard's own GUARD_PLACEHOLDER example. `decision` is emitted only when
-// set (an enforce-only override with no decision change is legal TOML).
-export function composeGuardToml(rows: GuardOverrideRow[]): string {
+// composeGuardToml renders an ORG guard bundle: the org's own `[[rule]]`
+// definitions (custom rules, matcher-v1) and then its `[[override]]` rows
+// over built-in rules — the shapes internal/guard/policyfile.go parses at
+// layer "org", with no wrapping table header, matching both shipped starter
+// bundles. `decision` is emitted only when set (an enforce-only override with
+// no decision change is legal TOML). With no custom rules the bytes are
+// exactly what the override-only composer produced, so a fleet that never
+// authors one keeps byte-identical bundles.
+//
+// A custom rule the org marks overridable (GuardRuleRow.overridable) is
+// written as its own grant row straight after the rule: an `[[override]]`
+// naming the rule id that carries ONLY `overridable = true`. `overridable` is
+// an [[override]] key, never a [[rule]] key (guardbundle.ClarifyProblems), and
+// the row carries no `enforce` key on purpose: `enforce = false` would cap the
+// rule at flag and `enforce = true` would enforce it in observe mode, neither
+// of which the author asked for. parseGuardBundle folds the row back.
+export function composeGuardToml(rows: GuardOverrideRow[], rules: GuardRuleRow[] = []): string {
   const lines: string[] = [
     "# Org guard-policy bundle (TOML; merged on every agent as the strictness floor)",
   ];
+  for (const r of rules) {
+    const id = r.id.trim();
+    if (!id) continue;
+    lines.push("", ...ruleBlockLines(r));
+    if (r.overridable === true) lines.push("", "[[override]]", `rule = ${tomlStr(id)}`, "overridable = true");
+  }
   for (const r of rows) {
     if (!r.rule.trim()) continue;
-    lines.push("", "[[override]]", `rule = ${tomlStr(r.rule.trim())}`);
-    if (r.decision) lines.push(`decision = ${tomlStr(r.decision)}`);
-    lines.push(`enforce = ${r.enforce ? "true" : "false"}`);
-    // Emitted ONLY when the author actually set it: an unspoken rule is
-    // already hard by default, and an emitted key would change the bytes of
-    // every bundle in every fleet that has no use for the flag.
-    if (r.overridable !== undefined) lines.push(`overridable = ${r.overridable ? "true" : "false"}`);
+    lines.push("", ...overrideBlockLines(r, ORG_GUARD_GRAMMAR));
   }
   return lines.join("\n") + "\n";
 }
 
-// parseGuardOverrides is the inverse of composeGuardToml for the narrow
-// grammar the guard form owns: comments, blank lines, `[[override]]` blocks
-// and their rule/decision/enforce assignments. Anything else (e.g. a
-// `[[rule]]` definition table, multi-line values, unknown keys) returns null
-// so the caller falls back to the Advanced raw-TOML editor instead of
-// silently dropping constructs the form cannot represent.
+// parseGuardOverrides is the override-only view of parseGuardBundle, kept for
+// the callers that edit overrides alone (the setup wizard's guard step): a
+// bundle that also defines `[[rule]]` entries returns null so such a caller
+// falls back to its Advanced raw-TOML editor instead of dropping them.
 export function parseGuardOverrides(toml: string): GuardOverrideRow[] | null {
-  const rows: GuardOverrideRow[] = [];
-  let cur: GuardOverrideRow | null = null;
-  for (const rawLine of toml.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (line === "" || line.startsWith("#")) continue;
-    if (line === "[[override]]") {
-      if (cur) rows.push(cur);
-      cur = emptyGuardOverride();
-      continue;
-    }
-    const m = /^([A-Za-z_]+)\s*=\s*(.+?)\s*(?:#.*)?$/.exec(line);
-    if (!m || !cur) return null;
-    const [, key, val] = m;
-    if (key === "rule") {
-      const s = tomlUnquote(val);
-      if (s === null) return null;
-      cur.rule = s;
-    } else if (key === "decision") {
-      const s = tomlUnquote(val);
-      if (s === null || !(DECISIONS as readonly string[]).includes(s)) return null;
-      cur.decision = s as Decision;
-    } else if (key === "enforce") {
-      if (val !== "true" && val !== "false") return null;
-      cur.enforce = val === "true";
-    } else if (key === "overridable") {
-      if (val !== "true" && val !== "false") return null;
-      cur.overridable = val === "true";
-    } else {
-      return null;
-    }
-  }
-  if (cur) rows.push(cur);
-  if (rows.some((r) => !r.rule.trim())) return null;
-  return rows;
+  const b = parseGuardBundle(toml);
+  if (!b || b.rules.length > 0) return null;
+  return b.overrides;
 }
 
 // --- [[rule]] authoring (net-new, matcher-v1 — docs/guard-policy-authoring.md) ---
@@ -527,6 +554,13 @@ export type GuardRuleRow = {
   // verdict carries on what to do instead ("" = none). Both optional.
   doc: string;
   advice: string;
+  // overridable is the org's grant for its OWN rule (org bundles only,
+  // ORG_GUARD_GRAMMAR): true lets a developer approve past the rule on their
+  // own machine, scoped and logged, like GuardOverrideRow.overridable on a
+  // built-in. It is composed as a separate `[[override]]` grant row, never a
+  // [[rule]] key. undefined / false = the rule is hard. The node's own layers
+  // cannot grant it, so composeRuleToml ignores it.
+  overridable?: boolean;
 };
 
 export function emptyGuardCommandMatch(): GuardCommandMatch {
@@ -665,49 +699,91 @@ export function composeRuleToml(
     lines.push("", `disable = ${tomlStrArray(disableIds)}`);
   }
   for (const r of rules) {
-    const id = r.id.trim();
-    if (!id) continue;
-    lines.push("", "[[rule]]");
-    lines.push(`id         = ${tomlStr(id)}`);
-    if (r.category.trim()) lines.push(`category   = ${tomlStr(r.category.trim())}`);
-    lines.push(`severity   = ${tomlStr(r.severity)}`);
-    lines.push(`decision   = ${tomlStr(r.decision)}`);
-    if (r.enforce) lines.push("enforce    = true");
-    if (r.applies_to.length) lines.push(`applies_to = ${tomlStrArray(r.applies_to)}`);
-    if (r.doc.trim()) lines.push(`doc        = ${tomlStr(r.doc.trim())}`);
-    if (r.advice.trim()) lines.push(`advice     = ${tomlStr(r.advice.trim())}`);
-    if (r.scope === "command") {
-      const c = r.command;
-      if (c.command_regex.trim()) lines.push(`match.command_regex = ${tomlStr(c.command_regex.trim())}`);
-      if (c.command_base.trim()) lines.push(`match.command_base = ${tomlStr(c.command_base.trim())}`);
-      if (c.arg_contains.trim()) lines.push(`match.arg_contains = ${tomlStr(c.arg_contains.trim())}`);
-    } else {
-      const e = r.event;
-      if (e.path_glob.length) lines.push(`match.path_glob = ${tomlStrArray(e.path_glob)}`);
-      if (e.path_not.length) lines.push(`match.path_not = ${tomlStrArray(e.path_not)}`);
-      if (e.path_outside_project) lines.push("match.path_outside_project = true");
-      if (e.path_sensitive) lines.push("match.path_sensitive = true");
-      if (e.access) lines.push(`match.access = ${tomlStr(e.access)}`);
-      if (e.url_domain.trim()) lines.push(`match.url_domain = ${tomlStr(e.url_domain.trim())}`);
-      if (e.mcp_server.trim()) lines.push(`match.mcp_server = ${tomlStr(e.mcp_server.trim())}`);
-      if (e.mcp_tool.trim()) lines.push(`match.mcp_tool = ${tomlStr(e.mcp_tool.trim())}`);
-      if (e.event_kind.length) lines.push(`match.event_kind = ${tomlStrArray(e.event_kind)}`);
-      if (e.sink.trim()) lines.push(`match.sink = ${tomlStr(e.sink.trim())}`);
-      if (e.taint_source.trim()) lines.push(`match.taint_source = ${tomlStr(e.taint_source.trim())}`);
-      const costN = parseTomlNumber(e.session_cost_usd_gt);
-      if (costN !== null) lines.push(`match.session_cost_usd_gt = ${costN}`);
-      const repeatN = parseTomlNumber(e.repeat_count_gt);
-      if (repeatN !== null && Number.isInteger(repeatN)) lines.push(`match.repeat_count_gt = ${repeatN}`);
-    }
+    if (!r.id.trim()) continue;
+    lines.push("", ...ruleBlockLines(r));
   }
   for (const r of overrides) {
     if (!r.rule.trim()) continue;
-    lines.push("", "[[override]]", `rule = ${tomlStr(r.rule.trim())}`);
-    if (r.decision) lines.push(`decision = ${tomlStr(r.decision)}`);
-    lines.push(`enforce = ${r.enforce ? "true" : "false"}`);
+    lines.push("", ...overrideBlockLines(r, LOCAL_GUARD_GRAMMAR));
   }
   return lines.join("\n") + "\n";
 }
+
+// ruleBlockLines renders one `[[rule]]` block (no leading blank line) — the
+// ONE rule renderer both composers share, so a node policy file and an org
+// bundle write a rule byte-for-byte the same way.
+function ruleBlockLines(r: GuardRuleRow): string[] {
+  const lines: string[] = [];
+  const id = r.id.trim();
+  lines.push("[[rule]]");
+  lines.push(`id         = ${tomlStr(id)}`);
+  if (r.category.trim()) lines.push(`category   = ${tomlStr(r.category.trim())}`);
+  lines.push(`severity   = ${tomlStr(r.severity)}`);
+  lines.push(`decision   = ${tomlStr(r.decision)}`);
+  if (r.enforce) lines.push("enforce    = true");
+  if (r.applies_to.length) lines.push(`applies_to = ${tomlStrArray(r.applies_to)}`);
+  if (r.doc.trim()) lines.push(`doc        = ${tomlStr(r.doc.trim())}`);
+  if (r.advice.trim()) lines.push(`advice     = ${tomlStr(r.advice.trim())}`);
+  if (r.scope === "command") {
+    const c = r.command;
+    if (c.command_regex.trim()) lines.push(`match.command_regex = ${tomlStr(c.command_regex.trim())}`);
+    if (c.command_base.trim()) lines.push(`match.command_base = ${tomlStr(c.command_base.trim())}`);
+    if (c.arg_contains.trim()) lines.push(`match.arg_contains = ${tomlStr(c.arg_contains.trim())}`);
+  } else {
+    const e = r.event;
+    if (e.path_glob.length) lines.push(`match.path_glob = ${tomlStrArray(e.path_glob)}`);
+    if (e.path_not.length) lines.push(`match.path_not = ${tomlStrArray(e.path_not)}`);
+    if (e.path_outside_project) lines.push("match.path_outside_project = true");
+    if (e.path_sensitive) lines.push("match.path_sensitive = true");
+    if (e.access) lines.push(`match.access = ${tomlStr(e.access)}`);
+    if (e.url_domain.trim()) lines.push(`match.url_domain = ${tomlStr(e.url_domain.trim())}`);
+    if (e.mcp_server.trim()) lines.push(`match.mcp_server = ${tomlStr(e.mcp_server.trim())}`);
+    if (e.mcp_tool.trim()) lines.push(`match.mcp_tool = ${tomlStr(e.mcp_tool.trim())}`);
+    if (e.event_kind.length) lines.push(`match.event_kind = ${tomlStrArray(e.event_kind)}`);
+    if (e.sink.trim()) lines.push(`match.sink = ${tomlStr(e.sink.trim())}`);
+    if (e.taint_source.trim()) lines.push(`match.taint_source = ${tomlStr(e.taint_source.trim())}`);
+    const costN = parseTomlNumber(e.session_cost_usd_gt);
+    if (costN !== null) lines.push(`match.session_cost_usd_gt = ${costN}`);
+    const repeatN = parseTomlNumber(e.repeat_count_gt);
+    if (repeatN !== null && Number.isInteger(repeatN)) lines.push(`match.repeat_count_gt = ${repeatN}`);
+  }
+  return lines;
+}
+
+// overrideBlockLines renders one `[[override]]` block (no leading blank
+// line). `overridable` is written only where the grammar grants it (the org
+// layer) and only when the author spoke: an unspoken rule is already hard by
+// default, and an emitted key would change the bytes of every bundle in every
+// fleet that has no use for the flag.
+function overrideBlockLines(r: GuardOverrideRow, grammar: GuardPolicyGrammar): string[] {
+  const lines = ["[[override]]", `rule = ${tomlStr(r.rule.trim())}`];
+  if (r.decision) lines.push(`decision = ${tomlStr(r.decision)}`);
+  lines.push(`enforce = ${r.enforce ? "true" : "false"}`);
+  if (grammar.overridable && r.overridable !== undefined) lines.push(`overridable = ${r.overridable ? "true" : "false"}`);
+  return lines;
+}
+
+// GuardPolicyGrammar is what one policy layer's file may say beyond the
+// `[[rule]]` / `[[override]]` keys every layer shares
+// (internal/guard/policyfile.go::parsePolicyFile): the differences between
+// the node's own files and an org bundle are this data, never a branch on
+// which dashboard is asking.
+export type GuardPolicyGrammar = {
+  /** A top-level `disable = [...]` list (the trusted-project layer). */
+  disable: boolean;
+  /** `overridable` on an `[[override]]` row (only the org grants it). */
+  overridable: boolean;
+};
+
+// LOCAL_GUARD_GRAMMAR is the node rule manager's: user and trusted-project
+// files. `disable` parses (composeRuleToml writes it only for the
+// trusted-project layer); `overridable` does not, since a node layer cannot
+// grant it (merge.go noteUngrantableOverridable).
+export const LOCAL_GUARD_GRAMMAR: GuardPolicyGrammar = { disable: true, overridable: false };
+
+// ORG_GUARD_GRAMMAR is an org bundle's: `overridable` grants, and `disable`
+// is not an org key (the org layer ignores it; Lint refuses it).
+export const ORG_GUARD_GRAMMAR: GuardPolicyGrammar = { disable: false, overridable: true };
 
 export type ParsedGuardPolicy = {
   rules: GuardRuleRow[];
@@ -725,14 +801,79 @@ export type ParsedGuardPolicy = {
 // calls for: the caller falls back to the Advanced raw-TOML editor rather
 // than silently dropping a construct this form can't represent.
 export function parseRules(toml: string): ParsedGuardPolicy | null {
+  const p = parsePolicyText(toml, LOCAL_GUARD_GRAMMAR);
+  return p && { rules: p.rules, overrides: p.overrides, disable: p.disable };
+}
+
+// GuardBundleForm is what the org guard form edits: the bundle's custom
+// `[[rule]]` definitions and its `[[override]]` rows over built-in rules.
+export type GuardBundleForm = {
+  rules: GuardRuleRow[];
+  overrides: GuardOverrideRow[];
+};
+
+// parseGuardBundle is the inverse of composeGuardToml under ORG_GUARD_GRAMMAR,
+// as strict as parseRules: anything the form cannot represent (a `disable`
+// list, a `[fallbacks]` table, an unknown key, a multi-line value) returns
+// null so the caller opens the Advanced raw-TOML editor rather than dropping
+// it. An `[[override]]` row carrying ONLY `rule` and `overridable = true` for
+// a custom rule the same bundle defines is the rule's grant row
+// (composeGuardToml) and folds back onto GuardRuleRow.overridable.
+export function parseGuardBundle(toml: string): GuardBundleForm | null {
+  const p = parsePolicyText(toml, ORG_GUARD_GRAMMAR);
+  if (!p) return null;
+  const byId = new Map<string, GuardRuleRow>();
+  for (const r of p.rules) if (!byId.has(r.id.trim())) byId.set(r.id.trim(), r);
+  const overrides: GuardOverrideRow[] = [];
+  p.overrides.forEach((o, i) => {
+    const keys = p.overrideKeys[i];
+    const rule = byId.get(o.rule.trim());
+    if (rule && o.overridable === true && keys.size === 2 && keys.has("rule") && keys.has("overridable")) {
+      rule.overridable = true;
+      return;
+    }
+    overrides.push(o);
+  });
+  return { rules: p.rules, overrides };
+}
+
+// stripTomlComment drops a trailing `# ...` comment from one line, ignoring a
+// `#` inside a quoted string (a regex or a glob may hold one). The starter
+// bundles annotate each `rule = "R-101"      # ...` line this way.
+function stripTomlComment(line: string): string {
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (quote) {
+      if (quote === '"' && c === "\\") i++;
+      else if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'") quote = c;
+    else if (c === "#") return line.slice(0, i);
+  }
+  return line;
+}
+
+type ParsedPolicyText = ParsedGuardPolicy & {
+  // overrideKeys[i] is the set of keys overrides[i] actually wrote (an
+  // absent `enforce` and an explicit one parse to the same row).
+  overrideKeys: Set<string>[];
+};
+
+// parsePolicyText is the ONE strict parser behind parseRules and
+// parseGuardBundle; the grammar says which layer-specific keys parse.
+function parsePolicyText(toml: string, grammar: GuardPolicyGrammar): ParsedPolicyText | null {
   const rules: GuardRuleRow[] = [];
   const overrides: GuardOverrideRow[] = [];
+  const overrideKeys: Set<string>[] = [];
   let disable: string[] = [];
   let disableSeen = false;
 
   let mode: "none" | "rule" | "override" = "none";
   let curRule: GuardRuleRow | null = null;
   let curOverride: GuardOverrideRow | null = null;
+  let curKeys = new Set<string>();
   let curRuleScope: GuardMatchScope | null = null;
 
   function flushCurrent(): boolean {
@@ -742,13 +883,14 @@ export function parseRules(toml: string): ParsedGuardPolicy | null {
     } else if (mode === "override") {
       if (!curOverride || !curOverride.rule.trim()) return false;
       overrides.push(curOverride);
+      overrideKeys.push(curKeys);
     }
     return true;
   }
 
   for (const rawLine of toml.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (line === "" || line.startsWith("#")) continue;
+    const line = stripTomlComment(rawLine).trim();
+    if (line === "") continue;
 
     if (line === "[[rule]]") {
       if (!flushCurrent()) return null;
@@ -761,6 +903,7 @@ export function parseRules(toml: string): ParsedGuardPolicy | null {
     if (line === "[[override]]") {
       if (!flushCurrent()) return null;
       curOverride = emptyGuardOverride();
+      curKeys = new Set<string>();
       curRule = null;
       mode = "override";
       continue;
@@ -772,7 +915,7 @@ export function parseRules(toml: string): ParsedGuardPolicy | null {
     const val = m[2].trim();
 
     if (mode === "none") {
-      if (key !== "disable" || disableSeen) return null;
+      if (!grammar.disable || key !== "disable" || disableSeen) return null;
       const arr = parseTomlStringArray(val);
       if (arr === null) return null;
       disable = arr;
@@ -782,7 +925,12 @@ export function parseRules(toml: string): ParsedGuardPolicy | null {
 
     if (mode === "override") {
       if (!curOverride) return null;
-      if (key === "rule") {
+      if (curKeys.has(key)) return null;
+      curKeys.add(key);
+      if (key === "overridable" && grammar.overridable) {
+        if (val !== "true" && val !== "false") return null;
+        curOverride.overridable = val === "true";
+      } else if (key === "rule") {
         const s = tomlUnquote(val);
         if (s === null) return null;
         curOverride.rule = s;
@@ -929,5 +1077,118 @@ export function parseRules(toml: string): ParsedGuardPolicy | null {
     }
   }
   if (!flushCurrent()) return null;
-  return { rules, overrides, disable };
+  return { rules, overrides, disable, overrideKeys };
+}
+
+// --- Custom rule ids (advisory; internal/guard/policyfile.go compileRule is
+// the gate) ---
+//
+// The lint enforces only two things about a [[rule]] id: it is not a built-in
+// id ("id collides with built-in rule ...") and it is unique within one file
+// ("duplicate id"). No prefix is required. The org form still SUGGESTS one,
+// ORG-<n>, because the built-in catalog grows release by release under R-,
+// the code security rule pack owns S-7.., and an org id that a later release
+// claims stops loading (the built-in collision is a parse error on the node).
+
+// ORG_CUSTOM_RULE_ID_PREFIX is the prefix the org form suggests.
+export const ORG_CUSTOM_RULE_ID_PREFIX = "ORG-";
+
+// RESERVED_RULE_ID_PREFIXES are the namespaces Observer's own rules use; an
+// author id inside one may collide with a rule a later release adds.
+const RESERVED_RULE_ID_PREFIXES: readonly { prefix: string; owner: string }[] = [
+  { prefix: "R-", owner: "built-in rules" },
+  { prefix: "S-7", owner: "the code security rule pack" },
+];
+
+// suggestCustomRuleId returns the first `<prefix><n>` (n from 1) that no id in
+// taken uses.
+export function suggestCustomRuleId(prefix: string, taken: Iterable<string>): string {
+  const used = new Set<string>();
+  for (const t of taken) used.add(t.trim());
+  for (let n = 1; ; n++) {
+    const id = `${prefix}${n}`;
+    if (!used.has(id)) return id;
+  }
+}
+
+// guardCustomRuleIdProblems is the advisory check on one custom rule id
+// against the built-in catalog, the reserved namespaces and the other custom
+// rules in the same file (others: their ids, this rule's own excluded). Empty
+// means nothing to say; an empty id is guardRuleRowProblems' business.
+export function guardCustomRuleIdProblems(id: string, others: readonly string[]): string[] {
+  const t = id.trim();
+  if (!t) return [];
+  if (guardRuleInfo(t)) {
+    return [`${t} is a built-in rule. To change it, add it under the built-in rules instead; a custom rule needs its own id.`];
+  }
+  const out: string[] = [];
+  if (others.some((o) => o.trim() === t)) out.push(`Another custom rule here already uses the id ${t}.`);
+  const reserved = RESERVED_RULE_ID_PREFIXES.find((r) => t.startsWith(r.prefix));
+  if (reserved) {
+    out.push(`Ids starting with ${reserved.prefix} belong to ${reserved.owner}; a later release may add ${t} and this rule would stop loading. Use ${ORG_CUSTOM_RULE_ID_PREFIX}... instead.`);
+  }
+  return out;
+}
+
+// guardProblemsForRule picks the lint problems that name one custom rule: the
+// parser's "rule <n> (<id>): ..." form (position = the rule's 1-based place
+// among the composed [[rule]] blocks) or any problem naming the id as a whole
+// token (the merge's "org override on <id> ..." form). Problems that name no
+// rule stay with the bundle as a whole.
+export function guardProblemsForRule(problems: readonly string[], id: string, position: number): string[] {
+  const t = id.trim();
+  if (!t) return [];
+  const esc = t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const token = new RegExp(`(^|[^A-Za-z0-9_-])${esc}($|[^A-Za-z0-9_-])`);
+  const at = `rule ${position} (`;
+  return problems.filter((p) => p.startsWith(at) || token.test(p));
+}
+
+// guardRuleMatcherSummary is the one-line "what does it match" text of a
+// custom rule for a rules table: its set matchers of the active scope, in
+// composer order, as `key value` pairs.
+export function guardRuleMatcherSummary(r: GuardRuleRow): string {
+  const parts: string[] = [];
+  const add = (k: string, v: string | boolean | readonly string[]) => {
+    if (typeof v === "boolean") {
+      if (v) parts.push(k);
+    } else if (typeof v === "string") {
+      if (v.trim()) parts.push(`${k} ${v.trim()}`);
+    } else if (v.length) {
+      parts.push(`${k} ${v.join(", ")}`);
+    }
+  };
+  if (r.scope === "command") {
+    add("command_regex", r.command.command_regex);
+    add("command_base", r.command.command_base);
+    add("arg_contains", r.command.arg_contains);
+  } else {
+    const e = r.event;
+    add("path_glob", e.path_glob);
+    add("path_not", e.path_not);
+    add("path_outside_project", e.path_outside_project);
+    add("path_sensitive", e.path_sensitive);
+    add("access", e.access);
+    add("url_domain", e.url_domain);
+    add("mcp_server", e.mcp_server);
+    add("mcp_tool", e.mcp_tool);
+    add("event_kind", e.event_kind);
+    add("sink", e.sink);
+    add("taint_source", e.taint_source);
+    add("session_cost_usd_gt", e.session_cost_usd_gt);
+    add("repeat_count_gt", e.repeat_count_gt);
+  }
+  return parts.join("; ");
+}
+
+// blankGuardBundleForm is the org guard form with nothing in it yet: one
+// empty built-in rule row to fill in, no custom rules.
+export function blankGuardBundleForm(): GuardBundleForm {
+  return { overrides: [emptyGuardOverride()], rules: [] };
+}
+
+// guardBundleFormIsEmpty reports a parsed bundle with no rows at all (a
+// header-only or withdrawn body), which the editor opens as the blank form.
+export function guardBundleFormIsEmpty(f: GuardBundleForm): boolean {
+  return f.overrides.length === 0 && f.rules.length === 0;
 }

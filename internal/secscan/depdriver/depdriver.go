@@ -93,6 +93,10 @@ type Env struct {
 	// child did not run the step, so the project's stored binary checks are
 	// stale). nil drops them.
 	ReachSink func(root string, runs []secreach.SymbolRun, ran bool)
+	// InventorySink receives every parsed, non-failed scan's package
+	// inventory (security coverage gaps plan item 2: the project SBOM's
+	// source), with the driver id; nil keeps it nowhere.
+	InventorySink func(root, driver string, pkgs []depscan.Package)
 }
 
 // Isolated is one prepared isolated run (Env.Isolate). A nil Provider
@@ -218,6 +222,9 @@ func (d *Scalibr) Scan(ctx context.Context, t secscan.Target) (secscan.Result, e
 	}
 	if d.env.ReachSink != nil {
 		d.env.ReachSink(t.ProjectRoot, resp.Reach, resp.ReachRan)
+	}
+	if d.env.InventorySink != nil && t.CheckoutRoot == "" {
+		d.env.InventorySink(t.ProjectRoot, depscan.ScalibrID, resp.Packages)
 	}
 	resp = ApplyOnline(ctx, resp, d.env.Online)
 	if d.env.Submodules != nil {

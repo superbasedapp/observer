@@ -1,6 +1,10 @@
 package policy
 
-import "strings"
+import (
+	"strings"
+	"sync"
+	"sync/atomic"
+)
 
 // Path handling in this package is deliberately OS-AGNOSTIC: it never
 // uses path/filepath (whose semantics depend on the daemon's runtime
@@ -66,6 +70,24 @@ func normPath(p string) string {
 	if p == "" {
 		return ""
 	}
+	if isNormalizedPath(p) {
+		// Already canonical: the slow path below would rebuild the same
+		// string. Most calls land here - the engine normalizes a path once
+		// and the matchers re-normalize it at every comparison - and the
+		// split/join allocation was the largest CPU cost of a week's guard
+		// replay after the filesystem lookups (demo bug #14).
+		return p
+	}
+	return normPathSlow(p)
+}
+
+// normPathSlow is normPath without the already-canonical fast path: the
+// whole rewrite, for any input. Kept separate so a test can pin that the fast
+// path never changes an answer.
+func normPathSlow(p string) string {
+	if p == "" {
+		return ""
+	}
 	if rest, ok := strings.CutPrefix(p, `\\?\`); ok {
 		p = rest
 		if hasFoldPrefix(p, `UNC\`) {
@@ -113,6 +135,52 @@ func normPath(p string) string {
 		return "/" + joined
 	default:
 		return joined
+	}
+}
+
+// isNormalizedPath reports whether normPath(p) == p without building
+// anything: no backslash (so no UNC or `\\?\` form, which the slow path
+// rewrites), a drive letter only when lowercase and followed by "/" or
+// nothing, and no empty, "." or ".." segment (so no "//", no trailing "/"
+// beyond a bare root). It answers false whenever it is unsure; the slow path
+// then decides, so a false is only ever slower, never different.
+func isNormalizedPath(p string) bool {
+	if strings.IndexByte(p, '\\') >= 0 {
+		return false
+	}
+	s := p
+	if len(s) >= 2 && s[1] == ':' && isASCIILetter(s[0]) {
+		if s[0] < 'a' {
+			return false // an uppercase drive is lowercased
+		}
+		s = s[2:]
+		if s == "" || s == "/" {
+			return true // "c:" and "c:/" are their own normal forms
+		}
+		if s[0] != '/' {
+			return false // drive-relative "c:x" becomes "c:/x"
+		}
+	}
+	if s == "/" {
+		return true
+	}
+	s = strings.TrimPrefix(s, "/")
+	if s == "" {
+		return false
+	}
+	for {
+		seg := s
+		i := strings.IndexByte(s, '/')
+		if i >= 0 {
+			seg = s[:i]
+		}
+		if seg == "" || seg == "." || seg == ".." {
+			return false
+		}
+		if i < 0 {
+			return true
+		}
+		s = s[i+1:]
 	}
 }
 
@@ -551,11 +619,76 @@ func hasComponent(p, comp string) bool {
 // case-insensitive matching (used for the sensitive-path tables: see
 // rules_boundary.go for why that is always-on there).
 func matchGlob(pattern, path string, ci bool) bool {
-	pat, p := normPath(pattern), normPath(path)
+	return matchSegs(globSegs(pattern, ci), globPathSegs(path, ci))
+}
+
+// globPathSegs is the segment list matchGlob compares one side by: the
+// normalized path, ASCII-lowered when ci, split at "/". The caller must not
+// modify the result (a pattern's is shared through globSegCache).
+func globPathSegs(p string, ci bool) []string {
+	n := normPath(p)
 	if ci {
-		pat, p = strings.ToLower(pat), strings.ToLower(p)
+		n = strings.ToLower(n)
 	}
-	return matchSegs(strings.Split(pat, "/"), strings.Split(p, "/"))
+	return strings.Split(n, "/")
+}
+
+// globSegCacheMax bounds globSegCache. The pattern tables are the built-in
+// rows plus the operator's configured globs (allow_paths, hook switches,
+// user rules): a few hundred. Past the bound a pattern is split on every
+// call, the speed before the cache, never unbounded memory.
+const globSegCacheMax = 4096
+
+// globSegCache memoizes a PATTERN's segments (demo bug #14, R3-5). A week's
+// guard replay matches every path token of every captured command against
+// every path table, and before the cache each comparison re-normalized,
+// re-lowered and re-split the same few hundred patterns: that preprocessing,
+// not the matching, was a third of the replay's CPU. A pattern's segments
+// depend only on its text and the case mode, so the cached answer is the
+// answer. Shared by every engine in the process and read on the hot path,
+// so a read is a plain map lookup on an immutable snapshot (one per case
+// mode); a pattern seen for the first time publishes a copied map. The
+// copies are a one-time cost: the tables are fixed once the engines are
+// built.
+var (
+	globSegCache   [2]atomic.Pointer[map[string][]string] // [ci]
+	globSegCacheMu sync.Mutex
+)
+
+// globSegs returns pattern's segments (globPathSegs), memoized.
+func globSegs(pattern string, ci bool) []string {
+	slot := &globSegCache[0]
+	if ci {
+		slot = &globSegCache[1]
+	}
+	if m := slot.Load(); m != nil {
+		if v, ok := (*m)[pattern]; ok {
+			return v
+		}
+	}
+	segs := globPathSegs(pattern, ci)
+	globSegCacheMu.Lock()
+	defer globSegCacheMu.Unlock()
+	old := slot.Load()
+	n := 0
+	if old != nil {
+		if v, ok := (*old)[pattern]; ok {
+			return v
+		}
+		n = len(*old)
+	}
+	if n >= globSegCacheMax {
+		return segs
+	}
+	next := make(map[string][]string, n+1)
+	if old != nil {
+		for k, v := range *old {
+			next[k] = v
+		}
+	}
+	next[pattern] = segs
+	slot.Store(&next)
+	return segs
 }
 
 // matchSegs matches pattern segments against path segments,
@@ -615,8 +748,13 @@ func matchSeg(p, s string) bool {
 
 // matchAnyGlob reports whether path matches any pattern in patterns.
 func matchAnyGlob(patterns []string, path string, ci bool) bool {
+	if len(patterns) == 0 {
+		return false
+	}
+	// The path's segments are the same for every pattern: split them once.
+	segs := globPathSegs(path, ci)
 	for _, pat := range patterns {
-		if matchGlob(pat, path, ci) {
+		if matchSegs(globSegs(pat, ci), segs) {
 			return true
 		}
 	}

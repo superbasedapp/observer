@@ -74,7 +74,7 @@ func hostedConnectStoreEndpoint(ctx context.Context, cfgPath, provider string, f
 		}
 		if k == "" {
 			if len(v.EnvCredential) != 1 {
-				return "", fmt.Errorf("%s needs %s; enter each in Settings > Hosted sandboxes", v.Name, strings.Join(v.EnvCredential, " and "))
+				return "", fmt.Errorf("%s needs %s; enter each in Terminals > Settings > Hosted sandboxes", v.Name, strings.Join(v.EnvCredential, " and "))
 			}
 			k = v.EnvCredential[0]
 		}

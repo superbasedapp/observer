@@ -10,7 +10,7 @@ const (
 	WriterEnrolment Writer = "enrolment"
 	// WriterInit is `observer init`, batch or interactive.
 	WriterInit Writer = "init"
-	// WriterSetup is the dashboard's Settings > Setup route buttons.
+	// WriterSetup is the dashboard's Settings > Connected tools route buttons.
 	WriterSetup Writer = "setup"
 	// WriterLauncher is a tool launcher (`observer crush`, ...).
 	WriterLauncher Writer = "launcher"
@@ -287,7 +287,7 @@ func ToolLabel(tool string) string {
 // writerPhrases says who set a route, for the "kept because" sentence.
 var writerPhrases = map[Writer]string{
 	WriterInit:     "`observer init` set it",
-	WriterSetup:    "it was set from Settings > Setup",
+	WriterSetup:    "it was set from Settings > Connected tools",
 	WriterLauncher: "a launcher set it",
 	WriterManaged:  "your organization keeps it routed (it stays until the organization turns that off)",
 }

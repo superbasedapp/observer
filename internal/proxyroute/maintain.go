@@ -350,7 +350,7 @@ type RouteAct struct {
 // RecentRouteActs reads the route-provenance file under homeDir and returns
 // the routes Observer's enrolment (the CLI enrol or managed maintenance)
 // wrote or repaired within window of now, newest first. Read-only. A record
-// another writer owns (init, Settings > Setup, a launcher) is the developer's
+// another writer owns (init, Settings > Connected tools, a launcher) is the developer's
 // own act and is not reported.
 func RecentRouteActs(homeDir string, now time.Time, window time.Duration) []RouteAct {
 	f, err := loadProvenance(filepath.Join(homeDir, ".observer", ProvenanceFileName))

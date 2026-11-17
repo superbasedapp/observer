@@ -4,6 +4,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -310,6 +312,87 @@ func TestEditPairs(t *testing.T) {
 	} {
 		if got := len(editPairs(raw)); got != want {
 			t.Errorf("%s: %d, want %d", raw, got, want)
+		}
+	}
+}
+
+// aiWrite stores an AI whole-file write of rel (a new file) with its
+// file_changes row.
+func (s *fixObsSeed) aiWrite(t *testing.T, rel, content string, at time.Time) {
+	t.Helper()
+	raw, _ := json.Marshal(map[string]string{"file_path": rel, "content": content})
+	id := s.action(t, models.ActionWriteFile, rel, string(raw), at, true)
+	if _, err := s.st.InsertFileChanges(context.Background(), []store.FileChangeRow{{
+		SessionID: s.sid, ProjectID: s.pid, ActionID: id, FilePathHash: loc.PathHash(s.root, rel),
+		Category: string(loc.CategoryCode), Actor: store.LOCActorAI, Confidence: string(loc.ConfidenceHigh),
+		Source: store.LOCSourceWrite, Stats: loc.Stats{AddedCode: 3}, Version: loc.Version, SavedAt: at,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestVerifyFixesCreditsOnlyHonestAddedTests (security coverage gaps plan
+// item 6): a new test file the session wrote, followed by a passing fuzz
+// run, verifies the fix and says the session added tests; the same new file
+// with a skip marker, a file git already held before the session, and a
+// low-confidence change row do not.
+func TestVerifyFixesCreditsOnlyHonestAddedTests(t *testing.T) {
+	now := time.Now().UTC()
+	ctx := context.Background()
+	noHistory := func(context.Context, string, int, ...string) ([]byte, bool, error) { return nil, false, nil }
+	oldHistory := func(context.Context, string, int, ...string) ([]byte, bool, error) {
+		return []byte(strconv.FormatInt(now.Add(-48*time.Hour).Unix(), 10) + "\n"), false, nil
+	}
+	cases := []struct {
+		name     string
+		content  string
+		git      gitRunner
+		lowConf  bool
+		verified bool
+	}{
+		{"new fuzz test", "func FuzzParse(f *testing.F) {\n\tf.Fuzz(func(t *testing.T, b []byte) { Parse(b) })\n}\n", noHistory, false, true},
+		{"new test that skips", "func TestParse(t *testing.T) {\n\tt.Skip(\"later\")\n}\n", noHistory, false, false},
+		{"build-ignored test", "//go:build ignore\n\npackage p\n", noHistory, false, false},
+		{"file git held before", "func FuzzParse(f *testing.F) {}\n", oldHistory, false, false},
+		{"low-confidence change row", "func FuzzParse(f *testing.F) {}\n", noHistory, true, false},
+	}
+	for _, c := range cases {
+		s := newFixObsSeed(t)
+		s.aiEdit(t, "pkg/parse.go", now.Add(-30*time.Minute))
+		if c.lowConf {
+			raw, _ := json.Marshal(map[string]string{"file_path": "pkg/parse_test.go", "content": c.content})
+			id := s.action(t, models.ActionWriteFile, "pkg/parse_test.go", string(raw), now.Add(-29*time.Minute), true)
+			if _, err := s.st.InsertFileChanges(ctx, []store.FileChangeRow{{
+				SessionID: s.sid, ProjectID: s.pid, ActionID: id, FilePathHash: loc.PathHash(s.root, "pkg/parse_test.go"),
+				Category: string(loc.CategoryCode), Actor: store.LOCActorAI, Confidence: string(loc.ConfidenceLow),
+				Source: store.LOCSourceWrite, Stats: loc.Stats{AddedCode: 3}, Version: loc.Version, SavedAt: now.Add(-29 * time.Minute),
+			}}); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			s.aiWrite(t, "pkg/parse_test.go", c.content, now.Add(-29*time.Minute))
+		}
+		s.action(t, models.ActionRunCommand, "go test -fuzz=FuzzParse -fuzztime=10s ./pkg", "", now.Add(-20*time.Minute), true)
+		id := s.closedFinding(t, "pkg/parse.go", now.Add(-10*time.Minute))
+		got, err := s.st.ListSecFindings(ctx, store.SecFindingFilter{Limit: 10})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var f secfinding.Finding
+		for _, x := range got {
+			if x.ID == id {
+				f = x
+			}
+		}
+		v, err := fixVerdictWith(ctx, s.st, s.root, f, c.git)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if v.Verified != c.verified {
+			t.Errorf("%s: verdict %+v", c.name, v)
+		}
+		if c.verified && (!v.AddedTests || v.Class != "go_fuzz" || !strings.Contains(v.Detail(), "added tests") || !fixObservations(v).TestFilesEdited) {
+			t.Errorf("%s: record %+v %q", c.name, v, v.Detail())
 		}
 	}
 }

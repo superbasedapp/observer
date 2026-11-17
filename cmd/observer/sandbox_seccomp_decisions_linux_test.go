@@ -22,7 +22,9 @@ import (
 // N2-A8): what a tool sees under the filter when it runs one of the
 // programs the decisions are about. One row per decision outcome; a row is
 // skipped when its program is missing or fails here even unfiltered (an
-// unprivileged host without user namespaces, for example).
+// unprivileged host without user namespaces, for example). A row with seize
+// set runs under a profile that lifts PTRACE_SEIZE (the strace opt-in, lane
+// ptrace, PT-96) instead of observer_default.
 var seccompDecisionProbes = []struct {
 	name    string
 	argv    []string
@@ -32,6 +34,8 @@ var seccompDecisionProbes = []struct {
 	// that program measured here (its release), and says why. An error
 	// skips the row, naming what could not be measured.
 	expect func() (allowed bool, why string, err error)
+	// seize: the row runs under the seize profile.
+	seize bool
 }{
 	// N2-A8: user namespaces stay open (a browser sandbox needs one) ...
 	{name: "user namespace", argv: []string{"unshare", "-U", "true"}, allowed: true},
@@ -45,6 +49,10 @@ var seccompDecisionProbes = []struct {
 	// straceChildExpectation). Attaching to a process that already exists
 	// is the EPERM probe of TestSeccompKernelEPERM.
 	{name: "strace on its own child", argv: []string{"strace", "-f", "-o", "/dev/null", "true"}, expect: straceChildExpectation},
+	// Lane ptrace: with the strace opt-in's profile, strace on a child it
+	// starts works on every release, 6.14 and later included.
+	{name: "strace on its own child, strace switch on", argv: []string{"strace", "-f", "-o", "/dev/null", "true"}, expect: straceSeizeExpectation, seize: true},
+	{name: "strace -f on its own child that forks, strace switch on", argv: []string{"strace", "-f", "-o", "/dev/null", "sh", "-c", "true; true"}, expect: straceSeizeExpectation, seize: true},
 }
 
 // straceSelfProbeRelease is the first strace release (6.14, 2025-03-25)
@@ -79,19 +87,39 @@ func parseStraceRelease(out string) (major, minor int, ok bool) {
 	return major, minor, true
 }
 
+// straceRelease reads this host's strace release.
+func straceRelease() (major, minor int, err error) {
+	out, err := exec.Command("strace", "-V").Output()
+	if err != nil {
+		return 0, 0, fmt.Errorf("strace -V: %w", err)
+	}
+	major, minor, ok := parseStraceRelease(string(out))
+	if !ok {
+		return 0, 0, fmt.Errorf("strace -V named no release: %q", strings.TrimSpace(string(out)))
+	}
+	return major, minor, nil
+}
+
 // straceChildExpectation is the strace row's expected outcome on this
 // host: allowed for a strace that falls back to PTRACE_TRACEME, denied
 // for one that cannot (straceSelfProbeRelease).
 func straceChildExpectation() (bool, string, error) {
-	out, err := exec.Command("strace", "-V").Output()
+	major, minor, err := straceRelease()
 	if err != nil {
-		return false, "", fmt.Errorf("strace -V: %w", err)
-	}
-	major, minor, ok := parseStraceRelease(string(out))
-	if !ok {
-		return false, "", fmt.Errorf("strace -V named no release: %q", strings.TrimSpace(string(out)))
+		return false, "", err
 	}
 	return straceChildAllowed(major, minor)
+}
+
+// straceSeizeExpectation is the strace rows' expected outcome under the
+// seize profile: allowed on every release (6.14 and later seize their child
+// directly; earlier ones see their probe succeed and seize too).
+func straceSeizeExpectation() (bool, string, error) {
+	major, minor, err := straceRelease()
+	if err != nil {
+		return false, "", err
+	}
+	return straceSeizeAllowed(major, minor)
 }
 
 // straceChildAllowed is the strace row's expected outcome for a release.
@@ -101,6 +129,12 @@ func straceChildAllowed(major, minor int) (bool, string, error) {
 		return true, rel + " probes PTRACE_SEIZE on a forked child, sees the filter's EPERM and falls back to PTRACE_TRACEME", nil
 	}
 	return false, rel + " probes PTRACE_SEIZE on itself, takes the filter's EPERM for support and seizes its child, which the filter refuses", nil
+}
+
+// straceSeizeAllowed is the seize rows' expected outcome for a release.
+func straceSeizeAllowed(major, minor int) (bool, string, error) {
+	rel := fmt.Sprintf("strace %d.%d", major, minor)
+	return true, rel + " seizes the child it starts, which the strace switch's profile allows (PTRACE_ATTACH stays denied)", nil
 }
 
 // seccompDecisionDir stands for the probes' mount target; envDecisionDir
@@ -132,42 +166,62 @@ func runDecisionProbe(argv []string, dir string) (ok bool, why string) {
 	return false, err.Error() + ": " + strings.TrimSpace(lines[len(lines)-1])
 }
 
-// seccompDecisionChild loads the filter and prints one line per probe:
-// "<index> ok" or "<index> fail <why>". It exits; it never returns.
-func seccompDecisionChild() {
+// seccompDecisionChild loads profile and prints one line per probe whose
+// seize field equals seize: "<index> ok" or "<index> fail <why>". It exits;
+// it never returns.
+func seccompDecisionChild(profile sandboxseccomp.ProfileID, seize bool) {
 	runtime.LockOSThread()
 	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
 		os.Stdout.WriteString("SKIP no_new_privs: " + err.Error() + "\n")
 		os.Exit(0)
 	}
-	if err := applySeccompSelf(string(sandboxseccomp.ProfileObserverDefault)); err != nil {
+	if err := applySeccompSelf(string(profile)); err != nil {
 		os.Stdout.WriteString("SKIP load: " + err.Error() + "\n")
 		os.Exit(0)
 	}
 	var b strings.Builder
 	for i, p := range seccompDecisionProbes {
+		if p.seize != seize {
+			continue
+		}
 		res := "ok"
 		if ok, why := runDecisionProbe(p.argv, os.Getenv(envDecisionDir)); !ok {
 			res = "fail " + strings.ReplaceAll(why, "\n", " ")
 		}
-		b.WriteString(string(rune('a'+i)) + " " + res + "\n")
+		b.WriteString(strconv.Itoa(i) + " " + res + "\n")
 	}
 	os.Stdout.WriteString(b.String())
 	os.Exit(0)
 }
 
 // TestSeccompKernelDecisions runs each decision probe unfiltered (its
-// baseline) and under the filter, and checks the filtered outcome is the
-// one the decision records.
+// baseline) and under its profile, and checks the filtered outcome is the
+// one the decision records: the observer_default rows, then the strace
+// switch's rows under a profile that lifts PTRACE_SEIZE.
 func TestSeccompKernelDecisions(t *testing.T) {
-	if os.Getenv(envSeccompChild) == "decisions" {
-		seccompDecisionChild()
+	switch os.Getenv(envSeccompChild) {
+	case "decisions":
+		seccompDecisionChild(sandboxseccomp.ProfileObserverDefault, false)
+	case "decisions-seize":
+		seccompDecisionChild(sandboxseccomp.ProfileObserverSeizeYama, true)
 	}
 	dir := t.TempDir()
 	t.Setenv(envDecisionDir, dir)
-	baseline := make([]bool, len(seccompDecisionProbes))
+	t.Run("observer_default", func(t *testing.T) { runDecisionTable(t, dir, "decisions", false) })
+	t.Run("strace switch on", func(t *testing.T) { runDecisionTable(t, dir, "decisions-seize", true) })
+}
+
+// runDecisionTable is TestSeccompKernelDecisions for the rows whose seize
+// field equals seize, under the child mode's profile.
+func runDecisionTable(t *testing.T, dir, mode string, seize bool) {
+	var idx []int
+	baseline := map[int]bool{}
 	anyRan := false
 	for i, p := range seccompDecisionProbes {
+		if p.seize != seize {
+			continue
+		}
+		idx = append(idx, i)
 		if _, err := exec.LookPath(p.argv[0]); err != nil {
 			continue
 		}
@@ -177,7 +231,7 @@ func TestSeccompKernelDecisions(t *testing.T) {
 	if !anyRan {
 		t.Skip("no decision probe runs on this host even unfiltered")
 	}
-	cmd, out := startSeccompChild(t, "TestSeccompKernelDecisions", "decisions")
+	cmd, out := startSeccompChild(t, "TestSeccompKernelDecisions", mode)
 	b, rerr := io.ReadAll(out)
 	err := cmd.Wait()
 	got := string(b)
@@ -188,10 +242,14 @@ func TestSeccompKernelDecisions(t *testing.T) {
 		t.Fatalf("child: %v %v: %s", rerr, err, got)
 	}
 	lines := strings.Split(strings.TrimSpace(got), "\n")
-	if len(lines) != len(seccompDecisionProbes) {
-		t.Fatalf("child printed %d lines, want %d: %q", len(lines), len(seccompDecisionProbes), got)
+	if len(lines) != len(idx) {
+		t.Fatalf("child printed %d lines, want %d: %q", len(lines), len(idx), got)
 	}
-	for i, p := range seccompDecisionProbes {
+	for k, i := range idx {
+		p := seccompDecisionProbes[i]
+		if !strings.HasPrefix(lines[k], strconv.Itoa(i)+" ") {
+			t.Fatalf("child line %q is not probe %d", lines[k], i)
+		}
 		if !baseline[i] {
 			t.Logf("%s: skipped (missing or fails unfiltered here)", p.name)
 			continue
@@ -204,9 +262,9 @@ func TestSeccompKernelDecisions(t *testing.T) {
 				continue
 			}
 		}
-		filtered := strings.HasSuffix(lines[i], " ok")
+		filtered := strings.HasSuffix(lines[k], " ok")
 		if filtered != want {
-			t.Errorf("%s: under the filter ok=%v, expected %v because %s (child: %q)", p.name, filtered, want, why, lines[i])
+			t.Errorf("%s: under the filter ok=%v, expected %v because %s (child: %q)", p.name, filtered, want, why, lines[k])
 			continue
 		}
 		t.Logf("%s: ok unfiltered, ok=%v under the filter (%s)", p.name, filtered, why)
@@ -214,7 +272,8 @@ func TestSeccompKernelDecisions(t *testing.T) {
 }
 
 // TestStraceChildAllowed pins the strace row's expectation per release,
-// either side of straceSelfProbeRelease, and the `strace -V` parse.
+// either side of straceSelfProbeRelease, and the `strace -V` parse; under
+// the strace switch's profile every release is allowed.
 func TestStraceChildAllowed(t *testing.T) {
 	for _, tc := range []struct {
 		out  string
@@ -234,6 +293,9 @@ func TestStraceChildAllowed(t *testing.T) {
 		got, why, err := straceChildAllowed(major, minor)
 		if err != nil || got != tc.want || why == "" {
 			t.Errorf("%q: allowed=%v (%q, %v), want %v", tc.out, got, why, err, tc.want)
+		}
+		if got, why, err := straceSeizeAllowed(major, minor); err != nil || !got || why == "" {
+			t.Errorf("%q with the strace switch: allowed=%v (%q, %v), want true", tc.out, got, why, err)
 		}
 	}
 	if _, _, ok := parseStraceRelease("strace: unknown"); ok {

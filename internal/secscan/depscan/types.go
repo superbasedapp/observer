@@ -232,6 +232,10 @@ type ChildRequest struct {
 	// records. Additive: the version stays 1; a child built without x/vuln
 	// answers nothing for it.
 	ReachGo bool `json:"reach_go,omitempty"`
+	// Packages are the rows a KindSBOM request matches (security coverage
+	// gaps plan item 2): the child extracts nothing and matches these, read
+	// by the caller from an SBOM file. Additive: the version stays 1.
+	Packages []Package `json:"packages,omitempty"`
 	// ScratchDir is a writable directory the daemon prepared for this run
 	// (absolute, as the child sees it): the symbol check writes its flat
 	// record directory there. Empty: the child uses the system temporary

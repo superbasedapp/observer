@@ -1,0 +1,10 @@
+{
+  "id": "op_create1",
+  "machineId": "m_agqteugyy5px6hzeadbh4ldjo4",
+  "type": "create",
+  "state": "queued",
+  "phase": "scheduling",
+  "error": null,
+  "createdAt": "2026-11-11T09:59:40Z",
+  "updatedAt": "2026-11-11T09:59:40Z"
+}

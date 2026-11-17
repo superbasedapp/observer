@@ -116,7 +116,6 @@ func (s *Store) Exchange(ctx context.Context, in ExchangeInput) (ExchangeResult,
 	if err != nil {
 		return ExchangeResult{}, fmt.Errorf("cloudserver/store.Exchange: rand token: %w", err)
 	}
-	thumb := Thumbprint(in.PublicKey)
 
 	var res ExchangeResult
 	err = s.inTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
@@ -141,56 +140,77 @@ func (s *Store) Exchange(ctx context.Context, in ExchangeInput) (ExchangeResult,
 		// 2) Resolve-or-create the account through the SHARED identity-bootstrap
 		// seam (the same one PortalLogin uses), which also establishes tenant
 		// context and refuses a suspended account with ErrAccountSuspended.
-		accountID, e := resolveOrCreateAccountTx(ctx, tx, in.Provider, in.Subject)
+		accountID, e := s.resolveOrCreateAccountTx(ctx, tx, in.Provider, in.Subject)
 		if e != nil {
 			return e
 		}
 
-		// 3) Register or reuse the device (now RLS-scoped to accountID).
-		var deviceID string
-		var revokedAt *time.Time
-		e = tx.QueryRow(ctx,
-			`SELECT id::text, revoked_at FROM device_registrations
-			  WHERE account_id = $1::uuid AND thumbprint = $2`,
-			accountID, thumb).Scan(&deviceID, &revokedAt)
-		switch {
-		case errors.Is(e, pgx.ErrNoRows):
-			if e2 := tx.QueryRow(ctx,
-				`INSERT INTO device_registrations (account_id, public_key, thumbprint, label)
-				 VALUES ($1::uuid, $2, $3, $4) RETURNING id::text`,
-				accountID, in.PublicKey, thumb, in.Label).Scan(&deviceID); e2 != nil {
-				return fmt.Errorf("register device: %w", e2)
-			}
-		case e != nil:
-			return fmt.Errorf("lookup device: %w", e)
-		default:
-			if revokedAt != nil {
-				return ErrDeviceRevoked
-			}
+		// 3) + 4) Register or reuse the device and mint its token: the one
+		// owner shared with the connect flow's sign-in delivery (connect.go).
+		r, e := registerDeviceAndMintTokenTx(ctx, tx, accountID, in.PublicKey, in.Label, ttl, now, rawToken)
+		if e != nil {
+			return e
 		}
-
-		// 4) Mint the device-bound token.
-		var expiresAt time.Time
-		if e2 := tx.QueryRow(ctx,
-			`INSERT INTO api_tokens (account_id, device_id, token_hash, expires_at)
-			 VALUES ($1::uuid, $2::uuid, $3, $4) RETURNING expires_at`,
-			accountID, deviceID, hashSecret(rawToken), now.Add(ttl)).Scan(&expiresAt); e2 != nil {
-			return fmt.Errorf("mint token: %w", e2)
-		}
-
-		res = ExchangeResult{
-			AccountID:  accountID,
-			DeviceID:   deviceID,
-			Thumbprint: thumb,
-			Token:      rawToken,
-			ExpiresAt:  expiresAt,
-		}
+		res = r
 		return nil
 	})
 	if err != nil {
 		return ExchangeResult{}, err
 	}
 	return res, nil
+}
+
+// registerDeviceAndMintTokenTx registers the device with public key pub on
+// accountID (or reuses its row), then mints a device-bound API token valid
+// for ttl. It is the one owner of a device credential, shared by Exchange and
+// the connect flow's sign-in delivery (DeliverConnectSignIn), so both refuse
+// the same things: a revoked device (ErrDeviceRevoked) and a new device of an
+// account holding a passkey with no live approval (FR-6,
+// ErrDeviceApprovalRequired). The caller's transaction is already in
+// accountID's tenant context and has checked the account is active.
+func registerDeviceAndMintTokenTx(ctx context.Context, tx pgx.Tx, accountID string, pub []byte, label string, ttl time.Duration, now time.Time, rawToken string) (ExchangeResult, error) {
+	thumb := Thumbprint(pub)
+	var deviceID string
+	var revokedAt *time.Time
+	e := tx.QueryRow(ctx,
+		`SELECT id::text, revoked_at FROM device_registrations
+		  WHERE account_id = $1::uuid AND thumbprint = $2`,
+		accountID, thumb).Scan(&deviceID, &revokedAt)
+	switch {
+	case errors.Is(e, pgx.ErrNoRows):
+		// FR-6: a NEW device of an account that holds a passkey needs a
+		// passkey-verified portal session's approval of its thumbprint.
+		if e2 := consumeDeviceApprovalTx(ctx, tx, accountID, thumb, now); e2 != nil {
+			return ExchangeResult{}, e2
+		}
+		if e2 := tx.QueryRow(ctx,
+			`INSERT INTO device_registrations (account_id, public_key, thumbprint, label)
+			 VALUES ($1::uuid, $2, $3, $4) RETURNING id::text`,
+			accountID, pub, thumb, label).Scan(&deviceID); e2 != nil {
+			return ExchangeResult{}, fmt.Errorf("register device: %w", e2)
+		}
+	case e != nil:
+		return ExchangeResult{}, fmt.Errorf("lookup device: %w", e)
+	default:
+		if revokedAt != nil {
+			return ExchangeResult{}, ErrDeviceRevoked
+		}
+	}
+
+	var expiresAt time.Time
+	if e2 := tx.QueryRow(ctx,
+		`INSERT INTO api_tokens (account_id, device_id, token_hash, expires_at)
+		 VALUES ($1::uuid, $2::uuid, $3, $4) RETURNING expires_at`,
+		accountID, deviceID, hashSecret(rawToken), now.Add(ttl)).Scan(&expiresAt); e2 != nil {
+		return ExchangeResult{}, fmt.Errorf("mint token: %w", e2)
+	}
+	return ExchangeResult{
+		AccountID:  accountID,
+		DeviceID:   deviceID,
+		Thumbprint: thumb,
+		Token:      rawToken,
+		ExpiresAt:  expiresAt,
+	}, nil
 }
 
 // TokenPrincipal is the resolved identity behind a bearer token.

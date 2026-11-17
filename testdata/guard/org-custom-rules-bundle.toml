@@ -1,0 +1,27 @@
+# Org guard-policy bundle (TOML; merged on every agent as the strictness floor)
+
+[[rule]]
+id         = "ORG-1"
+category   = "exfil"
+severity   = "high"
+decision   = "deny"
+enforce    = true
+doc        = "Copying files off the machine with scp"
+advice     = "Use the artifact store"
+match.command_base = "scp"
+
+[[override]]
+rule = "ORG-1"
+overridable = true
+
+[[rule]]
+id         = "ORG-2"
+category   = "exfil"
+severity   = "warn"
+decision   = "ask"
+match.url_domain = "paste.example.com"
+
+[[override]]
+rule = "R-172"
+decision = "deny"
+enforce = true

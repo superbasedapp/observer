@@ -161,7 +161,7 @@ var claudeCodeExpect = map[string]rowExpect{
 	// Network rules R-174..R-179: R-174/R-177 shapes sit mid-command; R-175/R-176
 	// are allow/allow (silent until raised); R-178/R-179 map their tunnel/scanner
 	// bases to ask-prefix entries.
-	"R-174": {}, "R-175": {}, "R-176": {}, "R-177": {}, "R-178": {entries: 10}, "R-179": {entries: 10},
+	"R-174": {}, "R-175": {}, "R-176": {}, "R-177": {}, "R-178": {entries: 10}, "R-179": {entries: 18},
 	"R-180": {}, "R-190": {}, "R-204": {}, "R-205": {}, "R-301": {}, "R-302": {}, "R-303": {},
 	"R-304": {entries: 8, deny: 8}, "R-305": {}, "R-306": {}, "R-307": {},
 	"B-603": {}, "B-604": {}, "B-610": {}, "B-611": {}, "B-612": {}, "B-613": {},
@@ -199,7 +199,7 @@ var openCodeExpect = map[string]rowExpect{
 	"R-170": {}, "R-171": {}, "R-172": {},
 	"R-173": {},
 	// Network rules R-174..R-179 (same shape as the claude-code table above).
-	"R-174": {}, "R-175": {}, "R-176": {}, "R-177": {}, "R-178": {entries: 10}, "R-179": {entries: 10},
+	"R-174": {}, "R-175": {}, "R-176": {}, "R-177": {}, "R-178": {entries: 10}, "R-179": {entries: 18},
 	"R-180": {}, "R-190": {}, "R-204": {}, "R-205": {}, "R-301": {}, "R-302": {}, "R-303": {},
 	"R-304": {}, "R-305": {}, "R-306": {}, "R-307": {},
 	"T-501": {}, "T-502": {}, "T-503": {}, "T-504": {}, "T-505": {},

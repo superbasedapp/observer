@@ -96,14 +96,28 @@ type hash struct {
 	Content string `json:"content"`
 }
 
+// licenseRef is a CycloneDX license object: an SPDX id or a free-text name.
+type licenseRef struct {
+	ID   string `json:"id,omitempty"`
+	Name string `json:"name,omitempty"`
+}
+
+// licenseChoice is one CycloneDX licenses[] entry: a license or an SPDX
+// expression (never both).
+type licenseChoice struct {
+	License    *licenseRef `json:"license,omitempty"`
+	Expression string      `json:"expression,omitempty"`
+}
+
 type component struct {
-	Type       string     `json:"type"`
-	BOMRef     string     `json:"bom-ref"`
-	Name       string     `json:"name"`
-	Version    string     `json:"version,omitempty"`
-	Purl       string     `json:"purl,omitempty"`
-	Hashes     []hash     `json:"hashes,omitempty"`
-	Properties []property `json:"properties,omitempty"`
+	Type       string          `json:"type"`
+	BOMRef     string          `json:"bom-ref"`
+	Name       string          `json:"name"`
+	Version    string          `json:"version,omitempty"`
+	Purl       string          `json:"purl,omitempty"`
+	Hashes     []hash          `json:"hashes,omitempty"`
+	Licenses   []licenseChoice `json:"licenses,omitempty"`
+	Properties []property      `json:"properties,omitempty"`
 }
 
 type tool struct {
@@ -233,7 +247,13 @@ func serial(bi *debug.BuildInfo, m Meta) string {
 		}
 	}
 	h.Write([]byte("\ndistro=" + m.Distro + "\ndigest=" + m.ComponentsDigest))
-	b := h.Sum(nil)[:16]
+	return urnUUID(h.Sum(nil))
+}
+
+// urnUUID shapes the first 16 bytes of a SHA-256 sum as a name-based
+// urn:uuid (the serial number shape both Render and RenderInventory use).
+func urnUUID(sum []byte) string {
+	b := sum[:16]
 	b[6] = (b[6] & 0x0f) | 0x50 // version 5 shape (name-based, SHA)
 	b[8] = (b[8] & 0x3f) | 0x80 // RFC 4122 variant
 	s := hex.EncodeToString(b)

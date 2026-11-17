@@ -12,11 +12,11 @@ import { registerCopyProxyEnv } from './proxyEnv';
 //   start / stop / openDashboard        — M1 (live; see lifecycle.ts)
 //   copyProxyEnv                        — M4 (live; see proxyEnv.ts)
 //   init / initWithMCP                  — future
-//   enroll                              — future
+//   enroll                              — replaced by observer.connect
+//                                         ("Sign in and connect", connect.ts)
 const STUBS: Array<{ id: string; milestone: string }> = [
   { id: 'observer.init', milestone: 'M3+' },
   { id: 'observer.initWithMCP', milestone: 'M3+' },
-  { id: 'observer.enroll', milestone: 'M6' },
 ];
 
 export function registerCommands(

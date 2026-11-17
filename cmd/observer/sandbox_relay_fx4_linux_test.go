@@ -170,8 +170,8 @@ func TestCraftedPayloadCannotReadThisMachinesLogin(t *testing.T) {
 }
 
 // TestHostedPathClassesEveryVendor (FX4-A7): the agent-state class applies
-// to every hosted row with a box home (E2B, Modal, Vercel and the org's
-// gateway), not only the org's: each maps the tool's state dir in its own
+// to every hosted row with a box home (E2B, Modal, Vercel, Daytona and the
+// org's gateway), not only the org's: each maps the tool's state dir in its own
 // box home onto the run's quarantine, where the transcript pull copies the
 // same file, and leaves the rest of the box home (the home itself, its other
 // dot files, the tool's login file) unmapped, so the binding refuses it.
@@ -183,6 +183,9 @@ func TestHostedPathClassesEveryVendor(t *testing.T) {
 		{sandboxremote.VendorModal, "/root"},
 		{sandboxremote.VendorVercel, "/vercel/sandbox"},
 		{sandboxremote.VendorOpenShellOrg, "/home/sandbox"},
+		{sandboxremote.VendorDockerSandboxes, "/root"},
+		{sandboxremote.VendorInstaBox, "/data/home"},
+		{sandboxremote.VendorDaytona, "/home/daytona"},
 	} {
 		t.Run(row.id, func(t *testing.T) {
 			v, ok := sandboxremote.VendorFor(row.id)

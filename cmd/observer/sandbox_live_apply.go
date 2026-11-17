@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/marmutapp/superbased-observer/internal/dashapi"
 )
 
 // sandbox_live_apply.go is the ONE seam through which a local
@@ -149,7 +151,20 @@ func sandboxLiveApplyFor(surface, configPath string) func(ctx context.Context, b
 		}
 	}
 	return func(ctx context.Context, backend string) string {
-		return askDaemonSandboxApply(ctx, "http://"+daemonDashboardAddr(configPath)+"/api/terminal/sandbox/setup/"+url.PathEscape(backend)+"/apply")
+		// Only the daemon serving this config's database applies it
+		// (daemon_handoff.go, L-125): another one would re-read its own
+		// config and the CLI would report an apply that did not happen here.
+		t := resolveDaemonHandoff(ctx, configPath)
+		switch {
+		case t.Use:
+		case t.Match == dashapi.DBUnknown:
+			// Something listens that may be this database's daemon but
+			// cannot be confirmed: it is not asked, so it may need a restart.
+			return sandboxLiveNoAnswer
+		default:
+			return sandboxLiveNoDaemon
+		}
+		return askDaemonSandboxApplyFor(ctx, t.Base+"/api/terminal/sandbox/setup/"+url.PathEscape(backend)+"/apply", t.DBIdentity)
 	}
 }
 
@@ -157,6 +172,13 @@ func sandboxLiveApplyFor(surface, configPath string) func(ctx context.Context, b
 // now: refused means no daemon, {"applied": true} means applied, anything
 // else means it did not confirm.
 func askDaemonSandboxApply(ctx context.Context, u string) string {
+	return askDaemonSandboxApplyFor(ctx, u, "")
+}
+
+// askDaemonSandboxApplyFor is askDaemonSandboxApply naming this CLI's
+// database (dbIdentity, "" = none): a daemon serving another one refuses,
+// which reads as no daemon for this database.
+func askDaemonSandboxApplyFor(ctx context.Context, u, dbIdentity string) string {
 	ctx, cancel := context.WithTimeout(ctx, liveRunsDaemonTimeout)
 	defer cancel()
 	b := make([]byte, 32)
@@ -171,7 +193,8 @@ func askDaemonSandboxApply(ctx context.Context, u string) string {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(setupApplyConfirmHeader, token)
 	req.AddCookie(&http.Cookie{Name: setupApplyConfirmCookie, Value: token}) //nolint:gosec // G124: a request cookie (the double-submit half), not one this process sets
-	resp, err := (&http.Client{Timeout: liveRunsDaemonTimeout}).Do(req)      //nolint:gosec // G704: false positive; the request to the node's own dashboard built above
+	daemonTarget{DBIdentity: dbIdentity}.setDBIdentity(req)
+	resp, err := (&http.Client{Timeout: liveRunsDaemonTimeout}).Do(req) //nolint:gosec // G704: false positive; the request to the node's own dashboard built above
 	if err != nil {
 		if isConnRefused(err) {
 			return sandboxLiveNoDaemon
@@ -179,6 +202,9 @@ func askDaemonSandboxApply(ctx context.Context, u string) string {
 		return sandboxLiveNoAnswer
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if isDBIdentityRefusal(resp, dbIdentity) {
+		return sandboxLiveNoDaemon
+	}
 	var body struct {
 		Applied bool `json:"applied"`
 	}

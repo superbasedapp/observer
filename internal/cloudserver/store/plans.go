@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/marmutapp/superbased-observer/internal/cloudserver/enrichbudget"
 )
 
 // Plan names seeded by migration 0012. Both are versioned; the version pinned
@@ -28,9 +30,10 @@ const (
 	// pre-existing account keep working with no backfill. Bump this
 	// deliberately, in the same change that seeds a new free version — a silent
 	// "latest free version wins" would re-tier every unassigned account the
-	// moment a new version landed. v4 is migration 0043's row (v3's caps,
-	// route pin moved to Claude Haiku 5.5).
-	DefaultFreePlanVersion = 4
+	// moment a new version landed. v5 is migration 0079's row (v4 copied,
+	// session enrichment governed by the 'free' enrichment tier's token
+	// budgets, ruling R-AI1).
+	DefaultFreePlanVersion = 5
 	// FreeBudgetPool is the budget_pools key the free plan draws from. Moving
 	// OFF it is what makes an assignment an ACTIVATION rather than a downgrade
 	// (see assignPlanTx).
@@ -74,9 +77,20 @@ type Plan struct {
 	// RouteID pins this plan's jobs to ONE route_registry row (migration 0039,
 	// nullable column read through coalesce). Empty means "use the feature's
 	// default route" - what every plan predating the column means, and what
-	// free v2 keeps meaning. ResolveRouteForPlan is the one reader.
+	// free v2 keeps meaning. ResolveRouteForPlan is the one reader. Under an
+	// EnrichmentTier it is INERT for session enrichment (the tier names the
+	// route); v5 keeps v4's value only so a pre-tier binary still serves.
 	RouteID string `json:"route_id"`
+	// EnrichmentTier names the enrichment_tiers row whose token budgets and
+	// route govern session enrichment on this plan (ruling R-AI1, migration
+	// 0078). Empty means the legacy daily/monthly COUNT caps (every plan up
+	// to v4).
+	EnrichmentTier string `json:"enrichment_tier,omitempty"`
 }
+
+// TokenBudgeted reports whether session enrichment on this plan is governed
+// by an enrichment tier's token budgets rather than the count caps.
+func (p Plan) TokenBudgeted() bool { return p.EnrichmentTier != "" }
 
 // Allowance is the composed answer to "what may this account spend on this
 // feature right now" — the ONE place plan defaults and the per-account
@@ -94,8 +108,13 @@ type Allowance struct {
 	// else "plan".
 	Source string
 	// Overridden reports whether an explicit per-account entitlement override
-	// supplied the caps instead of the plan.
+	// supplied the caps instead of the plan. On a token-budgeted plan an
+	// override supplies the concurrency cap only: the entitlements row counts
+	// enrichments, and session enrichment there is budgeted in tokens.
 	Overridden bool
+	// Tier is the plan's enrichment tier in force (the highest published
+	// version), set only for session enrichment on a token-budgeted plan.
+	Tier *enrichbudget.Tier
 }
 
 // PlanAssignment is the outcome of AssignPlan.
@@ -147,12 +166,12 @@ func CeilToMonthlyCycleStart(t time.Time) time.Time {
 func loadPlanTx(ctx context.Context, tx pgx.Tx, name string, version int) (Plan, error) {
 	var p Plan
 	q := `SELECT plan_id::text, name, version, label, daily_cap, monthly_cap, concurrency_cap, budget_pool,
-	             digest_weekly, results_retention_days, coalesce(route_id, '')
+	             digest_weekly, results_retention_days, coalesce(route_id, ''), coalesce(enrichment_tier, '')
 	        FROM plans WHERE name = $1 AND ($2 = 0 OR version = $2)
 	       ORDER BY version DESC LIMIT 1`
 	e := tx.QueryRow(ctx, q, name, version).
 		Scan(&p.ID, &p.Name, &p.Version, &p.Label, &p.DailyCap, &p.MonthlyCap, &p.ConcurrencyCap, &p.BudgetPool,
-			&p.DigestWeekly, &p.ResultsRetentionDays, &p.RouteID)
+			&p.DigestWeekly, &p.ResultsRetentionDays, &p.RouteID, &p.EnrichmentTier)
 	if errors.Is(e, pgx.ErrNoRows) {
 		return Plan{}, ErrPlanNotFound
 	}
@@ -177,7 +196,7 @@ func resolvePlanTx(ctx context.Context, tx pgx.Tx, accountID string, now time.Ti
 	e := tx.QueryRow(ctx,
 		`SELECT p.plan_id::text, p.name, p.version, p.label,
 		        p.daily_cap, p.monthly_cap, p.concurrency_cap, p.budget_pool,
-		        p.digest_weekly, p.results_retention_days, coalesce(p.route_id, '')
+		        p.digest_weekly, p.results_retention_days, coalesce(p.route_id, ''), coalesce(p.enrichment_tier, '')
 		   FROM account_plans ap
 		   JOIN plans p ON p.plan_id = ap.plan_id
 		  WHERE ap.account_id = $1::uuid
@@ -187,7 +206,7 @@ func resolvePlanTx(ctx context.Context, tx pgx.Tx, accountID string, now time.Ti
 		  LIMIT 1`,
 		accountID, now).
 		Scan(&p.ID, &p.Name, &p.Version, &p.Label, &p.DailyCap, &p.MonthlyCap, &p.ConcurrencyCap, &p.BudgetPool,
-			&p.DigestWeekly, &p.ResultsRetentionDays, &p.RouteID)
+			&p.DigestWeekly, &p.ResultsRetentionDays, &p.RouteID, &p.EnrichmentTier)
 	if errors.Is(e, pgx.ErrNoRows) {
 		return loadPlanTx(ctx, tx, PlanFree, DefaultFreePlanVersion)
 	}
@@ -250,6 +269,16 @@ func resolveAllowanceTx(ctx context.Context, tx pgx.Tx, accountID, feature strin
 	if overrides {
 		a.DailyCap, a.MonthlyCap, a.ConcurrencyCap = entDaily, entMonthly, entConcurrent
 		a.Source, a.Overridden = source, true
+	}
+	if feature == FeatureSessionEnrichment && plan.TokenBudgeted() {
+		tier, err := loadTierTx(ctx, tx, plan.EnrichmentTier)
+		if err != nil {
+			return Allowance{}, err
+		}
+		a.Tier = &tier
+		// The count caps are not enforced under a tier; an override still
+		// supplies the concurrency cap.
+		a.DailyCap, a.MonthlyCap = 0, 0
 	}
 	return a, nil
 }

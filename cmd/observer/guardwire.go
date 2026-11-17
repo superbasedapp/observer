@@ -159,6 +159,8 @@ func buildGuardForStore(ctx context.Context, cfg config.Config, st *store.Store,
 		// one. Resolved from the org's SIGNED enrolment grant, the
 		// same input `observer org status` reports.
 		ManagedTenancy: managedTenancy,
+		// CG-16: block texts name the CLI where the Security page is hidden.
+		ApprovalPageHidden: approvalPageHiddenLookup(cfg, storeOpenerFor(st), nil),
 		OnPolicyState: func(ps guard.PolicyState) {
 			// Project layers load lazily mid-run; use a fresh
 			// short-lived context rather than the (possibly long-gone)
@@ -192,6 +194,14 @@ func buildGuardForStore(ctx context.Context, cfg config.Config, st *store.Store,
 		lctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		return st.ApprovalActiveFor(lctx, ruleID, sessionID, rootHash, time.Now().UTC())
+	})
+	// The same register read, naming the covering approval and its grantor so
+	// a verdict says which approval covered it (plan section 13.7).
+	g.SetApprovalCoverLookup(func(ruleID, sessionID, rootHash string) (guard.ApprovalCover, error) {
+		lctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		c, err := st.ApprovalCoverFor(lctx, ruleID, sessionID, rootHash, time.Now().UTC())
+		return guard.ApprovalCover{Found: c.Found, ID: c.ID, GrantedBy: c.GrantedBy}, err
 	})
 	// Org access grants (request-grants G3): the same claim the hook
 	// process composes, over the daemon's long-lived handle.

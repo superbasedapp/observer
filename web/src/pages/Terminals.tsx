@@ -49,6 +49,7 @@ import { WorkspaceGrid } from "@/components/workspace/WorkspaceGrid";
 import { HeldLaunches } from "@/components/HeldLaunches";
 import { ArenaTab } from "@/components/arena/ArenaTab";
 import { RemoteSystemsCard } from "@/components/RemoteSystemsCard";
+import { DefaultWorkspaceCard } from "./settings/DefaultWorkspaceCard";
 import { FolderRootPicker, FolderSuggestions, rootsWithAdded, sortSuggestions } from "@/components/FolderSelection";
 import { useHostOS } from "@/lib/keyPlatform";
 
@@ -721,6 +722,13 @@ export function TerminalsPage() {
           </div>
         </div>
       </ChartShell>
+      </div>
+
+      {/* Default workspace: Observer's own scratch folder ([workspace].default_dir),
+          kept beside Folder Selection because both answer "which folder". It is
+          NOT added to the allow-list above: launching there still needs a root. */}
+      <div id="default-workspace" className="scroll-mt-6">
+        <DefaultWorkspaceCard readOnly={!p?.config_writable} />
       </div>
 
       {/* Remote systems (T-488): the [[terminal.ssh.profiles]] editor the

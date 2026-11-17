@@ -280,6 +280,18 @@ export type CoverageResponse = {
   supported: CoverageSupported[];
   projects: CoverageProject[];
   reasons: Record<string, string>;
+  /** "What is checked": one row per checking family (absent on an older daemon). */
+  families?: CoverageFamily[];
+};
+
+/** One checking family of the coverage read: its components and state
+ *  (on, off, not_selected, not_in_build). */
+export type CoverageFamily = {
+  family: string;
+  label: string;
+  components: string[];
+  state: string;
+  note?: string;
 };
 
 /** POST /api/security/scan's start body: exactly one of project, projects or

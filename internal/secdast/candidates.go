@@ -12,8 +12,15 @@ const MaxLaunchJSON = 256 << 10
 // candidates come from .claude/launch.json ports, never a remote host).
 type Candidate struct {
 	URL string `json:"url"`
-	// Name is the launch configuration's name.
+	// Name is the launch configuration's name, or the dev server the
+	// project's files suggest ("npm run dev (vite)").
 	Name string `json:"name,omitempty"`
+	// Source is the file kind that named it (SourceLaunchJSON, ...).
+	Source string `json:"source,omitempty"`
+	// Listening is "yes" when the kernel's own socket table shows a
+	// listening socket on the port (ListeningPorts), "no" when it shows
+	// none, "" when the operating system exposes no such table (unknown).
+	Listening string `json:"listening,omitempty"`
 }
 
 // launchFile is the part of .claude/launch.json read: each configuration's

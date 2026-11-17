@@ -155,6 +155,9 @@ func TestDockerignoreExcludesKitStateAndSecrets(t *testing.T) {
 		// cloud box kit (cloud-box.sh: the SBCI_BOX_STATE_DIR default)
 		"deploy/cloud-box/state/api.env",
 		"deploy/cloud-box/state/pg_admin_pw",
+		// cloud kit on OVH (cloud-app.sh: the SBCI_BOX_STATE_DIR default)
+		"deploy/saas-ovh/cloud-app/state/pg_admin_pw",
+		"deploy/saas-ovh/cloud-app/state/tenant_context_key",
 		// org compose kits: keygen.sh's .env, the production .env and the
 		// secrets/ dir its compose bind-mounts (both go:embedded otherwise)
 		"deploy/observer-org/.env",
@@ -174,8 +177,6 @@ func TestDockerignoreExcludesKitStateAndSecrets(t *testing.T) {
 		"deploy/modules/compact/azure/app/terraform.tfvars",
 		"deploy/modules/appliance/aws/data/prod.auto.tfvars",
 		"deploy/modules/compact/azure/app/.terraform/providers/p",
-		"deploy/ops/azure-vm-watchdog/sbdemo.tfvars",
-		"deploy/ops/azure-vm-watchdog/terraform.tfstate",
 	} {
 		if !excludedFromContext(patterns, f) {
 			t.Errorf("%s is in the docker build context: a `COPY . .` build stage (and, under deploy/observer-org/production or deploy/modules, the observer-org go:embed) would carry it. Exclude it in .dockerignore.", f)
@@ -265,9 +266,9 @@ func docsEmbedFiles(t *testing.T) []string {
 
 // TestDockerignoreKeepsTrackedEmbedRoots: every tracked file under the
 // observer-org go:embed roots is in the context, so a working-tree image
-// embeds what `git archive` would. The one documented gap: the OpenTofu
-// test-bundle .env fixtures under deploy/modules/**/tests/ (the `**/.env`
-// rule takes them; `observer-org deploy export` prunes tests/ anyway).
+// embeds what `git archive` would. That includes the OpenTofu test-bundle
+// .env fixtures: deploy/embed.go names them by pattern (MS-R-050), so a
+// context without them fails the image build (2026-11-11).
 func TestDockerignoreKeepsTrackedEmbedRoots(t *testing.T) {
 	root := repoRoot(t)
 	skipInPublicTree(t, root, "the observer-org go:embed roots under deploy/")
@@ -289,9 +290,6 @@ func TestDockerignoreKeepsTrackedEmbedRoots(t *testing.T) {
 			continue
 		}
 		seen++
-		if strings.Contains(f, "/tests/") && path.Base(f) == ".env" {
-			continue
-		}
 		if excludedFromContext(patterns, f) {
 			t.Errorf("tracked %s is excluded from the docker build context; a working-tree observer-org image would embed less than a release build", f)
 		}

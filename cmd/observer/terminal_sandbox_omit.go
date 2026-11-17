@@ -101,6 +101,10 @@ func sandboxHelperDispatch([]string) (int, bool) { return 0, false }
 // Settings card shows no forbid).
 func sandboxSignInForbiddenSeam(string) func() bool { return nil }
 
+// sandboxSeizeHostSeam is nil: a build without the sandbox has no strace
+// switch rows.
+func sandboxSeizeHostSeam() func() dashapi.SandboxSeizeHost { return nil }
+
 // sandboxCLIMarkers is empty: a build without the sandbox has no
 // sandboxed CLI launches.
 func sandboxCLIMarkers(string) []sandboxCLIMarker { return nil }
@@ -125,3 +129,7 @@ func sandboxRowTreeContained(string) bool { return false }
 // sandboxCLIProcessAlive is false: a build without the sandbox has no
 // sandboxed CLI launch whose CLI could be alive.
 func sandboxCLIProcessAlive(int, string) bool { return false }
+
+// sandboxGatewayPortFunc answers nil in a build without the sandbox: there is
+// no in-box gateway whose port a target could collide with.
+func sandboxGatewayPortFunc() func(int) int { return nil }

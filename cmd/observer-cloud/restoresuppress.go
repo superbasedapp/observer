@@ -23,14 +23,16 @@ func newRestoreSuppressCmd() *cobra.Command {
 	var yes bool
 	cmd := &cobra.Command{
 		Use:   "restore-suppress",
-		Short: "re-apply deletion to accounts a point-in-time restore resurrected",
+		Short: "re-apply deletion to accounts and orgs a point-in-time restore resurrected",
 		Long: "Reads the deletion journal (SBCI_DELETION_JOURNAL_PATH) and, for every\n" +
 			"account it records as deleted that is NOT currently tombstoned in the\n" +
 			"connected database, re-runs the complete deletion. Run this against the\n" +
 			"restored database BEFORE it reopens to traffic - see\n" +
 			"docs/cloud-intelligence-staging-launch-runbook.md §14.3. Idempotent: an\n" +
 			"account still tombstoned is skipped, so re-running after a partial\n" +
-			"failure is safe. Requires --yes (this writes to the restored database).",
+			"failure is safe. It also re-arms every org deletion the journal records\n" +
+			"as fenced (the worker then purges the org again). Requires --yes (this\n" +
+			"writes to the restored database).",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if !yes {
 				return fmt.Errorf("restore-suppress requires --yes to confirm (this re-applies deletion against the restored database)")
@@ -47,7 +49,15 @@ func newRestoreSuppressCmd() *cobra.Command {
 				return fmt.Errorf("restore-suppress: %w", err)
 			}
 
-			detail := fmt.Sprintf(`{"suppressed":%d}`, n)
+			// M6.9 / M7a.1: every org whose purge had started is driven to the
+			// fence again (plan 06 5.3.10 step 5); the worker's deletion
+			// driver then fences it and the host purges it.
+			orgs, err := s.ReapplyOrgDeletionsFromJournal(ctx, time.Now())
+			if err != nil {
+				return fmt.Errorf("restore-suppress: orgs: %w", err)
+			}
+
+			detail := fmt.Sprintf(`{"suppressed":%d,"orgs_rearmed":%d}`, n, orgs)
 			if auditErr := s.RecordAudit(ctx, "", "restore_suppress_run", detail); auditErr != nil {
 				// The suppression already ran — real accounts are already
 				// re-tombstoned. Surface the audit failure loudly instead of
@@ -56,7 +66,7 @@ func newRestoreSuppressCmd() *cobra.Command {
 				fmt.Fprintf(cmd.ErrOrStderr(),
 					"observer-cloud: restore-suppress applied, but recording the audit row failed: %v\n", auditErr)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "observer-cloud: restore-suppress: %d account(s) re-suppressed\n", n)
+			fmt.Fprintf(cmd.OutOrStdout(), "observer-cloud: restore-suppress: %d account(s) re-suppressed, %d org deletion(s) re-armed\n", n, orgs)
 			return nil
 		},
 	}

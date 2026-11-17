@@ -1059,11 +1059,17 @@ func (d *openShellDriver) compose(created termsvc.CreateResult, p openShellProbe
 	if err != nil {
 		return nil, err
 	}
+	// The Windows drives the box must not show (the mount table's, with the
+	// foreign homes'); an unreadable table refuses the launch.
+	foreign, err := foreignMountRoots()
+	if err != nil {
+		return nil, err
+	}
 	bp, err := openShellCompileInput(openShellBindInputs{
 		home: home, workspace: run.Dir, sockDir: sockDir, copyDir: copyDir,
 		observerBin: r.observerBin, observerDir: r.observerDir, observerRealDir: openShellResolvedObserverDir(r.observerDir),
 		spec: spec, overlays: overlays, pins: pins, toolBinDirs: r.toolBinDirs(run.Tool),
-		homeMode: r.cfg.HomeMode, tier: vocab.Tier(r.egress.Mode), driver: p.facts.Driver, masks: openShellMasks(r.cfg, foreignMountRoots()),
+		homeMode: r.cfg.HomeMode, tier: vocab.Tier(r.egress.Mode), driver: p.facts.Driver, masks: openShellMasks(r.cfg, foreign),
 		uid: os.Getuid(), gid: os.Getgid(), lstat: os.Lstat, resolve: filepath.EvalSymlinks,
 	})
 	if err != nil {

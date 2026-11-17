@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
+	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/orgenrol"
 	"github.com/marmutapp/superbased-observer/internal/retention"
 	"github.com/marmutapp/superbased-observer/internal/store"
@@ -18,10 +19,17 @@ import (
 // enrolmentStatusResponse is the wire shape of GET /api/enrolment/status.
 // Enrolled is always present; the rest are populated only when enrolled.
 type enrolmentStatusResponse struct {
-	Enrolled        bool         `json:"enrolled"`
-	OrgID           string       `json:"org_id,omitempty"`
-	OrgName         string       `json:"org_name,omitempty"`
-	OrgDisplay      string       `json:"org_display,omitempty"`
+	Enrolled   bool   `json:"enrolled"`
+	OrgID      string `json:"org_id,omitempty"`
+	OrgName    string `json:"org_name,omitempty"`
+	OrgDisplay string `json:"org_display,omitempty"`
+	// Tenancy is the enrolment KIND, orgcontract.TenancyManaged or
+	// TenancyIndividual, as orgclient.NodeManaged resolves it (the enrolment
+	// class, or a verified managed grant). The top-bar chip names it (demo
+	// bug #3: "Enrolled in <org>" read as managed on an individual node).
+	// Omitted when not enrolled or when the read fails: the chip then keeps
+	// its kind-less wording rather than guessing.
+	Tenancy         string       `json:"tenancy,omitempty"`
 	OrgServerURL    string       `json:"org_server_url,omitempty"`
 	UserEmail       string       `json:"user_email,omitempty"`
 	EnrolledAt      string       `json:"enrolled_at,omitempty"`
@@ -115,6 +123,7 @@ func (s *Server) handleEnrolmentStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if st.Enrolled {
 		resp.RetentionHeld = s.retentionHeld(r.Context())
+		resp.Tenancy = s.enrolmentTenancy(r.Context())
 	}
 	writeJSON(w, resp)
 }
@@ -124,6 +133,23 @@ func (s *Server) handleEnrolmentStatus(w http.ResponseWriter, r *http.Request) {
 // failure omits the field rather than failing the status endpoint, and zero
 // held rows omit it too. The caller has already established org mode is on
 // (OrgClient non-nil) and the node is enrolled.
+// enrolmentTenancy is the enrolment kind for the status chip, through the
+// same seam `observer org status` reads (orgclient.NodeManaged). "" when the
+// read is unavailable.
+func (s *Server) enrolmentTenancy(ctx context.Context) string {
+	if s.opts.DB == nil {
+		return ""
+	}
+	managed, err := orgclient.NodeManaged(ctx, store.New(s.opts.DB))
+	if err != nil {
+		return ""
+	}
+	if managed {
+		return orgcontract.TenancyManaged
+	}
+	return orgcontract.TenancyIndividual
+}
+
 func (s *Server) retentionHeld(ctx context.Context) *retentionHeldDTO {
 	if s.opts.DB == nil {
 		return nil
@@ -305,6 +331,7 @@ func (s *Server) handleEnrolmentInvite(w http.ResponseWriter, r *http.Request) {
 }
 
 // notEnrolledInviteMessage is the 409 body an invite request gets on a node
-// that is not enrolled. The Enrolment section that shows it has the enrol
-// form, so it points there rather than at `observer enroll` (T-374).
-const notEnrolledInviteMessage = "This agent is not enrolled in an organization. Enrol first in Settings > Enrolment."
+// that is not enrolled. The Account section (formerly Enrolment) that shows it
+// has the connect form, so it points there rather than at `observer enroll`
+// (T-374).
+const notEnrolledInviteMessage = "This machine is not connected to a team. Connect first in Settings > Account."

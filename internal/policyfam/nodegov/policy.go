@@ -269,9 +269,25 @@ func compileShare(raw map[string]any) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
+		if row.Raise != "" && !raisesSomething(norm) {
+			return nil, fmt.Errorf("nodegov.Compile: share.%s is a raise directive and takes only true or a non-empty list; leave it out for no directive", key)
+		}
 		out[key] = norm
 	}
 	return out, nil
+}
+
+// raisesSomething reports whether a normalized raise-directive value can
+// raise anything: `true`, or a list with at least one entry.
+func raisesSomething(v any) bool {
+	switch t := v.(type) {
+	case bool:
+		return t
+	case []string:
+		return len(t) > 0
+	default:
+		return false
+	}
 }
 
 // compileFeatures expands the `features` block into pinned entries (§3).

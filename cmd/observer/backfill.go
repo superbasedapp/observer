@@ -2785,11 +2785,13 @@ func backfillOpenClawSessionID(ctx context.Context, db *sql.DB, agentsDirs []str
 		INSERT INTO sessions (
 			id, project_id, tool, model, git_branch, started_at, ended_at,
 			total_actions, metadata, quality_score, redundancy_ratio,
-			error_rate, onboarding_cost, turns_to_first_edit, retry_cost_tokens
+			error_rate, onboarding_cost, turns_to_first_edit, retry_cost_tokens,
+			authority, authority_org_key
 		)
 		SELECT ?, project_id, tool, model, git_branch, started_at, ended_at,
 		       total_actions, metadata, quality_score, redundancy_ratio,
-		       error_rate, onboarding_cost, turns_to_first_edit, retry_cost_tokens
+		       error_rate, onboarding_cost, turns_to_first_edit, retry_cost_tokens,
+		       authority, authority_org_key
 		  FROM sessions
 		 WHERE id = ?
 		   AND tool = 'openclaw'
@@ -2805,7 +2807,11 @@ func backfillOpenClawSessionID(ctx context.Context, db *sql.DB, agentsDirs []str
 		   error_rate = COALESCE(excluded.error_rate, sessions.error_rate),
 		   onboarding_cost = COALESCE(excluded.onboarding_cost, sessions.onboarding_cost),
 		   turns_to_first_edit = COALESCE(excluded.turns_to_first_edit, sessions.turns_to_first_edit),
-		   retry_cost_tokens = COALESCE(excluded.retry_cost_tokens, sessions.retry_cost_tokens)`)
+		   retry_cost_tokens = COALESCE(excluded.retry_cost_tokens, sessions.retry_cost_tokens),
+		   -- Attribution is sticky (M8.1): the canonical row keeps its own
+		   -- stamp; only a NULL one takes the merged row's.
+		   authority = COALESCE(sessions.authority, excluded.authority),
+		   authority_org_key = COALESCE(sessions.authority_org_key, excluded.authority_org_key)`)
 	if err != nil {
 		return res, fmt.Errorf("backfill openclaw-session-id: prepare session merge: %w", err)
 	}

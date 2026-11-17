@@ -12,6 +12,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/components"
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/netlanes"
 )
 
 // privacyJSONSchema is the stable --json envelope discriminator, mirroring
@@ -66,11 +67,25 @@ type privacyEgress struct {
 	Detail string `json:"detail"`
 }
 
-// privacyReport is the full --json envelope of `observer privacy`.
+// privacyLane is one user-facing network lane (internal/netlanes, the one
+// source the README's table is generated from).
+type privacyLane struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Sends   string `json:"sends"`
+	To      string `json:"to"`
+	When    string `json:"when"`
+	Default string `json:"default"`
+	TurnOff string `json:"turn_off"`
+}
+
+// privacyReport is the full --json envelope of `observer privacy`. Lanes is
+// additive within superbased.privacy/1.
 type privacyReport struct {
 	Schema  string          `json:"schema"`
 	Sockets []privacySocket `json:"sockets"`
 	Egress  []privacyEgress `json:"egress"`
+	Lanes   []privacyLane   `json:"lanes"`
 	DocsURL string          `json:"docs_url"`
 }
 
@@ -84,8 +99,20 @@ func buildPrivacyReport(cfg config.Config) privacyReport {
 		Schema:  privacyJSONSchema,
 		Sockets: buildPrivacySockets(cfg),
 		Egress:  buildPrivacyEgress(cfg),
+		Lanes:   buildPrivacyLanes(),
 		DocsURL: privacyDocsURL,
 	}
+}
+
+// buildPrivacyLanes is every declared network lane in plain words, from
+// internal/netlanes (tests/invariant checks it covers every remote lane in
+// the developer lane table).
+func buildPrivacyLanes() []privacyLane {
+	out := make([]privacyLane, 0, len(netlanes.Lanes))
+	for _, l := range netlanes.Lanes {
+		out = append(out, privacyLane{ID: l.ID, Name: l.Name, Sends: l.Sends, To: l.To, When: l.When, Default: string(l.Default), TurnOff: l.TurnOff})
+	}
+	return out
 }
 
 // buildPrivacySockets lists every listener the daemon can open, under
@@ -465,8 +492,9 @@ func buildPrivacyEgress(cfg config.Config) []privacyEgress {
 		// F1: internal/proxy.Prewarm fires HEAD requests against
 		// [proxy].prewarm_targets at proxy startup (default non-empty:
 		// chatgpt.com + api.openai.com, see internal/config's Default()).
-		// One of the two automatic, on-by-default outbound calls; the
-		// other is the pricing feed row below (T-931).
+		// One of the three automatic, on-by-default outbound calls; the
+		// others are the pricing feed row below (T-931) and the package
+		// list download (the "Every network lane" section).
 		prewarmRow(cfg),
 		pricingFeedRow(cfg),
 		routingProbeRow(cfg),
@@ -532,7 +560,7 @@ func newPrivacyCmd() *cobra.Command {
 // seam — the constructor cmd/observer/privacy_test.go uses so every test
 // drives a fixed config.Config instead of the operator's real one.
 func newPrivacyCmdWith(deps privacyDeps) *cobra.Command {
-	var jsonOut bool
+	var jsonOut, markdownOut bool
 
 	cmd := &cobra.Command{
 		Use:   "privacy",
@@ -547,19 +575,29 @@ beyond your config file - it's a report on what the binary CAN do given
 its current configuration, not a live traffic capture.
 
 Your session content (prompts, code, responses, file contents) never leaves
-this machine on this product's behalf without your explicit consent. Two
-automatic background requests run on a default install, and neither carries
+this machine on this product's behalf without your explicit consent. Three
+automatic background requests run on a default install, and none carries
 any of your data: the pricing feed fetch of the public model price table
 (once at daemon start, then daily; standalone nodes only - see the "pricing
-feed" row) and the TLS pre-warm HEAD requests the proxy fires at startup
-against [proxy].prewarm_targets (see the "TLS pre-warm" row). Every other
-outbound row below is either forwarding a request your own AI tool already
-made, or something you explicitly configured, consented to, or clicked.`,
+feed" row), the package list download while package checks are on (every 6
+hours; see "Package list downloads" under "Every network lane") and the TLS
+pre-warm HEAD requests the proxy fires at startup against
+[proxy].prewarm_targets (see the "TLS pre-warm" row). Every other outbound
+row below is either forwarding a request your own AI tool already made, or
+something you explicitly configured, consented to, or clicked.
+
+--markdown prints only the "Every network lane" table, as Markdown (the
+README's table is generated from it).`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := deps.loadConfig()
 			if err != nil {
 				return fmt.Errorf("observer privacy: loading config: %w", err)
+			}
+			if markdownOut {
+				// The lane table only, for the README (it needs no config).
+				fmt.Fprint(cmd.OutOrStdout(), netlanes.Markdown())
+				return nil
 			}
 			report := buildPrivacyReport(cfg)
 			if jsonOut {
@@ -571,6 +609,8 @@ made, or something you explicitly configured, consented to, or clicked.`,
 	}
 
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit a machine-readable JSON report instead of plain text")
+	cmd.Flags().BoolVar(&markdownOut, "markdown", false, "print every network lane as one Markdown table (the README's table) and nothing else")
+	cmd.MarkFlagsMutuallyExclusive("json", "markdown")
 
 	return cmd
 }
@@ -604,9 +644,21 @@ func writePrivacyText(w io.Writer, report privacyReport) {
 	}
 
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Two automatic calls run by default, neither carrying session data: the")
-	fmt.Fprintln(w, "pricing feed fetch and the TLS pre-warm HEAD requests above. Everything")
-	fmt.Fprintln(w, "else needs an explicit opt-in or your own tool's request.")
+	fmt.Fprintln(w, "Every network lane")
+	fmt.Fprintln(w, "------------------")
+	for _, l := range report.Lanes {
+		fmt.Fprintf(w, "  %-38s %s\n", l.Name, l.Default)
+		fmt.Fprintf(w, "    sends:    %s\n", l.Sends)
+		fmt.Fprintf(w, "    to:       %s\n", l.To)
+		fmt.Fprintf(w, "    when:     %s\n", l.When)
+		fmt.Fprintf(w, "    turn off: %s\n", l.TurnOff)
+	}
+
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Three automatic calls run by default, none carrying session data: the")
+	fmt.Fprintln(w, "pricing feed fetch, the package list download and the")
+	fmt.Fprintln(w, "TLS pre-warm HEAD requests above. Everything else needs an explicit")
+	fmt.Fprintln(w, "opt-in or your own tool's request.")
 	fmt.Fprintf(w, "Full detail: %s\n", report.DocsURL)
 }
 

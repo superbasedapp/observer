@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/frontdoor"
 )
 
 // printWelcome renders the bare-`observer` greeting (usability arc
@@ -51,6 +53,9 @@ func printWelcome(cmd *cobra.Command) error {
 			fmt.Fprintf(out, "  daemon      not detected - start it with `observer start`\n")
 		}
 	}
+	if line := welcomeSignInLine(connectIdentityState(""), welcomeConnected()); line != "" {
+		fmt.Fprintf(out, "\n  %s\n", line)
+	}
 	fmt.Fprint(out, "\n")
 	fmt.Fprint(out, "  observer usage     one-shot cost table (no daemon, temp DB)\n")
 	fmt.Fprintf(out, "  observer start     %s\n", welcomeStartLine(dashAddr))
@@ -59,9 +64,29 @@ func printWelcome(cmd *cobra.Command) error {
 	} else {
 		fmt.Fprint(out, "  observer init      wire hooks / MCP into your AI tools\n")
 	}
+	fmt.Fprint(out, "  observer connect   sign in and see this machine online\n")
 	fmt.Fprint(out, "  observer doctor    health checks\n")
 	fmt.Fprint(out, "  observer --help    every command\n")
 	return nil
+}
+
+// welcomeSignInLine is the bare-`observer` sign-in nudge (Getting started
+// v2): one line when this machine is signed out and not connected anywhere,
+// "" otherwise (signed in, connected to a server, or a build with no
+// SuperBased sign-in, whose identity reads as unknown). Never blocking.
+func welcomeSignInLine(id frontdoor.Identity, connected bool) string {
+	if id != frontdoor.IdentitySignedOut || connected {
+		return ""
+	}
+	return "Not signed in. Run `observer connect` to see this machine online."
+}
+
+// welcomeConnected reports whether this machine is connected (enrolled)
+// anywhere, without creating the database. An unreadable state reads as not
+// connected: the nudge is a hint, never a gate.
+func welcomeConnected() bool {
+	enr, err := loadConnectEnrolment(context.Background(), "")
+	return err == nil && enr != nil
 }
 
 // welcomeStartLine describes what `observer start` runs in THIS build

@@ -433,7 +433,7 @@ func TestOldWorkerResultAllocationDoesNotWaitForDeletionFence(t *testing.T) {
 	if _, err := completion.Exec(ctx, `SET LOCAL ROLE sbci_worker`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := completion.Exec(ctx, `SELECT set_config('sbci.account_id', $1, true)`, acct); err != nil {
+	if err := s.SetAccountContext(ctx, completion, acct); err != nil {
 		t.Fatal(err)
 	}
 	for want := int64(1); want <= 2; want++ {

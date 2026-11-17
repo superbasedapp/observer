@@ -7,6 +7,7 @@ import { ScannersCard, type SecurityScanners } from "@/components/security/Scann
 import { projectLabel, sortProjects, type SecurityStatus } from "@/lib/codeSecurity";
 import { useApi, type ApiState } from "@/lib/useApi";
 import { useComponentCatalog, useComponentState } from "@/lib/useComponents";
+import { DastCard } from "./DastCard";
 import { PackageChecksCard } from "./PackageChecksCard";
 import { ScannerSwitches } from "./ScannerSwitches";
 
@@ -17,7 +18,8 @@ import { ScannerSwitches } from "./ScannerSwitches";
 // and grouped under plain headings: Scanners (custom scanners), Package
 // checks, Databases and images (the dependency Scanners card), Code rules,
 // IaC scanners (Trivy and KICS: the guided install the CLI's `observer
-// security iac install` does, dashboard CLI parity plan B-CS2), Import
+// security iac install` does, dashboard CLI parity plan B-CS2), Web checks
+// (the passive DAST card, shown only while security.dast is selected), Import
 // results.
 //
 // The custom scanners card shows only while /api/security/scanners/custom
@@ -86,6 +88,9 @@ export function ScannersTab({ status, onChanged }: { status: ApiState<SecuritySt
       </Section>
       <Section title="IaC scanners">
         <IaCInstallCard key={`iac-${epoch}`} onChanged={scanners.reload} />
+      </Section>
+      <Section title="Web checks">
+        <DastCard key={`dast-${epoch}`} projects={projects} />
       </Section>
       <Section title="Import results">
         <SARIFImportCard key={`sarif-${epoch}`} projects={projects} onImported={onChanged} />

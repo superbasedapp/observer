@@ -51,6 +51,9 @@ func withInstallSignals(opts dashapi.Options) dashapi.Options {
 	if opts.InstallSignalTools == nil {
 		opts.InstallSignalTools = func() []string { return installSignalToolsFor("") }
 	}
+	if opts.WorkspaceGitInit == nil {
+		opts.WorkspaceGitInit = workspaceGitInit
+	}
 	if opts.AggregateShareStatus == nil {
 		opts.AggregateShareStatus = aggregateShareStatusFor(opts.ConfigPath, opts.DB)
 	}

@@ -292,12 +292,20 @@ func countHeld(ctx context.Context, database *sql.DB, maxAgeDays int, hold *Push
 // below the actions push cursor or released by the held-data ceiling
 // (timestamp at or before shedThrough; "" releases nothing, since every
 // stored timestamp is non-empty).
+//
+// An action of a session under a local hold (local_session_holds, agent
+// migration 251, `observer sessions hold`) is never selected.
 func agedActions(cutoff string, hold *PushHold) (string, []any) {
 	if hold == nil {
-		return `timestamp < ?`, []any{cutoff}
+		return `timestamp < ? AND ` + notHeldSession, []any{cutoff}
 	}
-	return `timestamp < ? AND (id <= ? OR timestamp <= ?)`, []any{cutoff, hold.ActionsCursor, hold.shedThrough}
+	return `timestamp < ? AND (id <= ? OR timestamp <= ?) AND ` + notHeldSession, []any{cutoff, hold.ActionsCursor, hold.shedThrough}
 }
+
+// notHeldSession excludes a row whose session_id is under a local hold
+// (local_session_holds, written only by internal/store/sessionholds.go).
+// Every node retention pass that removes a session's rows ANDs it in.
+const notHeldSession = `session_id NOT IN (SELECT session_id FROM local_session_holds)`
 
 // Pruner runs retention on a database.
 type Pruner struct {
@@ -509,9 +517,16 @@ func ConvertToIncrementalVacuum(ctx context.Context, db *sql.DB) (int, error) {
 // transaction holds the lock for long and other writers interleave.
 const (
 	retentionBatchSize = 1000
-	// retentionBatchPause lets queued writers (the watcher above all) take
-	// the lock between batches.
-	retentionBatchPause = 20 * time.Millisecond
+	// retentionBatchPause lets waiting writers (the watcher above all) take
+	// the lock between batches. SQLite does not queue a writer: its busy
+	// handler polls, and after about 230 ms of waiting it polls only every
+	// 100 ms (sqliteDefaultBusyCallback's delays table). The old 20 ms pause
+	// was a window such a writer hit about one time in five, so on a loaded
+	// host a writer stayed blocked for many batches (measured 2026-11-17: one
+	// insert waited across 14 of 30 batches, 1.6 s of a 3.3 s prune). A
+	// pause longer than the poll interval puts the next poll inside the
+	// window, so a waiting writer commits at the next batch boundary.
+	retentionBatchPause = 120 * time.Millisecond
 	// retentionCheckpointEvery runs a PASSIVE WAL checkpoint every N batches
 	// so a long prune does not grow the WAL without bound.
 	retentionCheckpointEvery = 25
@@ -695,7 +710,7 @@ func agedBatch(ctx context.Context, tx *sql.Tx, where string, args []any) ([]int
 // session (T-839).
 func (p *Pruner) deleteAccountObservations(ctx context.Context, cutoff string, hold *PushHold) error {
 	q, qArgs := `DELETE FROM tool_account_observations WHERE rowid IN (
-		SELECT rowid FROM tool_account_observations WHERE observed_at < ?`, []any{cutoff}
+		SELECT rowid FROM tool_account_observations WHERE observed_at < ? AND `+notHeldSession, []any{cutoff}
 	if hold != nil {
 		q += ` AND session_id NOT IN (SELECT id FROM sessions WHERE rowid > ?)`
 		qArgs = append(qArgs, hold.SessionsCursor)
@@ -738,10 +753,12 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 
 // orphanSessionWhere selects a session with no remaining row in any table
 // that references it (the orphaned-session sweep's condition).
+// A session under a local hold is never an orphan.
 const orphanSessionWhere = `id NOT IN (SELECT DISTINCT session_id FROM actions)
    AND id NOT IN (SELECT DISTINCT session_id FROM token_usage)
    AND id NOT IN (SELECT DISTINCT session_id FROM failure_context)
-   AND id NOT IN (SELECT DISTINCT session_id FROM compaction_events)`
+   AND id NOT IN (SELECT DISTINCT session_id FROM compaction_events)
+   AND id NOT IN (SELECT session_id FROM local_session_holds)`
 
 // deleteOrphanedSessions removes sessions whose action set is empty after
 // the actions delete pass AND that no other table still references. Other
@@ -843,8 +860,10 @@ func (p *Pruner) shrinkToCap(ctx context.Context, opts Options, res *Result) err
 	}
 
 	var minTS sql.NullString
+	// The oldest action the shed could remove: a held session's actions
+	// never are, so they do not anchor the window.
 	if err := p.db.QueryRowContext(ctx,
-		`SELECT MIN(timestamp) FROM actions`).Scan(&minTS); err != nil {
+		`SELECT MIN(timestamp) FROM actions WHERE `+notHeldSession).Scan(&minTS); err != nil {
 		return fmt.Errorf("retention: min timestamp: %w", err)
 	}
 	if !minTS.Valid {

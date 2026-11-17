@@ -23,6 +23,7 @@ import type { LaunchIsolation } from "@/lib/types";
 import { LAUNCH_TERMINAL as LaunchTerminal } from "@/lib/components.gen";
 import { NewTerminalDialog } from "@/components/NewTerminalDialog";
 import type { NewTerminalDraft } from "@/components/NewTerminalDialog";
+import type { NewTerminalTask } from "@/lib/terminalTask";
 import {
   useTerminalStatuses,
   AgentStatusBadge,
@@ -169,6 +170,12 @@ type LaunchDockCtx = {
    * picker does not list falls back to the dialog's usual default.
    */
   openNewTerminalFor: (tool: string) => void;
+  /**
+   * Open the same dialog in task mode (lib/terminalTask.ts, fix findings
+   * with an agent): the folder is fixed to the task's project, the picker
+   * lists terminal agents only, and Start posts to the task's route.
+   */
+  openNewTerminalWithTask: (task: NewTerminalTask) => void;
   /** The dock-owned live sessions (the Terminal Workspace reads these). */
   sessions: DockSession[];
   /** Per-token connection status. */
@@ -279,6 +286,9 @@ export function LaunchDockProvider({ children }: { children: ReactNode }) {
   // it exits so the operator does not have to choose tool/root/model/sandbox
   // all over again.
   const [newTerminalDraft, setNewTerminalDraft] = useState<NewTerminalDraft>();
+  // The open dialog's task (task mode), kept across a guided install's
+  // resume and cleared when the dialog closes or a plain open replaces it.
+  const [newTerminalTask, setNewTerminalTask] = useState<NewTerminalTask>();
   const [resumedAfterInstall, setResumedAfterInstall] = useState(false);
   const [pendingInstall, setPendingInstall] = useState<{
     token: string;
@@ -454,12 +464,22 @@ export function LaunchDockProvider({ children }: { children: ReactNode }) {
     // keeps the saved draft so an impatient operator still resumes in place.
     setPendingInstall(null);
     setResumedAfterInstall(false);
+    setNewTerminalTask(undefined);
+    setNewOpen(true);
+  }, []);
+
+  const openNewTerminalWithTask = useCallback((task: NewTerminalTask) => {
+    setPendingInstall(null);
+    setResumedAfterInstall(false);
+    setNewTerminalDraft(undefined);
+    setNewTerminalTask(task);
     setNewOpen(true);
   }, []);
 
   const openNewTerminalFor = useCallback((tool: string) => {
     setPendingInstall(null);
     setResumedAfterInstall(false);
+    setNewTerminalTask(undefined);
     setNewTerminalDraft({
       tool,
       sshProfile: "",
@@ -698,6 +718,7 @@ export function LaunchDockProvider({ children }: { children: ReactNode }) {
       launch,
       openNewTerminal,
       openNewTerminalFor,
+      openNewTerminalWithTask,
       sessions,
       statuses,
       closeSession,
@@ -720,6 +741,7 @@ export function LaunchDockProvider({ children }: { children: ReactNode }) {
       launch,
       openNewTerminal,
       openNewTerminalFor,
+      openNewTerminalWithTask,
       sessions,
       statuses,
       closeSession,
@@ -777,9 +799,14 @@ export function LaunchDockProvider({ children }: { children: ReactNode }) {
         <NewTerminalDialog
           initialDraft={newTerminalDraft}
           resumedAfterInstall={resumedAfterInstall}
+          task={newTerminalTask}
+          onTaskStarted={(handle, tool, hasProjectRoot) =>
+            launch({ token: handle, tool, sessionId: "", hasProjectRoot: hasProjectRoot ?? false })
+          }
           onClose={() => {
             setNewOpen(false);
             setResumedAfterInstall(false);
+            setNewTerminalTask(undefined);
           }}
           onLaunched={(handle, tool, hasProjectRoot, resumeDraft) => {
             setNewOpen(false);
@@ -790,6 +817,7 @@ export function LaunchDockProvider({ children }: { children: ReactNode }) {
             } else {
               setNewTerminalDraft(undefined);
               setPendingInstall(null);
+              setNewTerminalTask(undefined);
             }
             launch({ token: handle, tool, sessionId: "", hasProjectRoot: hasProjectRoot ?? false });
           }}
@@ -850,6 +878,13 @@ export function LaunchDockProvider({ children }: { children: ReactNode }) {
       </CompanionProvider>
     </Ctx.Provider>
   );
+}
+
+/** useOptionalLaunchDock is the dock, or null outside LaunchDockProvider
+ *  (a component test, an embed without the dock): a caller then hides or
+ *  disables what needs the dock instead of throwing. */
+export function useOptionalLaunchDock(): LaunchDockCtx | null {
+  return useContext(Ctx);
 }
 
 export function useLaunchDock(): LaunchDockCtx {

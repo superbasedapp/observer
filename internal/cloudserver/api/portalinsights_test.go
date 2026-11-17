@@ -277,7 +277,8 @@ func TestPortalUsageCarriesPlanJobsAndResets(t *testing.T) {
 	decode(t, resp, &u)
 
 	// The pre-existing fields keep their names and meanings (additive change).
-	if u.Feature == "" || u.DailyCap != 100 || u.MonthlyCap != 3000 {
+	// Free v5 (ruling R-AI1) enforces token budgets, so the count caps read 0.
+	if u.Feature == "" || u.DailyCap != 0 || u.MonthlyCap != 0 {
 		t.Fatalf("the existing allowance fields changed shape: %+v", u)
 	}
 	if u.Plan != "free" || u.PlanLabel == "" || u.PlanVersion < 1 || u.BudgetPool != "free" {

@@ -1,8 +1,8 @@
 import { useState, type ReactNode } from "react";
-import { Link } from "react-router-dom";
 import { Button, Callout, Card, PageHeader, Pill } from "@/components/primitives";
 import { DisplayControls } from "@/components/TopBar";
 import { BudgetCard } from "@/components/BudgetCard";
+import { GatedLink } from "@/components/GatedLink";
 import { applyLookup } from "@/components/security/PackageLookupCard";
 import { navIcon } from "@/lib/nav";
 import { apiReason, fetchJSON } from "@/lib/api";
@@ -80,11 +80,16 @@ function Row({ label, children, to }: { label: ReactNode; children: ReactNode; t
   );
 }
 
+/** ManageLink is every link on this page. It goes through GatedLink, so a
+ *  link to a page or Settings section the organization hid on this machine
+ *  (Cloud, Code security, Security > Budgets on a managed node) reads
+ *  "Managed by your organization" instead of landing on a notice (CG-20,
+ *  CG-21). */
 function ManageLink({ to, children }: { to: string; children: ReactNode }) {
   return (
-    <Link to={to} className="text-[12px] font-medium text-accent hover:text-accent-strong">
+    <GatedLink to={to} className="text-[12px] font-medium text-accent hover:text-accent-strong">
       {children}
-    </Link>
+    </GatedLink>
   );
 }
 

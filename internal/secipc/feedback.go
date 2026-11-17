@@ -266,7 +266,7 @@ func encodeHits(hits []policy.SecurityHit, max int) []hit {
 		}
 		out = append(out, hit{
 			Category: string(h.Category), Severity: string(h.Severity), Confidence: string(h.Confidence),
-			RuleID: h.RuleID, Path: h.Path, Line: h.Line,
+			RuleID: h.RuleID, Path: h.Path, Line: h.Line, CWE: policy.SafeCWEs(h.CWE),
 		})
 	}
 	return out
@@ -285,6 +285,7 @@ func decodeHits(in []hit, max int) []policy.SecurityHit {
 		out = append(out, policy.SecurityHit{
 			Category: policy.FindingCategory(h.Category), Severity: policy.FindingSeverity(h.Severity),
 			Confidence: policy.FindingConfidence(h.Confidence), RuleID: h.RuleID, Path: path, Line: h.Line,
+			CWE: policy.SafeCWEs(h.CWE),
 		})
 	}
 	return out

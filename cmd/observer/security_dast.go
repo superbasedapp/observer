@@ -20,13 +20,14 @@ import (
 	"golang.org/x/term"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/git"
 	"github.com/marmutapp/superbased-observer/internal/guardposture"
-	"github.com/marmutapp/superbased-observer/internal/scrub"
 	"github.com/marmutapp/superbased-observer/internal/secdast"
 	"github.com/marmutapp/superbased-observer/internal/secdast/dastconsent"
 	"github.com/marmutapp/superbased-observer/internal/secdastnet"
 	"github.com/marmutapp/superbased-observer/internal/secfinding"
 	"github.com/marmutapp/superbased-observer/internal/secposture"
+	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
 // security_dast.go is the cmd seam of the local passive DAST checker
@@ -51,6 +52,13 @@ type dastEnv struct {
 
 func openDASTEnv(cmd *cobra.Command) (dastEnv, error) {
 	configPath, _ := cmd.Flags().GetString("config")
+	return openDASTEnvAt(configPath)
+}
+
+// openDASTEnvAt is openDASTEnv for a config path (the CLI's --config, or
+// the dashboard seam's resolved path): errDASTNotSelected unless the
+// config selects security.dast.
+func openDASTEnvAt(configPath string) (dastEnv, error) {
 	cfg, err := config.Load(config.LoadOptions{GlobalPath: configPath})
 	if err != nil {
 		return dastEnv{}, err
@@ -86,7 +94,8 @@ func (e dastEnv) consent() dastconsent.Consent {
 func securityDASTSubcommands() []*cobra.Command { return []*cobra.Command{newSecurityDASTCmd()} }
 
 func newSecurityDASTCmd() *cobra.Command {
-	var asJSON, insecureTLS bool
+	var asJSON, insecureTLS, noStore bool
+	var storeProject string
 	c := &cobra.Command{
 		Use:   "dast <url>",
 		Short: "Passive checks of a dev server on this machine (localhost only; component security.dast, opt-in)",
@@ -96,7 +105,8 @@ func newSecurityDASTCmd() *cobra.Command {
 			"CORS, exposed .git and .env, directory listings, source maps, framework debug pages and\n" +
 			"version banners. The URL must be localhost, 127.0.0.1 or [::1] with a port; anything\n" +
 			"else is refused, also after name resolution, and no redirect off it is followed.\n" +
-			"Findings are flag only and are printed, not stored. The first run asks for the one\n" +
+			"Findings are flag only; they are stored against the project (--project, default the git\n" +
+			"root of the working directory; --no-store prints only). The first run asks for the one\n" +
 			"accept (or run `observer security dast accept`). An agent cannot run it (guard R-165).",
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -124,9 +134,30 @@ func newSecurityDASTCmd() *cobra.Command {
 				}
 				fmt.Fprintln(cmd.OutOrStdout())
 			}
-			return runDAST(cmd.Context(), cmd.OutOrStdout(), t, secdastnet.Options{InsecureTLS: insecureTLS}, asJSON, time.Now())
+			var rec dastRecorder
+			if !noStore {
+				root, perr := securityProjectRoot(storeProject)
+				switch {
+				case perr != nil && storeProject != "":
+					return perr
+				case perr == nil:
+					configPath, _ := cmd.Flags().GetString("config")
+					_, database, cleanup, err := loadConfigAndDB(cmd.Context(), configPath)
+					if err != nil {
+						return err
+					}
+					defer cleanup()
+					st := store.New(database)
+					rec = dastRecorder{root: root, record: func(ctx context.Context, r dastRun) (int, error) {
+						return recordDASTRun(ctx, st, e.dir, root, t, r.Report, r.Findings, r.Started, r.Took)
+					}}
+				}
+			}
+			return runDAST(cmd.Context(), cmd.OutOrStdout(), t, secdastnet.Options{InsecureTLS: insecureTLS}, asJSON, time.Now(), rec)
 		},
 	}
+	c.Flags().BoolVar(&noStore, "no-store", false, "print the findings only; store nothing")
+	c.Flags().StringVar(&storeProject, "project", "", "the project directory to store the findings against (default: the git root of the working directory; outside a repository they are printed only)")
 	c.Flags().BoolVar(&asJSON, "json", false, "print the report as JSON")
 	c.Flags().BoolVar(&insecureTLS, "insecure-tls", false, "accept an untrusted (self-signed) certificate on an https dev server; the address stays loopback-only")
 	var yes bool
@@ -233,21 +264,35 @@ type dastReportView struct {
 	Checks   int                  `json:"checks"`
 	Errors   []secdast.ProbeError `json:"errors,omitempty"`
 	Findings []dastFindingView    `json:"findings"`
+	// Stored: the run was recorded against StoredProject (its directory
+	// name); New counts the findings it saw for the first time.
+	Stored        bool   `json:"stored"`
+	StoredProject string `json:"stored_project,omitempty"`
+	New           int    `json:"new,omitempty"`
 }
 
-// runDAST is THE run seam: the lane's client, the pure run under the run
-// timeout, the findings through the scrubber.
-func runDAST(ctx context.Context, w io.Writer, t secdast.Target, opts secdastnet.Options, asJSON bool, now time.Time) error {
-	ctx, cancel := context.WithTimeout(ctx, secdast.RunTimeout)
-	defer cancel()
-	client, err := secdastnet.New(ctx, t, opts)
+// dastRecorder stores a run against a project; the zero value prints only.
+type dastRecorder struct {
+	root   string
+	record func(ctx context.Context, r dastRun) (int, error)
+}
+
+// runDAST is THE CLI run seam: the lane's run (runDASTLane), the record
+// when there is a project, then the report.
+func runDAST(ctx context.Context, w io.Writer, t secdast.Target, opts secdastnet.Options, asJSON bool, now time.Time, rec dastRecorder) error {
+	run, err := runDASTLane(ctx, t, opts, now)
 	if err != nil {
 		return err
 	}
-	defer client.Close()
-	rep := secdast.Run(ctx, t, dastToken(), client.Fetch)
-	findings := secdast.Findings(t, rep.Hits, now, scrub.New().String)
-	view := dastReportView{Target: rep.Target, Outcome: rep.Outcome, Requests: client.RoundTrips(), Checks: rep.Checks, Errors: rep.Errors, Findings: dastViews(findings)}
+	rep, findings := run.Report, run.Findings
+	view := dastReportView{Target: rep.Target, Outcome: rep.Outcome, Requests: run.RoundTrips, Checks: rep.Checks, Errors: rep.Errors, Findings: dastViews(findings)}
+	if rec.record != nil {
+		created, err := rec.record(ctx, run)
+		if err != nil {
+			return err
+		}
+		view.StoredProject, view.Stored, view.New = filepath.Base(rec.root), true, created
+	}
 	if asJSON {
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
@@ -297,6 +342,10 @@ func printDASTReport(w io.Writer, v dastReportView) {
 	for _, f := range v.Findings {
 		fmt.Fprintf(w, "\n  [%s] %s (%s)\n    %s\n    %s\n    fix: %s\n", f.Severity, f.Title, f.Rule, f.Evidence, f.Message, f.FixHint)
 	}
+	if v.Stored {
+		fmt.Fprintf(w, "\n%d findings, flag only, stored against %s (%d new); see Code security > Findings.\n", len(v.Findings), v.StoredProject, v.New)
+		return
+	}
 	fmt.Fprintf(w, "\n%d findings, flag only (printed, not stored).\n", len(v.Findings))
 }
 
@@ -309,8 +358,10 @@ func dastToken() string {
 	return hex.EncodeToString(b)
 }
 
-// runDASTCandidates reads <project>/.claude/launch.json (capped) and lists
-// the loopback URLs it names.
+// runDASTCandidates lists the dev-server URLs a project's own files name
+// (secdast.ProjectCandidates: .claude/launch.json, package.json scripts,
+// framework config files), each marked listening where the kernel's listen
+// table says so (Linux). Nothing is contacted.
 func runDASTCandidates(w io.Writer, project string, asJSON bool) error {
 	if project == "" {
 		wd, err := os.Getwd()
@@ -319,30 +370,29 @@ func runDASTCandidates(w io.Writer, project string, asJSON bool) error {
 		}
 		project = wd
 	}
-	path := filepath.Join(project, ".claude", "launch.json")
-	var cands []secdast.Candidate
-	if f, err := os.Open(path); err == nil { //nolint:gosec // G304: the project's own launch file; only read and parsed.
-		data, rerr := io.ReadAll(io.LimitReader(f, secdast.MaxLaunchJSON+1))
-		_ = f.Close()
-		if rerr != nil {
-			return rerr
-		}
-		cands = secdast.LaunchCandidates(data)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
+	if root, ok := git.FindRoot(project); ok {
+		project = root
 	}
+	cands := dastProjectCandidates(project)
 	if cands == nil {
 		cands = []secdast.Candidate{}
 	}
 	if asJSON {
-		return json.NewEncoder(w).Encode(map[string]any{"launch_json": path, "candidates": cands})
+		return json.NewEncoder(w).Encode(map[string]any{"project": project, "candidates": cands})
 	}
 	if len(cands) == 0 {
-		fmt.Fprintf(w, "No loopback dev server named in %s. Type the URL yourself: observer security dast http://localhost:<port>/\n", path)
+		fmt.Fprintf(w, "No dev server found in %s's files (.claude/launch.json, package.json scripts, framework configs).\n", project)
 		return nil
 	}
 	for _, c := range cands {
-		fmt.Fprintf(w, "%s\t%s\n", c.URL, c.Name)
+		state := ""
+		switch c.Listening {
+		case "yes":
+			state = "  [listening]"
+		case "no":
+			state = "  [not listening]"
+		}
+		fmt.Fprintf(w, "%s  %s (%s)%s\n", c.URL, c.Name, c.Source, state)
 	}
 	return nil
 }

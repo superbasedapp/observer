@@ -25,7 +25,7 @@ runs on this machine; see [`docs/component-state.md`](./component-state.md).
 4. [Customisation](#customisation): settings reference + recipes
 5. [Troubleshooting](#troubleshooting): what to do when something goes wrong
 6. [Beyond the extension](#beyond-the-extension): CLI parity, MCP, the Help drawer
-7. [Privacy + local-first](#privacy--local-first): what data leaves your machine (none)
+7. [Privacy + local-first](#privacy--local-first): what data leaves your machine (nothing, until you connect it)
 
 ---
 
@@ -44,7 +44,31 @@ If you're on Cursor, VSCodium, or Windsurf, the same VSIX ships to
 [Open VSX](https://open-vsx.org/); `cursor --install-extension
 superbased.superbased-observer` works identically.
 
-### 2. Confirm the binary is healthy
+### 2. Sign in and connect (recommended)
+
+On first start a notification says SuperBased Observer is running and
+offers **Sign in and connect**. The same action sits in the status bar
+(**SuperBased · not signed in**) and the command palette.
+
+Your browser opens the SuperBased connect page. Sign in, then choose
+where this machine shows up:
+
+- **Personal dashboard** (made for you on first sign-in): summary only,
+  no prompts, responses or file paths.
+- **A team**: full detail, including prompts, responses and file paths.
+  Team admins can read it.
+- **Not now**: you stay signed in and nothing is sent.
+
+The editor shows a short code while it waits (like `KTRW-4821`). If no
+browser opens, for example on a remote machine, open the connect page on
+any device and type the code. Joining a team your admin told you about?
+Run **SuperBased: Connect to a team...** and enter the team name.
+
+Once connected, the status bar shows the name of your dashboard or team;
+click it to open that dashboard online. Skipping this step is fine:
+everything below works with no account.
+
+### 3. Confirm the binary is healthy
 
 Open the command palette (`Ctrl+Shift+P` / `⌘⇧P`) and run **SuperBased:
 Doctor**. A terminal opens with the binary's own health-check
@@ -55,7 +79,7 @@ If Doctor says `binary not found`, set `observer.binary.path` in
 your Settings to an absolute path (e.g. `/usr/local/bin/observer`)
 and re-run.
 
-### 3. Choose how the extension supervises the daemon
+### 4. Choose how the extension supervises the daemon
 
 There are three options for `observer.daemon.mode`:
 
@@ -73,7 +97,7 @@ If you don't already have a workflow around `observer start`,
 **flip to `auto`**. The setting is at `observer.daemon.mode` in
 the Settings UI or in `settings.json`.
 
-### 4. Open the dashboard
+### 5. Open the dashboard
 
 Run **SuperBased: Open Dashboard**. The full React analytics SPA
 renders inside an editor tab (same surface as
@@ -568,9 +592,14 @@ The extension is **strictly local-first**:
   the webview-side `127.0.0.1` to the workspace host's loopback.
   Data still doesn't cross any wire that wasn't already part of
   your VS Code remote-dev session.
-- **No data leaves your machine.** Every byte SuperBased captures is
-  written to `~/.observer/observer.db` (or
-  `$OBSERVER_HOME/observer.db`) and stays there.
+- **No data leaves your machine until you connect it.** Every byte
+  SuperBased captures is written to `~/.observer/observer.db` (or
+  `$OBSERVER_HOME/observer.db`) and stays there unless you run **Sign in
+  and connect** and approve a share level in your browser: summary only
+  for your personal dashboard, full detail (prompts, responses, file
+  paths) for a team. Starting the request sends this machine's name, OS
+  and Observer version; **Not now** on the approval page signs you in and
+  sends nothing else.
 - **Line counts on save are counts, not content.** The one thing the
   extension sends rather than reads is the per-save line count described
   in [Human line counts on save](#human-line-counts-on-save): how many

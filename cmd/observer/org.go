@@ -17,14 +17,17 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/marmutapp/superbased-observer/internal/attachrule"
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/db"
 	"github.com/marmutapp/superbased-observer/internal/fsatomic"
 	"github.com/marmutapp/superbased-observer/internal/govern"
 	"github.com/marmutapp/superbased-observer/internal/intelligence/advisor"
+	"github.com/marmutapp/superbased-observer/internal/managedconfig"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/orgenrol"
+	"github.com/marmutapp/superbased-observer/internal/pairing"
 	"github.com/marmutapp/superbased-observer/internal/routeprov"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
@@ -42,6 +45,14 @@ type orgBundle struct {
 	db      *sql.DB
 	cfg     config.Config
 	cleanup func()
+	// attachPolicy, when set, is the company-managed attach policy the
+	// attach and detach gates read (org_attachpolicy.go); nil reads this
+	// OS's fixed source.
+	attachPolicy func() managedconfig.AttachResult
+	// attach, when its Grant is set, makes runEnrolSequence enrol with a
+	// Connect approval's attach grant instead of a one-time token
+	// (`observer enroll --attach-grant-file`, Getting started v2 lane 8).
+	attach orgclient.AttachCredential
 }
 
 // shareModeRule is one row of the share-mode line's table: the input that can
@@ -360,6 +371,7 @@ func buildOrgBundleWith(ctx context.Context, configPath string, quietWhenNotEnro
 	// (the org's lowering and a managed node's signed raise), the same one
 	// the daemon's pushes use; the daemon swaps in its live handle.
 	client.SetShareProvider(cliGovernanceShareProvider(cfg, st, logger))
+	client.SetScopeProvider(cliGovernanceScopeProvider(cfg, st, logger))
 	return orgBundle{
 		client:  client,
 		store:   st,
@@ -398,7 +410,10 @@ func orgJudgeRelayFuncFor(c *orgclient.Client) orgJudgeRelayFunc {
 	}
 }
 
-func newEnrollCmd() *cobra.Command {
+func newEnrollCmd() *cobra.Command { return newEnrollCmdWith(defaultEnrolCmdDeps()) }
+
+// newEnrollCmdWith is newEnrollCmd over explicit seams (tests).
+func newEnrollCmdWith(deps enrolCmdDeps) *cobra.Command {
 	var (
 		configPath       string
 		linkURL          string
@@ -408,6 +423,8 @@ func newEnrollCmd() *cobra.Command {
 		acceptGovernance bool
 		acceptIntel      bool
 		tokenFile        string
+		dropUnsent       bool
+		attachGrantFile  string
 	)
 	cmd := &cobra.Command{
 		Use:   "enroll [<org-url> <token>]",
@@ -437,22 +454,56 @@ hand-edit TOML, and
 AI client (claude-code, codex, cursor, cline). Pass --no-write-block
 or --wire-clients=false to opt out of either side. Only activity AFTER
 enrolment is ever shared (the push cursor seeds at the current
-high-water id).`,
+high-water id).
+
+Switching organizations: when this machine is already enrolled with a
+different organization, the rows still waiting for it are sent there
+first (bounded to about a minute). If that fails (the organization is
+unreachable, refuses this machine, or the time runs out), nothing is
+changed and the enrolment code is not used. --drop-unsent switches
+anyway: those rows then stay on this machine unsent and are never sent
+to the new organization on their own (only ` + "`observer org backfill --all --confirm`" + `
+would send them, to whichever organization the machine is enrolled in
+then). Re-enrolling with the same organization is unchanged.
+
+Company-managed configuration (the [attach] keys of the managed config
+your administrator installs) may set the organization server: with no
+arguments, this command then signs in there (--idp). When it also locks
+the machine, enrolling with any other server is refused.`,
 		Args: cobra.MaximumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			args, err := enrolArgsWithTokenFile(tokenFile, linkURL, idpURL, args, cmd.InOrStdin())
+			// M8.6: company-managed config may pre-set the server (a bare
+			// `observer enroll` signs in there) and lock the machine to it.
+			// One snapshot of the policy serves every check below.
+			// M8.5: a pairing code is never accepted on the command line,
+			// where other local users can read it; it comes through
+			// --token-file, or `observer connect` with SBO_PAIR_CODE.
+			for _, a := range args {
+				if err := pairing.RefuseArgument(a); err != nil {
+					return err
+				}
+			}
+			pol := deps.attachPolicy()
+			in := enrolInputs{grantFile: attachGrantFile, tokenFile: tokenFile, linkURL: linkURL, idpURL: idpURL}
+			orgURL, token, grant, err := in.resolve(cmd, pol, args)
 			if err != nil {
 				return err
 			}
-			orgURL, token, err := resolveEnrolCredentials(linkURL, idpURL, args)
-			if err != nil {
+			idpURL = in.idpURL
+			// Refuse before any network call or browser sign-in;
+			// runEnrolSequence checks again for every surface.
+			if err := checkManagedAttach(pol, attachrule.Destination{}, attachrule.IntentAttach, orgURL); err != nil {
 				return err
 			}
-			b, err := buildOrgBundle(cmd.Context(), configPath)
+			b, err := deps.bundle(cmd.Context(), configPath)
 			if err != nil {
 				return err
 			}
 			defer b.cleanup()
+			b.attachPolicy = func() managedconfig.AttachResult { return pol }
+			if b.attach, err = enrolAttachCredential(deps, configPath, orgURL, grant); err != nil {
+				return err
+			}
 			c, enabled := b.client, b.cfg.OrgClient.Enabled
 			// ACP-P6c: --idp obtains the one-time enrolment code through an
 			// IdP-verified browser approval instead of an admin handing one
@@ -460,19 +511,37 @@ high-water id).`,
 			// rail takes — the flow's whole design is that it produces an
 			// ordinary enrolment code, not a second kind of enrolment.
 			if idpURL != "" {
-				flow := &idpEnrolFlow{client: c, out: cmd.OutOrStdout()}
+				// R3-78: settle the switch drain BEFORE the browser step, so a
+				// refusal never costs the person a sign-in. Enroll runs it
+				// again (nothing is left by then, so it costs one empty cycle).
+				if _, derr := c.DrainBeforeSwitch(cmd.Context(), orgURL, switchDrainOptions(&b.cfg, dropUnsent)); derr != nil {
+					if msg, ok := unsentRefusal(derr, false, cliDrainSurface); ok {
+						return errors.New(msg)
+					}
+					return derr
+				}
+				flow := deps.idpFlow(c, cmd.OutOrStdout())
 				if token, err = flow.Run(cmd.Context(), orgURL); err != nil {
 					return err
 				}
 			}
 			// T-642: the one enrolment sequence Settings > Enrolment also
 			// runs (exchange, managed bind, default [org_client] block).
-			seq, err := runEnrolSequence(cmd.Context(), b, configPath, orgURL, token, writeBlock)
+			seq, err := runEnrolSequence(cmd.Context(), b, configPath, orgURL, token, writeBlock, dropUnsent)
 			if err != nil {
+				if msg, ok := unsentRefusal(err, false, cliDrainSurface); ok {
+					return errors.New(msg)
+				}
 				return err
 			}
 			enr, offer := seq.enr, seq.offer
 			out := cmd.OutOrStdout()
+			if note, warn := seq.drainNote(); note != "" {
+				if warn {
+					note = "Warning: " + note
+				}
+				fmt.Fprintln(out, note)
+			}
 			fmt.Fprintf(out, "Enrolled in %s (org_id %s) as %s.\n", enr.OrgName, enr.OrgID, enr.UserEmail)
 			fmt.Fprintf(out, "Pushing to %s.\n", enr.OrgServerURL)
 			if seq.bindTried {
@@ -539,69 +608,7 @@ high-water id).`,
 			// enrolled with the requirement PENDING (Accept or Leave later).
 			offerOrgIntelAtEnrol(cmd, b, configPath, acceptIntel)
 			if wireClients {
-				fmt.Fprintln(out, "\nAuto-wiring AI clients (hooks + MCP + proxy routing). Pass --wire-clients=false to skip.")
-				// Resolve the proxy port from config so we can both
-				// drive the registrar and probe whether the daemon
-				// is currently listening.
-				cfg, cfgErr := config.Load(config.LoadOptions{GlobalPath: configPath})
-				proxyPort := 8820
-				if cfgErr == nil && cfg.Proxy.Port > 0 {
-					proxyPort = cfg.Proxy.Port
-				}
-				// T-642: register against the running daemon's binary, not
-				// whichever binary ran this enrol (enrolWireRules).
-				wireBin := enrolWireBinaryFor(out, b.cfg.Observer.DBPath)
-				winHomes, winDistro, newReg := productionWindowsBrowserInputs()
-				var report WireReport
-				lines, claudeHint, codexHint, codexHooksHint, werr := wireAIClients(WireAIClientsOptions{
-					Report:              &report,
-					RouteWriter:         routeprov.WriterEnrolment,
-					ConfigPath:          configPath,
-					BinaryPath:          wireBin,
-					ProxyPort:           proxyPort,
-					All:                 true,
-					WindowsBrowserHomes: winHomes,
-					WSLDistro:           winDistro,
-					NewWindowsRegistry:  newReg,
-				})
-				switch {
-				case werr != nil:
-					fmt.Fprintf(out, "Warn: auto-wire failed: %v\n", werr)
-				case len(lines) == 0:
-					fmt.Fprintln(out, "  (no AI clients detected - install Claude Code / Codex / Cursor / Cline first, then run `observer init`)")
-				default:
-					for _, ln := range lines {
-						if ln != "" {
-							fmt.Fprintln(out, "  "+ln)
-						}
-					}
-					if claudeHint != "" {
-						fmt.Fprintln(out)
-						fmt.Fprint(out, claudeHint)
-					}
-					if codexHint != "" {
-						fmt.Fprintln(out)
-						fmt.Fprint(out, codexHint)
-					}
-					if codexHooksHint {
-						fmt.Fprintln(out)
-						fmt.Fprintln(out, "note: codex runs a hook only once it is trusted (security feature).")
-						fmt.Fprintln(out, codexTrustLine())
-					}
-				}
-				// Loud post-wire warning when the proxy isn't
-				// listening: every Claude Code session on the host
-				// now routes through 127.0.0.1:<port> after the
-				// settings.json write, so a stopped proxy breaks
-				// EVERY Claude Code instance until the operator
-				// launches `observer start`. N4 caveat in
-				// docs/audits/teams-test-regression-v1.8.2-2026-06-04.md.
-				// Only for routes that are actually in place (T-736): a node
-				// with no Claude Code got this warning for a write that never
-				// happened.
-				if len(report.RoutesInPlace) > 0 && !proxyReachable(fmt.Sprintf("http://127.0.0.1:%d", proxyPort), 200*time.Millisecond) {
-					printProxyDownWarning(out, proxyPort, report.RoutesInPlace)
-				}
+				enrolWireClients(out, configPath, b.cfg.Observer.DBPath)
 			}
 			return nil
 		},
@@ -616,9 +623,157 @@ high-water id).`,
 		"accept an organization governance grant without an interactive prompt (scripted rollout; see `observer org grant show` for what was granted)")
 	cmd.Flags().BoolVar(&acceptIntel, "accept-intel-consent", false,
 		"accept the organization's Cloud Intelligence terms without an interactive prompt when it requires them (the terms are still printed; see `observer intel status`)")
+	cmd.Flags().BoolVar(&dropUnsent, "drop-unsent", false,
+		"switch organizations even when the rows still waiting for the current one could not be sent to it (they stay on this machine, unsent)")
 	cmd.Flags().StringVar(&tokenFile, "token-file", "",
 		"read the enrolment code from this file (\"-\" reads stdin) instead of the command line; pass the org URL as the only argument")
+	// Hidden: `observer connect` passes the attach grant its Connect
+	// approval carried; a person never types one.
+	cmd.Flags().StringVar(&attachGrantFile, "attach-grant-file", "",
+		"read a Connect approval's attach grant from this file (\"-\" reads stdin); pass the org URL as the only argument")
+	_ = cmd.Flags().MarkHidden("attach-grant-file")
 	return cmd
+}
+
+// enrolInputs are `observer enroll`'s credential flags.
+type enrolInputs struct {
+	grantFile, tokenFile, linkURL, idpURL string
+}
+
+// resolve returns the org URL and the one credential the flags and args
+// name: an attach grant (--attach-grant-file, Getting started v2 lane 8:
+// `observer connect` hands the grant its Connect approval carried on
+// standard input), else a one-time token, else none (--idp, possibly set by
+// company-managed configuration, which updates in.idpURL).
+func (in *enrolInputs) resolve(cmd *cobra.Command, pol managedconfig.AttachResult, args []string) (orgURL, token, grant string, err error) {
+	if in.grantFile != "" {
+		orgURL, grant, err = enrolAttachGrantArgs(in.grantFile, in.tokenFile, in.linkURL, in.idpURL, args, cmd.InOrStdin())
+		return orgURL, "", grant, err
+	}
+	in.idpURL = managedEnrolIdPURL(cmd.OutOrStdout(), pol, in.tokenFile, in.linkURL, in.idpURL, args)
+	args, err = enrolArgsWithTokenFile(in.tokenFile, in.linkURL, in.idpURL, args, cmd.InOrStdin())
+	if err != nil {
+		return "", "", "", err
+	}
+	orgURL, token, err = resolveEnrolCredentials(in.linkURL, in.idpURL, args)
+	return orgURL, token, "", err
+}
+
+// enrolAttachCredential is the attach credential for grant ("" for none):
+// the grant and this build's device-proof signer. A build with no signer
+// (no Cloud Intelligence) refuses and names --idp.
+func enrolAttachCredential(deps enrolCmdDeps, configPath, orgURL, grant string) (orgclient.AttachCredential, error) {
+	if grant == "" {
+		return orgclient.AttachCredential{}, nil
+	}
+	var prove func(grant, agentPublicKey string) (orgcontract.AttachProof, error)
+	if deps.attachProver != nil {
+		prove = deps.attachProver(configPath)
+	}
+	if prove == nil {
+		return orgclient.AttachCredential{}, errors.New("observer enroll: this build cannot use a Connect approval; run `observer enroll --idp " + orgURL + "` instead")
+	}
+	return orgclient.AttachCredential{Grant: grant, Prove: prove}, nil
+}
+
+// enrolAttachGrantArgs resolves --attach-grant-file: exactly one argument,
+// the org URL (http(s)://host), no other way to enrol beside it, and the
+// grant read bounded from the file or standard input ("-"), never argv.
+func enrolAttachGrantArgs(grantFile, tokenFile, linkURL, idpURL string, args []string, stdin io.Reader) (orgURL, grant string, err error) {
+	if tokenFile != "" || linkURL != "" || idpURL != "" {
+		return "", "", errors.New("observer enroll: --attach-grant-file cannot be combined with --token-file, --link or --idp")
+	}
+	if len(args) != 1 {
+		return "", "", errors.New("observer enroll: with --attach-grant-file pass exactly one argument, the org URL")
+	}
+	u, perr := url.Parse(strings.TrimSpace(args[0]))
+	if perr != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		return "", "", fmt.Errorf("observer enroll: invalid org URL %q (need http(s)://host)", args[0])
+	}
+	var raw []byte
+	if grantFile == "-" {
+		raw, err = readEnrolTokenBounded(stdin)
+	} else {
+		raw, err = readEnrolTokenFile(grantFile)
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("observer enroll: read --attach-grant-file: %w", err)
+	}
+	grant = strings.TrimSpace(string(raw))
+	if grant == "" {
+		return "", "", errors.New("observer enroll: --attach-grant-file holds no grant")
+	}
+	return u.Scheme + "://" + u.Host, grant, nil
+}
+
+// enrolWireClients is `observer org enroll`'s auto-wire step: hooks, MCP and
+// proxy routing into every detected AI client, against the running daemon's
+// binary, with the proxy-down warning when a route is in place but nothing
+// listens.
+func enrolWireClients(out io.Writer, configPath, dbPath string) {
+	fmt.Fprintln(out, "\nAuto-wiring AI clients (hooks + MCP + proxy routing). Pass --wire-clients=false to skip.")
+	// Resolve the proxy port from config so we can both
+	// drive the registrar and probe whether the daemon
+	// is currently listening.
+	cfg, cfgErr := config.Load(config.LoadOptions{GlobalPath: configPath})
+	proxyPort := 8820
+	if cfgErr == nil && cfg.Proxy.Port > 0 {
+		proxyPort = cfg.Proxy.Port
+	}
+	// T-642: register against the running daemon's binary, not
+	// whichever binary ran this enrol (enrolWireRules).
+	wireBin := enrolWireBinaryFor(out, dbPath)
+	winHomes, winDistro, newReg := productionWindowsBrowserInputs()
+	var report WireReport
+	lines, claudeHint, codexHint, codexHooksHint, werr := wireAIClients(WireAIClientsOptions{
+		Report:              &report,
+		RouteWriter:         routeprov.WriterEnrolment,
+		ConfigPath:          configPath,
+		BinaryPath:          wireBin,
+		ProxyPort:           proxyPort,
+		All:                 true,
+		WindowsBrowserHomes: winHomes,
+		WSLDistro:           winDistro,
+		NewWindowsRegistry:  newReg,
+	})
+	switch {
+	case werr != nil:
+		fmt.Fprintf(out, "Warn: auto-wire failed: %v\n", werr)
+	case len(lines) == 0:
+		fmt.Fprintln(out, "  (no AI clients detected - install Claude Code / Codex / Cursor / Cline first, then run `observer init`)")
+	default:
+		for _, ln := range lines {
+			if ln != "" {
+				fmt.Fprintln(out, "  "+ln)
+			}
+		}
+		if claudeHint != "" {
+			fmt.Fprintln(out)
+			fmt.Fprint(out, claudeHint)
+		}
+		if codexHint != "" {
+			fmt.Fprintln(out)
+			fmt.Fprint(out, codexHint)
+		}
+		if codexHooksHint {
+			fmt.Fprintln(out)
+			fmt.Fprintln(out, "note: codex runs a hook only once it is trusted (security feature).")
+			fmt.Fprintln(out, codexTrustLine())
+		}
+	}
+	// Loud post-wire warning when the proxy isn't
+	// listening: every Claude Code session on the host
+	// now routes through 127.0.0.1:<port> after the
+	// settings.json write, so a stopped proxy breaks
+	// EVERY Claude Code instance until the operator
+	// launches `observer start`. N4 caveat in
+	// docs/audits/teams-test-regression-v1.8.2-2026-06-04.md.
+	// Only for routes that are actually in place (T-736): a node
+	// with no Claude Code got this warning for a write that never
+	// happened.
+	if len(report.RoutesInPlace) > 0 && !proxyReachable(fmt.Sprintf("http://127.0.0.1:%d", proxyPort), 200*time.Millisecond) {
+		printProxyDownWarning(out, proxyPort, report.RoutesInPlace)
+	}
 }
 
 // enrolArgsWithTokenFile folds --token-file into the positional pair
@@ -1203,9 +1358,12 @@ func insertManagedPolicyKeys(path string, lines []string, headerIdx int, missing
 	return fsatomic.WriteFile(path, []byte(strings.Join(newLines, "\n")), fsatomic.Options{FilePerm: 0o600})
 }
 
-func newUnenrollCmd() *cobra.Command {
+func newUnenrollCmd() *cobra.Command { return newUnenrollCmdWith(defaultEnrolCmdDeps()) }
+
+// newUnenrollCmdWith is newUnenrollCmd over explicit seams (tests).
+func newUnenrollCmdWith(deps enrolCmdDeps) *cobra.Command {
 	var configPath string
-	var plan bool
+	var plan, dropUnsent bool
 	cmd := &cobra.Command{
 		Use:   "unenroll",
 		Short: "Leave the enrolled organization and clear local credentials",
@@ -1218,14 +1376,28 @@ recomposes onto your own settings without a restart.
 
 --plan prints that conferred -> retired table and changes nothing. Your
 config.toml and local data are kept; nothing already shared is deleted from
-the org server.`,
+the org server.
+
+Before leaving, the rows still waiting for the organization are sent to it
+(bounded to about a minute). If that fails (the organization is unreachable,
+refuses this machine, or the time runs out), nothing is changed.
+--drop-unsent leaves anyway: those rows then stay on this machine unsent
+(only ` + "`observer org backfill --all --confirm`" + ` would ever send them, to the
+organization the machine is enrolled in then).
+
+A machine company-managed configuration locks to its organization
+refuses to leave it.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			b, err := buildOrgBundle(cmd.Context(), configPath)
+			b, err := deps.bundle(cmd.Context(), configPath)
 			if err != nil {
 				return err
 			}
 			defer b.cleanup()
+			// M8.6: performUnenrol refuses leaving a machine company config
+			// locks to its organization; --plan changes nothing and stays
+			// available.
+			b.attachPolicy = deps.attachPolicy
 			if plan {
 				st, serr := b.client.Status(cmd.Context())
 				if serr != nil {
@@ -1234,8 +1406,11 @@ the org server.`,
 				printUnenrolPlan(cmd.OutOrStdout(), st.Enrolled, st.OrgName)
 				return nil
 			}
-			rep, err := performUnenrol(cmd.Context(), b, configPath)
+			rep, err := performUnenrol(cmd.Context(), b, configPath, dropUnsent)
 			if err != nil {
+				if msg, ok := unsentRefusal(err, true, cliDrainSurface); ok {
+					return errors.New(msg)
+				}
 				return err
 			}
 			printUnenrolReport(cmd.OutOrStdout(), rep)
@@ -1244,6 +1419,8 @@ the org server.`,
 	}
 	cmd.Flags().StringVar(&configPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml)")
 	cmd.Flags().BoolVar(&plan, "plan", false, "Print what leaving would retire, in order, and change nothing")
+	cmd.Flags().BoolVar(&dropUnsent, "drop-unsent", false,
+		"leave even when the rows still waiting for the organization could not be sent to it (they stay on this machine, unsent)")
 	return cmd
 }
 
@@ -1340,7 +1517,12 @@ func newOrgStatusCmd() *cobra.Command {
 // `observer enroll` seeds the cursor at the current high-water id, so
 // only post-enrolment activity ships — protecting against the Issue 4
 // "first push exfiltrates the whole local corpus" finding. backfill is
-// the explicit opt-in to share older data.
+// the explicit opt-in to share older data, and it shares only the rows
+// captured under the organization enrolled now (sessions.authority_org_key,
+// agent migration 250, operator ruling D-43): history captured under a
+// previous enrolment never ships. History captured before this machine first
+// enrolled (personal) is claimed by the first organization it pushes to
+// (operator answer 2026-11-13).
 func newOrgBackfillCmd() *cobra.Command {
 	var (
 		configPath string
@@ -1354,7 +1536,11 @@ func newOrgBackfillCmd() *cobra.Command {
 eligible for the next push loop. By default ` + "`observer enroll`" + ` seeds
 the cursor at the current high-water id, so only post-enrolment activity is
 ever shared. ` + "`backfill --all --confirm`" + ` resets every table cursor to
-0 so the entire local corpus ships on the next push cycle.
+0 so every row captured under the organization this machine is enrolled in
+now ships on the next push cycles, including history captured before this
+machine first enrolled in any organization. Sessions captured under a
+previous enrolment (another organization) stay on this machine: they are
+never sent to the current organization.
 
 Use ` + "`observer org status`" + ` first to see how many historical rows
 would become eligible. Dry-run is the default; --confirm is required to
@@ -1395,10 +1581,13 @@ actually rewind.`,
 type orgBackfillReport struct {
 	// Eligible is how many rows were already waiting to ship before the run.
 	Eligible int64
-	// WouldUnlock is how many more rows the rewind makes eligible: the rows
-	// that predate enrolment (or that a previous push already shipped).
+	// WouldUnlock is how many more rows the rewind makes eligible: the
+	// current organization's rows below the cursor (captured under an
+	// earlier enrolment in it, or already shipped by a previous push).
 	WouldUnlock int64
-	// Total is the entire local corpus across the pushable tables.
+	// Total is every row the current organization may receive across the
+	// pushable tables (store.PushEligibleCounts keeps to the rows captured
+	// under it, D-43).
 	Total int64
 	// Rewound is true when the cursor was actually reset (confirm).
 	Rewound bool
@@ -1406,8 +1595,9 @@ type orgBackfillReport struct {
 
 // performOrgBackfill is `observer org backfill --all`: it counts what a rewind
 // would make eligible and, only when confirm is set, resets every table's push
-// cursor to 0 so the push loop ships the whole local corpus over its next
-// cycles. A dry run changes nothing.
+// cursor to 0 so the push loop ships every row captured under the current
+// organization over its next cycles (the selection keeps to that org's rows,
+// D-43). A dry run changes nothing.
 func performOrgBackfill(ctx context.Context, st *store.Store, confirm bool) (orgBackfillReport, error) {
 	cur, err := st.LoadPushCursor(ctx)
 	if err != nil {
@@ -1436,24 +1626,28 @@ func performOrgBackfill(ctx context.Context, st *store.Store, confirm bool) (org
 	return rep, nil
 }
 
-// backfillCrossEnrolmentWarning is operator ruling D-273 item 2 (review
-// M3-12): the rewind keeps shipping history captured under a previous
-// enrolment, and says so before the operator confirms. Settings > Enrolment's
-// Share history card shows the same warning (web/src/lib/shareHistory.ts).
+// backfillCrossEnrolmentWarning is what a dry run says before the operator
+// confirms. Operator ruling D-273 item 2 (review M3-12) made the rewind warn
+// that it shipped history captured under a previous enrolment; D-43 (agent
+// migration 250) amended that: the rewind now sends only the rows captured
+// under the organization enrolled now, so the note says what stays behind and
+// that what is sent cannot be taken back. Settings > Enrolment's Share history
+// card carries its own copy of this text (web/src/lib/shareHistory.ts).
 func backfillCrossEnrolmentWarning(org string) string {
 	if org == "" {
 		org = "the organization this machine is enrolled in now"
 	}
-	return "WARNING: the older rows can include sessions captured under a previous enrolment " +
-		"(another organization, or personal use before this machine enrolled). They all go to " + org + ", " +
-		"and cannot be taken back once they are pushed."
+	return "NOTE: rows captured while this machine was enrolled in " + org +
+		", and history captured before it first enrolled anywhere, go to " + org + ". " +
+		"Sessions captured under a previous enrolment (another organization) stay on this machine. " +
+		"Rows cannot be taken back once they are pushed."
 }
 
 // printOrgBackfillReport renders a backfill run. org names the current
 // organization in the cross-enrolment warning ("" when unknown).
 func printOrgBackfillReport(out io.Writer, rep orgBackfillReport, org string) {
 	fmt.Fprintf(out, "currently eligible: %d rows\n", rep.Eligible)
-	fmt.Fprintf(out, "would unlock:       %d more rows (entire local corpus)\n", rep.WouldUnlock)
+	fmt.Fprintf(out, "would unlock:       %d more rows (captured under this organization)\n", rep.WouldUnlock)
 	if rep.WouldUnlock > 0 && !rep.Rewound {
 		fmt.Fprintln(out, "\n"+backfillCrossEnrolmentWarning(org))
 	}
@@ -1461,7 +1655,7 @@ func printOrgBackfillReport(out io.Writer, rep orgBackfillReport, org string) {
 		fmt.Fprintln(out, "\nDRY RUN - pass --confirm to rewind the cursor.")
 		return
 	}
-	fmt.Fprintln(out, "cursor reset to 0; next push cycle will ship the full corpus.")
+	fmt.Fprintln(out, "cursor reset to 0; the next push cycles will ship every row captured under this organization.")
 }
 
 // newOrgPreviewCmd surfaces the last-pushed wire bytes so the operator
@@ -1555,9 +1749,35 @@ next fetch (default 120 s) - a bounded window, documented in docs/budgets.md.
 When nothing is queued the command reports the current cursor state
 and the last push so the operator can tell why nothing happened -
 "cursor up to date" vs "the auto-loop just pushed in the previous
-interval".`,
+interval".
+
+While a daemon is running the push runs IN the daemon (over its owner-local
+dashboard API, the route behind Settings > Enrolment > Push now), which also
+wakes the daemon's own push loop past any failure pause and its policy
+polls. With no daemon running the push runs in this process, and so it does
+when the daemon that answers serves another database (another HOME or
+--config): a push is only handed to the daemon of this config's database.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// A running daemon does the push itself, over its owner-local
+			// dashboard route, so its push loop and policy polls wake too
+			// (org_pushnow_daemon.go). Only with no daemon does this process
+			// push on its own client, as it always has. Only a daemon
+			// serving this config's database is asked (daemon_handoff.go,
+			// L-125); another one is never handed the push.
+			if dashboardNotInBuildNote() == "" {
+				if t := resolveDaemonHandoff(cmd.Context(), configPath); t.Use {
+					if got := daemonPushNow(cmd.Context(), t.Base, t.DBIdentity); got.Answered {
+						if got.Err != nil {
+							return got.Err
+						}
+						printDaemonPushNowReport(cmd.OutOrStdout(), got.Report)
+						return nil
+					}
+				} else if t.Listening {
+					fmt.Fprintf(cmd.ErrOrStderr(), "Not asking the daemon at %s (%s); pushing in this process.\n", strings.TrimPrefix(t.Base, "http://"), t.Reason)
+				}
+			}
 			b, err := buildOrgBundle(cmd.Context(), configPath)
 			if err != nil {
 				return err

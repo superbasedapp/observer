@@ -51,6 +51,7 @@ func securityScanSubcommands() []*cobra.Command {
 	scan.Flags().StringArray("artifacts", nil, "also read the executables, Java archives and wheels under this directory of the project for this run (Go build info, cargo auditable; repeatable); folders you turned on with `scan artifacts enable` are read as well, every other folder is not; SCALIBR driver only")
 	// The image verb carries the driver switch (security_scan_image_driver.go,
 	// lane OS-2 T); trivy-db is the Trivy image driver's database.
+	sbomCmd := newSecuritySBOMCmd()
 	scan.AddCommand(newSecurityScanArtifactsCmd(), newSecurityScanReachCmd(), newSecurityScanStatusCmd(), newSecurityScanDBCmd(), newSecurityScanInstallCmd(), withImageDriver(newSecurityScanImageCmd()), newSecurityScanTrivyDBCmd())
 	child := &cobra.Command{
 		Use:    "scan-child",
@@ -62,7 +63,7 @@ func securityScanSubcommands() []*cobra.Command {
 		},
 	}
 	// The package lookup posture (lane RM-2): `observer security lookup`.
-	return []*cobra.Command{scan, child, newSecurityLookupCmd()}
+	return []*cobra.Command{scan, child, newSecurityLookupCmd(), sbomCmd, newSecurityLicensesCmd()}
 }
 
 // depsScanComponents returns the selected driver components, filtered by

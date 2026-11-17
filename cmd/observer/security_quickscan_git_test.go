@@ -18,7 +18,17 @@ func TestSecurityQuickScanEngineNeverLazyFetches(t *testing.T) {
 	if e.Git == nil {
 		t.Fatal("the quick scan engine has no git runner")
 	}
-	if got, want := reflect.ValueOf(e.Git).Pointer(), reflect.ValueOf(gitview.RunReadOnlyNoLazyFetch).Pointer(); got != want {
-		t.Fatal("the quick scan engine's git runner is not gitview.RunReadOnlyNoLazyFetch")
+	if got, want := reflect.ValueOf(e.Git).Pointer(), reflect.ValueOf(securityQuickScanGit).Pointer(); got != want {
+		t.Fatal("the quick scan engine's git runner is not securityQuickScanGit")
+	}
+	// securityQuickScanGit adds a linked worktree's GIT_DIR and work tree,
+	// and runs everything through the never-lazily-fetching envelope.
+	if got, want := reflect.ValueOf(securityQuickScanGitRun).Pointer(), reflect.ValueOf(gitview.RunReadOnlyNoLazyFetchEnv).Pointer(); got != want {
+		t.Fatal("the quick scan's git envelope is not gitview.RunReadOnlyNoLazyFetchEnv")
+	}
+	// The Windows git a WSL daemon runs for a Windows-drive checkout
+	// (R3-86) goes through the same never-lazily-fetching envelope.
+	if got, want := reflect.ValueOf(securityQuickScanGitProgramRun).Pointer(), reflect.ValueOf(gitview.RunReadOnlyNoLazyFetchProgram).Pointer(); got != want {
+		t.Fatal("the quick scan's Windows-git envelope is not gitview.RunReadOnlyNoLazyFetchProgram")
 	}
 }

@@ -79,10 +79,27 @@ type PolicyResourcePollResult struct {
 // state, not a failure), an auth failure stops the loop, and any other
 // error backs off exponentially.
 func (c *Client) PolicyResourcePollLoop(ctx context.Context, opts PolicyResourceOptions, onResult func(PolicyResourcePollResult)) error {
+	return c.PolicyResourcePollLoopLive(ctx, func() PolicyResourceOptions { return opts }, onResult)
+}
+
+// PolicyResourcePollLoopLive is PolicyResourcePollLoop with the options
+// resolved again at the start of EVERY cycle (demo finding #23, 2026-11-10).
+// The accept and preauthorize lists live in config.toml, and a managed
+// enrolment made while the daemon runs (`observer enroll` in another
+// process, or the dashboard) writes them there: with options captured once
+// at daemon start, a node that started individual and was re-enrolled
+// managed kept fetching node.governance and reporting it delivered but not
+// accepted until a restart. opts must be cheap and must not block; a nil
+// opts is the zero options.
+func (c *Client) PolicyResourcePollLoopLive(ctx context.Context, opts func() PolicyResourceOptions, onResult func(PolicyResourcePollResult)) error {
+	if opts == nil {
+		opts = func() PolicyResourceOptions { return PolicyResourceOptions{} }
+	}
 	cycle := func(ctx context.Context) error {
 		var notEnrolled, authFailed bool
+		cycleOpts := opts()
 		for _, family := range policyfam.SupportedFamilies {
-			res, err := c.FetchAndAcceptPolicyResource(ctx, family, opts)
+			res, err := c.FetchAndAcceptPolicyResource(ctx, family, cycleOpts)
 			if onResult != nil {
 				onResult(PolicyResourcePollResult{Family: family, Result: res, Err: err})
 			}
@@ -116,6 +133,32 @@ func (c *Client) PolicyResourcePollLoop(ctx context.Context, opts PolicyResource
 		return ctx.Err()
 	}
 	return c.runLoopKick(ctx, c.policyPollInterval(), c.policyResourceKick, cycle)
+}
+
+// KickPolicyResourcePoll wakes PolicyResourcePollLoop for an immediate fetch
+// cycle (non-blocking; a pending kick coalesces). The daemon calls it when
+// its enrolment identity or its policy accept lists change, and after a
+// dashboard push-now, so a change made while it runs is fetched in seconds
+// instead of at the next hourly poll. Like every kick it only advances the
+// poll: the fetch applies every gate unchanged. Nil-safe.
+func (c *Client) KickPolicyResourcePoll() {
+	if c == nil || c.policyResourceKick == nil {
+		return
+	}
+	select {
+	case c.policyResourceKick <- struct{}{}:
+	default:
+	}
+}
+
+// ActiveIdentity is ActiveEnrolmentIdentity over this client's store: the
+// live (org key, generation) of the enrolment, read fresh. ok=false when not
+// enrolled or tombstoned. Nil-safe.
+func (c *Client) ActiveIdentity(ctx context.Context) (orgKey string, generation int64, ok bool) {
+	if c == nil {
+		return "", 0, false
+	}
+	return ActiveEnrolmentIdentity(ctx, c.store)
 }
 
 // maybeKickPolicyResourceFetch is the receiving half of the push-ack

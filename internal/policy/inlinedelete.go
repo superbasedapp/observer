@@ -418,7 +418,7 @@ func inlineDeletePathMatch(pats []pathPattern) MatchCmdFn {
 		anchors := unitAnchors(ctx, cmd)
 		for _, t := range targets {
 			for _, c := range unitPathCandidates(ctx, anchors, t.text) {
-				if desc, ok := pathPatternMatch(c.path, ctx.Cfg.Home, pats); ok {
+				if desc, ok := homePathPatternMatch(ctx, c.path, pats); ok {
 					return true, movedReason(desc+" ("+t.text+", deleted by a "+t.kind+" inline script)", c.moved)
 				}
 			}

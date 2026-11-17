@@ -405,6 +405,9 @@ func (s *Store) UpsertSession(ctx context.Context, sess models.Session) error {
 	defer func() { _ = tx.Rollback() }()
 
 	authStamp, authVerStamp := s.resolveAuthorityStampFrom(ctx, tx)
+	// Which org the session's data belongs to (agent migration 250, D-43):
+	// read through the same transaction, so it is atomic with the write too.
+	orgKeyStamp := resolveAuthorityOrgKeyFrom(ctx, tx)
 
 	// upsertSessionMidTxHook fires here, between the in-tx enrolment read and
 	// the session write, for the FD2 barrier regression test only (nil in
@@ -419,8 +422,8 @@ func (s *Store) UpsertSession(ctx context.Context, sess models.Session) error {
 
 	_, err = tx.ExecContext(
 		ctx,
-		`INSERT INTO sessions (id, project_id, tool, model, git_branch, started_at, ended_at, total_actions, metadata, org_id, user_email, authority, authority_classifier_version, workspace, workspace_hash, is_worktree)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO sessions (id, project_id, tool, model, git_branch, started_at, ended_at, total_actions, metadata, org_id, user_email, authority, authority_classifier_version, workspace, workspace_hash, is_worktree, authority_org_key)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 		   -- A bracketed per-tool placeholder project ("[<tool>]", the
 		   -- root a capture path uses when it knows no working directory)
@@ -503,7 +506,15 @@ func (s *Store) UpsertSession(ctx context.Context, sess models.Session) error {
 		     WHEN sessions.authority = 'org' OR excluded.authority = 'org' THEN ?
 		     WHEN sessions.authority = 'personal' AND excluded.authority = 'personal' THEN ?
 		     ELSE sessions.authority_classifier_version
-		   END`,
+		   END,
+		   -- Org attribution (agent migration 250, D-43): the FIRST
+		   -- determinable stamp wins and is never rewritten. An org key is
+		   -- never replaced by another org's, and 'personal' never becomes
+		   -- an org's (a session that keeps capturing after the node enrols
+		   -- stays personal, so data captured before the enrolment never
+		   -- reaches the org). Only an unknown (NULL) stamp - a capture
+		   -- whose enrolment could not be read - takes this write's value.
+		   authority_org_key = COALESCE(sessions.authority_org_key, excluded.authority_org_key)`,
 		// project_id is always overwritten on conflict because the
 		// caller's incoming value reflects the latest adapter parse
 		// (which may correct an earlier mis-attribution). The
@@ -535,6 +546,7 @@ func (s *Store) UpsertSession(ctx context.Context, sess models.Session) error {
 		sess.Workspace,
 		workspaceHash,
 		boolToInt(sess.IsWorktree),
+		orgKeyStamp,           // INSERT: authority_org_key (nil == unknown)
 		dataauthority.Version, // ON CONFLICT: version carried on an 'org' result
 		dataauthority.Version, // ON CONFLICT: version carried on a personal upgrade (FD5)
 	)

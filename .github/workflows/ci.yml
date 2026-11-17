@@ -194,8 +194,18 @@ jobs:
       shard_count: ${{ steps.plan.outputs.shard_count }}
       omit: ${{ steps.plan.outputs.omit }}
       tier: ${{ steps.plan.outputs.tier }}
+      attested: ${{ steps.attest.outputs.attested }}
     steps:
       - uses: actions/checkout@v5
+      # Gate attestation (L-139): when the ops gate (a full Docker Sandbox
+      # run of this exact commit) passed and its signed attestation is
+      # published as refs/gate-attestations/<sha>, the jobs it covers
+      # (scripts/ci/gate-coverage.tsv: go-test, lint, frontend) are skipped
+      # here and every other job still runs. Without an attestation, or with
+      # any doubt about it, the answer is false and nothing is skipped.
+      - id: attest
+        if: "!startsWith(github.ref, 'refs/tags/')"
+        run: bash scripts/ci/gate-attestation.sh "$GITHUB_SHA"
       # v* tag push (CICD lane, 2026-11-01): release.sh tags only a sha whose
       # FULL ci run (a workflow_dispatch on main) is green, and that run
       # already ran this same omit-tag matrix on this same tree. Measured
@@ -363,7 +373,7 @@ jobs:
     # Every job except omit-tags skips on tag pushes (header: "What runs
     # when").
     needs: plan
-    if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/')
+    if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/') && needs.plan.outputs.attested != 'true'
     runs-on: ${{ vars.SBO_CI_LINUX_RUNNER || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v5
@@ -596,7 +606,7 @@ jobs:
   lint:
     name: lint
     needs: plan
-    if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/')
+    if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/') && needs.plan.outputs.attested != 'true'
     runs-on: ${{ vars.SBO_CI_LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 45
     steps:
@@ -749,22 +759,56 @@ jobs:
   # pattern below turns checkptr off ONLY for modernc.org/...: the race
   # detector itself still instruments those packages, and every package of
   # this module (and every other dependency) keeps checkptr.
+  #
+  # PostgreSQL (D-24, M3-0.6): dbtest.New opens PostgreSQL by default, and
+  # every dbtest PostgreSQL fixture FAILS its test when
+  # OBSERVER_CONTROL_STORE_DSN is unset, so a shard holding an org package
+  # (about 100 of them, scripts/ci/org-postgres-suite.tsv) needs a server.
+  # Each shard gets its own postgres:16-alpine service; every fixture
+  # creates and drops a database of its own, cloned from one migrated
+  # template per server. This runs no more packages than before: the same
+  # shards, the same packages, now with a database. With the DSN set, the
+  # controltest "postgres" dialect cases and the TestLivePG* tests of those
+  # packages run instead of skipping. A shard with no org package only pays
+  # the service start (about 10 s). The service trusts connections and has
+  # no password: it exists only inside this ephemeral runner, and its
+  # superuser has the CREATEDB the fixtures need. It needs a runner with
+  # Docker: a third-party runner chosen through SBO_CI_LINUX_RUNNER must
+  # support job service containers.
   # ----------------------------------------------------------------
   go-test:
     name: go test (shard ${{ matrix.shard }})
     needs: plan
-    if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/') && needs.plan.outputs.shard_count != '0'
+    if: needs.plan.outputs.run == 'true' && !startsWith(github.ref, 'refs/tags/') && needs.plan.outputs.shard_count != '0' && needs.plan.outputs.attested != 'true'
     runs-on: ${{ vars.SBO_CI_LINUX_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
         shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: observer
+          POSTGRES_DB: observer_org
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U observer -d observer_org"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
     env:
       SHARDS: ${{ needs.plan.outputs.shard_count }}
       SHARD_FILTER: plan/affected.txt
       RACE_FILTER: plan/race.txt
       FRESH_FILTER: plan/fresh.txt
+      # The org test database (see the PostgreSQL note above).
+      # OBSERVER_DBTEST_ENGINE stays unset: PostgreSQL is the default.
+      OBSERVER_CONTROL_STORE_DSN: postgres://observer@localhost:5432/observer_org?sslmode=disable
+      OBSERVER_DATA_STORE_DSN: postgres://observer@localhost:5432/observer_org?sslmode=disable
       # Only the push tier may replay a cached result; a full or narrowed
       # release-gate run (P-222) runs every package it tests with -count=1.
       GO_TEST_REPLAY: ${{ needs.plan.outputs.tier == 'push' && '1' || '0' }}
@@ -969,6 +1013,11 @@ jobs:
   #     the single sets the diff can touch, in 2 batches.
   #     A tag push skips the job when a green dispatch run already covers
   #     its sha (plan job, `proven` step).
+  # PostgreSQL (D-24): an edition's tests include org packages that open a
+  # PostgreSQL fixture (tests/e2e/orgserver under sbo_distro_minimal at
+  # this commit), which fail without OBSERVER_CONTROL_STORE_DSN, so each
+  # batch gets the same passwordless service and DSNs as the go test
+  # shards. It runs nothing more than before.
   # ----------------------------------------------------------------
   omit-tags:
     name: omit tags ${{ matrix.name }}
@@ -982,6 +1031,23 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.plan.outputs.omit) }}
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: observer
+          POSTGRES_DB: observer_org
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U observer -d observer_org"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      OBSERVER_CONTROL_STORE_DSN: postgres://observer@localhost:5432/observer_org?sslmode=disable
+      OBSERVER_DATA_STORE_DSN: postgres://observer@localhost:5432/observer_org?sslmode=disable
     steps:
       - uses: actions/checkout@v5
       # One cache family for every batch: build tags only change which files

@@ -381,7 +381,7 @@ func inlinePathMatch(ctx *MatchContext, cmd *Command, pats []pathPattern) (bool,
 	anchors := unitAnchors(ctx, cmd)
 	for _, op := range ops {
 		for _, c := range unitPathCandidates(ctx, anchors, op.text) {
-			if desc, ok := pathPatternMatch(c.path, ctx.Cfg.Home, pats); ok {
+			if desc, ok := homePathPatternMatch(ctx, c.path, pats); ok {
 				return true, movedReason(desc+" ("+op.text+", named in a "+op.kind+" inline script)", c.moved)
 			}
 		}

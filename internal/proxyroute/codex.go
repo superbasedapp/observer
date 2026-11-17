@@ -54,7 +54,7 @@ type RegisterOptions struct {
 	// .codex. Mirrors hook.Options.WSLUserHome.
 	WSLUserHome string
 	// Writer says who is writing routes through this registrar (enrolment,
-	// `observer init`, Settings > Setup, a launcher). Every write or
+	// `observer init`, Settings > Connected tools, a launcher). Every write or
 	// confirmation is recorded with it in the route-provenance file
 	// (provenance.go), which is how leaving an organization removes only the
 	// routes enrolment wrote. The zero value is "unknown", never enrolment.

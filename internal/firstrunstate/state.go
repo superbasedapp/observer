@@ -47,6 +47,12 @@ type State struct {
 	// own storage does not (a profile whose storage is not persisted, a
 	// second browser). The dashboard owns the closed set of keys.
 	Dismissed map[string]time.Time `json:"dismissed,omitempty"`
+	// Snoozed records, per dashboard notice key, when the owner last put
+	// the notice away for a while (the Overview "Get started" panel, which
+	// comes back as a one-line strip after a week). Unlike Dismissed, a
+	// later snooze replaces the earlier time. The dashboard owns the closed
+	// set of keys and the return interval.
+	Snoozed map[string]time.Time `json:"snoozed,omitempty"`
 }
 
 // DismissedKeys returns the dismissed notice keys, sorted.
@@ -153,6 +159,25 @@ func (s *Store) Dismiss(key string, now time.Time) (State, error) {
 	st.Dismissed[key] = now.UTC()
 	if err := s.write(st); err != nil {
 		return st, fmt.Errorf("firstrunstate.Dismiss: %w", err)
+	}
+	return st, nil
+}
+
+// Snooze records key as put away at now, replacing any earlier snooze of
+// the same key (each dismissal starts the return interval again).
+func (s *Store) Snooze(key string, now time.Time) (State, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st := s.read()
+	if s.path == "" || key == "" {
+		return st, nil
+	}
+	if st.Snoozed == nil {
+		st.Snoozed = map[string]time.Time{}
+	}
+	st.Snoozed[key] = now.UTC()
+	if err := s.write(st); err != nil {
+		return st, fmt.Errorf("firstrunstate.Snooze: %w", err)
 	}
 	return st, nil
 }

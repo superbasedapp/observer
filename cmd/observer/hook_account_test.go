@@ -19,7 +19,12 @@ import (
 )
 
 func TestNativeHookAccountCaptureWithoutActionOrEffort(t *testing.T) {
-	for _, key := range []string{"OPENAI_API_KEY", "CODEX_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"} {
+	for _, key := range []string{
+		"OPENAI_API_KEY", "CODEX_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY",
+		// The Claude desktop host's session account (R3-101): run from a desktop
+		// Code session, these reach the test and outrank the fixture's login file.
+		"CLAUDE_CODE_USER_EMAIL", "CLAUDE_CODE_ACCOUNT_UUID", "CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH",
+	} {
 		t.Setenv(key, "")
 	}
 	for _, tool := range []string{models.ToolCodex, models.ToolClaudeCode} {

@@ -28,6 +28,7 @@ import { fmtBytes, fmtDateTime, fmtInt } from "@/lib/format";
 import { orgDisplayLabel, orgDisplayLabelSentence } from "@/lib/orgName";
 import type { EnrolmentInvite, EnrolmentStatus } from "@/lib/types";
 import {
+  apiErrorCode,
   apiErrorMessage,
   canSubmit,
   DECISION_TONE,
@@ -61,6 +62,7 @@ import {
   type EnrolLeaveRoute,
   type EnrolLeaveStep,
   type Tone,
+  UNSENT_ROWS,
 } from "@/lib/enrolment";
 import { MetricIcon } from "@/components/MetricIcon";
 import {
@@ -86,9 +88,9 @@ export function EnrolmentSection({ icon }: { icon?: LucideIcon }) {
 
   return (
     <ChartShell
-      title="Organization enrolment"
+      title="Connection"
       icon={icon}
-      sub="Teams visibility: when enrolled, this machine shares activity rollups with your organization's SuperBased server. An individual enrolment shares counts, costs, timings and hashes unless you opt in to more; an organization-managed enrolment shares full content. Enrol, check status, push and leave from here."
+      sub="Where this machine sends its activity: status, what is sent, send now and disconnect. Summary only sends counts, costs and timings; Full detail adds prompts, responses and file paths. To connect to a self-hosted server, use the code or link your admin gave you."
     >
       {local ? (
         <ManagedEnrolment manage={manage} />
@@ -128,6 +130,39 @@ function ErrorBox({ message }: { message: string | null }) {
   return (
     <div role="alert" className={`${BOX} ${TONE_BOX.danger}`}>
       {message}
+    </div>
+  );
+}
+
+// UnsentConfirm is the R3-78 confirm step: the daemon refused to switch (or
+// leave) because rows captured for the current organization could not be sent
+// to it first. Nothing changed; the message names the count and the reason.
+// The person chooses to proceed anyway (those rows then stay on this machine,
+// unsent) or to cancel.
+function UnsentConfirm({
+  message,
+  proceedLabel,
+  busy,
+  onProceed,
+  onCancel,
+}: {
+  message: string;
+  proceedLabel: string;
+  busy: boolean;
+  onProceed: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div role="alert" className={`${BOX} ${TONE_BOX.warn} space-y-2`}>
+      <div>{message}</div>
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" variant="danger" loading={busy} onClick={onProceed}>
+          {proceedLabel}
+        </Button>
+        <Button size="sm" variant="secondary" onClick={onCancel} disabled={busy}>
+          Cancel
+        </Button>
+      </div>
     </div>
   );
 }
@@ -176,7 +211,7 @@ function ManagedEnrolment({ manage }: { manage: ApiState<ManageResponse> }) {
         {leave && (
           <div className={`${BOX} ${TONE_BOX.info} space-y-1`}>
             <div className="font-medium text-fg-1">
-              {leave.was_enrolled ? `Left ${orgDisplayLabel(leave.org_display)}.` : "Not enrolled; nothing to do."}
+              {leave.was_enrolled ? `Left ${orgDisplayLabel(leave.org_display)}.` : "Not connected; nothing to do."}
             </div>
             {leave.notes?.map((n, i) => (
               <div key={i} className="break-words">
@@ -241,6 +276,7 @@ function JoinCard({
   const [touched, setTouched] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [unsent, setUnsent] = useState<string | null>(null);
   const [probe, setProbe] = useState<EnrolProbe | null>(null);
   const errors = touched ? formErrors(form) : {};
   const method = METHOD_OPTIONS.find((m) => m.value === form.method);
@@ -248,6 +284,7 @@ function JoinCard({
   function set<K extends keyof EnrolForm>(k: K, v: EnrolForm[K]) {
     setForm((f) => ({ ...f, [k]: v }));
     setErr(null);
+    setUnsent(null);
     if (k === "orgUrl" || k === "method") setProbe(null);
   }
 
@@ -268,16 +305,28 @@ function JoinCard({
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    await enrol(false);
+  }
+
+  // enrol posts the form; dropUnsent is the "Switch anyway" answer to an
+  // unsent_rows refusal (R3-78).
+  async function enrol(dropUnsent: boolean) {
     setTouched(true);
     if (!canSubmit(form) || busy) return;
     setBusy(true);
     setErr(null);
     try {
-      const out = await post<EnrolOutcome>("/api/enrolment/enrol", enrolBody(form));
+      const out = await post<EnrolOutcome>("/api/enrolment/enrol", enrolBody(form, dropUnsent));
       setForm((f) => ({ ...f, token: "", link: "" }));
+      setUnsent(null);
       onEnrolled(out);
     } catch (e2) {
-      setErr(apiErrorMessage(e2));
+      if (apiErrorCode(e2) === UNSENT_ROWS) {
+        setUnsent(apiErrorMessage(e2));
+      } else {
+        setUnsent(null);
+        setErr(apiErrorMessage(e2));
+      }
     } finally {
       setBusy(false);
     }
@@ -285,11 +334,11 @@ function JoinCard({
 
   return (
     <div className="rounded-2 border border-line-1 bg-bg-2 px-4 py-3 text-[12px]">
-      <div className="mb-1 font-medium text-fg-1">{reenrol ? "Re-enrol this machine" : "Join an organization"}</div>
+      <div className="mb-1 font-medium text-fg-1">{reenrol ? "Reconnect this machine" : "Connect to a team"}</div>
       <p className="mb-3 text-fg-3">
         {reenrol
-          ? "Re-enrolling replaces this machine's current enrolment and credentials with the new one."
-          : "This machine is not enrolled - nothing is shared. Enrolling writes an [org_client] block to your config.toml and stores the credential in your OS keychain (or a 0600 file). Only activity after enrolment is ever shared."}
+          ? "Reconnecting replaces this machine's current connection and credentials with the new one. For a different team, the rows still waiting for the current one are sent to it first; if that fails, nothing changes until you choose."
+          : "This machine is not connected, so nothing is shared. Connecting writes an [org_client] block to your config.toml and stores the credential in your OS keychain (or a 0600 file). Only activity after you connect is ever shared."}
       </p>
       <div className="mb-2 max-w-full overflow-x-auto">
         <SegmentedControl<EnrolMethod>
@@ -309,8 +358,8 @@ function JoinCard({
               <div className="flex flex-col gap-2 sm:flex-row sm:items-start">
                 <div className="min-w-0 flex-1">
                   <Input
-                    label="Organization server"
-                    aria-label="Organization server"
+                    label="Team server"
+                    aria-label="Team server"
                     placeholder="https://observer.example.com"
                     value={form.orgUrl}
                     onChange={(e) => set("orgUrl", e.target.value)}
@@ -327,8 +376,8 @@ function JoinCard({
               </div>
               {probe && <div className={`${BOX} ${probe.ok ? TONE_BOX.success : TONE_BOX.warn}`}>{probe.message}</div>}
               <Input
-                label="Enrolment code"
-                aria-label="Enrolment code"
+                label="Connection code"
+                aria-label="Connection code"
                 placeholder="id.secret"
                 value={form.token}
                 onChange={(e) => set("token", e.target.value)}
@@ -341,8 +390,8 @@ function JoinCard({
             </>
           ) : (
             <Input
-              label="Enrolment link"
-              aria-label="Enrolment link"
+              label="Connection link"
+              aria-label="Connection link"
               placeholder="https://observer.example.com/enrol/..."
               value={form.link}
               onChange={(e) => set("link", e.target.value)}
@@ -353,9 +402,18 @@ function JoinCard({
             />
           )}
           <ErrorBox message={err} />
+          {unsent && (
+            <UnsentConfirm
+              message={unsent}
+              proceedLabel="Switch anyway"
+              busy={busy}
+              onProceed={() => void enrol(true)}
+              onCancel={() => setUnsent(null)}
+            />
+          )}
           <div className="flex flex-wrap items-center gap-2">
             <Button type="submit" variant="primary" size="sm" iconLeft={LogIn} disabled={busy || (touched && !canSubmit(form))}>
-              {busy ? "Enrolling..." : reenrol ? "Re-enrol" : "Enrol this machine"}
+              {busy ? "Connecting..." : reenrol ? "Reconnect" : "Connect this machine"}
             </Button>
             <span className="text-[11px] text-fg-3">
               The server is checked first; the code is not spent if it cannot be reached.
@@ -383,6 +441,7 @@ function IdPFlow({
   const [touched, setTouched] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [unsent, setUnsent] = useState<string | null>(null);
   const [start, setStart] = useState<IdPStart | null>(null);
   const [state, setState] = useState<IdPPoll["status"] | null>(null);
   const [copied, setCopied] = useState(false);
@@ -423,17 +482,32 @@ function IdPFlow({
 
   async function begin(e: React.FormEvent) {
     e.preventDefault();
+    await startSignIn(false);
+  }
+
+  // startSignIn asks the daemon to start the sign-in. The switch drain runs
+  // before the browser step, so an unsent_rows refusal (R3-78) never costs a
+  // sign-in; dropUnsent is the "Switch anyway" answer to it.
+  async function startSignIn(dropUnsent: boolean) {
     setTouched(true);
     if (formErrors({ method: "idp", orgUrl, token: "", link: "" }).orgUrl || busy) return;
     setBusy(true);
     setErr(null);
     try {
-      const s = await post<IdPStart>("/api/enrolment/idp/start", { org_url: orgUrl.trim() });
+      const body: Record<string, string | boolean> = { org_url: orgUrl.trim() };
+      if (dropUnsent) body.drop_unsent = true;
+      const s = await post<IdPStart>("/api/enrolment/idp/start", body);
+      setUnsent(null);
       setStart(s);
       setState("pending");
       schedule(s.flow_id, s.interval);
     } catch (e2) {
-      setErr(apiErrorMessage(e2));
+      if (apiErrorCode(e2) === UNSENT_ROWS) {
+        setUnsent(apiErrorMessage(e2));
+      } else {
+        setUnsent(null);
+        setErr(apiErrorMessage(e2));
+      }
     } finally {
       setBusy(false);
     }
@@ -449,7 +523,7 @@ function IdPFlow({
     return (
       <div className="space-y-3">
         <div className="text-fg-2">
-          You need an active account on that organization first (redeem your sign-in invite and sign in once). Then
+          You need an active account on that team server first (redeem your sign-in invite and sign in once). Then
           open the page below, sign in if asked, and enter the code. A phone or another computer is fine.
         </div>
         <div className="flex flex-wrap items-center gap-3">
@@ -491,13 +565,14 @@ function IdPFlow({
   return (
     <form onSubmit={begin} className="space-y-3" autoComplete="off">
       <Input
-        label="Organization server"
-        aria-label="Organization server"
+        label="Team server"
+        aria-label="Team server"
         placeholder="https://observer.example.com"
         value={orgUrl}
         onChange={(e) => {
           setOrgUrl(e.target.value);
           setErr(null);
+          setUnsent(null);
         }}
         onBlur={() => setTouched(true)}
         error={urlErr}
@@ -506,6 +581,15 @@ function IdPFlow({
         inputMode="url"
       />
       <ErrorBox message={err} />
+      {unsent && (
+        <UnsentConfirm
+          message={unsent}
+          proceedLabel="Switch anyway"
+          busy={busy}
+          onProceed={() => void startSignIn(true)}
+          onCancel={() => setUnsent(null)}
+        />
+      )}
       <Button type="submit" variant="primary" size="sm" iconLeft={LogIn} disabled={busy}>
         {busy ? "Starting..." : "Start sign-in"}
       </Button>
@@ -522,7 +606,7 @@ function OutcomeCard({ outcome, pushLoop }: { outcome: EnrolOutcome; pushLoop: b
         {/* Finish line (D-665..D-669): Obs lands on a successful enrolment. */}
         <ObsLanding size={32} />
         <span className="font-medium text-fg-0">
-          Enrolled in {orgDisplayLabel(outcome.org_display)} as {outcome.user_email}.
+          Connected to {orgDisplayLabel(outcome.org_display)} as {outcome.user_email}.
         </span>
         <Pill variant={outcome.managed ? "accent" : "neutral"} case="none">
           {tenancyLabel(outcome.tenancy)}
@@ -542,7 +626,7 @@ function OutcomeCard({ outcome, pushLoop }: { outcome: EnrolOutcome; pushLoop: b
       {outcome.restart_required && !pushLoop && (
         <div className={`${BOX} ${TONE_BOX.warn} space-y-2`}>
           <div>
-            This daemon started before the machine was enrolled, so its push loop is not running yet. Restart it to
+            This daemon started before the machine was connected, so its push loop is not running yet. Restart it to
             begin pushing on a timer. Push now below works without a restart.
           </div>
           <ConfirmButton
@@ -592,12 +676,12 @@ function ConsentCard({
 
   return (
     <section
-      aria-label="Organization governance request"
+      aria-label="Team governance request"
       className="rounded-2 border border-accent/40 bg-bg-2 px-4 py-3 text-[12px]"
     >
       <div className="mb-2 font-medium text-fg-0">{d.intro}</div>
       <dl className="mb-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-fg-2">
-        <dt className="text-fg-3">Organization</dt>
+        <dt className="text-fg-3">Team</dt>
         <dd className="break-words">{orgDisplayLabelSentence(d.org_display)}</dd>
         <dt className="text-fg-3">Server</dt>
         <dd className="break-all font-mono">{d.server_url}</dd>
@@ -608,7 +692,7 @@ function ConsentCard({
           </>
         )}
       </dl>
-      <div className="mb-1 font-medium text-fg-1">If you accept, the organization may:</div>
+      <div className="mb-1 font-medium text-fg-1">If you accept, the team may:</div>
       <ul className="mb-3 list-disc space-y-1.5 pl-5">
         {(d.may ?? []).map((l) => (
           <li key={l.token} className="text-fg-2">
@@ -644,7 +728,7 @@ function ConsentCard({
           Decline
         </Button>
         <span className="text-[11px] text-fg-3">
-          Declining keeps this machine enrolled and reporting, but not governed. This request expires{" "}
+          Declining keeps this machine connected and reporting, but not governed. This request expires{" "}
           {fmtDateTime(pending.expires_at)}.
         </span>
       </div>
@@ -690,6 +774,7 @@ function EnrolledView({
   const [busy, setBusy] = useState<"push" | "leave" | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [leaveOpen, setLeaveOpen] = useState(false);
+  const [leaveUnsent, setLeaveUnsent] = useState<string | null>(null);
   const share = shareModeLabel(ov.share_mode);
 
   async function pushNow() {
@@ -705,31 +790,45 @@ function EnrolledView({
     }
   }
 
-  async function leaveOrg() {
+  // leaveOrg leaves; dropUnsent is the "Leave anyway" answer to an
+  // unsent_rows refusal (R3-78): the rows still waiting for the organization
+  // could not be sent to it first, and nothing changed.
+  async function leaveOrg(dropUnsent: boolean) {
     setBusy("leave");
     setErr(null);
     try {
-      const report = await post<LeaveReport>("/api/enrolment/leave", {});
+      const report = await post<LeaveReport>("/api/enrolment/leave", dropUnsent ? { drop_unsent: true } : {});
       setLeaveOpen(false);
+      setLeaveUnsent(null);
       onLeft(report);
     } catch (e) {
-      setErr(apiErrorMessage(e));
+      if (apiErrorCode(e) === UNSENT_ROWS) {
+        setLeaveUnsent(apiErrorMessage(e));
+      } else {
+        setLeaveUnsent(null);
+        setErr(apiErrorMessage(e));
+      }
     } finally {
       setBusy(null);
     }
   }
 
+  function closeLeave() {
+    setLeaveOpen(false);
+    setLeaveUnsent(null);
+  }
+
   return (
     <div className="space-y-4">
       <Stagger className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <StatCard label="Organization" icon={<MetricIcon metric="organisation" />} value={<Clip>{orgDisplayLabelSentence(ov.org_display)}</Clip>} />
+        <StatCard label="Team" icon={<MetricIcon metric="organisation" />} value={<Clip>{orgDisplayLabelSentence(ov.org_display)}</Clip>} />
         <StatCard label="You" icon={<MetricIcon metric="member" />} value={<Clip>{ov.user_email || "-"}</Clip>} sub={tenancyLabel(ov.tenancy)} />
         <StatCard label="Server" icon={<MetricIcon metric="server" />} value={<Mono>{ov.org_server_url || "-"}</Mono>} />
         <StatCard
           label="Credential store"
           icon={<MetricIcon metric="credentialStore" />}
           value={<Clip>{ov.credential_store || "-"}</Clip>}
-          sub={ov.enrolled_at ? `enrolled ${fmtDateTime(ov.enrolled_at)}` : undefined}
+          sub={ov.enrolled_at ? `connected ${fmtDateTime(ov.enrolled_at)}` : undefined}
         />
       </Stagger>
 
@@ -753,10 +852,10 @@ function EnrolledView({
           View raw push payload
         </Button>
         <Button size="sm" variant="secondary" onClick={onReenrol}>
-          {reenrolOpen ? "Close re-enrol" : "Re-enrol"}
+          {reenrolOpen ? "Close reconnect" : "Reconnect"}
         </Button>
         <Button size="sm" variant="danger" iconLeft={LogOut} disabled={busy !== null} onClick={() => setLeaveOpen(true)}>
-          Leave organization
+          Leave team
         </Button>
       </div>
       <LeaveDialog
@@ -766,8 +865,10 @@ function EnrolledView({
         steps={ov.leave_steps}
         busy={busy === "leave"}
         error={leaveOpen ? err : null}
-        onCancel={() => setLeaveOpen(false)}
-        onConfirm={() => void leaveOrg()}
+        unsent={leaveUnsent}
+        onCancel={closeLeave}
+        onConfirm={() => void leaveOrg(false)}
+        onLeaveAnyway={() => void leaveOrg(true)}
       />
       <ErrorBox message={err} />
       {push && (
@@ -926,7 +1027,7 @@ function ShareHistoryCard({
         <span className="text-[10px] font-semibold uppercase tracking-[0.06em] text-fg-3">Share history</span>
       </div>
       <div className="text-fg-2">
-        Activity captured before this machine enrolled is not shared on its own: only new activity ships. Share
+        Activity captured before this machine connected is not shared on its own: only new activity ships. Share
         history sends the older rows too, under the same share mode as everything else.
       </div>
 
@@ -967,7 +1068,7 @@ function ShareHistoryCard({
               size="sm"
               iconLeft={History}
               loading={busy === "share"}
-              armedNote={`This sends ${fmtInt(preview.would_unlock)} older rows to ${orgDisplayLabel(ov.org_display)}, including any captured under a previous enrolment. It cannot be taken back once they are pushed.`}
+              armedNote={`This sends ${fmtInt(preview.would_unlock)} older rows to ${orgDisplayLabel(ov.org_display)}, including personal use from before this machine first connected. It cannot be taken back once they are pushed.`}
               onConfirm={() => void run(true)}
             >
               Share history
@@ -1015,7 +1116,7 @@ function ResyncCard({ post, onDone }: { post: Post; onDone: () => void }) {
         <span className="text-[10px] font-semibold uppercase tracking-[0.06em] text-fg-3">Re-send changed rows</span>
       </div>
       <div className="text-fg-2">
-        If the organization shows older values than this machine (fewer tokens, a missing end time, a row this
+        If the team dashboard shows older values than this machine (fewer tokens, a missing end time, a row this
         machine has since removed), re-send the recent rows that changed after they were pushed.
       </div>
       {rep && <div className={rep.confirmed ? "text-fg-1" : "text-fg-2"}>{resyncLine(rep)}</div>}
@@ -1027,7 +1128,7 @@ function ResyncCard({ post, onDone }: { post: Post; onDone: () => void }) {
             size="sm"
             iconLeft={RefreshCw}
             loading={busy === "queue"}
-            armedNote="Queues the rows for the push loop. The organization keeps the newest version of each row."
+            armedNote="Queues the rows for the push loop. The team server keeps the newest version of each row."
             onConfirm={() => void run(true)}
           >
             Re-send
@@ -1052,14 +1153,14 @@ function GrantPanel({ governed }: { governed: boolean }) {
     return (
       <div className={`${BOX} ${TONE_BOX.neutral}`}>
         <span className="font-medium text-fg-1">Not governed.</span> This machine granted no authority to the
-        organization; your dashboard and settings are entirely local.
+        team; your dashboard and settings are entirely local.
       </div>
     );
   }
   return (
-    <section aria-label="Organization grant" className="rounded-2 border border-line-1 bg-bg-2 px-3 py-2 text-[11.5px]">
+    <section aria-label="Team grant" className="rounded-2 border border-line-1 bg-bg-2 px-3 py-2 text-[11.5px]">
       <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.06em] text-fg-3">
-        What this organization can manage
+        What this team can manage
       </div>
       <dl className="mb-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-fg-2">
         <dt className="text-fg-3">Granted to</dt>
@@ -1130,20 +1231,20 @@ function ReadOnlyEnrolment({ reason }: { reason: "remote" | "process" }) {
       <div className="space-y-4">
         <div className={`${BOX} ${TONE_BOX.info}`}>
           {reason === "remote"
-            ? "Enrolment is managed from this machine's own dashboard (it writes this machine's config and keychain), so enrol, push and leave are not offered on a paired device."
-            : "This dashboard process cannot change the enrolment. Open the dashboard served by the running daemon to enrol, push or leave."}
+            ? "The connection is managed from this machine's own dashboard (it writes this machine's config and keychain), so connect, push and leave are not offered on a paired remote browser."
+            : "This dashboard process cannot change the connection. Open the dashboard served by the running daemon to connect, push or leave."}
         </div>
         {data?.enrolled ? (
           <>
             <Stagger className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <StatCard label="Organization" icon={<MetricIcon metric="organisation" />} value={<Clip>{orgDisplayLabelSentence(data.org_display)}</Clip>} />
+              <StatCard label="Team" icon={<MetricIcon metric="organisation" />} value={<Clip>{orgDisplayLabelSentence(data.org_display)}</Clip>} />
               <StatCard label="You" icon={<MetricIcon metric="member" />} value={<Clip>{data.user_email || "-"}</Clip>} />
               <StatCard label="Server" icon={<MetricIcon metric="server" />} value={<Mono>{data.org_server_url || "-"}</Mono>} />
               <StatCard
                 label="Credential store"
                 icon={<MetricIcon metric="credentialStore" />}
                 value={<Clip>{data.credential_store || "-"}</Clip>}
-                sub={data.enrolled_at ? `enrolled ${fmtDateTime(data.enrolled_at)}` : undefined}
+                sub={data.enrolled_at ? `connected ${fmtDateTime(data.enrolled_at)}` : undefined}
               />
             </Stagger>
             <PushPaused paused={data.push_paused} />
@@ -1152,8 +1253,8 @@ function ReadOnlyEnrolment({ reason }: { reason: "remote" | "process" }) {
           </>
         ) : (
           <div className="rounded-2 border border-dashed border-line-2 bg-bg-3/40 px-4 py-3 text-[12px] text-fg-2">
-            <div className="mb-1 font-medium text-fg-1">Not enrolled</div>
-            This machine is not enrolled in an organization - nothing is shared.
+            <div className="mb-1 font-medium text-fg-1">Not connected</div>
+            This machine is not connected to a team, so nothing is shared.
           </div>
         )}
       </div>
@@ -1173,7 +1274,7 @@ function PushPaused({ paused }: { paused?: EnrolmentStatus["push_paused"] }) {
     <div className="rounded-2 border border-danger/40 bg-danger/5 px-3 py-2 text-[11.5px]">
       <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.06em] text-danger">Pushes paused</div>
       <div className="text-fg-2">
-        The composed rollup is larger than the accepted push limit, so nothing is reaching the org server. The loop
+        The composed rollup is larger than the accepted push limit, so nothing is reaching the team server. The loop
         retries at <b>{paused.until}</b>.
       </div>
       {paused.reason && <div className="mt-1 text-fg-3">{paused.reason}</div>}
@@ -1189,7 +1290,7 @@ function PushPaused({ paused }: { paused?: EnrolmentStatus["push_paused"] }) {
           content="[org_client].max_push_bytes, [org_client.scope], [org_client.share]"
           className="align-middle"
         />{" "}
-        The org server enforces its own body limit too, so raising the node-side value alone may not be enough.
+        The team server enforces its own body limit too, so raising this machine's value alone may not be enough.
       </div>
     </div>
   );
@@ -1205,7 +1306,7 @@ function RetentionHeld({ held }: { held?: EnrolmentStatus["retention_held"] }) {
       <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.06em] text-warn">Retention held</div>
       <div className="text-fg-2">
         Retention held <b>{fmtInt(held.rows)}</b> rows awaiting push ({fmtInt(held.actions)} actions,{" "}
-        {fmtInt(held.sessions)} sessions). They are older than {held.max_age_days} days but the org server has not
+        {fmtInt(held.sessions)} sessions). They are older than {held.max_age_days} days but the team server has not
         accepted them yet, so they stay on this machine until it does.
       </div>
       <div className="mt-1 text-fg-3">
@@ -1304,7 +1405,7 @@ function InviteTeammate() {
     return (
       <div className="rounded-2 border border-dashed border-line-2 bg-bg-3/40 px-4 py-3 text-[12px] text-fg-2">
         <span className="font-medium text-fg-1">Working in a team?</span> Invite a teammate who is already a member of
-        this organization - they get a one-time enrolment code.{" "}
+        this team. They get a one-time connection code.{" "}
         <Button size="sm" variant="secondary" onClick={() => setOpen(true)}>
           Invite a teammate
         </Button>
@@ -1333,7 +1434,7 @@ function InviteTeammate() {
           <div className="text-fg-2">
             One-time code for <b className="text-fg-1">{invite.user_email}</b>. It works once and expires{" "}
             {fmtDateTime(invite.expires_at)}. They can enter the server address and this code in Settings &gt;
-            Enrolment on their own dashboard, or run the command below.
+            Account on their own dashboard, or run the command below.
           </div>
           <div className="flex items-center gap-2">
             <code className="flex-1 break-all rounded-2 border border-line-1 bg-bg-3 px-2 py-1 font-mono text-[11.5px] text-fg-1">
@@ -1366,7 +1467,7 @@ function InviteTeammate() {
       ) : (
         <form onSubmit={mint} className="space-y-2">
           <div className="text-fg-3">
-            They must already be a member of your organization - an invite hands over a code, it does not create an
+            They must already be a member of your team. An invite hands over a code; it does not create an
             account.
           </div>
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -1426,7 +1527,7 @@ function RawPayloadDrawer({ open, onClose }: { open: boolean; onClose: () => voi
       open={open}
       onClose={onClose}
       title="Last shared payload"
-      subtitle="The exact rollup last pushed to your org - byte-for-byte."
+      subtitle="The exact rollup last pushed to your team, byte for byte."
       width={760}
     >
       <div className="p-4">
@@ -1465,8 +1566,10 @@ function LeaveDialog({
   steps,
   busy,
   error,
+  unsent,
   onCancel,
   onConfirm,
+  onLeaveAnyway,
 }: {
   open: boolean;
   orgLabel: string;
@@ -1474,8 +1577,12 @@ function LeaveDialog({
   steps?: EnrolLeaveStep[] | null;
   busy: boolean;
   error: string | null;
+  // unsent is an unsent_rows refusal's message (R3-78): the dialog then
+  // offers Leave anyway or Cancel.
+  unsent: string | null;
   onCancel: () => void;
   onConfirm: () => void;
+  onLeaveAnyway: () => void;
 }) {
   const { remove, keep } = leavePlanGroups(plan);
   return (
@@ -1491,16 +1598,16 @@ function LeaveDialog({
             Cancel
           </Button>
           <Button size="sm" variant="danger" iconLeft={LogOut} loading={busy} onClick={onConfirm}>
-            Leave organization
+            Leave team
           </Button>
         </div>
       }
     >
       <div className="space-y-3 text-[12.5px] text-fg-2">
         <p>
-          This clears this machine's organization credentials and any organization governance of this dashboard. Data
-          already shared stays with the organization. Agent sessions keep working at every step, and this machine ends
-          as a plain individual node with all of its local data and settings.
+          This clears this machine's team credentials and any team governance of this dashboard. Data already
+          shared stays with the team. Agent sessions keep working at every step, and this machine ends as a
+          standalone machine with all of its local data and settings.
         </p>
         {steps && steps.length > 0 && (
           <section aria-label="What leaving retires" className="space-y-2">
@@ -1548,6 +1655,15 @@ function LeaveDialog({
           )}
         </section>
         <ErrorBox message={error} />
+        {unsent && (
+          <UnsentConfirm
+            message={unsent}
+            proceedLabel="Leave anyway"
+            busy={busy}
+            onProceed={onLeaveAnyway}
+            onCancel={onCancel}
+          />
+        )}
       </div>
     </Modal>
   );

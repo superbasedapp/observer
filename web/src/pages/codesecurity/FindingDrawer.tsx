@@ -4,6 +4,7 @@ import { DefinitionList, DefinitionRow } from "@shared/primitives/DefinitionList
 import { ChartState } from "@/components/ChartState";
 import { ExplainButton } from "@/components/security/ExplainButton";
 import { useApi } from "@/lib/useApi";
+import { useHrefGate } from "@/lib/governance";
 import { fmtRelative } from "@/lib/format";
 import {
   commitHref,
@@ -11,6 +12,7 @@ import {
   heldApproveHref,
   projectHref,
   reasonWords,
+  SECURITY_VERDICTS_HREF,
   sessionHref,
   type SecurityFinding,
   type SecurityFindingDetail,
@@ -27,6 +29,7 @@ import { pushToast } from "@/components/Toast";
 import { NodeLink } from "./NodeLink";
 import { DependencyRows, DependencySections, DependencySignalRows } from "./DependencyDetail";
 import { SEVERITY_TONE } from "./ProjectsCard";
+import { FixButton } from "./FixButton";
 
 // FindingDrawer is one finding's detail (GET /api/security/findings/{id}),
 // opened from a Findings row and addressed by `?finding=<id>`: what fired
@@ -118,18 +121,25 @@ export function FindingDrawer({
   pickers,
   explainSelected,
   onChanged,
+  onFix,
 }: {
   id: string | null;
   onClose: () => void;
   pickers: ExceptionsResponse | null;
   explainSelected: readonly string[] | null | undefined;
   onChanged: () => void;
+  /** "Fix with an agent" for an open finding (absent: no button). */
+  onFix?: (id: string) => void;
 }) {
   const detail = useApi<SecurityFindingDetail>(id ? `/api/security/findings/${encodeURIComponent(id)}` : null, undefined, [id]);
   const [excepting, setExcepting] = useState(false);
   const d = detail.data;
   const f = d?.finding;
   const pid = d?.project?.id;
+  // Security (where a held commit is approved) is hidden by default on a
+  // managed machine, while an org may expose this page (CG-21): say so rather
+  // than link to the managed notice.
+  const hrefGate = useHrefGate();
   return (
     <SlideOver
       open={id != null}
@@ -142,14 +152,15 @@ export function FindingDrawer({
       subtitle={f?.message}
       bodyClassName="p-5"
       footer={
-        f && pickers ? (
+        f && (pickers || (onFix && f.status === "open")) ? (
           <div className="flex flex-wrap items-center gap-2">
-            {f.status === "open" && !excepting && (
+            {onFix && f.status === "open" && <FixButton onClick={() => onFix(f.id)} testId="code-security-fix-drawer" />}
+            {pickers && f.status === "open" && !excepting && (
               <Button size="sm" variant="secondary" onClick={() => setExcepting(true)}>
                 Except...
               </Button>
             )}
-            <ExplainButton findingId={f.id} token={pickers.confirm_token} selected={explainSelected} />
+            {pickers && <ExplainButton findingId={f.id} token={pickers.confirm_token} selected={explainSelected} />}
           </div>
         ) : undefined
       }
@@ -255,9 +266,13 @@ export function FindingDrawer({
                 {heldApproveHref(f, d.commits) && (
                   <p className="m-0 text-fg-3" data-testid="finding-approve-pointer">
                     {"A commit or push this finding holds is approved from its verdict, not here. "}
-                    <NodeLink to={heldApproveHref(f, d.commits)} variant="text">
-                      Approve in Security
-                    </NodeLink>
+                    {hrefGate(SECURITY_VERDICTS_HREF) === "managed" ? (
+                      "Approving it is managed by your organization."
+                    ) : (
+                      <NodeLink to={heldApproveHref(f, d.commits)} variant="text">
+                        Approve in Security
+                      </NodeLink>
+                    )}
                   </p>
                 )}
               </Section>

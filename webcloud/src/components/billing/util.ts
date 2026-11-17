@@ -44,7 +44,7 @@ export function dateWithRelative(iso: string | null | undefined): string {
 // humanPlanLabel maps the raw plan token ("free" / "plus_beta") onto the
 // short human name a Pill should carry - never the raw token verbatim.
 export function humanPlanLabel(planToken: string | null | undefined): string {
-  return isPlusPlan(planToken) ? "Plus" : "Free";
+  return isPlusPlan(planToken) ? "Personal Pro" : "Free";
 }
 
 export function isPlusPlan(planToken: string | null | undefined): boolean {
@@ -66,9 +66,11 @@ export function statusMeta(
 // PLAN_COMPARISON_ROWS is the ruled §2 table (cloud-intelligence value-upgrade
 // plan, 2026-09-15): what every account gets for free, and what Plus adds on
 // top of it. No row is locked behind "coming soon" - everything free lists
-// ships today. The per-day / per-month counts are plan v3 (cloud migration
-// 0041, operator ruling D-299, 2026-10-05): Signed-in Free 100 / 3,000, Plus
-// 5x that. Keep them equal to the plans rows the server resolves.
+// ships today. Since plan v5 (cloud migrations 0078-0079, ruling R-AI1) there
+// is no cap on the number of sessions enriched; the allowance is tokens. The
+// token rows are the seeded tier defaults (enrichment_tiers free v1 / paid v1):
+// keep them equal to the tier versions the server has in force
+// (`observer-cloud tier show`).
 export const PLAN_COMPARISON_ROWS: {
   label: string;
   free: string;
@@ -79,8 +81,10 @@ export const PLAN_COMPARISON_ROWS: {
     free: "Included",
     plus: "Included",
   },
-  { label: "Sessions per day", free: "100", plus: "500" },
-  { label: "Sessions per month", free: "3,000", plus: "15,000" },
+  { label: "Sessions enriched", free: "No count limit", plus: "No count limit" },
+  { label: "Enrichment tokens per day", free: "250,000", plus: "1,000,000" },
+  { label: "Enrichment tokens per month", free: "3,000,000", plus: "15,000,000" },
+  { label: "Evidence per session upload", free: "4,000 tokens", plus: "12,000 tokens" },
   { label: "Weekly project digest", free: "Not included", plus: "Included" },
   { label: "Hosted history", free: "30 days", plus: "12 months" },
   {
@@ -114,6 +118,6 @@ export const PLAN_FEATURE_TONE: Readonly<Record<PlanFeature, string>> = {
 // PLAN_COMPARISON_FOOTNOTE is the one line shown once beneath both plan
 // cards, not per-card, since it applies equally to both.
 export const PLAN_COMPARISON_FOOTNOTE =
-  "The node keeps its own local copy of every result forever - only the " +
+  "Observer on your machine keeps its own local copy of every result forever - only the " +
   "portal's hosted history, corrections and export window shrink after the " +
   "retention period above.";

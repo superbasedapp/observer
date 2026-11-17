@@ -364,9 +364,7 @@ func boundaryRules() []Rule {
 		},
 		{
 			ID: "R-160", Category: CategoryBoundary, Severity: SeverityCritical,
-			AppliesTo: shell, MatchCmd: shPathMatchBy(func(ctx *MatchContext, p string) (string, bool) {
-				return observerConfigPath(p, ctx.Cfg.Home)
-			}, true),
+			AppliesTo: shell, MatchCmd: shPathMatchBy(observerConfigPathAt, true),
 			Observe: DecisionFlag, Enforce: DecisionDeny,
 			Doc:    "shell command modifying observer/guard/hook configuration",
 			Advice: "Guard and hook configuration is operator-owned (F4); ask the operator to change it.",
@@ -437,13 +435,22 @@ func observerConfigPath(p, home string) (string, bool) {
 	return pathPatternMatch(p, home, observerConfigPatterns)
 }
 
+// observerConfigPathAt is observerConfigPath(p, ctx.Cfg.Home) over the
+// evaluation's memoized forms of p (evalmemo.go).
+func observerConfigPathAt(ctx *MatchContext, p string) (string, bool) {
+	if _, ok := homePathPatternMatch(ctx, p, consentRecordPatterns); ok {
+		return "", false
+	}
+	return homePathPatternMatch(ctx, p, observerConfigPatterns)
+}
+
 // matchObserverConfigWriteFA is the R-160 file-access row over
 // observerConfigPath (faPathMatch's shape).
 func matchObserverConfigWriteFA(ctx *MatchContext) (bool, string) {
 	if !isWriteEvent(ctx.Event) {
 		return false, ""
 	}
-	desc, ok := observerConfigPath(ctx.Path, ctx.Cfg.Home)
+	desc, ok := observerConfigPathAt(ctx, ctx.Path)
 	if !ok {
 		return false, ""
 	}
@@ -466,7 +473,7 @@ func matchObserverConfigInline(ctx *MatchContext, cmd *Command) (bool, string) {
 	anchors := unitAnchors(ctx, cmd)
 	for _, op := range ops {
 		for _, c := range unitPathCandidates(ctx, anchors, op.text) {
-			if desc, ok := observerConfigPath(c.path, ctx.Cfg.Home); ok {
+			if desc, ok := observerConfigPathAt(ctx, c.path); ok {
 				return true, movedReason(desc+" ("+op.text+", named in a "+op.kind+" inline script)", c.moved)
 			}
 		}
@@ -510,13 +517,46 @@ func pathPatternMatch(p, home string, pats []pathPattern) (string, bool) {
 	if p == "" {
 		return "", false
 	}
+	return matchPathForms(pathMatchForms(p, home), pats)
+}
+
+// pathMatchForms is the form list pathPatternMatch tries: p itself and, when
+// under home, its "~/"-anchored form. Split out so a caller matching ONE path
+// against many tables (hookSwitchesAt) derives the forms once.
+func pathMatchForms(p, home string) []string {
 	forms := []string{p}
 	if rel, ok := homeRelative(p, home); ok {
 		forms = append(forms, rel)
 	}
+	return forms
+}
+
+// matchPathForms is pathPatternMatch over precomputed forms.
+func matchPathForms(forms []string, pats []pathPattern) (string, bool) {
+	if len(pats) == 0 {
+		return "", false
+	}
+	return matchPathFormSegs(pathFormSegs(forms), pats)
+}
+
+// pathFormSegs splits each form once for case-insensitive glob matching
+// (matchGlob's path side), so a table of N patterns costs one split per
+// form rather than N (demo bug #14, R3-5).
+func pathFormSegs(forms []string) [][]string {
+	out := make([][]string, len(forms))
+	for i, f := range forms {
+		out[i] = globPathSegs(f, true)
+	}
+	return out
+}
+
+// matchPathFormSegs is matchPathForms over pre-split forms: the same
+// pattern-major, form-minor order, so the same pattern names the hit.
+func matchPathFormSegs(formSegs [][]string, pats []pathPattern) (string, bool) {
 	for _, pat := range pats {
-		for _, f := range forms {
-			if matchGlob(pat.glob, f, true) {
+		ps := globSegs(pat.glob, true)
+		for _, fs := range formSegs {
+			if matchSegs(ps, fs) {
 				return pat.desc, true
 			}
 		}
@@ -531,7 +571,7 @@ func faPathMatch(pats []pathPattern, wantWrite bool) MatchFn {
 		if isWriteEvent(ctx.Event) != wantWrite {
 			return false, ""
 		}
-		desc, ok := pathPatternMatch(ctx.Path, ctx.Cfg.Home, pats)
+		desc, ok := homePathPatternMatch(ctx, ctx.Path, pats)
 		if !ok {
 			return false, ""
 		}
@@ -545,7 +585,7 @@ func faPathMatch(pats []pathPattern, wantWrite bool) MatchFn {
 // classifies as write or read access within the unit.
 func shPathMatch(pats []pathPattern, wantWrite bool) MatchCmdFn {
 	return shPathMatchBy(func(ctx *MatchContext, p string) (string, bool) {
-		return pathPatternMatch(p, ctx.Cfg.Home, pats)
+		return homePathPatternMatch(ctx, p, pats)
 	}, wantWrite)
 }
 
@@ -553,7 +593,7 @@ func shPathMatch(pats []pathPattern, wantWrite bool) MatchCmdFn {
 // judges a path by its place in the project, not by its absolute form).
 func shPathMatchBy(match func(ctx *MatchContext, p string) (string, bool), wantWrite bool) MatchCmdFn {
 	return func(ctx *MatchContext, cmd *Command) (bool, string) {
-		tokens := sensitivePathTokens(cmd)
+		tokens := sensitivePathTokensMemo(ctx, cmd)
 		if len(tokens) == 0 {
 			return false, ""
 		}
@@ -803,15 +843,29 @@ func matchOutsideProject(wantWrite bool) MatchFn {
 // matchCrossProjectWrite implements R-151: a write landing inside a
 // DIFFERENT observed project's root — detectable only because the
 // daemon knows every project root it watches.
+//
+// "Different" needs the event's own project. With no ProjectRoot the
+// session's project is unknown, so every known root, the session's own
+// among them, would read as another project's: unknown is not a
+// violation (R-150's contract). Before 2026-11-16 an empty root fell
+// through to the loop below, and the proxy's response inspection (it
+// carries no root, guard.InspectProxyResponse) raised R-151 on every
+// write an agent made into its own project; live, a security-assessment
+// run's writes to its own run folder were reported as cross-project
+// bleed. A lane with no root leaves the write to the watcher, which
+// judges it against the session's recorded project.
 func matchCrossProjectWrite(ctx *MatchContext) (bool, string) {
 	if !isWriteEvent(ctx.Event) || ctx.Path == "" {
 		return false, ""
 	}
 	cur := ctx.Event.ProjectRoot
-	if cur != "" && isUnder(ctx.Path, cur) {
+	if cur == "" {
+		return false, ""
+	}
+	if isUnder(ctx.Path, cur) {
 		return false, "" // inside the current project: never cross-bleed
 	}
-	if cur != "" && !comparableFlavors(ctx.Path, cur) {
+	if !comparableFlavors(ctx.Path, cur) {
 		// The path is in a flavor the event's own root cannot be
 		// compared with, so "outside the current project" is unknown,
 		// and a match against another root would be a guess (live: a
@@ -824,7 +878,7 @@ func matchCrossProjectWrite(ctx *MatchContext) (bool, string) {
 		// A known root that is not an absolute path in either flavor
 		// (FU-193's "Xcode (project unknown)", a placeholder) names no
 		// directory to bleed into (audit row 8).
-		if root == "" || !isAbsPath(root) || (cur != "" && pathsEqual(root, cur)) {
+		if root == "" || !isAbsPath(root) || pathsEqual(root, cur) {
 			continue
 		}
 		if isUnder(ctx.Path, root) {
@@ -1682,7 +1736,7 @@ func matchProjectPolicyWriteFA(ctx *MatchContext) (bool, string) {
 
 // matchProjectPolicyWriteShell implements the R-161 shell row.
 func matchProjectPolicyWriteShell(ctx *MatchContext, cmd *Command) (bool, string) {
-	tokens := sensitivePathTokens(cmd)
+	tokens := sensitivePathTokensMemo(ctx, cmd)
 	if len(tokens) == 0 {
 		return false, ""
 	}

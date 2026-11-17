@@ -71,7 +71,7 @@ func TestRunDASTAgainstLoopbackServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	if err := runDAST(context.Background(), &out, tg, secdastnet.Options{}, true, time.Now()); err != nil {
+	if err := runDAST(context.Background(), &out, tg, secdastnet.Options{}, true, time.Now(), dastRecorder{}); err != nil {
 		t.Fatal(err)
 	}
 	var view dastReportView
@@ -89,7 +89,7 @@ func TestRunDASTAgainstLoopbackServer(t *testing.T) {
 		t.Fatal("the .env body reached the report")
 	}
 	out.Reset()
-	if err := runDAST(context.Background(), &out, tg, secdastnet.Options{}, false, time.Now()); err != nil || !strings.Contains(out.String(), "flag only") {
+	if err := runDAST(context.Background(), &out, tg, secdastnet.Options{}, false, time.Now(), dastRecorder{}); err != nil || !strings.Contains(out.String(), "flag only") {
 		t.Fatalf("text report: %v %s", err, out.String())
 	}
 }
@@ -103,7 +103,7 @@ func TestRunDASTUnreachableIsAnError(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	err = runDAST(context.Background(), &out, tg, secdastnet.Options{}, false, time.Now())
+	err = runDAST(context.Background(), &out, tg, secdastnet.Options{}, false, time.Now(), dastRecorder{})
 	if err == nil || !strings.Contains(err.Error(), "nothing was checked") || !strings.Contains(out.String(), secdast.OutcomeUnreachable) {
 		t.Fatalf("unreachable run: %v %s", err, out.String())
 	}
@@ -112,7 +112,7 @@ func TestRunDASTUnreachableIsAnError(t *testing.T) {
 func TestRunDASTCandidates(t *testing.T) {
 	dir := t.TempDir()
 	var out bytes.Buffer
-	if err := runDASTCandidates(&out, dir, false); err != nil || !strings.Contains(out.String(), "No loopback dev server") {
+	if err := runDASTCandidates(&out, dir, false); err != nil || !strings.Contains(out.String(), "No dev server found") {
 		t.Fatalf("no launch.json: %v %s", err, out.String())
 	}
 	if err := os.MkdirAll(filepath.Join(dir, ".claude"), 0o755); err != nil {
@@ -122,7 +122,7 @@ func TestRunDASTCandidates(t *testing.T) {
 		t.Fatal(err)
 	}
 	out.Reset()
-	if err := runDASTCandidates(&out, dir, false); err != nil || !strings.Contains(out.String(), "http://localhost:5173/\tweb") || strings.Contains(out.String(), "example.com") {
+	if err := runDASTCandidates(&out, dir, false); err != nil || !strings.Contains(out.String(), "http://localhost:5173/  web (launch.json)") || strings.Contains(out.String(), "example.com") {
 		t.Fatalf("candidates: %v %s", err, out.String())
 	}
 }

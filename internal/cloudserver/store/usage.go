@@ -112,6 +112,50 @@ type UsageSnapshot struct {
 	// current ISO week (Mon-Sun UTC). Present (computed) only when
 	// DigestWeekly is true; zero otherwise.
 	DigestsThisWeek int `json:"digests_this_week,omitempty"`
+
+	// BudgetUnit is how session enrichment is budgeted on the resolved plan:
+	// "count" (the daily/monthly enrichment caps above) or "tokens" (ruling
+	// R-AI1: the tier's token budgets below; DailyCap/MonthlyCap read 0
+	// because no count cap is enforced, and the warnings name the token
+	// windows "daily_tokens" / "monthly_tokens").
+	BudgetUnit string `json:"budget_unit"`
+	// EnrichmentTier / EnrichmentTierVersion name the tier in force.
+	EnrichmentTier        string `json:"enrichment_tier,omitempty"`
+	EnrichmentTierVersion int    `json:"enrichment_tier_version,omitempty"`
+	// The tier's token budgets and the committed tokens of the current UTC
+	// day and month (settled actuals plus open holds at their worst case).
+	DailyTokensUsed     int64 `json:"daily_tokens_used,omitempty"`
+	DailyTokenBudget    int64 `json:"daily_token_budget,omitempty"`
+	MonthlyTokensUsed   int64 `json:"monthly_tokens_used,omitempty"`
+	MonthlyTokenBudget  int64 `json:"monthly_token_budget,omitempty"`
+	SessionTokenBudget  int64 `json:"session_token_budget,omitempty"`
+	EvidenceTokenBudget int   `json:"evidence_token_budget,omitempty"`
+	// DailyTokensRemaining / MonthlyTokensRemaining are budget minus
+	// committed, floored at 0, so every reader shows the same "left" figure.
+	// Pointers so a spent window still says 0: nil (omitted) on a count plan.
+	DailyTokensRemaining   *int64 `json:"daily_tokens_remaining,omitempty"`
+	MonthlyTokensRemaining *int64 `json:"monthly_tokens_remaining,omitempty"`
+}
+
+// tokensRemaining is a token window's budget minus what it has committed,
+// never negative (committed may exceed the budget by an open hold's
+// settlement, which books the provider's actual count).
+func tokensRemaining(budget, used int64) *int64 {
+	left := max(budget-used, 0)
+	return &left
+}
+
+// tokenWindowCommitted reads one token window's committed tokens (0 when the
+// window has no row yet).
+func tokenWindowCommitted(ctx context.Context, tx pgx.Tx, accountID, feature, kind, key string) int64 {
+	var v int64
+	if err := tx.QueryRow(ctx,
+		`SELECT committed_tokens FROM usage_token_windows
+		  WHERE account_id = $1::uuid AND feature = $2 AND window_kind = $3 AND window_key = $4`,
+		accountID, feature, kind, key).Scan(&v); err != nil {
+		return 0
+	}
+	return v
 }
 
 // Usage returns the current daily/monthly/concurrency counters for a feature,
@@ -129,9 +173,21 @@ func (s *Store) Usage(ctx context.Context, accountID, feature string, now time.T
 		snap.DailyCap, snap.MonthlyCap, snap.ConcurrencyCap = allow.DailyCap, allow.MonthlyCap, allow.ConcurrencyCap
 		snap.Plan, snap.PlanLabel, snap.PlanVersion = allow.Plan.Name, allow.Plan.Label, allow.Plan.Version
 		snap.BudgetPool, snap.PlanOverridden = allow.BudgetPool, allow.Overridden
-		snap.DailyUsed = cycleUsed(ctx, tx, accountID, feature, "daily", daily)
-		snap.MonthlyUsed = cycleUsed(ctx, tx, accountID, feature, "monthly", monthly)
 		snap.ConcurrencyUsed = cycleUsed(ctx, tx, accountID, feature, "concurrency", concurrencyWindowKey)
+		snap.BudgetUnit = budgetUnitCount
+		if t := allow.Tier; t != nil {
+			snap.BudgetUnit = budgetUnitTokens
+			snap.EnrichmentTier, snap.EnrichmentTierVersion = t.Name, t.Version
+			snap.DailyTokenBudget, snap.MonthlyTokenBudget = t.DailyTokens, t.MonthlyTokens
+			snap.SessionTokenBudget, snap.EvidenceTokenBudget = t.SessionTokens, t.EvidenceTokens
+			snap.DailyTokensUsed = tokenWindowCommitted(ctx, tx, accountID, feature, "daily", daily)
+			snap.MonthlyTokensUsed = tokenWindowCommitted(ctx, tx, accountID, feature, "monthly", monthly)
+			snap.DailyTokensRemaining = tokensRemaining(snap.DailyTokenBudget, snap.DailyTokensUsed)
+			snap.MonthlyTokensRemaining = tokensRemaining(snap.MonthlyTokenBudget, snap.MonthlyTokensUsed)
+		} else {
+			snap.DailyUsed = cycleUsed(ctx, tx, accountID, feature, "daily", daily)
+			snap.MonthlyUsed = cycleUsed(ctx, tx, accountID, feature, "monthly", monthly)
+		}
 		snap.Warnings = usageWarnings(snap)
 		snap.DigestWeekly = allow.Plan.DigestWeekly
 		snap.ResultsRetentionDays = allow.Plan.ResultsRetentionDays
@@ -151,16 +207,28 @@ func (s *Store) Usage(ctx context.Context, accountID, feature string, now time.T
 // INTEGER arithmetic (used*100 vs cap*threshold) so a boundary like 70/100 is
 // exact rather than at the mercy of binary floating point; the reported
 // used_fraction is float only because it is display data.
+//
+// The windows warned on are the ones the plan ENFORCES: the count windows on
+// a count plan, the token windows on a token-budgeted one (a count cap that
+// is not enforced reads 0 and must not warn "exhausted").
 func usageWarnings(s UsageSnapshot) []UsageWarning {
-	out := []UsageWarning{}
-	for _, w := range []struct {
+	type window struct {
 		window    string
 		used, cap int
-	}{
+	}
+	windows := []window{
 		{"daily", s.DailyUsed, s.DailyCap},
 		{"monthly", s.MonthlyUsed, s.MonthlyCap},
-		{"concurrency", s.ConcurrencyUsed, s.ConcurrencyCap},
-	} {
+	}
+	if s.BudgetUnit == budgetUnitTokens {
+		windows = []window{
+			{"daily_tokens", int(s.DailyTokensUsed), int(s.DailyTokenBudget)},
+			{"monthly_tokens", int(s.MonthlyTokensUsed), int(s.MonthlyTokenBudget)},
+		}
+	}
+	windows = append(windows, window{"concurrency", s.ConcurrencyUsed, s.ConcurrencyCap})
+	out := []UsageWarning{}
+	for _, w := range windows {
 		if warn, ok := usageWarningFor(w.window, w.used, w.cap); ok {
 			out = append(out, warn)
 		}

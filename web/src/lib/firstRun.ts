@@ -94,6 +94,8 @@ export type FirstRunResponse = {
   confirm_token?: string;
   /** Notices the owner dismissed for good, kept on the daemon (WINNODE2 16b). */
   dismissed?: string[];
+  /** Notices put away for a while, key to when (Get started panel). */
+  snoozed?: Record<string, string>;
 };
 
 export const FIRST_RUN_PATH = "/api/firstrun";
@@ -365,31 +367,4 @@ export function tourHeld(s: FirstRunUiState): boolean {
 export function resetFirstRunUi(): void {
   uiState = { decided: false, open: false };
   listeners.clear();
-}
-
-// ---- closed for this visit ------------------------------------------------
-
-export const FIRST_RUN_VISIT_KEY = "sb_firstrun_closed_this_visit";
-
-type MinimalStorage = Pick<Storage, "getItem" | "setItem">;
-
-export function closedThisVisit(storage: MinimalStorage | null | undefined): boolean {
-  try {
-    return storage?.getItem(FIRST_RUN_VISIT_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-
-export function markClosedThisVisit(storage: MinimalStorage | null | undefined): void {
-  try {
-    storage?.setItem(FIRST_RUN_VISIT_KEY, "1");
-  } catch {
-    // Storage unavailable: the dialog may open again on a reload.
-  }
-}
-
-/** shouldAutoOpen: the daemon says so and it was not closed this visit. */
-export function shouldAutoOpen(d: FirstRunResponse | null, closedVisit: boolean): boolean {
-  return d != null && d.auto_open === true && !closedVisit;
 }

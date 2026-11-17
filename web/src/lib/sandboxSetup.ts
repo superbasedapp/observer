@@ -12,6 +12,7 @@
 // raw `api <status>` string (DI-05), and no em or en dashes.
 
 import type {
+  SandboxSetupAction,
   SandboxSetupConsent,
   SandboxSetupPlan,
   SandboxSetupRecord,
@@ -56,6 +57,16 @@ export const CLASS_BUTTON_LABELS: Record<string, string | null> = {
 };
 
 /**
+ * CHANNEL_BUTTON_LABELS name an auto step whose channel opens a setup
+ * terminal rather than changing something in place, so a consent screen or a
+ * sign-in never reads "Turn on".
+ */
+export const CHANNEL_BUTTON_LABELS: Record<string, string> = {
+  hosted_consent: "Open the consent screen in terminal",
+  orgshell_login: "Sign in in terminal",
+};
+
+/**
  * KIND_TERMINAL_VERBS name what a terminal or elevated step does by its kind,
  * so a step that starts a service or pulls an image never says "Install". A
  * kind absent here installs something (a program, a package).
@@ -78,14 +89,38 @@ export function downloadButtonLabel(c: SandboxSetupConsent): string {
 }
 
 /**
+ * stepCopyText is what a guide step's "Copy command" copies: a credential
+ * step's CLI form, or a display the daemon flags as a command line. A display
+ * that is a sentence ("Install bubblewrap with your package manager") is
+ * never offered as a command; null when there is nothing to copy.
+ */
+export function stepCopyText(step: SandboxSetupStep): string | null {
+  if (step.command) return step.command;
+  if (step.display_is_command && step.display) return step.display;
+  return null;
+}
+
+/**
+ * stepTakesInput reports a step whose action is typed in rather than
+ * clicked (a provider's API key): it never gets a plain button, which would
+ * send nothing and be refused.
+ */
+export function stepTakesInput(step: SandboxSetupStep): boolean {
+  return step.channel === "hosted_connect";
+}
+
+/**
  * stepButtonLabel is the one button a step offers, or null for none. A step
  * that carries a download consent and runs in-process reads as a download;
- * otherwise the label follows the class. A guide step offers "Copy command"
- * only when it has something to copy.
+ * a step that takes typed input has its own form instead; otherwise the
+ * label follows the channel or the class. A guide step offers "Copy command"
+ * only when it has a command to copy.
  */
 export function stepButtonLabel(step: SandboxSetupStep): string | null {
   if (step.consent && step.class === "auto") return downloadButtonLabel(step.consent);
-  if (step.class === "guide") return step.display ? CLASS_BUTTON_LABELS.guide : null;
+  if (stepTakesInput(step)) return null;
+  if (step.class === "guide") return stepCopyText(step) ? CLASS_BUTTON_LABELS.guide : null;
+  if (step.class === "auto" && CHANNEL_BUTTON_LABELS[step.channel]) return CHANNEL_BUTTON_LABELS[step.channel];
   const verb = KIND_TERMINAL_VERBS[step.kind];
   if (verb && step.class === "terminal") return verb;
   if (verb && step.class === "elevated") return `${verb} (asks for your password)`;
@@ -293,7 +328,39 @@ export type RecordView = {
 const INSTALLED_PREFIX = "Installed from this dashboard on ";
 const LAST_RUN_PREFIX = "Last run from this dashboard on ";
 
+// RUN_ONLY_CHANNELS are the channels whose terminal only runs one of
+// Observer's own commands (the consent screen, the org-shell sign-in): nothing
+// is installed, so their record reads as a run, never as an install with
+// download-host advice.
+const RUN_ONLY_CHANNELS = new Set<string>(["hosted_consent", "org_shell"]);
+
+const RUN_STATUS_COPY: Record<string, { tone: "info" | "ok" | "warn"; line: (date: string) => string }> = {
+  installing: { tone: "info", line: (d) => `Running from this dashboard (started ${d}).` },
+  installed: { tone: "ok", line: (d) => `Done from this dashboard on ${d}.` },
+  installed_not_found: { tone: "warn", line: (d) => `Run from this dashboard on ${d}; it finished, but its result is not detected yet.` },
+  install_failed: { tone: "warn", line: (d) => `The run started from this dashboard on ${d} did not finish successfully.` },
+  install_interrupted: { tone: "warn", line: (d) => `The run started from this dashboard on ${d} stopped before it finished.` },
+};
+
+// runRecordView phrases a run-only step's record (RUN_ONLY_CHANNELS).
+function runRecordView(rec: SandboxSetupRecord): RecordView {
+  const row = RUN_STATUS_COPY[rec.status];
+  const date = fmtInstallDate(rec.installed_at);
+  const line = row ? row.line(date) : `Run from this dashboard on ${date} (status: ${rec.status || "unknown"}).`;
+  let remedy: string | null = null;
+  if (rec.status === "install_failed") {
+    const outcome = typeof rec.exit_code === "number" ? `It exited with code ${rec.exit_code}.` : "It failed.";
+    remedy = `${outcome} Its own message is in the step's terminal output; fix what it says and run the step again.`;
+  } else if (rec.status === "installed_not_found") {
+    remedy = "Press Check this machine, or run the step again.";
+  } else if (rec.status === "install_interrupted") {
+    remedy = "The daemon restarted while it ran. Run it again.";
+  }
+  return { tone: row ? row.tone : "info", line, remedy };
+}
+
 export function recordView(rec: SandboxSetupRecord, stepDone = true): RecordView {
+  if (RUN_ONLY_CHANNELS.has(rec.channel)) return runRecordView(rec);
   const row = INSTALL_STATUS_COPY[rec.status];
   const date = fmtInstallDate(rec.installed_at);
   let line = row ? row.line(date) : `Installed from this dashboard on ${date} (status: ${rec.status || "unknown"}).`;
@@ -339,6 +406,29 @@ export function manageActions(step: SandboxSetupStep): ManageAction[] {
   if (step.state === "missing" && placed) out.push({ action: "repair", label: "Repair" });
   if (step.can_undo) out.push({ action: "undo", label: "Undo" });
   return out;
+}
+
+/**
+ * consentFolderFor is the folder a step's action sends (the run request's
+ * from_file): a consent step's run, repair or update runs the consent screen
+ * again and needs the folder the person picked; undo and every other step
+ * send none. An empty pick sends none, so the daemon falls back to the
+ * default workspace when it is set up.
+ */
+export function consentFolderFor(step: SandboxSetupStep, action: SandboxSetupAction, picked: string): string | undefined {
+  if (step.channel !== "hosted_consent" || action === "undo") return undefined;
+  const folder = picked.trim();
+  return folder === "" ? undefined : folder;
+}
+
+/**
+ * consentNeedsFolder reports whether a step shows the consent folder picker:
+ * a consent step that is not settled yet, or one with a Manage action that
+ * runs the consent screen again (repair, update).
+ */
+export function consentNeedsFolder(step: SandboxSetupStep, settled: boolean, actions: ManageAction[]): boolean {
+  if (step.channel !== "hosted_consent") return false;
+  return !settled || actions.some((a) => a.action !== "undo");
 }
 
 // ---------------------------------------------------------------------------
@@ -532,23 +622,130 @@ export function opProgressLabel(done: number, total: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// Docs links and "afterwards" notes
+// Credential steps (a provider's API key)
 // ---------------------------------------------------------------------------
 
-/** DOCS_BASE is where the repository's docs/ folder is published. */
-export const DOCS_BASE = "https://github.com/superbasedapp/observer/blob/main/docs/";
+/** CREDENTIAL_STORE_LABEL is the key form's button. */
+export const CREDENTIAL_STORE_LABEL = "Store in this machine's keychain";
+
+/** CREDENTIAL_FORM_NOTE is said under the key form: where the key goes and that it never comes back. */
+export const CREDENTIAL_FORM_NOTE =
+  "Sent once to Observer on this computer and kept in its keychain, bound to the endpoint of the region saved for this provider. It is never shown again, never logged, and the field clears when you press the button.";
+
+/** CREDENTIAL_STORED_NOTE is said once the daemon stored the key. */
+export const CREDENTIAL_STORED_NOTE = "The key is stored in this machine's keychain.";
 
 /**
- * docsHref turns a step's docs anchor ("sandboxed-terminals.md#enabling-it")
- * into a link; an https link is kept, anything else (empty, another scheme,
- * a path that climbs out of docs/) yields null.
+ * credentialFields are the fields a credential step's form asks for, or
+ * null when the step shows no form: it is not a typed-input step, it is done
+ * or not needed, the daemon says it cannot run now (a step before it is
+ * blocked, or the organization does not allow the backend), or the daemon
+ * named no fields.
  */
-export function docsHref(docs: string | undefined): string | null {
-  const d = (docs || "").trim();
-  if (!d) return null;
-  if (/^https:\/\//i.test(d)) return d;
-  if (/^[a-z][a-z0-9+.-]*:/i.test(d) || d.startsWith("/") || d.includes("..")) return null;
-  return DOCS_BASE + d;
+export function credentialFields(step: SandboxSetupStep): string[] | null {
+  if (!stepTakesInput(step) || !step.can_run) return null;
+  if (step.state === "done" || step.state === "not_applicable") return null;
+  const names = (step.fields ?? []).filter((n) => n.trim() !== "");
+  return names.length > 0 ? names : null;
+}
+
+/**
+ * credentialRunFields is the run request's fields: each named field's typed
+ * value, trimmed, and nothing else.
+ */
+export function credentialRunFields(names: string[], values: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const n of names) out[n] = (values[n] ?? "").trim();
+  return out;
+}
+
+/**
+ * credentialErrorSentence phrases a refused key store. The daemon's own
+ * refusal names a field, never a value (a missing field, a region the key
+ * cannot be bound to), so it is shown as said; any other failure reads as
+ * every setup failure does.
+ */
+export function credentialErrorSentence(status: number, body: string): string {
+  const p = parseSetupError(body);
+  if (p.code === "step_not_runnable" && p.error) return `The key was not stored: ${p.error.replace(/\.\s*$/, "")}.`;
+  return setupErrorSentence(status, body);
+}
+
+/** joinNames lists names as "A", "A and B", "A, B and C". */
+function joinNames(names: string[]): string {
+  if (names.length <= 1) return names.join("");
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+/**
+ * credentialGuideNote is said under a credential step that became a guide
+ * (guided installs are switched off): the command asks for the same values
+ * and stores them the same way, and the Hosted sandboxes card's Connect form
+ * is not affected by that switch. null for any other step.
+ */
+export function credentialGuideNote(step: SandboxSetupStep): string | null {
+  if (step.kind !== "credential" || step.class !== "guide" || !step.command) return null;
+  const names = step.fields ?? [];
+  const what = names.length > 0 ? joinNames(names) : "the provider's key";
+  return `Run it in a terminal of your own: it asks for ${what} and keeps ${names.length > 1 ? "them" : "it"} in this machine's keychain. The Connect form on the Hosted sandboxes card stores ${names.length > 1 ? "them" : "it"} too.`;
+}
+
+// ---------------------------------------------------------------------------
+// Help (the dashboard's own help drawer) and "afterwards" notes
+// ---------------------------------------------------------------------------
+
+/** SETUP_HELP_LABEL is a step card's help link. */
+export const SETUP_HELP_LABEL = "How this step works";
+
+/**
+ * SETUP_PREREQ_HELP names the help entry of a step whose subject is more
+ * specific than its docs anchor (the generic module and enable steps, which
+ * every backend shares, and the hosted steps, which share one anchor).
+ */
+export const SETUP_PREREQ_HELP: Record<string, string> = {
+  component: "glossary.terminals_sandbox_setup_module",
+  enable: "glossary.terminals_sandbox_setup_enable",
+  "hosted-account": "glossary.terminals_sandbox_setup_hosted_account",
+  "hosted-key": "glossary.terminals_sandbox_setup_hosted_key",
+  "hosted-consent": "glossary.terminals_sandbox_setup_hosted_consent",
+};
+
+/**
+ * SETUP_DOCS_HELP maps every docs anchor a setup remedy carries
+ * (internal/sandboxsetup/prereqs.go, the docs constants) to the help entry
+ * written from that docs section, so a step's help opens in the dashboard's
+ * help drawer instead of a page outside it. sandboxSetup.test.ts reads
+ * prereqs.go and fails when an anchor has no row here.
+ */
+export const SETUP_DOCS_HELP: Record<string, string> = {
+  "sandboxed-terminals.md#enabling-it": "glossary.terminals_sandbox_setup_bwrap",
+  "sandboxed-terminals.md#which-engine-which-socket": "glossary.terminals_sandbox_setup_engine",
+  "sandboxed-terminals.md#the-default-image-on-this-machine-pull-and-revoked-images": "glossary.terminals_sandbox_setup_image",
+  "sandboxed-terminals.md#gvisor-oci-runsc-beta": "glossary.terminals_sandbox_setup_gvisor",
+  "sandboxed-terminals.md#landlock-only-process_lite-beta": "glossary.terminals_sandbox_setup_landlock",
+  "sandboxed-terminals.md#microvm-sandboxes-cloud-hypervisor-beta": "glossary.terminals_sandbox_setup_vm",
+  "sandboxed-terminals.md#the-probe": "glossary.terminals_sandbox_setup_kvm",
+  "sandboxed-terminals.md#image-set-and-import": "glossary.terminals_sandbox_setup_vm_images",
+  "sandboxed-terminals.md#native-windows-mxc-processcontainer-mxc-process-beta": "glossary.terminals_sandbox_setup_mxc",
+  "sandboxed-terminals.md#the-mxc-files-as-a-signed-kind": "glossary.terminals_sandbox_setup_mxc_files",
+  "sandboxed-terminals.md#macos-sandboxes-beta-seatbelt-and-apple-container": "glossary.terminals_sandbox_setup_macos",
+  "sandboxed-terminals.md#hosted-sandboxes-beta-e2b-modal-and-vercel-sandbox": "glossary.terminals_sandbox_setup_hosted",
+  "sandbox-openshell.md#what-you-need": "glossary.terminals_sandbox_setup_openshell",
+  "sandbox-openshell.md#managed-gateway-mode-the-default": "glossary.terminals_sandbox_setup_openshell_gateway",
+  "sandbox-openshell-org.md#turning-it-on": "glossary.terminals_sandbox_setup_org_shell",
+  "sandboxed-terminals.md#the-isolation-engine-component-isolation": "glossary.terminals_sandbox_setup_module",
+};
+
+/** SETUP_OVERVIEW_HELP is the help entry about the checklist as a whole. */
+export const SETUP_OVERVIEW_HELP = "glossary.terminals_sandbox_setup";
+
+/**
+ * setupHelpId is the help entry a step card opens: the step's own entry,
+ * else its docs anchor's, else the checklist's overview (never a link out
+ * of the dashboard).
+ */
+export function setupHelpId(step: Pick<SandboxSetupStep, "prereq" | "docs">): string {
+  return SETUP_PREREQ_HELP[step.prereq] ?? SETUP_DOCS_HELP[(step.docs ?? "").trim()] ?? SETUP_OVERVIEW_HELP;
 }
 
 /** AFTER_NOTES says what the person does once a step ran (the closed After vocabulary). */

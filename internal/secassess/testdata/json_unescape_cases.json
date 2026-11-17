@@ -1,0 +1,107 @@
+[
+  {
+    "name": "no backslash is the same text",
+    "in": "{\"a\": \"b\"}",
+    "want": "{\"a\": \"b\"}"
+  },
+  {
+    "name": "the live finding F-9",
+    "in": "{\"url\": \"x\", \"content\": \"{\\\"console\\\": \\\"internal\\\", \\\"status\\\": \\\"ok\\\"}\"}",
+    "want": "{\"url\": \"x\", \"content\": \"{\"console\": \"internal\", \"status\": \"ok\"}\"}"
+  },
+  {
+    "name": "the live finding F-2's condition",
+    "in": "\\\"role\\\": \\\"admin\\\"",
+    "want": "\"role\": \"admin\""
+  },
+  {
+    "name": "a quote, a backslash and a slash",
+    "in": "\\\" \\\\ \\/",
+    "want": "\" \\ /"
+  },
+  {
+    "name": "the control escapes",
+    "in": "a\\nb\\tc\\rd\\be\\ff",
+    "want": "a\nb\tc\rd\be\ff"
+  },
+  {
+    "name": "a unicode escape",
+    "in": "caf\\u00e9 \\u0041",
+    "want": "café A"
+  },
+  {
+    "name": "a unicode escape in upper case hex",
+    "in": "\\u00E9",
+    "want": "é"
+  },
+  {
+    "name": "a surrogate pair is one character",
+    "in": "\\ud83d\\ude00",
+    "want": "😀"
+  },
+  {
+    "name": "a lone high surrogate stays as written",
+    "in": "x\\ud83dy",
+    "want": "x\\ud83dy"
+  },
+  {
+    "name": "a lone low surrogate stays as written",
+    "in": "x\\ude00y",
+    "want": "x\\ude00y"
+  },
+  {
+    "name": "a high surrogate then a plain escape: the lone half stays, the plain escape decodes",
+    "in": "\\ud83d\\u0041",
+    "want": "\\ud83dA"
+  },
+  {
+    "name": "two low surrogates stay as written",
+    "in": "\\ude00\\ude00",
+    "want": "\\ude00\\ude00"
+  },
+  {
+    "name": "two high surrogates stay as written",
+    "in": "\\ud83d\\ud83d",
+    "want": "\\ud83d\\ud83d"
+  },
+  {
+    "name": "a unicode escape with too few digits stays",
+    "in": "\\u12",
+    "want": "\\u12"
+  },
+  {
+    "name": "a unicode escape with a non-hex digit stays",
+    "in": "\\u12g4",
+    "want": "\\u12g4"
+  },
+  {
+    "name": "an unknown escape keeps its backslash",
+    "in": "\\x41 \\d \\a",
+    "want": "\\x41 \\d \\a"
+  },
+  {
+    "name": "a trailing backslash stays",
+    "in": "abc\\",
+    "want": "abc\\"
+  },
+  {
+    "name": "decoded once only",
+    "in": "\\\\\\\"",
+    "want": "\\\""
+  },
+  {
+    "name": "an escaped backslash before n is not a newline",
+    "in": "\\\\n",
+    "want": "\\n"
+  },
+  {
+    "name": "bytes outside ASCII pass through",
+    "in": "café \\\"x\\\" 世界",
+    "want": "café \"x\" 世界"
+  },
+  {
+    "name": "empty",
+    "in": "",
+    "want": ""
+  }
+]

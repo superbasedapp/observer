@@ -134,7 +134,22 @@ func (s *Server) handlePortalExportList(w http.ResponseWriter, r *http.Request) 
 // handlePortalExportDownload is the PORTAL download path (session auth; the
 // artifact was already gated by the assembly reauth, and the read is RLS-scoped
 // to the account).
+//
+// It is a read, and since the portal cookie is SameSite=Lax (ruling A7a) a
+// cross-site top-level navigation to it would carry the cookie. That does no
+// harm: the export id is a random UUID scoped to the account, so another
+// site cannot name a victim's export; the attachment would land on the
+// victim's own disk, never in the other site's hands (a navigation's
+// response is not readable cross-origin, and no CORS header is sent); and
+// the only write is the content-free "export_downloaded" audit row. It is
+// still refused when a browser reports a cross-site or same-site initiator
+// (enforceSameOriginFetch): the SPA downloads by a same-origin fetch, so
+// nothing legitimate is lost, and a sibling (tenant) subdomain gets no
+// cookie-carrying path to the account's full data export at all.
 func (s *Server) handlePortalExportDownload(w http.ResponseWriter, r *http.Request) {
+	if !enforceSameOriginFetch(w, r) {
+		return
+	}
 	p, _ := portalPrincipalFrom(r.Context())
 	s.downloadExport(w, r, p.AccountID, r.PathValue("id"))
 }

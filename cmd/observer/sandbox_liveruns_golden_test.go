@@ -57,9 +57,9 @@ func TestNoLiveRunGoldensServiceRestart(t *testing.T) {
 // live, `observer components remove terminals.sandbox --yes` and then `add`
 // print what the pre-lane binary printed.
 func TestNoLiveRunGoldensComponentsRemove(t *testing.T) {
-	requireComponents(t, "terminals.sandbox", "terminals.sandbox.apple-container", "terminals.sandbox.e2b",
+	requireComponents(t, "terminals.sandbox", "terminals.sandbox.apple-container", "terminals.sandbox.daytona", "terminals.sandbox.e2b",
 		"terminals.sandbox.landlock", "terminals.sandbox.modal", "terminals.sandbox.mxc", "terminals.sandbox.oci",
-		"terminals.sandbox.seatbelt", "terminals.sandbox.vercel")
+		"terminals.sandbox.seatbelt", "terminals.sandbox.vercel", "terminals.sandbox.instabox")
 	home := t.TempDir()
 	setTestHome(t, home)
 	cfgPath := filepath.Join(home, ".observer", "config.toml")

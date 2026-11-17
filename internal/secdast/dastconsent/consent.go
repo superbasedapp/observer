@@ -16,8 +16,10 @@ import (
 )
 
 // Version is bumped when Text changes materially (a new probe, a remote
-// target); a record of an older version reads not accepted.
-const Version = 1
+// target); a record of an older version reads not accepted. Version 2
+// (security coverage gaps plan item 1): findings are stored against the
+// project on this machine, and runs can start from the dashboard.
+const Version = 2
 
 // File is the record's name in the security directory.
 const File = "dast-consent.json"
@@ -38,7 +40,8 @@ var Text = fmt.Sprintf("Observer's local DAST checker sends a few plain GET requ
 	"directory listings, source maps, framework debug pages and version banners. It sends no cookie, password or token, "+
 	"submits nothing and changes nothing, but your server will see and log the requests (/.git/HEAD, /.env and a random "+
 	"missing page among them). At most %d KB of each response is read, and only facts (a status, a header name, a byte "+
-	"count) are kept; nothing leaves this machine. Each run starts only when you start it.",
+	"count) are kept, stored as findings against the project on this machine (Code security > Findings); nothing leaves this "+
+	"machine. Each run starts only when you start it, from the command line or the Code security page.",
 	secdast.MaxRequests, int(secdast.RunTimeout.Seconds()), secdast.MaxBodyBytes>>10)
 
 // Consent is the node's record of the accept.

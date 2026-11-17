@@ -119,12 +119,40 @@ type firstRunResponse struct {
 	// Dismissed lists the dashboard notices the owner dismissed for good
 	// (uiDismissKeys), kept on the daemon (WINNODE2 16b).
 	Dismissed []string `json:"dismissed,omitempty"`
+	// Snoozed maps each notice the owner put away for a while
+	// (uiSnoozeKeys) to when, RFC3339 UTC, so the dashboard can bring it
+	// back after its return interval (the Get started panel, 7 days).
+	Snoozed map[string]string `json:"snoozed,omitempty"`
 }
 
 // uiDismissKeys is the closed set of notices POST /api/firstrun/seen
 // {"dismiss": key} records: the first-visit product tour and the "Review
 // components" setup card. Anything else is refused.
 var uiDismissKeys = map[string]bool{"tour": true, "components_setup": true}
+
+// uiSnoozeKeys is the closed set of notices POST /api/firstrun/seen
+// {"snooze": key} records: the Overview "Get started" panel, which comes
+// back as a one-line strip a week after it is put away. Anything else is
+// refused.
+var uiSnoozeKeys = map[string]bool{"get_started": true}
+
+// snoozedOf renders the persisted snoozes for the wire, keeping only keys
+// the dashboard still knows.
+func snoozedOf(st firstrunstate.State) map[string]string {
+	if len(st.Snoozed) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(st.Snoozed))
+	for k, at := range st.Snoozed {
+		if uiSnoozeKeys[k] {
+			out[k] = at.UTC().Format(time.RFC3339)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
 
 // firstRunState returns this server's one seen-state store.
 func (s *Server) firstRunState() *firstrunstate.Store {
@@ -192,6 +220,7 @@ func (s *Server) handleFirstRun(w http.ResponseWriter, r *http.Request) {
 		GeneratedAt:       s.now().UTC().Format(time.RFC3339),
 		ConfirmToken:      setConfirmCookie(w, r),
 		Dismissed:         st.DismissedKeys(),
+		Snoozed:           snoozedOf(st),
 	})
 }
 
@@ -205,9 +234,26 @@ func (s *Server) handleFirstRunSeen(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Seen    *bool  `json:"seen"`
 		Dismiss string `json:"dismiss"`
+		Snooze  string `json:"snooze"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10)).Decode(&req); err != nil {
 		http.Error(w, "decode body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Snooze != "" {
+		// {"snooze": key}: a notice put away for a while (the Get
+		// started panel); each snooze restarts its return interval.
+		if !uiSnoozeKeys[req.Snooze] {
+			http.Error(w, "unknown notice "+strconv.Quote(req.Snooze), http.StatusBadRequest)
+			return
+		}
+		st, err := s.firstRunState().Snooze(req.Snooze, s.now())
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		s.recordManageAudit(r, "ui_notice_snoozed", "notice="+req.Snooze)
+		writeJSON(w, map[string]any{"ok": true, "snoozed": snoozedOf(st)})
 		return
 	}
 	if req.Dismiss != "" {

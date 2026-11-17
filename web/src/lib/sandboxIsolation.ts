@@ -321,6 +321,12 @@ export function seccompRunLabel(iso: LaunchIsolation | undefined): string | null
   switch (iso?.seccomp) {
     case "observer_default":
       return "seccomp filter observer_default";
+    // The strace switch (lane ptrace): Observer's filter with PTRACE_SEIZE
+    // lifted, on the containment ground the launch recorded.
+    case "observer_seize_pidns":
+      return "seccomp filter observer_seize_pidns, strace allowed (the sandbox has its own process list)";
+    case "observer_seize_yama":
+      return "seccomp filter observer_seize_yama, strace allowed (Yama limits it to the run's own child processes)";
     case "not_applicable":
       return "seccomp not applicable: not filtered by Observer";
     default:

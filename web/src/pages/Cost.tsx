@@ -84,6 +84,7 @@ import { cacheSummaryTone } from "@shared/lib/cacheVocab";
 import { VocabPill } from "@shared/lib/vocabPill";
 import { navIcon } from "@/lib/nav";
 import { tokenSourceMix } from "@/lib/costDisplayModel";
+import { costReliabilityNote } from "@/lib/costReliability";
 import { csvText, type CsvColumn } from "@/lib/costExport";
 import { MetricIcon } from "@/components/MetricIcon";
 
@@ -198,11 +199,24 @@ export function CostPage() {
           icon={<MetricIcon metric={dollarsShown() ? "spend" : "tokens"} />}
           loading={models.loading || costTs.loading}
           value={fmtCost(summary.cost, summaryTokenTotal(summary.tokens))}
-          // Cost reliability qualifies a dollar figure; the token view's
-          // subtitle is the source mix the tokens came from.
+          // Cost reliability qualifies a dollar figure, in words with the
+          // reason on hover (lib/costReliability.ts, demo bug #7: the tile
+          // printed a bare "unreliable"); the token view's subtitle is the
+          // source mix the tokens came from.
           sub={
             dollarsShown()
-              ? summary.reliability || "-"
+              ? (() => {
+                  const note = costReliabilityNote(summary.reliability, models.data?.rows ?? [], models.data?.unknown_model_count ?? 0);
+                  return note.tooltip ? (
+                    <Tooltip content={note.tooltip}>
+                      <span tabIndex={0} className="cursor-help underline decoration-dotted underline-offset-2">
+                        {note.sub}
+                      </span>
+                    </Tooltip>
+                  ) : (
+                    note.sub
+                  );
+                })()
               : tokenSourceMix(models.data?.rows ?? []) || undefined
           }
           spark={dollarsShown() ? sparks.cost : sparks.tokens}

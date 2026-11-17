@@ -23,6 +23,25 @@
 //	            bind the Claude Haiku 5.5 route to the Anthropic API: endpoint,
 //	            provider resource identity, and a price snapshot copied from
 //	            the pricing table (operator-only; runs and exits)
+//	signer oidc serve|keygen|public-key|promote|retire
+//	            the platform OIDC issuer's id_token signer (managed-SaaS M6.2;
+//	            its own systemd unit and Linux user; signer.go)
+//	signer document serve|keygen|public-key|raise-floor
+//	            the document signer for entitlements, the availability envelope
+//	            and host-API requests (managed-SaaS M6.3; worker VM, its own
+//	            unit and user; signer_document.go); raise-floor raises the
+//	            database's version floors past a copy of the signer's record
+//	            after a restore (operator, admin DSN; W16-D6)
+//	oidc register-client
+//	            register the platform OIDC client of an org provisioned
+//	            without one (CPSIGN-13 backfill; operator, admin DSN, dry run
+//	            by default; W16-D7; oidcclient.go)
+//	staff serve the staff console: its own process, listener (:8091), host
+//	            (staff.superbased.app) and database login (managed-SaaS M6.8,
+//	            rulings A2/A3; staffserve.go). serve mounts no staff route.
+//	staff enrol|credentials|revoke-credential
+//	            the operator's staff passkey management, the only way a staff
+//	            credential is created or recovered (staff.go)
 //
 // Configuration is 12-factor (env):
 //
@@ -38,7 +57,21 @@
 //	SBCI_WORKER_PG_DSN      Postgres DSN the `worker` process connects with, whose
 //	                        login role is a member of sbci_worker ONLY. UNSET ⇒
 //	                        falls back to SBCI_PG_DSN.
-//	SBCI_LISTEN             API listen address (serve; default :8090)
+//	SBCI_STAFF_PG_DSN       Postgres DSN of the staff login (sbci_staff_svc, the
+//	                        only member of sbci_staff) for `staff serve` and the
+//	                        staff operator verbs. serve REFUSES to start when it
+//	                        is set. SBCI_STAFF_LISTEN / SBCI_STAFF_BASE_URL /
+//	                        SBCI_STAFF_HOST / SBCI_STAFF_SESSION_TTL /
+//	                        SBCI_STAFF_SESSION_IDLE_TTL /
+//	                        SBCI_STAFF_EDGE_SHARED_SECRET(_FILE): see
+//	                        staffserve.go.
+//	SBCI_LISTEN            API listen address (serve; default :8090)
+//	SBCI_METRICS_LISTEN     the optional Prometheus /metrics listener (serve and
+//	                        worker; host:port, e.g. 0.0.0.0:9470 for cloud-api and
+//	                        0.0.0.0:9471 for cloud-worker inside the container,
+//	                        published on the monitoring address only). Empty (the
+//	                        default) opens nothing; never the public listen
+//	                        address; a malformed value refuses to start (metrics.go)
 //	SBCI_EXTERNAL_BASE_URL  absolute externally-visible origin (scheme+host[:port],
 //	                        no trailing slash/path) used to reconstruct the htu a
 //	                        client's proof-of-possession proof was bound to (serve;
@@ -115,6 +148,38 @@
 //	                        anthropic:messages:<model>, see `route bind-anthropic`)
 //	SBCI_EVIDENCE_KEY / SBCI_EVIDENCE_KEY_FILE
 //	                        the shared evidence-blob AES-256-GCM key (64 hex chars)
+//	SBCI_OIDC_ISSUER        the platform OIDC issuer switch (serve; M6.2). Unset ⇒
+//	                        no /oauth2 route is mounted. Set, it must equal the
+//	                        portal origin plus /oauth2 or serve refuses to start;
+//	                        the signer unit reads the same value
+//	SBCI_OIDC_SIGNER_SOCKET the OIDC signer's unix socket (serve and the signer;
+//	                        default /run/observer-cloud-oidc/signer.sock)
+//	SBCI_OIDC_VM_ID         the name serve registers this VM's signer key under
+//	                        (oidc_signing_keys.vm_id; default the hostname)
+//	SBCI_OIDC_SIGNER_ALLOW_UID / SBCI_OIDC_SIGNER_KEY
+//	                        the signer unit's own settings (signer.go)
+//	SBCI_TENANT_DOMAIN      the parent domain of tenant dashboards (superbased.app);
+//	                        the me/orgs CORS allow-list; UNSET ⇒ same-origin only
+//	SBCI_PERSONAL_PLANE     serving (default) | retired: retired answers 410
+//	                        moved_to_org_plane on the old personal-plane routes
+//	                        (D-IND-7; internal/cloudserver/api/retired.go); any
+//	                        other value refuses to start
+//	SBCI_TENANT_CONTEXT_KEY / SBCI_TENANT_CONTEXT_KEY_FILE
+//	                        the tenant-context HMAC key (hex, at least 64 digits),
+//	                        the same on every process; `migrate` installs it and
+//	                        serve / worker refuse to start when the database does
+//	                        not verify it. UNSET ⇒ a process-random key that only
+//	                        a login allowed to install keys can use (dev)
+//	SBCI_PADDLE_PAST_DUE_GRACE_DAYS
+//	                        worker, with the host-API client on: how many days a
+//	                        past_due org subscription still carries its plan
+//	                        after it entered past_due (1-90; default 14, L-124,
+//	                        W16-D5); then the org falls to its grant, launch
+//	                        window or floor. hostapiworker.go
+//	SBCI_WAITLIST_RETRY_FLOOR
+//	                        worker, with the host-API client on: the least delay
+//	                        before a waitlisted create is sent again, a Go
+//	                        duration from 1m to 1h (default 15m, W16-D5)
 package main
 
 import (
@@ -135,11 +200,13 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/api"
+	"github.com/marmutapp/superbased-observer/internal/cloudserver/cloudmetrics"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/community"
 	clouddb "github.com/marmutapp/superbased-observer/internal/cloudserver/db"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/deletionjournal"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/identity"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/jobs"
+	"github.com/marmutapp/superbased-observer/internal/cloudserver/staffauth/passkey"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/store"
 	"github.com/marmutapp/superbased-observer/webcloud"
 )
@@ -178,7 +245,12 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	root.AddCommand(newServeCmd(), newWorkerCmd(), newMigrateCmd(), newGrantPlanCmd(), newProveCmd(), newKillSwitchCmd(), newSchemaCheckCmd(), newRestoreSuppressCmd(), newRouteCmd())
+	root.AddCommand(newServeCmd(), newWorkerCmd(), newMigrateCmd(), newGrantPlanCmd(), newProveCmd(), newKillSwitchCmd(), newSchemaCheckCmd(), newRestoreSuppressCmd(), newRouteCmd(),
+		newSignerCmd(), newOIDCCmd())
+	root.AddCommand(newStaffCmd())
+	root.AddCommand(newTierCmd())      // R-AI1: enrichment tiers (platform configuration)
+	root.AddCommand(newDeletionsCmd()) // M6.9 / M7a.1: deletion status, dry run, resume
+	root.AddCommand(newMigratePersonalCmd())
 	return root
 }
 
@@ -256,6 +328,13 @@ func openStoreForRole(ctx context.Context, role store.Role, dsn string) (*store.
 			return nil, fmt.Errorf("SBCI_EVIDENCE_KEY: %w", err)
 		}
 		s.SetEvidenceEncryptor(enc)
+	}
+	// SBCI_TENANT_CONTEXT_KEY[_FILE]: the tenant-context HMAC key (M3b.2,
+	// tenantkey.go). Unset ⇒ a process-random key, usable only by a login that
+	// may install it (the single-login dev posture).
+	if err := applyTenantContextKey(s); err != nil {
+		pool.Close()
+		return nil, err
 	}
 	// T-946: the budget pools' USD spend ceilings (SBCI_FREE_POOL_DAILY_USD /
 	// SBCI_FREE_POOL_MONTHLY_USD, default USD 5 / 50 for the Free pool). Both
@@ -474,12 +553,36 @@ func portalBaseURL(externalBase string) string {
 	return externalBase
 }
 
+// envPersonalPlane is the personal-plane retirement switch (D-IND-7).
+const envPersonalPlane = "SBCI_PERSONAL_PLANE"
+
+// personalPlaneFromEnv reads SBCI_PERSONAL_PLANE: unset or "serving" serves
+// the personal plane, "retired" retires it, anything else is an error that
+// stops serve from starting.
+func personalPlaneFromEnv() (string, error) {
+	mode, err := api.ParsePersonalPlane(os.Getenv(envPersonalPlane))
+	if err != nil {
+		return "", fmt.Errorf("observer-cloud: %s: %w", envPersonalPlane, err)
+	}
+	return mode, nil
+}
+
 // edgeConfigForExternalOrigin builds the authenticated Cloudflare-to-origin
 // boundary. A public deployment may never silently start in direct-origin
 // mode: its 32-byte shared secret is mandatory and malformed values fail
 // startup. Only loopback development may omit the secret, in which case the
 // API ignores every forwarded-IP header and rate-limits the direct peer.
 func edgeConfigForExternalOrigin(base, secret string) (api.EdgeConfig, error) {
+	return edgeConfigForOrigin(base, secret, envEdgeSharedSecret)
+}
+
+// envEdgeSharedSecret is the customer serve process's edge secret.
+const envEdgeSharedSecret = "SBCI_EDGE_SHARED_SECRET" //nolint:gosec // env var NAME, not a credential
+
+// edgeConfigForOrigin is edgeConfigForExternalOrigin for a secret read from
+// the variable named secretEnv, which every refusal names (the staff process
+// reads its own, SBCI_STAFF_EDGE_SHARED_SECRET).
+func edgeConfigForOrigin(base, secret, secretEnv string) (api.EdgeConfig, error) {
 	u, err := url.Parse(base)
 	if err != nil {
 		return api.EdgeConfig{}, fmt.Errorf("SBCI_EXTERNAL_BASE_URL %q is not a valid URL: %w", base, err)
@@ -494,14 +597,14 @@ func edgeConfigForExternalOrigin(base, secret string) (api.EdgeConfig, error) {
 		if loopback {
 			return api.EdgeConfig{}, nil
 		}
-		return api.EdgeConfig{}, errors.New("SBCI_EDGE_SHARED_SECRET is required for a non-loopback origin")
+		return api.EdgeConfig{}, fmt.Errorf("%s is required for a non-loopback origin", secretEnv)
 	}
 	if strings.TrimSpace(secret) != secret {
-		return api.EdgeConfig{}, errors.New("SBCI_EDGE_SHARED_SECRET must not contain leading or trailing whitespace")
+		return api.EdgeConfig{}, fmt.Errorf("%s must not contain leading or trailing whitespace", secretEnv)
 	}
 	decoded, err := hex.DecodeString(secret)
 	if err != nil || len(decoded) != 32 {
-		return api.EdgeConfig{}, errors.New("SBCI_EDGE_SHARED_SECRET must be exactly 64 hexadecimal characters (32 random bytes)")
+		return api.EdgeConfig{}, fmt.Errorf("%s must be exactly 64 hexadecimal characters (32 random bytes)", secretEnv)
 	}
 	return api.EdgeConfig{Enabled: true, AuthSecret: secret}, nil
 }
@@ -661,8 +764,52 @@ func newMigrateCmd() *cobra.Command {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "observer-cloud: migrated to schema version %d\n", v)
+			// M7b.1: the plans rows are generated from the entitlements plan
+			// catalog (the migrating login owns the table; cloud 0084 refuses
+			// any other writer). Drift fails the migrate.
+			plans, err := store.GeneratePlans(ctx, pool)
+			if err != nil {
+				return fmt.Errorf("generate the plans rows: %w", err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "observer-cloud: plans generated from the entitlements catalog: %d inserted, %d unchanged\n",
+				len(plans.Inserted), len(plans.Unchanged))
+			// M3b.2: install SBCI_TENANT_CONTEXT_KEY[_FILE] as the current
+			// tenant-context key (only the migrating login may).
+			keyID, err := installTenantContextKey(ctx, pool)
+			if err != nil {
+				return fmt.Errorf("install the tenant context key: %w", err)
+			}
+			if keyID != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "observer-cloud: tenant context key %s installed\n", keyID)
+			}
 			return nil
 		},
+	}
+}
+
+// verifyBoundStore logs the application role a serve or worker store bound
+// to and refuses to start when the database does not verify this process's
+// tenant-context key (M3b.2): every tenant read would otherwise be empty.
+func verifyBoundStore(ctx context.Context, log *slog.Logger, s *store.Store, what string) error {
+	log.Info("observer-cloud: "+what+" store bound to application role", "app_role", s.Role())
+	if err := s.VerifyTenantContext(ctx); err != nil {
+		return fmt.Errorf("observer-cloud %s: %w", what, err)
+	}
+	return nil
+}
+
+// logRouteDefaultCoverage is serve's startup readiness signal (not a gate):
+// it logs every feature with no eligible default route.
+func logRouteDefaultCoverage(ctx context.Context, log *slog.Logger, s *store.Store) {
+	coverage, err := s.FeatureDefaultCoverage(ctx)
+	if err != nil {
+		log.Warn("observer-cloud: startup route-coverage check failed", "err", err)
+		return
+	}
+	for _, c := range coverage {
+		if !c.HasDefault {
+			log.Error("observer-cloud: feature has no eligible default route (every route is plan_pinned or inactive) - ResolveRoute will 503 for accounts not pinned to one", "feature", c.Feature)
+		}
 	}
 }
 
@@ -687,7 +834,15 @@ func newServeCmd() *cobra.Command {
 				return err
 			}
 			defer s.Pool().Close()
-			log.Info("observer-cloud: serve store bound to application role", "app_role", s.Role())
+			if err := verifyBoundStore(ctx, log, s, "serve"); err != nil {
+				return err
+			}
+			// Ruling A3: the customer process serves no staff route, never
+			// holds the staff login, and its own login cannot become
+			// sbci_staff (refused in the split posture).
+			if err := checkServeIsNotStaff(ctx, log, s, os.Getenv); err != nil {
+				return err
+			}
 
 			// Readiness signal, not a gate: a feature whose only active route
 			// is plan_pinned has no eligible ResolveRoute default left (the
@@ -699,48 +854,12 @@ func newServeCmd() *cobra.Command {
 			// runbook impossible to follow. GET /healthz's
 			// "route_default_missing" field carries the same signal for
 			// external monitoring.
-			if coverage, covErr := s.FeatureDefaultCoverage(ctx); covErr != nil {
-				log.Warn("observer-cloud: startup route-coverage check failed", "err", covErr)
-			} else {
-				for _, c := range coverage {
-					if !c.HasDefault {
-						log.Error("observer-cloud: feature has no eligible default route (every route is plan_pinned or inactive) - ResolveRoute will 503 for accounts not pinned to one", "feature", c.Feature)
-					}
-				}
-			}
+			logRouteDefaultCoverage(ctx, log, s)
 
-			// W9 + the 2026-09-12 production-live arc (gaps 1.1/1.5/1.8/1.11):
-			// parse the Paddle price catalogue and confirm every configured
-			// plan actually exists before wiring it — a typo in
-			// SBCI_PADDLE_PRICES fails startup loudly instead of quietly
-			// fail-closing every future activation as unknown-price.
-			pm, err := paddlePriceMap()
+			// The Paddle price catalogue, every plan confirmed to exist.
+			pm, err := wirePaddlePrices(ctx, log, s)
 			if err != nil {
-				return fmt.Errorf("observer-cloud: SBCI_PADDLE_PRICES: %w", err)
-			}
-			if len(pm) > 0 {
-				s.SetPaddlePriceMap(pm)
-				for _, plan := range pm {
-					ok, perr := s.PlanExists(ctx, plan.Name, plan.Version)
-					if perr != nil {
-						return fmt.Errorf("observer-cloud: validate Paddle price plan %s v%d: %w", plan.Name, plan.Version, perr)
-					}
-					if !ok {
-						return fmt.Errorf("observer-cloud: a Paddle price maps to %s v%d, which is not a published plan", plan.Name, plan.Version)
-					}
-					// A price pinned to a SUPERSEDED version sells the old
-					// allowance to every NEW subscriber (existing ones are
-					// floored at their current version by the activation
-					// path). Not fatal - a deploy may roll the image before
-					// the env - but loud, because after 0041 a plus_beta v2
-					// price sells LESS than the free plan (D-299).
-					newer, nerr := s.PlanExists(ctx, plan.Name, plan.Version+1)
-					if nerr == nil && newer {
-						log.Warn("observer-cloud: a Paddle price maps to a superseded plan version - new subscribers get the old allowance; update SBCI_PADDLE_PRICES",
-							"plan", plan.Name, "mapped_version", plan.Version)
-					}
-				}
-				log.Info("observer-cloud: Paddle price map wired", "prices", len(pm))
+				return err
 			}
 			listen := strings.TrimSpace(os.Getenv("SBCI_LISTEN"))
 			if listen == "" {
@@ -751,13 +870,14 @@ func newServeCmd() *cobra.Command {
 			// without a real live client token / webhook secret / price
 			// fails startup here rather than silently serving a broken
 			// checkout in production.
-			paddleCheckout, err := paddleCheckoutFromEnv(pm, externalBaseURL(listen))
+			paddleServe, err := paddleServeConfigFromEnv(pm, externalBaseURL(listen), log)
 			if err != nil {
-				return fmt.Errorf("observer-cloud: Paddle checkout configuration: %w", err)
+				return err
 			}
-			log.Info("observer-cloud: Paddle checkout configuration",
-				"environment", paddleCheckout.Environment, "prices", len(paddleCheckout.Prices),
-				"trial_days", paddleCheckout.TrialDays, "checkout_available", paddleCheckout.Available())
+			paddleCheckout := paddleServe.checkout
+			// FR-9: the account path drops a past_due Personal Pro after the same
+			// dunning window (SBCI_PADDLE_PAST_DUE_GRACE_DAYS) the org view applies.
+			s.SetPaddlePastDueGrace(paddleServe.pastDueGrace)
 
 			startServeSweepers(ctx, s, log)
 
@@ -792,6 +912,26 @@ func newServeCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// D-IND-7: the personal-plane retirement switch. A typo must not
+			// silently keep (or retire) the plane, so an unknown value refuses
+			// to start.
+			personalPlane, err := personalPlaneFromEnv()
+			if err != nil {
+				return err
+			}
+			log.Info("observer-cloud: personal plane", "mode", personalPlane)
+			// Getting started v2: the one-step attach grant's signing key
+			// (SBCI_ATTACH_GRANT_KEY_FILE). Unset hands out no grant; a file
+			// that is set but unreadable or malformed refuses to start.
+			attachGrantKey, err := loadAttachGrantKey(os.Getenv(envAttachGrantKeyFile))
+			if err != nil {
+				return err
+			}
+			if attachGrantKey != nil {
+				log.Info("observer-cloud: attach grants on", "key_id", attachGrantKeyID(attachGrantKey))
+			} else {
+				log.Info("observer-cloud: attach grants off (" + envAttachGrantKeyFile + " unset); a connected machine joins its dashboard through the dashboard's own sign-in")
+			}
 			// C1 (gap 2.3): the dev-auth stub must be provably impossible to reach
 			// from anywhere but a loopback origin, and never combined with the
 			// WorkOS browser leg. Refuses to start rather than warning, unlike the
@@ -807,7 +947,7 @@ func newServeCmd() *cobra.Command {
 			if err := validateTwoOriginConfig(portalBase, base, portalHost, apiHost, workosBrowserLeg); err != nil {
 				return err
 			}
-			edge, err := edgeConfigForExternalOrigin(base, os.Getenv("SBCI_EDGE_SHARED_SECRET"))
+			edge, err := edgeConfigForExternalOrigin(base, os.Getenv(envEdgeSharedSecret))
 			if err != nil {
 				return err
 			}
@@ -822,13 +962,29 @@ func newServeCmd() *cobra.Command {
 			// fall back to store.DefaultBrowserSessionTTL (24h) /
 			// store.DefaultBrowserSessionIdleTTL (2h).
 			portalSessionTTL, portalSessionIdleTTL := portalSessionTTLFromEnv(log)
+			// W17: the team create allow-list switch (teamallowlist.go). A
+			// malformed value refuses to start: it is a security knob.
+			teamCreateAllowlist, err := teamCreateAllowlistFromEnv(log)
+			if err != nil {
+				return err
+			}
 			// The admission gate (FA6) answers with the SAME provider family,
 			// credential and attestation mode the worker uses.
-			family, credentials, err := chooseFamilyCredentials(log)
+			// M6.2: chooseServeIntegrations also wires the platform OIDC
+			// issuer (oidcserve.go): nil, and no route mounted, unless
+			// SBCI_OIDC_ISSUER is set.
+			family, credentials, oidcIssuer, err := chooseServeIntegrations(ctx, log, s, portalBase)
+			if err != nil {
+				return err
+			}
+			// FR-4 follow-up: the optional /metrics listener (metrics.go);
+			// off unless SBCI_METRICS_LISTEN is set, never on the public mux.
+			metricsReg, err := startMetricsListener(ctx, log, metricsGetenv, cloudmetrics.ProcessAPI, listen)
 			if err != nil {
 				return err
 			}
 			apiServer := api.New(api.Options{
+				Metrics:            metricsReg,
 				Store:              s,
 				Queue:              jobs.NewPGQueue(s),
 				Verifier:           chooseVerifier(log),
@@ -863,21 +1019,46 @@ func newServeCmd() *cobra.Command {
 				PortalSessionIdleTTL: portalSessionIdleTTL,
 				// W9 Paddle billing webhook. Unset secret ⇒ the route answers 501
 				// (fail closed); dark until the operator provisions Paddle.
-				PaddleWebhookSecret: strings.TrimSpace(os.Getenv("SBCI_PADDLE_WEBHOOK_SECRET")),
+				// Wave 17: from SBCI_PADDLE_WEBHOOK_SECRET or its _FILE.
+				PaddleWebhookSecret: paddleServe.secrets.webhookSecret,
 				// A3 (gap 1.7): the previous secret during a rotation window, so
 				// flipping SBCI_PADDLE_WEBHOOK_SECRET to a new value is never an
 				// outage; keep the old one here until Paddle confirms the new
 				// secret is live, then drop it.
-				PaddleWebhookSecrets: []string{strings.TrimSpace(os.Getenv("SBCI_PADDLE_WEBHOOK_SECRET_PREVIOUS"))},
+				PaddleWebhookSecrets: []string{paddleServe.secrets.webhookSecretPrevious},
 				// A4/A5/A6: the validated checkout catalogue GET /portal/api/billing
 				// exposes to the portal (environment, client token, prices, trial).
 				PaddleCheckout: paddleCheckout,
+				// Wave 17: Paddle customer portal sessions (nil without the
+				// API key) and the dunning grace the org plan view applies.
+				PaddlePortal:       paddleServe.portal,
+				PaddlePastDueGrace: paddleServe.pastDueGrace,
 				// R5 canonical hosts. Unset ⇒ unenforced (single-host staging).
 				PortalHost: portalHost,
 				APIHost:    apiHost,
 				// W6e: authenticate the Cloudflare-to-ACA hop before accepting the
 				// one forwarded client identity used by shared rate-limit counters.
 				Edge: edge,
+				// M6.2: the /oauth2 issuer routes; nil leaves them unmounted.
+				OIDCIssuer: oidcIssuer,
+				// M6.6: the parent domain of tenant dashboards, the only input
+				// to GET /portal/api/me/orgs CORS; unset refuses every
+				// cross-origin caller.
+				TenantDomain: strings.TrimSpace(os.Getenv("SBCI_TENANT_DOMAIN")),
+				// W17: team orgs by allow-list until GO-3 (portal-guardrails).
+				TeamCreateAllowlist: teamCreateAllowlist,
+				// C2: the portal's passkey second factor, verified by the
+				// staff console's WebAuthn code (L-92) with the portal host as
+				// the relying party.
+				PortalWebAuthn: passkey.New(),
+				// D-IND-7: serving or retired (validated above).
+				PersonalPlane: personalPlane,
+				// Getting started v2: the personal dashboard is created at
+				// sign-in unless SBCI_PERSONAL_ON_SIGNIN is "off".
+				EnsurePersonalOnSignIn: !strings.EqualFold(strings.TrimSpace(os.Getenv("SBCI_PERSONAL_ON_SIGNIN")), "off"),
+				// Getting started v2 (lane 8): signs the attach grant an
+				// approved connect request carries; nil hands out none.
+				AttachGrantKey: attachGrantKey,
 			})
 			// T-964: check once, off the start path, that the WorkOS client id and
 			// API key belong together (a key from another WorkOS environment made
@@ -1055,6 +1236,44 @@ func runCommunityMaterialization(ctx context.Context, s *store.Store, log *slog.
 	}
 }
 
+// wirePaddlePrices parses the Paddle price catalogue and confirms every
+// configured plan exists before wiring it on s (W9 and the 2026-09-12
+// production-live arc, gaps 1.1/1.5/1.8/1.11): a typo in SBCI_PADDLE_PRICES
+// fails startup loudly instead of quietly fail-closing every future
+// activation as unknown-price.
+func wirePaddlePrices(ctx context.Context, log *slog.Logger, s *store.Store) (map[string]store.PaddlePlan, error) {
+	pm, err := paddlePriceMap()
+	if err != nil {
+		return nil, fmt.Errorf("observer-cloud: SBCI_PADDLE_PRICES / SBCI_PADDLE_NO_TRIAL_PRICES: %w", err)
+	}
+	if len(pm) == 0 {
+		return pm, nil
+	}
+	s.SetPaddlePriceMap(pm)
+	for _, plan := range pm {
+		ok, perr := s.PlanExists(ctx, plan.Name, plan.Version)
+		if perr != nil {
+			return nil, fmt.Errorf("observer-cloud: validate Paddle price plan %s v%d: %w", plan.Name, plan.Version, perr)
+		}
+		if !ok {
+			return nil, fmt.Errorf("observer-cloud: a Paddle price maps to %s v%d, which is not a published plan", plan.Name, plan.Version)
+		}
+		// A price pinned to a SUPERSEDED version sells the old
+		// allowance to every NEW subscriber (existing ones are
+		// floored at their current version by the activation
+		// path). Not fatal - a deploy may roll the image before
+		// the env - but loud, because after 0041 a plus_beta v2
+		// price sells LESS than the free plan (D-299).
+		newer, nerr := s.PlanExists(ctx, plan.Name, plan.Version+1)
+		if nerr == nil && newer {
+			log.Warn("observer-cloud: a Paddle price maps to a superseded plan version - new subscribers get the old allowance; update SBCI_PADDLE_PRICES",
+				"plan", plan.Name, "mapped_version", plan.Version)
+		}
+	}
+	log.Info("observer-cloud: Paddle price map wired", "prices", len(pm))
+	return pm, nil
+}
+
 // paddlePriceMap reads the Paddle price->plan mapping from deploy env (A5 /
 // gap 1.8): SBCI_PADDLE_PRICES (multi-price: "pri_x=plan:version:interval[:
 // display]", comma-separated) plus the backward-compatible single legacy
@@ -1064,11 +1283,20 @@ func runCommunityMaterialization(ctx context.Context, s *store.Store, log *slog.
 // map ⇒ the webhook fail-closes every activation as unknown-price (the dark
 // posture until Paddle is provisioned). A malformed SBCI_PADDLE_PRICES entry
 // is a startup error, never a silently-dropped price.
+//
+// fu/billing-trial: SBCI_PADDLE_NO_TRIAL_PRICES ("pri_TRIAL=pri_NOTRIAL",
+// comma-separated) adds each catalogue price's trial-less sibling to the
+// same map with its primary's plan (store.WithPaddleNoTrialPrices), so a
+// webhook for either price resolves the plan; a bad pair fails startup.
 func paddlePriceMap() (map[string]store.PaddlePlan, error) {
-	return store.ParsePaddlePriceEntries(
+	pm, err := store.ParsePaddlePriceEntries(
 		os.Getenv("SBCI_PADDLE_PRICES"),
 		os.Getenv("SBCI_PADDLE_PRICE_PLUS"),
 	)
+	if err != nil {
+		return nil, err
+	}
+	return store.WithPaddleNoTrialPrices(pm, os.Getenv("SBCI_PADDLE_NO_TRIAL_PRICES"))
 }
 
 // paddleCheckoutFromEnv composes the validated PaddleCheckout deploy config
@@ -1076,15 +1304,19 @@ func paddlePriceMap() (map[string]store.PaddlePlan, error) {
 // already-parsed price map pm. All decision logic is the pure, tested
 // api.ValidatePaddleCheckoutEnv; this is glue only (env reads + type
 // conversion) so it needs no dedicated unit test of its own.
-func paddleCheckoutFromEnv(pm map[string]store.PaddlePlan, externalBase string) (api.PaddleCheckout, error) {
+func paddleCheckoutFromEnv(pm map[string]store.PaddlePlan, externalBase string, sec paddleSecrets) (api.PaddleCheckout, error) {
 	prices := make([]api.PaddlePriceEntry, 0, len(pm))
 	for id, p := range pm {
+		if p.NoTrialOf != "" {
+			// A trial-less sibling is never offered in the catalogue; the
+			// checkout handler offers it (fu/billing-trial).
+			continue
+		}
 		prices = append(prices, api.PaddlePriceEntry{
 			PriceID: id, PlanName: p.Name, PlanVersion: p.Version, Interval: p.Interval, Display: p.Display,
 		})
 	}
-	webhookConfigured := strings.TrimSpace(os.Getenv("SBCI_PADDLE_WEBHOOK_SECRET")) != "" ||
-		strings.TrimSpace(os.Getenv("SBCI_PADDLE_WEBHOOK_SECRET_PREVIOUS")) != ""
+	webhookConfigured := sec.webhookSecret != "" || sec.webhookSecretPrevious != ""
 	return api.ValidatePaddleCheckoutEnv(api.PaddleCheckoutEnv{
 		Environment:       os.Getenv("SBCI_PADDLE_ENV"),
 		ClientToken:       os.Getenv("SBCI_PADDLE_CLIENT_TOKEN"),
@@ -1094,6 +1326,8 @@ func paddleCheckoutFromEnv(pm map[string]store.PaddlePlan, externalBase string) 
 		// P3-f: sandbox billing on a public origin is refused unless explicitly
 		// allowed (SBCI_PADDLE_ALLOW_SANDBOX_ON_PUBLIC_ORIGIN=1, staging only).
 		OriginIsPublic: api.PaddleCheckoutEnvFromProcess(externalBase, os.Getenv),
+		// Wave 17: the API key's environment by prefix, never the key.
+		APIKeyEnvironment: sec.apiKeyEnvironment(),
 	})
 }
 
@@ -1118,7 +1352,9 @@ func newWorkerCmd() *cobra.Command {
 				return err
 			}
 			defer s.Pool().Close()
-			log.Info("observer-cloud: worker store bound to application role", "app_role", s.Role())
+			if err := verifyBoundStore(ctx, log, s, "worker"); err != nil {
+				return err
+			}
 
 			workerID := strings.TrimSpace(os.Getenv("SBCI_WORKER_ID"))
 			if workerID == "" {
@@ -1198,6 +1434,35 @@ func newWorkerCmd() *cobra.Command {
 			// finalized windows for every registered (cohort, metric) target; a
 			// window below the ≥30 floor or not yet finalized materializes nothing.
 			go runCommunityMaterialization(ctx, s, log)
+
+			// M6.4 + M6.3 worker side: the host-API client and the
+			// entitlements issuer. Off (nothing started, nothing read) unless
+			// SBCI_HOSTAPI_HOSTS_FILE is set (hostapiworker.go).
+			if err := startWorkerHostAPI(ctx, log, s); err != nil {
+				return err
+			}
+			// W16-D9: the org usage retention pass (usageretention.go).
+			if err := startUsageRetention(ctx, log, s, os.Getenv, time.Now); err != nil {
+				return err
+			}
+			// Wave 17: the scheduled seat sync (seatsync.go, through
+			// seatsync_hook.go so the public tree compiles). Off unless
+			// SBCI_PADDLE_SEAT_SYNC is report or on.
+			if err := startWorkerSeatSyncFn(ctx, log, s, os.Getenv, os.ReadFile); err != nil {
+				return err
+			}
+			// FR-4 follow-up: the worker's optional /metrics listener
+			// (metrics.go; the deletion driver's counters). The worker has no
+			// public listener.
+			metricsReg, err := startMetricsListener(ctx, log, metricsGetenv, cloudmetrics.ProcessWorker, "")
+			if err != nil {
+				return err
+			}
+			// M6.9 / M7a.1: the org deletion and account follow-up driver
+			// (orgdeletion.go).
+			if err := startOrgDeletionDriver(ctx, log, s, metricsReg); err != nil {
+				return err
+			}
 
 			log.Info("observer-cloud: worker running (Luna + digest executors over the inference seam; credential-absence + attestation gates fail closed)",
 				"worker_id", workerID, "provider", string(family), "pricing", pricingTableVersion())

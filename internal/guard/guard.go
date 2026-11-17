@@ -132,6 +132,19 @@ type Options struct {
 	// committed policy came from and how to change it, and points at no
 	// dashboard or request path (none is reachable from the sandbox).
 	BlockNotice BlockNotice
+	// ApprovalPageHidden, when non-nil, reports whether the node
+	// dashboard's Security page (where approvals are granted) is hidden on
+	// this machine by the organization's governance (the managed default).
+	// The block texts then name the CLI instead of a page the developer
+	// cannot open (CG-16). Asked only for a blocking verdict; nil = shown.
+	ApprovalPageHidden func() bool
+	// ReplayFS, when non-nil, memoizes the policy engine's filesystem
+	// lookups (symlink resolution, the hook-switch and SQL file reads) for
+	// this guard's lifetime (replayfs.go). Only a guard that REPLAYS
+	// captured history sets it - the dashboard simulation and the recipe
+	// replay - so a week of actions naming the same paths asks the
+	// filesystem once per path. Nil (every live guard) asks every time.
+	ReplayFS *ReplayFS
 }
 
 // Notifier is the alert channel seam (guard spec §3.1: notify owns
@@ -177,6 +190,9 @@ type Guard struct {
 	roots     []string
 	readFile  func(string) ([]byte, error)
 	readDir   func(string) ([]os.DirEntry, error)
+	// fs is the policy engine's filesystem seam: the live readers, or the
+	// replay memo over them (Options.ReplayFS).
+	fs fsReaders
 	// osReads reports that readFile is os.ReadFile (Options.ReadFile was
 	// nil), so the repository policy file can be read bounded straight off
 	// the filesystem (readInRepoPolicyFile, RC-10).
@@ -195,6 +211,11 @@ type Guard struct {
 	// A nil pointer means "tenancy unresolved in this process" - see
 	// Options.ManagedTenancy for what that deliberately implies.
 	managedTenancy atomic.Pointer[func() bool]
+
+	// approvalPageHidden is Options.ApprovalPageHidden behind an
+	// atomic.Pointer (SetApprovalPageHidden); nil = the Security page is
+	// shown, which keeps an individual node's texts unchanged.
+	approvalPageHidden atomic.Pointer[func() bool]
 
 	// orgBundleRejected is set when a cached org bundle EXISTS but could
 	// not be verified or parsed (signature, key pin, envelope or TOML),
@@ -362,6 +383,11 @@ type Guard struct {
 	// hot path must never contend with engine-cache loads.
 	proxyMu   sync.Mutex
 	proxySeen map[string]*proxySeen
+	// generated is the proxy prompt lane's per-session record of the
+	// secret and PII values the model or a tool already put in the
+	// conversation (promptprovenance.go): its one owner, with its own
+	// lock, so the prompt gate judges only what the developer typed.
+	generated generatedValues
 
 	// notifier + alertMin implement [guard.alerts] (MaybeAlert).
 	notifier Notifier
@@ -370,9 +396,17 @@ type Guard struct {
 	// approvals is the §6.3 grant lookup (SetApprovalLookup); nil =
 	// no approvals, every blocking verdict enforces.
 	approvals ApprovalLookup
+	// approvalCover is the optional richer grant lookup (SetApprovalCoverLookup):
+	// the same question as approvals, answered with the covering row so the
+	// verdict can name it. nil keeps every path byte-identical.
+	approvalCover ApprovalCoverLookup
 	// orgGrants is the org access-grant claim (orggrant.go,
 	// SetOrgGrantClaim); nil = no org grants.
 	orgGrants OrgGrantClaim
+	// orgGrantSession, when set (SetOrgGrantSession), begins the one
+	// conversation a verdict's peek and claim share; nil = each question
+	// asks orgGrants on its own.
+	orgGrantSession OrgGrantSession
 	// requestBase is the node dashboard origin for the org-locked deny
 	// line's request link (override.go, SetRequestAccessBase).
 	requestBase string
@@ -468,6 +502,7 @@ func New(opts Options) (*Guard, error) {
 		taint:             newTaintTracker(opts.Config.Taint),
 		watches:           make(map[string]configWatch),
 		blockNotice:       opts.BlockNotice,
+		fs:                newFSReaders(opts.ReplayFS),
 	}
 	if g.readFile == nil {
 		g.readFile = os.ReadFile
@@ -477,6 +512,9 @@ func New(opts Options) (*Guard, error) {
 	}
 	if opts.ManagedTenancy != nil {
 		g.SetManagedTenancy(opts.ManagedTenancy)
+	}
+	if opts.ApprovalPageHidden != nil {
+		g.SetApprovalPageHidden(opts.ApprovalPageHidden)
 	}
 	g.applyOrgLock(opts)
 	// A module's rule pack that does not build on its own is dropped with
@@ -730,8 +768,9 @@ func baseLadderWith(build func(org, user *policyFile) (*policy.Engine, []string,
 // layer set that would not build. notes are the load notes a base build of
 // these layers records.
 func (g *Guard) layersBuild(org, user *policyFile) (ok bool, notes []string) {
-	extra, overrides, _, notes := mergeLayersWithDisable(g.packRules, g.cfg.Rules.Disable, org, user, nil, nil)
-	notes = append(notes, configDisableOrgFloorIssues(org, g.cfg.Rules.Disable)...)
+	cfgDisable := g.configDisable()
+	extra, overrides, _, notes := mergeLayersLocked(g.packRules, cfgDisable, g.managedLock(), org, user, nil, nil)
+	notes = append(notes, g.configDisableNotes(org)...)
 	known := map[string]bool{}
 	for _, info := range policy.Catalog() {
 		known[info.ID] = true
@@ -740,7 +779,7 @@ func (g *Guard) layersBuild(org, user *policyFile) (ok bool, notes []string) {
 		known[extra[i].ID] = true
 	}
 	disabled := map[string]bool{}
-	for _, id := range effectiveConfigDisable(org, g.cfg.Rules.Disable) {
+	for _, id := range effectiveConfigDisable(org, cfgDisable) {
 		disabled[id] = true
 	}
 	for _, ov := range overrides {
@@ -828,16 +867,17 @@ func (g *Guard) buildEngineWith(mode policy.Mode, org, user, project, trusted *p
 // config-disable floor notes; they are returned on failure too.
 func (g *Guard) buildEngineNotes(mode policy.Mode, org, user, project, trusted *policyFile, in engineBudgetInputs) (*policy.Engine, []string, error) {
 	engineBuilds.Add(1)
-	extra, overrides, layerDisable, mergeIssues := mergeLayersWithDisable(g.packRules, g.cfg.Rules.Disable, org, user, project, trusted)
+	cfgDisable := g.configDisable()
+	extra, overrides, layerDisable, mergeIssues := mergeLayersLocked(g.packRules, cfgDisable, g.managedLock(), org, user, project, trusted)
 	notes := mergeIssues
-	notes = append(notes, configDisableOrgFloorIssues(org, g.cfg.Rules.Disable)...)
-	eng, err := g.newEngine(mode, extra, overrides, layerDisable, in)
+	notes = append(notes, g.configDisableNotes(org)...)
+	eng, err := g.newEngine(mode, extra, overrides, cfgDisable, layerDisable, in)
 	return eng, notes, err
 }
 
 // newEngine is policy.New over the guard's configuration and one merged
 // layer set.
-func (g *Guard) newEngine(mode policy.Mode, extra []policy.Rule, overrides []policy.Override, layerDisable []string, in engineBudgetInputs) (*policy.Engine, error) {
+func (g *Guard) newEngine(mode policy.Mode, extra []policy.Rule, overrides []policy.Override, cfgDisable, layerDisable []string, in engineBudgetInputs) (*policy.Engine, error) {
 	budget := in.budget
 	budgetSoft := in.soft
 	// Boundary slices pass through as-is: nil (section absent) lets
@@ -853,15 +893,15 @@ func (g *Guard) newEngine(mode policy.Mode, extra []policy.Rule, overrides []pol
 		ProtectedPathClasses: g.cfg.Boundary.ProtectedPathClasses,
 		// The database and network families' inputs (R-125, R-126, R-176).
 		DatabaseProdPatterns: g.cfg.Database.ProdPatterns,
-		ReadSQLFile:          readSQLFileBounded,
+		ReadSQLFile:          g.fsSeam().sqlFile,
 		NetworkAllowHosts:    g.cfg.Network.AllowHosts,
 		NetworkDenyHosts:     g.cfg.Network.DenyHosts,
 		KnownProjectRoots:    g.roots,
-		ResolveLinks:         resolveExistingLinks,
+		ResolveLinks:         g.fsSeam().resolveLinks,
 		// R-162 (T-910): the hook-switch table and the reader that lets
 		// an edit be judged on the whole file it produces.
 		HookSwitches: hookSwitchesForPolicy(),
-		ReadFile:     readHookSwitchFile,
+		ReadFile:     g.fsSeam().hookFile,
 		// R-168 (lane cli-2): the registry's launcher verbs, so an agent
 		// running `observer claude` is asked like `observer launch`.
 		LaunchVerbs: launchVerbsForPolicy(),
@@ -872,10 +912,12 @@ func (g *Guard) newEngine(mode policy.Mode, extra []policy.Rule, overrides []pol
 		// Config-level disables ([guard.rules] disable) unioned with the
 		// trusted per-project layer's `disable` list (empty on New /
 		// ReloadOrgLayer, where trusted is nil — byte-identical to the
-		// pre-arc Disabled: g.cfg.Rules.Disable).
+		// pre-arc Disabled: g.cfg.Rules.Disable). cfgDisable is that
+		// list without the ids the managed-node lock ignores
+		// (managedlock.go).
 		// policy.New keeps every org-floored row whatever this lists
 		// (OSH-R-014); configDisableOrgFloorIssues above says so.
-		Disabled:   unionDisable(g.cfg.Rules.Disable, layerDisable),
+		Disabled:   unionDisable(cfgDisable, layerDisable),
 		ExtraRules: extra,
 		Overrides:  appendOverrides(overrides, budgetSoft),
 		// [guard.budget] (§12.1): thresholds for the B-601..B-604 $ rows;
@@ -948,8 +990,21 @@ func (g *Guard) PolicyStates() []PolicyState {
 func (g *Guard) Mode() policy.Mode { return g.set.Load().mode }
 
 // RuleCount returns the base engine's active rule-row count (status
-// surfaces).
+// surfaces). A rule id can own several rows (one per event kind or matcher
+// form), so this is larger than RuleIDCount.
 func (g *Guard) RuleCount() int { return g.set.Load().base().RuleCount() }
+
+// RuleIDCount returns the number of distinct rule ids in the base engine:
+// the count the dashboard's Rules tab shows ("Effective rules (n)"). Demo
+// bug #12: the tab said 81 while `observer guard status` said 131 rows, and
+// neither said which it counted.
+func (g *Guard) RuleIDCount() int {
+	seen := map[string]struct{}{}
+	for _, r := range g.EffectiveRules() {
+		seen[r.ID] = struct{}{}
+	}
+	return len(seen)
+}
 
 // MaybeAlert fires a desktop notification for a verdict that meets
 // the [guard.alerts] threshold (desktop enabled at construction +

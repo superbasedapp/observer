@@ -3,6 +3,8 @@ package guard
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"strconv"
+	"strings"
 
 	"github.com/marmutapp/superbased-observer/internal/policy"
 )
@@ -38,6 +40,32 @@ func (g *Guard) SetApprovalLookup(fn ApprovalLookup) {
 	g.approvals = fn
 }
 
+// ApprovalCover is the covering approval a richer lookup found.
+type ApprovalCover struct {
+	// Found says an active approval covers the rule for this scope.
+	Found bool
+	// ID is the approval row id and GrantedBy its grantor ("" when the lookup
+	// does not know them). When several rows cover, the narrowest scope wins
+	// (session, then project, then global), then the lowest id.
+	ID        int64
+	GrantedBy string
+}
+
+// ApprovalCoverLookup is ApprovalLookup that also says WHICH approval covers
+// (plan docs/plans/security-assessments-module-plan-2026-11-13.md section
+// 13.7), so a verdict a relaxation changed names it. The error contract is
+// ApprovalLookup's: a lookup that could not be answered returns Found false
+// and a non-nil error, never a silent grant.
+type ApprovalCoverLookup func(ruleID, sessionID, projectRootHash string) (ApprovalCover, error)
+
+// SetApprovalCoverLookup wires the richer grant lookup beside SetApprovalLookup.
+// When it is set it is consulted in place of the plain lookup, so exactly one
+// read answers the question; nil (the default, and every process that does not
+// wire it) leaves the plain lookup and the verdict text exactly as they were.
+func (g *Guard) SetApprovalCoverLookup(fn ApprovalCoverLookup) {
+	g.approvalCover = fn
+}
+
 // SessionProjectRootLookup resolves the project root a session belongs
 // to ("" when unknown). It exists because the LANES DISAGREE about
 // what an event carries (adversarial review P2-7): a host that names
@@ -62,10 +90,19 @@ func (g *Guard) SetSessionProjectRootLookup(fn SessionProjectRootLookup) {
 	g.projectRootForSession = fn
 }
 
-// approvalProjectRootHash is the projectRootHash the grant lookup is
-// asked with, an ordered table walked top down (P-232):
+// GrantProject is the project a verdict's grant question is asked under:
+// the raw root (node-local, the request form shows it) and its
+// HashProjectRoot digest (what a project-scoped grant or approval is
+// matched against). Zero value: no project (matches no project grant).
+type GrantProject struct {
+	Root string
+	Hash string
+}
+
+// grantProject resolves the project the grant lookup is asked with, an
+// ordered table walked top down (P-232):
 //
-//	| # | the event carries                 | hashed root                         |
+//	| # | the event carries                 | root                                |
 //	|---|-----------------------------------|-------------------------------------|
 //	| 1 | ProjectRoot (the host named it)   | ProjectRoot                         |
 //	| 2 | ProjectLookupRoot (boundary-made) | ProjectLookupRoot                   |
@@ -81,18 +118,43 @@ func (g *Guard) SetSessionProjectRootLookup(fn SessionProjectRootLookup) {
 // grant. Before P-232 this row was missing, the hash was always "" on
 // that lane, and a project grant never downgraded a hook verdict.
 // Row 3 is the proxy lane, and it runs only on the already-rare
-// blocking path, so no allow-path request pays the read.
+// blocking (or recorded) path, so no allow-path request pays the read.
+//
+// It is the ONE resolver for both uses (GRANT-20): the grant matcher
+// (approvalProjectRootHash) and the guard_events writer
+// (stampGrantProject -> ActionVerdict.GrantProject ->
+// guard_events.project_root / project_root_hash, agent migration 253), so
+// a request drafted from the row is scoped to the project the gate will
+// match the next call on, not the session's start project.
+func (g *Guard) grantProject(ev *policy.Event) GrantProject {
+	root := ""
+	switch {
+	case ev == nil:
+	case ev.ProjectRoot != "":
+		root = ev.ProjectRoot
+	case ev.ProjectLookupRoot != "":
+		root = ev.ProjectLookupRoot
+	case g.projectRootForSession != nil && ev.SessionID != "":
+		root = g.projectRootForSession(ev.SessionID)
+	}
+	return GrantProject{Root: root, Hash: HashProjectRoot(root)}
+}
+
+// approvalProjectRootHash is the projectRootHash the grant lookup is asked
+// with: grantProject's digest.
 func (g *Guard) approvalProjectRootHash(ev *policy.Event) string {
-	if ev.ProjectRoot != "" {
-		return HashProjectRoot(ev.ProjectRoot)
+	return g.grantProject(ev).Hash
+}
+
+// stampGrantProject records on a verdict about to be persisted the project
+// its grant question was (or would have been) asked under, so the audit row
+// carries it (GRANT-20). A verdict below flag that is not a guard error is
+// never written, so it is left alone and pays no session read.
+func (g *Guard) stampGrantProject(av *ActionVerdict, ev *policy.Event) {
+	if av.Verdict.Decision < policy.DecisionFlag && !av.GuardError {
+		return
 	}
-	if ev.ProjectLookupRoot != "" {
-		return HashProjectRoot(ev.ProjectLookupRoot)
-	}
-	if g.projectRootForSession == nil || ev.SessionID == "" {
-		return ""
-	}
-	return HashProjectRoot(g.projectRootForSession(ev.SessionID))
+	av.GrantProject = g.grantProject(ev)
 }
 
 // approvalLookupFailedNote is the reason suffix a verdict carries when the
@@ -155,7 +217,17 @@ func (g *Guard) applyApprovals(v policy.Verdict, ev *policy.Event, lane string) 
 	es := g.set.Load()
 	locked := orgLockedVerdict(v, g.orgLocksVerdictRule(es, v.RuleID, eventProjectRoot(ev)))
 	var lookupErr error
+	var cover ApprovalCover
 	localApproved := func() bool {
+		if g.approvalCover != nil {
+			c, err := g.approvalCover(v.RuleID, ev.SessionID, g.approvalProjectRootHash(ev))
+			if err != nil {
+				lookupErr = err
+				return false
+			}
+			cover = c
+			return c.Found
+		}
 		if g.approvals == nil {
 			return false
 		}
@@ -181,12 +253,47 @@ func (g *Guard) applyApprovals(v policy.Verdict, ev *policy.Event, lane string) 
 		return v, approvalOutcome{}
 	}
 	if locked {
-		v.Reason += " [org_locked: an org policy locks " + v.RuleID + "; the local approval was ignored]"
+		v.Reason += orgLockedNote(g.orgLockCause(es, v.RuleID, eventProjectRoot(ev)), v.RuleID)
 		return v, approvalOutcome{}
 	}
 	v.Decision = policy.DecisionFlag
-	v.Reason += " [approved: an operator grant covers this rule for this scope]"
+	v.Reason += approvedNote(cover)
 	return v, approvalOutcome{degradedFrom: "approved"}
+}
+
+// approvedNote is the reason suffix of a verdict a local approval lifted. The
+// plain lookup names no approval; the richer one (SetApprovalCoverLookup) names
+// the covering row and its grantor, so the audit row says which approval
+// changed the verdict (plan section 13.7).
+func approvedNote(c ApprovalCover) string {
+	if c.ID <= 0 {
+		return " [approved: an operator grant covers this rule for this scope]"
+	}
+	who := ""
+	if c.GrantedBy != "" {
+		who = " (" + sanitizeApprovalGrantor(c.GrantedBy) + ")"
+	}
+	return " [approved: approval #" + strconv.FormatInt(c.ID, 10) + who + " covers this rule for this scope]"
+}
+
+// sanitizeApprovalGrantor bounds and cleans the grantor text a reason carries:
+// it is operator-chosen on the dashboard and the CLI, so a bracket or a control
+// character must not forge a second note.
+func sanitizeApprovalGrantor(s string) string {
+	const maxLen = 80
+	var b strings.Builder
+	for _, r := range s {
+		if b.Len() >= maxLen {
+			break
+		}
+		switch {
+		case r == '[' || r == ']' || r < 0x20 || r == 0x7f:
+			b.WriteByte('_')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // eventProjectRoot is the root ev's project layer is looked up under (the

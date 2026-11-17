@@ -4,9 +4,9 @@
     {
       "name": "archive",
       "dir": "internal/archivestore/migrations",
-      "head": 2,
-      "ref": "v1.37.1",
-      "commit": "aa7b9ac8e04fcdffdaa7170d1997934e2f964483",
+      "head": 3,
+      "ref": "v1.38.0",
+      "commit": "15c4c88b071dbaabba55731c24774e06937ad194",
       "steps": [
         {
           "file": "001_archive_codeintel.sql",
@@ -15,15 +15,19 @@
         {
           "file": "002_archive_process.sql",
           "blob": "8a5c2122437d36a34a13ccc5d2d3f2ed4eefc740"
+        },
+        {
+          "file": "003_archive_process_capture.sql",
+          "blob": "a6446d090d8fc5737448940ed8e443f60fc97732"
         }
       ]
     },
     {
       "name": "cloud",
       "dir": "internal/cloudserver/db/migrations",
-      "head": 44,
-      "ref": "v1.37.1",
-      "commit": "aa7b9ac8e04fcdffdaa7170d1997934e2f964483",
+      "head": 134,
+      "ref": "ca7cb7d013",
+      "commit": "ca7cb7d01359039d66064be4294b29f13989f9dd",
       "steps": [
         {
           "file": "0001_roles.sql",
@@ -200,6 +204,210 @@
         {
           "file": "0044_pool_spend_ceiling.sql",
           "blob": "d07150909c9cb739a8c2cef5f0a15b55b0162a7c"
+        },
+        {
+          "file": "0045_openai_compatible_route.sql",
+          "blob": "c9b56a6fc0b188184ff718a3e0a4c8a84f4b76b5"
+        },
+        {
+          "file": "0046_openai_compatible_route_contract.sql",
+          "blob": "1843d566bf9b02e289dfaf8e097ff0dee5d62e21"
+        },
+        {
+          "file": "0047_org_registry.sql",
+          "blob": "040b80bb3aee16467d0c4edb2534f605d7c90bd8"
+        },
+        {
+          "file": "0048_org_registry_policies.sql",
+          "blob": "01d6e1b627c537ff30984f5267619c8dcfdb3a48"
+        },
+        {
+          "file": "0049_org_outbox_and_deletion_requests.sql",
+          "blob": "921033b9e8e7b10285336c8512606d1985ba22aa"
+        },
+        {
+          "file": "0050_billing_org_id.sql",
+          "blob": "f721608ee8dfa717f7981733f58aa786ca379d33"
+        },
+        {
+          "file": "0051_oidc_issuer.sql",
+          "blob": "9e328a445bd1d74824cfed9e852dbd1e9722543b"
+        },
+        {
+          "file": "0052_oidc_issuer_grants.sql",
+          "blob": "38baa9cf91e6e0487cf027e895c0f52c772b6165"
+        },
+        {
+          "file": "0053_oidc_audit_mirror.sql",
+          "blob": "75fd996b16ccbe867af46ba8635110653d8d1052"
+        },
+        {
+          "file": "0054_oidc_sub_seen_trigger.sql",
+          "blob": "6c599807a42306c077d71f758a3c5d3c0725015d"
+        },
+        {
+          "file": "0055_signed_documents.sql",
+          "blob": "eb51f5b7ad33fb83bacb5ca28bfd36d467f319d0"
+        },
+        {
+          "file": "0056_signed_documents_grants.sql",
+          "blob": "8f5cf433f76d269f7a485dee7c522034aff0d300"
+        },
+        {
+          "file": "0058_org_outbox_dispatch.sql",
+          "blob": "b89383b50eeb82240a2d924cea18ca6511c6b17f"
+        },
+        {
+          "file": "0059_org_outbox_worker_policies.sql",
+          "blob": "366b15457c29d76d9ccde651acb6b4c4bc49b69d"
+        },
+        {
+          "file": "0060_org_reconcile_findings.sql",
+          "blob": "f94f1340f6edd383ec577f59f6f9b59ab96f31d0"
+        },
+        {
+          "file": "0066_tenant_context_keys.sql",
+          "blob": "a937f205d10196e327dfa4ce5f975acc85fced0f"
+        },
+        {
+          "file": "0067_tenant_context_mac.sql",
+          "blob": "6c64f9fcb0c710f2923d322cfa646cfb52ceccfa"
+        },
+        {
+          "file": "0068_staff_role.sql",
+          "blob": "f4a17487358b8d4745e84bb536ddf8fec213dd79"
+        },
+        {
+          "file": "0069_staff_tables.sql",
+          "blob": "b73befa71647eb0085950aec7ab5eee815b6ab22"
+        },
+        {
+          "file": "0070_staff_policies.sql",
+          "blob": "4ee3354b102aabb3b64f1b7fb43cbef4fa594659"
+        },
+        {
+          "file": "0074_account_verified_emails.sql",
+          "blob": "fd291cb6ad64b50dbc7b8780fdd9cdae32da8a48"
+        },
+        {
+          "file": "0075_account_verified_emails_policy.sql",
+          "blob": "7d65ce12d925434b68535471b7fb7895eb5b301d"
+        },
+        {
+          "file": "0076_staff_login.sql",
+          "blob": "9f8d82fb00464ea2b192d554c2fdb6f34d7c50c4"
+        },
+        {
+          "file": "0078_enrichment_token_budgets.sql",
+          "blob": "59d21401b03de88bf94eac00ae370c646fd3c379"
+        },
+        {
+          "file": "0079_plan_v5_token_budgets.sql",
+          "blob": "c9288ce2bf03f299ed7f88c8b59328b15c737e3f"
+        },
+        {
+          "file": "0082_definer_execute_revoke_public.sql",
+          "blob": "a923aa4b69957db3fb13ec2d949a178a8a682ca0"
+        },
+        {
+          "file": "0083_oidc_auth_time.sql",
+          "blob": "bf5275f3116c63bba7881bb24496aa0783288ad7"
+        },
+        {
+          "file": "0084_plans_generated_only.sql",
+          "blob": "c2d039cccaca4c79410c623a8ca7cfe2fd472929"
+        },
+        {
+          "file": "0085_org_usage_days.sql",
+          "blob": "aba504b941f49915e3c8dba9984b92e7a78790ef"
+        },
+        {
+          "file": "0087_oidc_support_codes.sql",
+          "blob": "b5a35caca8c7fd50cb802e215a786c792abdcb9a"
+        },
+        {
+          "file": "0088_oidc_support_target.sql",
+          "blob": "f4486e4762ac66e90e798c2cfee26484196ab857"
+        },
+        {
+          "file": "0089_worker_org_kind.sql",
+          "blob": "62b21d57fee2b7c0efd8fdb129eead536e1ef9ec"
+        },
+        {
+          "file": "0090_paddle_org_scope.sql",
+          "blob": "7d89c884e811088877e17e797accaf510cd1581c"
+        },
+        {
+          "file": "0091_portal_org_reads.sql",
+          "blob": "d8c4d09b0de6b8ed6779606c5f39bf8a1e1fc557"
+        },
+        {
+          "file": "0092_worker_org_slug.sql",
+          "blob": "e5362ad66a1fd29fa133886b263061c18c3c8300"
+        },
+        {
+          "file": "0093_worker_create_owner.sql",
+          "blob": "575d3257f221cd5def655e24f303c388efdf5c97"
+        },
+        {
+          "file": "0094_team_org_limits.sql",
+          "blob": "b77b30dc1f5c8a043e66ad96a5da95d2c3d59b5f"
+        },
+        {
+          "file": "0095_org_plan_grants.sql",
+          "blob": "5076cc61de1f07a049933642b56b1e9ec9cdd507"
+        },
+        {
+          "file": "0096_worker_create_owner_verified.sql",
+          "blob": "f6d847a5f1a2dc9b3bbff5d2d471e50c64890502"
+        },
+        {
+          "file": "0097_signed_doc_version_floors.sql",
+          "blob": "fa1e478c41cac75ba803e6ef13b20ea13402f96e"
+        },
+        {
+          "file": "0098_paddle_past_due_since.sql",
+          "blob": "a02ea50c9e18f1d3e0017f97407083dd28be6973"
+        },
+        {
+          "file": "0099_paddle_past_due_since_backfill.sql",
+          "blob": "d0a7290b67963b6eb933aa40df3f0d1dc06b2c6f"
+        },
+        {
+          "file": "0100_org_usage_seat_count.sql",
+          "blob": "1843ad876517de75276b57da91d5ca48c7387373"
+        },
+        {
+          "file": "0101_org_usage_retention.sql",
+          "blob": "0e6bad5334384f5330866b6b8836bf972ccd8731"
+        },
+        {
+          "file": "0120_org_account_deletion.sql",
+          "blob": "ee861a752f77207a8b8d77782e1212de91653bbf"
+        },
+        {
+          "file": "0121_org_members_deletion_worker_policies.sql",
+          "blob": "f0cd8c567831118b8227ab57ca3473302081c613"
+        },
+        {
+          "file": "0130_team_create_allowlist.sql",
+          "blob": "cb24b2d609204931d5218be9e561494cbecd2ab5"
+        },
+        {
+          "file": "0131_portal_passkeys.sql",
+          "blob": "4b6c3791d724e17fa07b2ad2cf8e67f1080ba170"
+        },
+        {
+          "file": "0132_portal_passkeys_policies.sql",
+          "blob": "147d4007c2c363d437813e0b0c50ca8a568b96b5"
+        },
+        {
+          "file": "0133_staff_console_reads.sql",
+          "blob": "ffb78c1d3462656daea538751c12f1482948057e"
+        },
+        {
+          "file": "0134_personal_migrations.sql",
+          "blob": "31f94297a370e4e0c6d003a919740ffd9b1207c8"
         }
       ]
     },
@@ -207,8 +415,8 @@
       "name": "edge-wal",
       "dir": "internal/edge/wal/migrations",
       "head": 1,
-      "ref": "v1.37.1",
-      "commit": "aa7b9ac8e04fcdffdaa7170d1997934e2f964483",
+      "ref": "v1.38.0",
+      "commit": "15c4c88b071dbaabba55731c24774e06937ad194",
       "steps": [
         {
           "file": "001_edge_wal.sql",
@@ -219,9 +427,9 @@
     {
       "name": "node",
       "dir": "internal/db/migrations",
-      "head": 211,
-      "ref": "v1.37.1",
-      "commit": "aa7b9ac8e04fcdffdaa7170d1997934e2f964483",
+      "head": 248,
+      "ref": "v1.38.0",
+      "commit": "15c4c88b071dbaabba55731c24774e06937ad194",
       "steps": [
         {
           "file": "001_initial.sql",
@@ -1022,15 +1230,95 @@
         {
           "file": "211_action_fk_child_indexes.sql",
           "blob": "4825bd009c7f547ffb7f85af58828f9c6eecb323"
+        },
+        {
+          "file": "212_process_capture_budget.sql",
+          "blob": "0f5037f968ee529ded70c713ee9ee89e80928e2b"
+        },
+        {
+          "file": "215_codeintel_complexity.sql",
+          "blob": "3b778bd17384b1ea710ca1c93932c12512ce72a9"
+        },
+        {
+          "file": "217_process_runs_service_root_idx.sql",
+          "blob": "aaf3d8725ee641e62274e25d325ccb295e77303b"
+        },
+        {
+          "file": "218_guard_approvals_unique.sql",
+          "blob": "6698a9b16f5d48175a56c06f6695437b1d7207ff"
+        },
+        {
+          "file": "219_project_quality_daily.sql",
+          "blob": "05e7f2b762cea305e6b28029ed928e85ec8fb4a3"
+        },
+        {
+          "file": "220_terminal_run_initiator.sql",
+          "blob": "b396dcee33fd31db2146ffeed2bf40f700790578"
+        },
+        {
+          "file": "221_project_quality_complexity.sql",
+          "blob": "2a7e7fb9123496bec5bba68f3f7a9bd547c4eddd"
+        },
+        {
+          "file": "222_tool_installs_subject.sql",
+          "blob": "d8f33e40a7b7ffd7f314893314d5fa56d131865b"
+        },
+        {
+          "file": "223_tooltax_action_type_backfill_3.sql",
+          "blob": "c1a16c24713c3116cad03975a2874e28f5d2b68b"
+        },
+        {
+          "file": "230_sandbox_egress_refusals.sql",
+          "blob": "da5708edf89c3d988a55e610567454567f2995c9"
+        },
+        {
+          "file": "231_sandbox_egress_refusal_drops.sql",
+          "blob": "e1c15ed837fe807a3cba2f00dbe8c3de61846927"
+        },
+        {
+          "file": "232_terminal_run_seccomp.sql",
+          "blob": "9cae7fb2fb13b2afe4100129153c72e08a7537ec"
+        },
+        {
+          "file": "233_sandbox_egress_refusal_link_loss.sql",
+          "blob": "d56a304610e552800d367d1b729b2281aba73406"
+        },
+        {
+          "file": "240_session_execution_location.sql",
+          "blob": "0de9dfb6203886d0d009b873621ab70fad118440"
+        },
+        {
+          "file": "241_cloud_agents_state.sql",
+          "blob": "7ab17b2f688afc6292857ae6a96d6c89d04401a7"
+        },
+        {
+          "file": "244_cloud_session_ship_tokens.sql",
+          "blob": "a00ec8ca134f5e7a40a04c85e7e5f0d7d71a12e7"
+        },
+        {
+          "file": "245_session_reported_via_token.sql",
+          "blob": "f085c40a642a433bf8d09663116bdd26ba067442"
+        },
+        {
+          "file": "246_cloud_session_links.sql",
+          "blob": "a546a5c87f739c0b9a2011e200214b4f57a4baca"
+        },
+        {
+          "file": "247_cloud_connector_vendor_user.sql",
+          "blob": "2fb94c62b0af8de34bcb45e39e686c3e37423e70"
+        },
+        {
+          "file": "248_plan_usage_daily.sql",
+          "blob": "5aa3a9ad65e415e70183b65a456f8d0422783f38"
         }
       ]
     },
     {
       "name": "org-pg",
       "dir": "internal/orgserver/db/pgmigrations",
-      "head": 140,
-      "ref": "v1.37.1",
-      "commit": "aa7b9ac8e04fcdffdaa7170d1997934e2f964483",
+      "head": 477,
+      "ref": "ca7cb7d013",
+      "commit": "ca7cb7d01359039d66064be4294b29f13989f9dd",
       "steps": [
         {
           "file": "0001_baseline.sql",
@@ -1559,15 +1847,411 @@
         {
           "file": "0140_project_root_path_key.sql",
           "blob": "c42246ed109237c808cb0d76c6b2235c21fbbbf6"
+        },
+        {
+          "file": "0141_org_setup_claim.sql",
+          "blob": "99b3b853eefa1f98647e9935672ffc85721d1e12"
+        },
+        {
+          "file": "0142_security_switch.sql",
+          "blob": "8a6094c438fb973a27a6c1ccda7d2adda942347c"
+        },
+        {
+          "file": "0143_session_process_capture.sql",
+          "blob": "1f086321941b48eb0409e341bc10794eb90872be"
+        },
+        {
+          "file": "0160_sandbox_posture_seccomp.sql",
+          "blob": "faaf5b2653c735da37197cebb38f8f5653fbbbf5"
+        },
+        {
+          "file": "0161_openshell_control.sql",
+          "blob": "2d7f4a1db4a7396318314fbfb47b60bec081cd7c"
+        },
+        {
+          "file": "0162_openshell_gateway.sql",
+          "blob": "dfabfdc03a1dcfc9b4c4f4bb19000bce983e4907"
+        },
+        {
+          "file": "0163_openshell_collects.sql",
+          "blob": "73b60a2b880ac2494865044a17eb9f410f8ee71e"
+        },
+        {
+          "file": "0164_openshell_last_decide.sql",
+          "blob": "2b6a22233fd47141ed412483cbd65f95c5010a19"
+        },
+        {
+          "file": "0170_session_execution_location.sql",
+          "blob": "0d640551b85495043785c0720714317c194f9708"
+        },
+        {
+          "file": "0171_cloud_session_ship_tokens.sql",
+          "blob": "3578f82bbe3a9384e700b8c14a7a2c0ee8e62635"
+        },
+        {
+          "file": "0172_cloud_session_token_volume.sql",
+          "blob": "f26e7c915c5bf1a0c8e4a8d69c96ce40a410bebb"
+        },
+        {
+          "file": "0173_cloud_session_projections.sql",
+          "blob": "e498a8b622a42e5f77988fbf8bf1ea6ef3fc63b9"
+        },
+        {
+          "file": "0174_session_cloud_projection.sql",
+          "blob": "e0f8ec23b6ed9801ecde3f627919cfe7aac0848e"
+        },
+        {
+          "file": "0175_cloud_projection_identity_source.sql",
+          "blob": "78f59f3e1f6bbef5a8a2608b6547088cc325723b"
+        },
+        {
+          "file": "0176_cloud_session_settings.sql",
+          "blob": "7ec160767ee479c3fb196810f74e5b28b68c1a16"
+        },
+        {
+          "file": "0180_member_notification_prefs.sql",
+          "blob": "6ad7ba1fda68e29c04777a55f2051d6083f6d7e1"
+        },
+        {
+          "file": "0181_auth_sessions.sql",
+          "blob": "f2b613c1f91d1031cde91f989bf4c74c6f2fd14a"
+        },
+        {
+          "file": "0182_member_node_keys.sql",
+          "blob": "dae129b9c633c9cabb56fffa8a911b95dfc20454"
+        },
+        {
+          "file": "0183_auth_pending_txns.sql",
+          "blob": "cd71a6f8622d3d20f8dae8aeb9e0c2c189db3f67"
+        },
+        {
+          "file": "0184_sandbox_egress_refusal_days.sql",
+          "blob": "4315ed75c9adb9d55f19980dd1e40c8be50bc606"
+        },
+        {
+          "file": "0185_admin_fleet_key.sql",
+          "blob": "200261fe91bf8d06a92d4939f6719afa1d56aff1"
+        },
+        {
+          "file": "0186_tenancy_role_prefix.sql",
+          "blob": "f54887365b2580ae6c7df3f92f93f758676eafe6"
+        },
+        {
+          "file": "0187_tenancy_roles.sql",
+          "blob": "6a7d989b76180112c17bb3fa08e1dff7c8dc9aa2"
+        },
+        {
+          "file": "0188_platform_secrets.sql",
+          "blob": "3d09e99913be62d3d778e1d3357a50344595934a"
+        },
+        {
+          "file": "0189_tenant_context.sql",
+          "blob": "24bd16c26bf616eb58603d0628f170b02216a8be"
+        },
+        {
+          "file": "0190_tenancy_installer.sql",
+          "blob": "de8e007cb6f313712d9459948fad9a69f0c67ec7"
+        },
+        {
+          "file": "0191_tenancy_policies.sql",
+          "blob": "0882c870ce60a7179394797d12af509a7a7f96f4"
+        },
+        {
+          "file": "0200_tenancy_default_org.sql",
+          "blob": "7bb0a706d1e5d3a9dd649a2657162401421a7c70"
+        },
+        {
+          "file": "0201_tenancy_org_id_columns.sql",
+          "blob": "f88ab611ad49a3d3b4973c67f527ebcd81ff9686"
+        },
+        {
+          "file": "0202_tenancy_identity_keys.sql",
+          "blob": "d6b31af0c1ca4cec6a4be35ba753d00a690a2988"
+        },
+        {
+          "file": "0203_tenancy_org_keys.sql",
+          "blob": "829cb8affa8d93cbe51aaa1fedd534bb238f4b8d"
+        },
+        {
+          "file": "0204_tenancy_policies_keyed.sql",
+          "blob": "f1ba7091ca4ba35411f5e9f22cdc798e3c285085"
+        },
+        {
+          "file": "0205_tenancy_conflict_keys.sql",
+          "blob": "2e7044e5f9eae76bee2ed267c7cdf62129a5e17e"
+        },
+        {
+          "file": "0206_tenancy_parent_keys.sql",
+          "blob": "641246bf2b0e523e31334d5043b3d2dbf9ba196b"
+        },
+        {
+          "file": "0207_tenancy_remaining_keys.sql",
+          "blob": "34f72fe872f0fe98dab355775905cfafa81afdf1"
+        },
+        {
+          "file": "0220_tenant_job_state.sql",
+          "blob": "50ef53770f388e93faca9ca567e86e57f76c924d"
+        },
+        {
+          "file": "0221_tenancy_policies.sql",
+          "blob": "3942b9c748c0d4344de8fcfc0337902759a90277"
+        },
+        {
+          "file": "0225_tenancy_shapes.sql",
+          "blob": "7d8a139cf31d631659ce0e61732f7a489d25b571"
+        },
+        {
+          "file": "0230_session_holds.sql",
+          "blob": "7d2bf6170459a8bc1ade66c247850286c24f6beb"
+        },
+        {
+          "file": "0231_tenancy_policies.sql",
+          "blob": "75780d812c41ec3096e7c1145801cb12132d0ddc"
+        },
+        {
+          "file": "0240_tenant_hosts.sql",
+          "blob": "8169d057a4dd146f831462b8ac86793f0b7109f9"
+        },
+        {
+          "file": "0241_tenancy_policies.sql",
+          "blob": "544374e4c1985811c2cf3c2f0a4dcb77aca0458d"
+        },
+        {
+          "file": "0245_sessions_id_user_index.sql",
+          "blob": "a455ce60b62769b6334d61bd9245b75823a0fe50"
+        },
+        {
+          "file": "0246_signin_invitations.sql",
+          "blob": "b39289513929ef6acfe8eb2afbdd256f1b311ac2"
+        },
+        {
+          "file": "0247_tenancy_policies.sql",
+          "blob": "e995d7d537fe02ad6723967d497d09774a06b06a"
+        },
+        {
+          "file": "0248_tenant_context_key_state.sql",
+          "blob": "25795071fb944e94e5723eca98bae069b59a0f4d"
+        },
+        {
+          "file": "0250_tenancy_org_per_tenant.sql",
+          "blob": "75bffcecbbe3d59a85a4026a892f7cf32b2836b2"
+        },
+        {
+          "file": "0260_org_kind.sql",
+          "blob": "956e3cc5c6433ac52eb1fdf71bf8073c4bae3af0"
+        },
+        {
+          "file": "0261_tenant_lifecycle.sql",
+          "blob": "4fa8001b5d25ed087932e9459a14a17c7eea653d"
+        },
+        {
+          "file": "0262_tenancy_policies.sql",
+          "blob": "df38be3fab58724ce72e3fbcb7ac617dd6b6d78e"
+        },
+        {
+          "file": "0263_tenant_provision_grants.sql",
+          "blob": "e60ea117cb0911a314211a7efa14bae21972b7ea"
+        },
+        {
+          "file": "0265_tenant_keys.sql",
+          "blob": "faf91ae52b1d672402ff26852fe6c289ca0adb68"
+        },
+        {
+          "file": "0266_tenancy_policies.sql",
+          "blob": "df9381ebb2280bfab8303b78cdd9f88d63db1db2"
+        },
+        {
+          "file": "0267_tenant_keys_host_writes.sql",
+          "blob": "7ad5e0eeee8137b2f92546f4ee1e4bfee0496361"
+        },
+        {
+          "file": "0285_tenant_keys_purge.sql",
+          "blob": "1d621e05ed731b95dca09dfcfa6da5528e4b78ae"
+        },
+        {
+          "file": "0290_support_access.sql",
+          "blob": "0b1eb5294efbbb77454bb1bd1b9d2853ab821369"
+        },
+        {
+          "file": "0291_operator_actions.sql",
+          "blob": "80900c3724f0badc11518a06a4fff58fdae78c4a"
+        },
+        {
+          "file": "0292_tenancy_policies.sql",
+          "blob": "927e2ac9abed7c00080fd9fcd0729239d6691c29"
+        },
+        {
+          "file": "0295_apply_parked.sql",
+          "blob": "dc12f82beef4268702ca25990af3f0280f09371c"
+        },
+        {
+          "file": "0296_tenancy_policies.sql",
+          "blob": "e57dfb43009dee119d08f7d9bf0286d193dab505"
+        },
+        {
+          "file": "0297_apply_parked_host_writes.sql",
+          "blob": "3030637891b4bf0d32e2a5dfc2e6b3929591a983"
+        },
+        {
+          "file": "0300_availability_documents.sql",
+          "blob": "388958e66c9b694334162580e0cf8957a8470e38"
+        },
+        {
+          "file": "0301_availability_host_writes.sql",
+          "blob": "73dd4959f24b811f9eaff8c718af2f1523cac4b9"
+        },
+        {
+          "file": "0302_tenancy_policies.sql",
+          "blob": "ef4c881a859af8dd846bcd7076e387498b78204e"
+        },
+        {
+          "file": "0305_recovery_links.sql",
+          "blob": "c2c4efc13112d792a01ed58240617721bc583ca4"
+        },
+        {
+          "file": "0306_tenancy_policies.sql",
+          "blob": "d5f177a5df87f26ab60cf69a0b3d13031777ffc8"
+        },
+        {
+          "file": "0307_tenancy_policies.sql",
+          "blob": "babae77adba51bda56272fa13b69eff83f496f4c"
+        },
+        {
+          "file": "0310_tenant_keys_saml_sp.sql",
+          "blob": "7ac833583801579bb7a986e5236b6c2359de7515"
+        },
+        {
+          "file": "0311_tenant_keys_saml_sp_validate.sql",
+          "blob": "16c85f9069551516e7b3ed1b98e79f07d61b9ffd"
+        },
+        {
+          "file": "0315_host_api_state.sql",
+          "blob": "d0b17d41dc60340679f8d3e304391303c9d742d2"
+        },
+        {
+          "file": "0316_host_api_host_writes.sql",
+          "blob": "bd13afa92f7fc140630e793dddbd2d0512c6bbca"
+        },
+        {
+          "file": "0317_tenancy_policies.sql",
+          "blob": "2378c5581fa57ae8e10d0e8b294ee2d8c122d9bc"
+        },
+        {
+          "file": "0318_quota_state.sql",
+          "blob": "05d1f8225d517e547f5d2a75d2aa3d7f02cc1a7b"
+        },
+        {
+          "file": "0319_quota_host_writes_and_oplog_kinds.sql",
+          "blob": "e104c2b5a80cd31cae97590f5712eaf41e4fc325"
+        },
+        {
+          "file": "0320_oplog_kinds_validate.sql",
+          "blob": "dfbc146b3e81a15213145dd2b63d9751fc230b7b"
+        },
+        {
+          "file": "0321_tenancy_policies.sql",
+          "blob": "2aedac77b61682f16903a47f2884a045765adc74"
+        },
+        {
+          "file": "0322_tenancy_policies.sql",
+          "blob": "59b597378037a75382262121e7b31c4d7669326d"
+        },
+        {
+          "file": "0323_apply_parked_refusals.sql",
+          "blob": "1f0d672a2b23781dcf4654441e0f5508f0626e3e"
+        },
+        {
+          "file": "0324_apply_parked_refusals_validate.sql",
+          "blob": "a49efa95b12f308ed3a62a77d9b24dbfa662d85c"
+        },
+        {
+          "file": "0325_host_api_calls_retention.sql",
+          "blob": "dd37f2866f729c2be793510464c8ded78ae4a075"
+        },
+        {
+          "file": "0337_intel_platform.sql",
+          "blob": "99d130ac4dcfcee3c940d2be7b8a0bb1946e0bec"
+        },
+        {
+          "file": "0338_tenancy_policies.sql",
+          "blob": "90a28b006515137e5909bb80939e34d82b51a7fa"
+        },
+        {
+          "file": "0340_quota_state_retention.sql",
+          "blob": "4911d918d9c2f476b54b365e7d79680318fd7102"
+        },
+        {
+          "file": "0341_quota_state_retention_validate.sql",
+          "blob": "745f3b21f8968b00ff0667dcb257d569f9d1496f"
+        },
+        {
+          "file": "0346_oplog_recovery_revoked_kind.sql",
+          "blob": "c0042548ff3aaceb98be0da09bb4ea896b34b6a1"
+        },
+        {
+          "file": "0347_oplog_recovery_revoked_kind_validate.sql",
+          "blob": "64800f5102c361c1e919bc32c448dabfe601dad5"
+        },
+        {
+          "file": "0359_intel_platform_hold_session.sql",
+          "blob": "5c8ad0708b6d14eb0755e3dd89f134eb3eb77669"
+        },
+        {
+          "file": "0360_intel_platform_hold_session_index.sql",
+          "blob": "316aeea3e25dbe41844513ee29222c206703611f"
+        },
+        {
+          "file": "0400_agent_access_org_switch.sql",
+          "blob": "a32b353dec1662ce74a930251002276a6aeadbad"
+        },
+        {
+          "file": "0450_org_component_choice.sql",
+          "blob": "89f29fa2cc0792df8989d8cb73384b3f3b98297e"
+        },
+        {
+          "file": "0451_tenancy_policies.sql",
+          "blob": "0df027fd6e9d6dab242aed883626d92cbbe089f4"
+        },
+        {
+          "file": "0470_org_purge_runs.sql",
+          "blob": "a07a18f7c9fd7bb81244c062569a0846de5187a6"
+        },
+        {
+          "file": "0471_tenancy_policies.sql",
+          "blob": "43659d527096d6e09f1fa9402972788bbc80e0a7"
+        },
+        {
+          "file": "0472_org_intel_results_import_ref.sql",
+          "blob": "a65c553b6ea6fd5e8862f70549beca309ccdfb53"
+        },
+        {
+          "file": "0473_org_intel_results_import_ref_idx.sql",
+          "blob": "2c9859cc203d35f4194e26392dace5ac73438bbc"
+        },
+        {
+          "file": "0474_otel_direct.sql",
+          "blob": "973b8d2a841116d67b6fb11425d7ac05d0b1a285"
+        },
+        {
+          "file": "0475_api_turns_org_user_request_idx.sql",
+          "blob": "b38a2b7b3ef0520e472f1085b6e5a9d0e35612ed"
+        },
+        {
+          "file": "0476_otel_direct_validate.sql",
+          "blob": "730a561e19a94fda02e642fe1678de22fa20d1ce"
+        },
+        {
+          "file": "0477_otel_direct_capture_backfill.sql",
+          "blob": "4081cc98529c7cf2ec6cc116eb9bfd7d751c76a0"
         }
       ]
     },
     {
       "name": "org-sqlite",
       "dir": "internal/orgserver/db/migrations",
-      "head": 273,
-      "ref": "v1.37.1",
-      "commit": "aa7b9ac8e04fcdffdaa7170d1997934e2f964483",
+      "head": 312,
+      "ref": "v1.38.0",
+      "commit": "15c4c88b071dbaabba55731c24774e06937ad194",
       "steps": [
         {
           "file": "001_initial.sql",
@@ -2628,6 +3312,78 @@
         {
           "file": "273_project_root_path_key.sql",
           "blob": "5e60589d35e5e81639189bbbb736984d76d92f74"
+        },
+        {
+          "file": "274_org_setup_claim.sql",
+          "blob": "284f76250293bafc80f21202bdf1fbec6f6379bd"
+        },
+        {
+          "file": "275_security_switch.sql",
+          "blob": "de014254d02241adb87824f95b1c704fb5b141cb"
+        },
+        {
+          "file": "276_session_process_capture.sql",
+          "blob": "aa1ede5694595bc855fd5ad386f89541bb4e4470"
+        },
+        {
+          "file": "290_sandbox_posture_seccomp.sql",
+          "blob": "d7902198ab11b49423fe051580036fe0829fd87a"
+        },
+        {
+          "file": "291_openshell_control.sql",
+          "blob": "beceb76899836e94c3bb58ec900ae051f7b2a4ad"
+        },
+        {
+          "file": "292_openshell_gateway.sql",
+          "blob": "2780402980e067442d56cc2c51d2d0d6ee74f84d"
+        },
+        {
+          "file": "293_openshell_collects.sql",
+          "blob": "a09f2250c2c0c6521c0e5b4b7ce7998a9c9f0da8"
+        },
+        {
+          "file": "294_openshell_last_decide.sql",
+          "blob": "9c21d581294008938204118181dfbc86c1d7483a"
+        },
+        {
+          "file": "300_session_execution_location.sql",
+          "blob": "db8c6796a557598eb18d3cd1045c6e107c7890d7"
+        },
+        {
+          "file": "301_cloud_session_ship_tokens.sql",
+          "blob": "8c9a55dd8b07ad1313542f55c351998dd7440edd"
+        },
+        {
+          "file": "302_cloud_session_token_volume.sql",
+          "blob": "529d2c3b4d4186a625725b27cde66caa096e367a"
+        },
+        {
+          "file": "303_cloud_session_projections.sql",
+          "blob": "95f49b30ee5239fafcfe1e277470d1c98eca2066"
+        },
+        {
+          "file": "304_session_cloud_projection.sql",
+          "blob": "30d6f61a957ee81e2673c5bdabec59782c4e8e2a"
+        },
+        {
+          "file": "305_cloud_projection_identity_source.sql",
+          "blob": "115b8a892caa1d1f662f7b18895bd7875a6cd844"
+        },
+        {
+          "file": "306_cloud_session_settings.sql",
+          "blob": "c0b1d9c18ffd43f4ab875b7d97200c16412dba9a"
+        },
+        {
+          "file": "310_member_notification_prefs.sql",
+          "blob": "991619d6e9de9df5a785946745fb0bc5247416a1"
+        },
+        {
+          "file": "311_auth_sessions.sql",
+          "blob": "9406c2b69beb67b8bd99ba8b939cc811f4ca4131"
+        },
+        {
+          "file": "312_member_node_keys.sql",
+          "blob": "7393cfdc6b7c88fc272991045c81f407c9cf92b9"
         }
       ]
     }

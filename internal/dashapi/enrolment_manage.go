@@ -20,8 +20,9 @@ type EnrolmentManager interface {
 	Enrol(ctx context.Context, req EnrolRequest) (EnrolOutcome, error)
 	// DecideGrant records (accept) or declines a parked grant offer.
 	DecideGrant(ctx context.Context, offerID string, accept bool) (GrantDecision, error)
-	// StartIdP begins a sign-in enrolment (`observer enroll --idp`).
-	StartIdP(ctx context.Context, orgURL string) (IdPStart, error)
+	// StartIdP begins a sign-in enrolment (`observer enroll --idp`). opts
+	// carries the drop choice for a switch from another organization (R3-78).
+	StartIdP(ctx context.Context, orgURL string, opts SwitchOptions) (IdPStart, error)
 	// PollIdP advances a sign-in enrolment one step; on approval it enrols.
 	PollIdP(ctx context.Context, flowID string) (IdPPoll, error)
 	// GrantReport is `observer org grant show` as data.
@@ -36,8 +37,17 @@ type EnrolmentManager interface {
 	// confirm=false only counts, confirm=true queues already-pushed rows that
 	// changed on this node (and deletion manifests) for a re-send.
 	Resync(ctx context.Context, confirm bool) (ResyncReport, error)
-	// Leave is `observer unenroll`, including its symmetric cleanup.
-	Leave(ctx context.Context) (LeaveReport, error)
+	// Leave is `observer unenroll`, including its symmetric cleanup. opts
+	// carries the drop choice (`--drop-unsent`, R3-78).
+	Leave(ctx context.Context, opts SwitchOptions) (LeaveReport, error)
+}
+
+// SwitchOptions is the explicit choice a switch or a leave may carry (R3-78):
+// DropUnsent proceeds even when the rows still waiting for the current
+// organization could not be sent to it first (`--drop-unsent`, the
+// dashboard's "Switch anyway" / "Leave anyway"). The zero value refuses.
+type SwitchOptions struct {
+	DropUnsent bool `json:"drop_unsent"`
 }
 
 // EnrolNote is one line of outcome copy with a tone.
@@ -155,6 +165,9 @@ type EnrolRequest struct {
 	OrgURL string `json:"org_url"`
 	Token  string `json:"token"`
 	Link   string `json:"link"`
+	// DropUnsent is the explicit "Switch anyway" after an unsent_rows
+	// refusal (R3-78; SwitchOptions).
+	DropUnsent bool `json:"drop_unsent,omitempty"`
 }
 
 // EnrolOutcome is what an enrolment did.

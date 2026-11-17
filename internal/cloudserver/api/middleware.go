@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // authenticate is the device-auth middleware: Bearer token introspection →
@@ -180,13 +181,41 @@ const auditLogPrefixLen = 8
 // workspace revision-unhealthy.kql and healthz-and-restarts.kql already
 // query, closing that gap for every event this function has ever recorded —
 // not just those two.
+//
+// It is also the metrics seam (metrics.go): every event is counted in
+// sbci_audit_events_total under its closed label, written or not. An event
+// listed in auditRowLimits whose request carries an audit source is written
+// at most once per (event, source) per window (auditlimit.go, AUDITRL-1);
+// a suppressed row is counted in sbci_audit_rows_suppressed_total, logged at
+// DEBUG, and its count rides on the next written row's detail.
 func (s *Server) audit(ctx context.Context, accountID, event string) {
-	if err := s.store.RecordAudit(ctx, accountID, event, ""); err != nil {
+	s.metrics.AuditEvent(event)
+	detail, carried := "", 0
+	if window, limited := auditRowLimits[event]; limited {
+		if src, ok := auditSourceFrom(ctx); ok {
+			now := time.Now
+			if s.now != nil {
+				now = s.now
+			}
+			write, c := s.auditLimit.admit(event, src, window, now())
+			if !write {
+				s.metrics.AuditRowSuppressed(event)
+				s.log.Debug("cloudserver/api: audit row suppressed (same event and source inside its window)", "event", event)
+				return
+			}
+			carried, detail = c, auditRowDetail(c, window)
+		}
+	}
+	if err := s.store.RecordAudit(ctx, accountID, event, detail); err != nil {
 		s.log.Warn("cloudserver/api: audit write failed", "event", event, "err", err)
 	}
 	prefix := accountID
 	if len(prefix) > auditLogPrefixLen {
 		prefix = prefix[:auditLogPrefixLen]
+	}
+	if carried > 0 {
+		s.log.Info("cloudserver/api: audit", "event", event, "account_id_prefix", prefix, "suppressed_rows", carried)
+		return
 	}
 	s.log.Info("cloudserver/api: audit", "event", event, "account_id_prefix", prefix)
 }

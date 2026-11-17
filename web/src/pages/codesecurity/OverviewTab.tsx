@@ -18,6 +18,7 @@ import { problemCounts, scannerProblems, type ScannerProblem, type ScannerProble
 import { coverageSummary, hasCoverage, reasonGroups } from "@/lib/secCoverage";
 import type { CodeSecurityTab } from "@/lib/nodePageTabs";
 import { toneOf } from "@shared/lib/tone";
+import { SecAssessCard } from "@/components/secassess/SecAssessCard";
 import { NamedLoading } from "./NamedLoading";
 import { ScanJobSummary } from "./ScanJobSummary";
 import { SEVERITY_TONE } from "./ProjectsCard";
@@ -402,6 +403,8 @@ export function OverviewTab({
             <ScanJobSummary job={scan.job} onOpenScan={onOpenScan} steps={steps} />
           </ChartState>
         </Card>
+
+        <SecAssessCard projects={projects} />
       </div>
     </div>
   );

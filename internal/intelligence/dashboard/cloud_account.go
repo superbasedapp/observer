@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/marmutapp/superbased-observer/internal/dashapi"
+	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
@@ -113,7 +114,7 @@ func (s *Server) cloudAccountSeams(w http.ResponseWriter) (*CloudAccountSeams, b
 // sessions are stamped authority='org' and are excluded from personal cloud
 // enrichment (internal/store/dataauthority.go, internal/cloudevidence), so a
 // personal sign-in here would complete but enrich nothing.
-const cloudOrgEnrolledMessage = "org-enrolled: personal cloud sign-in is managed by your organization and is unavailable on this node"
+const cloudOrgEnrolledMessage = "org-enrolled: personal sign-in is managed by your organization and is unavailable on this machine"
 
 // orgEnrolled reports whether this node is currently enrolled in an org,
 // reading the SAME local seam handleEnrolmentStatus uses (Options.OrgClient) —
@@ -131,20 +132,36 @@ func (s *Server) orgEnrolled(ctx context.Context) (enrolled bool, orgName string
 	return true, st.OrgName
 }
 
+// cloudLoginManagedRefusal reports whether a personal sign-in is refused
+// here: only on a machine an ORGANIZATION manages, whose identity and
+// content belong to the organization. Getting started v2 lifted the refusal
+// for an individual connection (a personal dashboard or an individual team
+// connection): there the sign-in is the person's own SuperBased account,
+// the same one `observer connect` signs in with, and signing in never moves
+// data. An enrolment whose kind cannot be read stays refused (fail closed),
+// as before.
+func (s *Server) cloudLoginManagedRefusal(ctx context.Context) bool {
+	enrolled, _ := s.orgEnrolled(ctx)
+	if !enrolled {
+		return false
+	}
+	return s.enrolmentTenancy(ctx) != orgcontract.TenancyIndividual
+}
+
 // handleCloudLogin serves POST /api/cloud/login: spawns `observer cloud login`
 // (one at a time) and returns the login state. A missing client id is refused
 // up front with the honest "set [cloud].workos_client_id or WORKOS_CLIENT_ID"
 // line — the CLI would only print how to configure and exit 0, which the page
 // could not tell from a sign-in. A second POST while one runs returns the
 // current state (200) rather than a second spawn. An org-enrolled node refuses
-// with 409 BEFORE any subprocess is spawned — enterprise-first (see
-// cloudOrgEnrolledMessage).
+// with 409 BEFORE any subprocess is spawned when an organization manages it
+// — enterprise-first (see cloudOrgEnrolledMessage, cloudLoginManagedRefusal).
 func (s *Server) handleCloudLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
-	if enrolled, _ := s.orgEnrolled(r.Context()); enrolled {
+	if s.cloudLoginManagedRefusal(r.Context()) {
 		writeJSONStatus(w, http.StatusConflict, map[string]string{
 			"error":   "org_enrolled",
 			"message": cloudOrgEnrolledMessage,
@@ -162,7 +179,7 @@ func (s *Server) handleCloudLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !st.ClientIDConfigured {
-			http.Error(w, "no WorkOS client id is configured - enter it under Advanced in Settings > Cloud Intelligence ([cloud].workos_client_id) and save, or set the WORKOS_CLIENT_ID environment variable, then try again", http.StatusConflict)
+			http.Error(w, "no WorkOS client id is configured - enter it under Advanced in Settings > Account ([cloud].workos_client_id) and save, or set the WORKOS_CLIENT_ID environment variable, then try again", http.StatusConflict)
 			return
 		}
 	}

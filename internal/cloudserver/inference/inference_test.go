@@ -20,6 +20,7 @@ func TestDialectTable(t *testing.T) {
 		{"chat_completions", true, FamilyFoundry, false, false, AttestationContentLogging},
 		{"responses_store_false", true, FamilyFoundry, true, false, AttestationContentLogging},
 		{"anthropic_messages", true, FamilyAnthropic, false, true, AttestationDisclosedOnly},
+		{"openai_compatible", true, FamilyOpenAICompatible, false, true, AttestationDisclosedOnly},
 		{"", false, "", false, false, ""},
 		{"Anthropic_Messages", false, "", false, false, ""},
 		{"openai_responses", false, "", false, false, ""},

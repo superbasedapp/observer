@@ -57,8 +57,8 @@ var Actions = []Action{ActionDiscover, ActionList, ActionCall, ActionRead, Actio
 // ResourceType::Task{target, id} (crates/agentgateway/src/mcp/session.rs),
 // and the celObject the compilers render is that resource alone. On
 // agentgateway v1.5.0 the CEL context had NO method discriminator at all;
-// the pinned v1.6.0 sets mcp.methodName (rbac.rs
-// McpAuthorizationSet::validate, T-749), but no compiler conjoins it yet,
+// v1.6.0 and the pinned v1.7.0 set mcp.methodName (rbac.rs
+// McpAuthorizationSet::validate, T-749, re-checked PT-95), but no compiler conjoins it yet,
 // so a grant on one task action would still compile to a rule covering all
 // three - a silent widening R8.30.g forbids. Lint therefore refuses every task-action grant with a typed
 // feature_unavailable ERROR, from all four compilers identically (R8.1).

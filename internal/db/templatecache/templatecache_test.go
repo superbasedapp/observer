@@ -453,15 +453,17 @@ func TestPruneRemovesOnlyStaleFilesOfTheLineage(t *testing.T) {
 }
 
 // TestPackageIsTestSupportOnly keeps this package out of shipped binaries:
-// the only non-test importers allowed are the two fixture packages, which are
-// themselves reached only from tests (dbtemplate pins that for itself in
-// TestPackageIsTestOnly).
+// the only non-test importers allowed are the files of the two fixture
+// packages, which are themselves reached only from tests (dbtemplate pins that
+// for itself in TestPackageIsTestOnly). The allow-list names packages, not
+// files, so a fixture package may split its own code across files; any other
+// package, production or not, is still an offender.
 func TestPackageIsTestSupportOnly(t *testing.T) {
 	root := moduleRoot(t)
 	const self = "internal/db/templatecache"
-	allowed := map[string]bool{
-		filepath.FromSlash("internal/db/dbtemplate/dbtemplate.go"):   true,
-		filepath.FromSlash("internal/orgserver/db/dbtest/dbtest.go"): true,
+	allowedPkgs := map[string]bool{
+		filepath.FromSlash("internal/db/dbtemplate"):       true,
+		filepath.FromSlash("internal/orgserver/db/dbtest"): true,
 	}
 	var offenders []string
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -485,7 +487,7 @@ func TestPackageIsTestSupportOnly(t *testing.T) {
 		for _, imp := range file.Imports {
 			if strings.HasSuffix(strings.Trim(imp.Path.Value, `"`), self) {
 				rel, _ := filepath.Rel(root, path)
-				if !allowed[rel] {
+				if !allowedPkgs[filepath.Dir(rel)] {
 					offenders = append(offenders, rel)
 				}
 			}

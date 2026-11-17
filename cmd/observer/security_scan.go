@@ -398,6 +398,7 @@ func (e *depsScanEnv) depsDriverWith(component string, runner *extrun.Runner, on
 			Submodules: e.submodules, ArtifactDirs: artifacts.On, ArtifactOff: artifacts.Off,
 		}
 		e.wireReachGo(&env)
+		env.InventorySink = e.inventorySink()
 		if factory := isolationFactoryFor(componentSnapshotForConfig(e.cfg), filepath.Dir(e.dir), nil); factory != nil {
 			env.Isolate = e.scalibrIsolate(factory, epochs)
 			env.IsolatedRunner = func(p extrun.IsolationProvider) *extrun.Runner {
@@ -406,7 +407,7 @@ func (e *depsScanEnv) depsDriverWith(component string, runner *extrun.Runner, on
 		}
 		return depdriver.NewScalibr(env), nil
 	case depscan.OSVComponent:
-		d := depsOSVDriver(runner, e.db.Dir(), epochs, filepath.Join(e.dir, "osv-canary"))
+		d := depsOSVDriver(runner, e.db.Dir(), epochs, filepath.Join(e.dir, "osv-canary"), e.inventorySink())
 		if d == nil {
 			return nil, nil
 		}

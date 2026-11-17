@@ -1,16 +1,15 @@
 package judgeclient
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/dataauthority"
+	"github.com/marmutapp/superbased-observer/internal/llmwire"
 )
 
 // Client calls an OpenAI-compatible /chat/completions endpoint (OpenRouter by
@@ -72,6 +71,10 @@ const (
 	defaultJudgeRetries = 1
 	// judgeRetryBackoff is the pause between judge attempts (context-bounded).
 	judgeRetryBackoff = 400 * time.Millisecond
+	// judgeMaxResponseBytes caps the upstream body read.
+	judgeMaxResponseBytes = 1 << 20
+	// judgeSystemPrompt is the fixed judge instruction.
+	judgeSystemPrompt = "You are a strict evaluation judge. Reply with a JSON object {\"score\": <0..1>, \"rationale\": <short>} and nothing else."
 )
 
 // New returns a judge client for baseURL with credential hv (the
@@ -147,98 +150,55 @@ func (j Client) Complete(ctx context.Context, model, prompt string) (string, err
 	if j.scrubPrompt != nil {
 		prompt = j.scrubPrompt(prompt)
 	}
-	reqBody := map[string]any{
-		"model":       model,
-		"temperature": 0,
-		"messages": []map[string]string{
-			{"role": "system", "content": "You are a strict evaluation judge. Reply with a JSON object {\"score\": <0..1>, \"rationale\": <short>} and nothing else."},
-			{"role": "user", "content": prompt},
-		},
-	}
-	if j.maxTokens > 0 {
-		reqBody["max_tokens"] = j.maxTokens
+	req := llmwire.Request{
+		Model:       model,
+		System:      judgeSystemPrompt,
+		Messages:    []llmwire.Message{{Role: llmwire.RoleUser, Content: prompt}},
+		MaxTokens:   j.maxTokens,
+		Temperature: new(float64),
 	}
 	// num_ctx is an Ollama-specific knob: only a local host understands it, and
 	// only a local host tolerates an unknown field (a hosted API would 400), so
 	// it is gated on local.
 	if j.local && j.numCtx > 0 {
-		reqBody["num_ctx"] = j.numCtx
-	}
-	raw, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", fmt.Errorf("judge: marshal: %w", err)
+		req.NumCtx = j.numCtx
 	}
 
-	body, status, err := j.doWithRetry(ctx, raw)
+	// A transport error or 5xx is retried up to j.retries additional times with
+	// a short backoff (gap-audit §5.3); a 4xx returns at once. The context
+	// bounds every attempt and each backoff sleep.
+	cl, err := llmwire.NewClient(j.httpc,
+		llmwire.WithRetry(llmwire.RetryPolicy{
+			Retries: j.retries,
+			On:      llmwire.RetryTransport | llmwire.RetryServerError,
+			Backoff: judgeRetryBackoff,
+		}),
+		llmwire.WithMaxResponseBytes(judgeMaxResponseBytes),
+		llmwire.WithHeaders(map[string]string{
+			"X-SBO-Eval": "true",                     // attribution marker (plan §15 Q4)
+			"X-Title":    "superbased-observer eval", // OpenRouter etiquette
+		}),
+		llmwire.WithRawErrors(),
+	)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("judge: %w", err)
 	}
-	if status != http.StatusOK {
-		return "", fmt.Errorf("judge: upstream %d: %s", status, truncateJudge(string(body), 300))
-	}
-	var parsed struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		return "", fmt.Errorf("judge: decode response: %w", err)
-	}
-	if len(parsed.Choices) == 0 {
+	out, err := cl.Complete(ctx, j.baseURL, j.hv, req)
+	var se *llmwire.StatusError
+	var te *llmwire.TransportError
+	switch {
+	case errors.As(err, &se):
+		return "", fmt.Errorf("judge: upstream %d: %s", se.StatusCode, truncateJudge(se.Body, 300))
+	case errors.As(err, &te):
+		return "", fmt.Errorf("judge: request: %w", te.Err)
+	case errors.Is(err, llmwire.ErrNoChoices):
 		return "", fmt.Errorf("judge: empty choices in response")
+	case errors.Is(err, llmwire.ErrDecode):
+		return "", fmt.Errorf("judge: decode response: %s", strings.TrimPrefix(err.Error(), llmwire.ErrDecode.Error()+": "))
+	case err != nil:
+		return "", fmt.Errorf("judge: %w", err)
 	}
-	return parsed.Choices[0].Message.Content, nil
-}
-
-// doWithRetry posts the marshalled judge body, retrying on a retryable failure
-// — a transport error, a request timeout, or a 5xx upstream — up to j.retries
-// additional attempts with a short backoff between them (gap-audit §5.3: the
-// single Do() had no resilience to a transient blip). A 4xx is returned
-// immediately (a bad request will not fix itself on retry). The context bounds
-// every attempt AND each backoff sleep, so a cancelled/expired context ends the
-// loop promptly. Returns the (capped) response body + status of the final
-// attempt, or the last transport error.
-func (j Client) doWithRetry(ctx context.Context, raw []byte) ([]byte, int, error) {
-	attempts := j.retries + 1
-	if attempts < 1 {
-		attempts = 1
-	}
-	var lastErr error
-	for attempt := 0; attempt < attempts; attempt++ {
-		if attempt > 0 {
-			select {
-			case <-ctx.Done():
-				return nil, 0, fmt.Errorf("judge: request: %w", ctx.Err())
-			case <-time.After(judgeRetryBackoff):
-			}
-		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, j.baseURL+"/chat/completions", bytes.NewReader(raw))
-		if err != nil {
-			return nil, 0, fmt.Errorf("judge: new request: %w", err)
-		}
-		req.Header.Set("Content-Type", "application/json")
-		if j.hv != "" { // a loopback/local judge may run keyless
-			req.Header.Set("Authorization", "Bearer "+j.hv)
-		}
-		req.Header.Set("X-SBO-Eval", "true")                  // attribution marker (plan §15 Q4)
-		req.Header.Set("X-Title", "superbased-observer eval") // OpenRouter etiquette
-
-		resp, err := j.httpc.Do(req)
-		if err != nil {
-			lastErr = fmt.Errorf("judge: request: %w", err)
-			continue // transport error / timeout — retryable
-		}
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		_ = resp.Body.Close()
-		if resp.StatusCode >= 500 && attempt < attempts-1 {
-			lastErr = fmt.Errorf("judge: upstream %d: %s", resp.StatusCode, truncateJudge(string(body), 300))
-			continue // 5xx — retryable
-		}
-		return body, resp.StatusCode, nil
-	}
-	return nil, 0, lastErr
+	return out.Content, nil
 }
 
 func truncateJudge(s string, n int) string {

@@ -104,7 +104,7 @@ func newHostedHarness(t *testing.T, vendor string) *hostedHarness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	keys := hostedTestEnv(t, map[string]string{"E2B_API_KEY": "e2b_FAKEKEY_harness", "MODAL_TOKEN_ID": "id", "MODAL_TOKEN_SECRET": "s", "VERCEL_TOKEN": "t", "VERCEL_TEAM_ID": "team", "VERCEL_PROJECT_ID": "prj"})
+	keys := hostedTestEnv(t, map[string]string{"E2B_API_KEY": "e2b_FAKEKEY_harness", "MODAL_TOKEN_ID": "id", "MODAL_TOKEN_SECRET": "s", "VERCEL_TOKEN": "t", "VERCEL_TEAM_ID": "team", "VERCEL_PROJECT_ID": "prj", "INSTABOX_API_KEY": "ibk_FAKEKEY_harness", "DAYTONA_API_KEY": "d"})
 	_ = keys
 	v, _ := sandboxremote.VendorFor(vendor)
 	inR, inW := io.Pipe()
@@ -511,7 +511,7 @@ func waitFor(t *testing.T, cond func() bool) {
 // guest end (the S11b resize decision for the guest-helper rows), and the
 // run ends with the agent's own exit code and a confirmed delete.
 func TestHostedHostGuestPTY(t *testing.T) {
-	for _, vendor := range []string{sandboxremote.VendorModal, sandboxremote.VendorVercel} {
+	for _, vendor := range []string{sandboxremote.VendorModal, sandboxremote.VendorVercel, sandboxremote.VendorInstaBox, sandboxremote.VendorDaytona} {
 		t.Run(vendor, func(t *testing.T) { testHostedHostGuestPTY(t, vendor) })
 	}
 }

@@ -377,6 +377,7 @@ func sandboxBackendListWith(cfg config.TerminalSandboxConfig, av sandbox.Availab
 		e := dashapi.SandboxBackendAvail{
 			ID: row.ID, Label: row.Label, Class: string(row.Iso.Class), Location: string(row.Iso.Location),
 			Maturity: string(row.Maturity), Phase: row.Phase, Component: sandboxComponent,
+			MasksWorkspaceSecrets: row.CanMaskWorkspaceSecrets(),
 		}
 		for _, t := range row.Net.Egress {
 			e.Egress = append(e.Egress, string(t))

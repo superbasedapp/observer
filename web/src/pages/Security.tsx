@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
+import { GatedLink } from "@/components/GatedLink";
 import clsx from "clsx";
 import {
   ChartShell,
@@ -52,6 +53,7 @@ import type {
 } from "@/lib/types";
 import { RuleManager } from "./security/RuleManager";
 import { RecipesCard } from "./security/RecipesCard";
+import { orgLockNote } from "./security/orgLock";
 import { keepSelected } from "@/lib/pickerOptions";
 import { useSessionOptions } from "@/lib/usePickerSources";
 import { MCPAccessSection } from "@/components/security/MCPAccessSection";
@@ -186,6 +188,9 @@ type GuardEvent = {
   enforced: boolean;
   source?: string;
   reason?: string;
+  // The reason exactly as stored, present only when `reason` reads the
+  // org-lock cause of a row written before the note named it.
+  stored_reason?: string;
   target_excerpt?: string;
   taint_origin?: string;
   // Org-granted override posture of this row's RULE under the org
@@ -286,9 +291,9 @@ function CodeSecurityLink() {
   return (
     <p className="mb-4 text-small text-fg-3" data-testid="guard-code-security-link">
       Findings, the commit gate and repository trust live on{" "}
-      <Link to="/code-security" className="text-accent hover:underline">
+      <GatedLink to="/code-security" managed="Code security (managed by your organization)" className="text-accent hover:underline">
         Code security
-      </Link>
+      </GatedLink>
       .
     </p>
   );
@@ -480,7 +485,10 @@ export function SecurityPage() {
         // no grant, a grant for another scope, a failed lookup, an org lock.
         const why = whyNotDowngraded(row.original, activeApprovals);
         return (
-          <span className="block max-w-[420px] text-fg-2">
+          <span
+            className="block max-w-[420px] text-fg-2"
+            title={row.original.stored_reason ? `As recorded: ${row.original.stored_reason}` : undefined}
+          >
             {row.original.reason}
             {row.original.taint_origin && (
               <span className="ml-1.5 text-[10.5px] text-fg-3">taint: {row.original.taint_origin}</span>
@@ -640,7 +648,11 @@ export function SecurityPage() {
       {/* Overview answers "am I protected right now": the mode, the
           exceptions in force, what enforce would block, the latest verdicts. */}
       <TabPanel id="overview" active={tab} idPrefix="security" className="space-y-6">
-        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+        {/* items-start: each card sizes to its own content. A grid row
+            stretches its items by default, so the short Mode card grew to
+            the Approvals card's height and showed a large empty block under
+            "Running: observe" (demo bug #8). */}
+        <div className="grid grid-cols-1 items-start gap-3 lg:grid-cols-2">
           <GuardModeCard
             sum={sum}
             loading={summary.loading}
@@ -1992,6 +2004,12 @@ type GuardBudget = {
   days: number;
   daily_p95_usd: number;
   daily_max_usd: number;
+  // Which spend the dollars measure (demo bug #6): "priced" is the guard
+  // budget rules' own read (a recorded cost, else the price table);
+  // "recorded" (an older daemon, or no price table) sums stored costs only.
+  spend_substrate?: "priced" | "recorded";
+  // Rows in the 30-day window that read counted as $0.
+  unpriced_rows?: number;
   // The token-denominated caps ([guard.budget] *_tokens, rules B-621..B-624)
   // and their usage on the same substrate (T-204). Optional: an older daemon
   // does not send them.
@@ -2014,6 +2032,23 @@ function niceCeil(x: number): number {
 }
 
 const usd = (v: number) => fmtUSD(v);
+
+// guardBudgetSubstrateNote is the card's footnote: how the suggestion is
+// sized and what spend it measures. Demo bug #6: the old footnote said "the
+// larger of proxy ground truth and watcher estimates per session" while the
+// card summed recorded costs only, so unproxied transcript turns were $0 to
+// it. "Today" is the UTC day, the guard's own daily window.
+function guardBudgetSubstrateNote(b: GuardBudget): string {
+  const head = "Suggested = observed p95 + 25% headroom, rounded - a tripwire above your normal use, not a cost target.";
+  if (b.spend_substrate !== "priced") {
+    return `${head} Spend here is the cost recorded with each turn (proxy and adapter-reported); turns priced only at read time, such as unproxied Claude Code transcripts, count as $0, so this can read lower than the Cost page.`;
+  }
+  const unpriced =
+    b.unpriced_rows && b.unpriced_rows > 0
+      ? ` ${b.unpriced_rows.toLocaleString("en-US")} row(s) in the window have no rate and count as $0.`
+      : "";
+  return `${head} Spend is every counted turn priced the way the budget rules price it (the recorded cost, else the current rate table), a turn seen by both the proxy and a transcript counted once; days are UTC days.${unpriced}`;
+}
 
 // GuardBudgetCard renders the budget guardrails in the developer cost display:
 // the dollar card (caps, spend, suggestions) in dollars, and in the token-usage
@@ -2187,9 +2222,7 @@ function GuardBudgetDollarCard() {
             </div>
           )}
           <div className="text-[11px] leading-snug text-fg-3">
-            Suggested = observed p95 + 25% headroom, rounded - a tripwire above your normal use, not a cost
-            target. Spend is measured as the larger of proxy ground truth and watcher estimates per session,
-            the same substrate the budget rules compare against. Tune precisely in Settings → Guard → budget.
+            {guardBudgetSubstrateNote(b)} Tune precisely in Settings → Guard → budget.
           </div>
           {confirm && (
             <div className="rounded-2 border border-line-2 bg-bg-3 p-3">
@@ -2988,6 +3021,15 @@ function ApprovalsCard({
                   {d.advice && <span className="block text-fg-3">{d.advice}</span>}
                 </div>
               ))}
+              {orgLockNote(selectedDefs) && (
+                // The approvals POST refuses a local approval of a rule the
+                // organization locks here (403 locked by org policy) unless an
+                // org soften grant asks for it, so say so before the grant.
+                <span className="mt-1 block text-warn" title={orgLockNote(selectedDefs)?.title}>
+                  {orgLockNote(selectedDefs)?.note}: a local approval of {ruleId} does not apply on this machine unless an
+                  organization grant asks for it. Ask for an exception on Requests.
+                </span>
+              )}
             </div>
           )}
           {custom && (
@@ -3408,12 +3450,13 @@ function PromptGuardCard() {
       }
       right={
         <div className="flex items-center gap-2">
-          <Link
+          <GatedLink
             to="/settings?section=guard"
+            managed={null}
             className="text-caption text-fg-3 underline decoration-dotted underline-offset-[3px] hover:text-fg-1"
           >
             Configure…
-          </Link>
+          </GatedLink>
           <Tooltip content="Fire a synthetic, obviously-fake secret through every registered prompt-submit hook and report whether it actually blocked (observer doctor --probe-hook)">
             <button
               type="button"

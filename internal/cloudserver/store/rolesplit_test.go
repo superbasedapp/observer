@@ -83,14 +83,18 @@ func TestRoleSplitDeployedGrants(t *testing.T) {
 		{"portal_consent_choices", "INSERT"},
 		{"provider_attestations", "INSERT"}, // admission gate records at enqueue
 		{"structural_snapshots", "INSERT"},
-		{"result_revisions", "INSERT"},  // W6c: the correction append (0018)
-		{"result_revisions", "UPDATE"},  // W6c: the deletion tombstone
-		{"result_revisions", "SELECT"},  // W6c: ETag + Sessions detail
-		{"account_profiles", "INSERT"},  // 0033: the sign-in leg upserts the display identity
-		{"account_profiles", "UPDATE"},  // 0033: ON CONFLICT DO UPDATE on every re-login
-		{"account_profiles", "SELECT"},  // 0033: the /portal/api/session bootstrap reads it
-		{"sbci_migrations", "SELECT"},   // 0036: /healthz schema block + schema-check on the service DSN
-		{"budget_pool_spend", "SELECT"}, // 0044: the reservation's spend-ceiling check
+		{"result_revisions", "INSERT"},        // W6c: the correction append (0018)
+		{"result_revisions", "UPDATE"},        // W6c: the deletion tombstone
+		{"result_revisions", "SELECT"},        // W6c: ETag + Sessions detail
+		{"account_profiles", "INSERT"},        // 0033: the sign-in leg upserts the display identity
+		{"account_profiles", "UPDATE"},        // 0033: ON CONFLICT DO UPDATE on every re-login
+		{"account_profiles", "SELECT"},        // 0033: the /portal/api/session bootstrap reads it
+		{"account_verified_emails", "INSERT"}, // 0074: the WorkOS sign-in leg records the provider's address (A4)
+		{"account_verified_emails", "UPDATE"}, // 0074: refreshed on every sign-in
+		{"account_verified_emails", "DELETE"}, // 0074: cleared when a sign-in carries no usable address
+		{"account_verified_emails", "SELECT"}, // 0074: the OIDC issuer reads it
+		{"sbci_migrations", "SELECT"},         // 0036: /healthz schema block + schema-check on the service DSN
+		{"budget_pool_spend", "SELECT"},       // 0044: the reservation's spend-ceiling check
 	}
 	for _, c := range apiHas {
 		if !tablePriv(t, pool, "sbci_api", c.table, c.priv) {
@@ -206,6 +210,10 @@ func TestRoleSplitLeastPrivilege(t *testing.T) {
 		tablePriv(t, pool, "sbci_worker", "account_profiles", "INSERT") {
 		t.Error("sbci_worker holds a grant on account_profiles; the developer's email is never a worker-plane read")
 	}
+	if tablePriv(t, pool, "sbci_worker", "account_verified_emails", "SELECT") ||
+		tablePriv(t, pool, "sbci_worker", "account_verified_emails", "INSERT") {
+		t.Error("sbci_worker holds a grant on account_verified_emails (0074); the developer's email is never a worker-plane read")
+	}
 	// The worker holds a COLUMN-level UPDATE on analysis_results (superseded,
 	// superseded_by — the W6c regeneration supersede path, migration 0018), so
 	// has_table_privilege(...,'UPDATE') is now true; the invariant that matters
@@ -300,9 +308,10 @@ func TestRoleSplitRoleAttributes(t *testing.T) {
 // introspects, identity-link, and the sweeps). The W5 cross-tenant aggregation
 // function + its EXECUTE grant land in the W5 migration, not 0015.
 //
-// sbci_current_account() is deliberately EXCLUDED: it is EXECUTE-to-PUBLIC by
-// design (a STABLE helper that reads the sbci.account_id GUC — it grants no
-// cross-tenant access), so every role including aggregator can call it.
+// sbci_current_account() is deliberately EXCLUDED: it is the RLS context helper
+// (it grants no cross-tenant access), and the aggregator holds an explicit
+// EXECUTE grant on it (0022) to evaluate the tenant policies; 0082 revoked only
+// its PUBLIC grant.
 func TestRoleSplitAggregatorHasNoCrossTenantExecute(t *testing.T) {
 	pool := cloudtestpg.NewDB(t)
 	sigs := []string{

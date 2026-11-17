@@ -23,7 +23,7 @@ import (
 
 // depsOSVDriver returns the driver; the canary project and Observer's empty
 // osv-scanner config are written under canaryDir first.
-func depsOSVDriver(runner *extrun.Runner, dbDir string, epochs map[string]string, canaryDir string) secscan.Driver {
+func depsOSVDriver(runner *extrun.Runner, dbDir string, epochs map[string]string, canaryDir string, sink func(root, driver string, pkgs []depscan.Package)) secscan.Driver {
 	// A canary that could not be written fails every ecosystem's
 	// self-test: "not scanned", never clean, so the error needs no path of
 	// its own.
@@ -31,7 +31,7 @@ func depsOSVDriver(runner *extrun.Runner, dbDir string, epochs map[string]string
 	return osvscanner.New(osvscanner.Env{
 		Runner: runner, DBDir: dbDir, Epochs: epochs, CanaryDir: canaryDir,
 		HomeDir: filepath.Join(filepath.Dir(canaryDir), "osv-scanner-home"),
-		GOOS:    runtime.GOOS, GOARCH: runtime.GOARCH,
+		GOOS:    runtime.GOOS, GOARCH: runtime.GOARCH, InventorySink: sink,
 	})
 }
 

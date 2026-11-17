@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/marmutapp/superbased-observer/internal/cloudserver/inference"
 )
 
 // RouteInfo is a resolved route-registry row. The server folds RouteVersion +
@@ -244,7 +246,7 @@ func (s *Store) ResolveRouteForPlan(ctx context.Context, feature, planRouteID st
 		reason = PlanRouteFeatureMismatch
 	case !pinned.Active:
 		reason = PlanRouteInactive
-	case pinned.Endpoint == "" || pinned.APIVersion == "":
+	case !RouteBound(pinned):
 		reason = PlanRouteUnbound
 	}
 	if reason == "" {
@@ -255,6 +257,21 @@ func (s *Store) ResolveRouteForPlan(ctx context.Context, feature, planRouteID st
 		return RouteInfo{}, PlanRouteFallback{}, err
 	}
 	return def, PlanRouteFallback{RouteID: planRouteID, Reason: reason}, nil
+}
+
+// RouteBound reports whether a route carries everything a call needs from its
+// binding: an endpoint, the provider resource identity its attestation is
+// scoped to, and an api_version when its dialect needs one
+// (inference.DialectSpec.NeedsAPIVersion). An unknown dialect is never bound
+// (fail closed). The openai_compatible dialect is bound with an EMPTY
+// api_version; before this predicate a plan or tier pinning such a route read
+// as "unbound" forever and silently ran the feature default instead.
+func RouteBound(r RouteInfo) bool {
+	spec, ok := inference.SpecFor(r.Dialect)
+	if !ok || r.Endpoint == "" || r.ARMResourceID == "" {
+		return false
+	}
+	return !spec.NeedsAPIVersion || r.APIVersion != ""
 }
 
 // ResolveRouteForFeature resolves feature's own active route, falling back to

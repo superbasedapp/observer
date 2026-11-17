@@ -360,7 +360,7 @@ func feedbackHit(f secfinding.Finding) policy.SecurityHit {
 	}
 	return policy.SecurityHit{
 		Category: f.Category, Severity: f.Severity, Confidence: f.Confidence, Baseline: f.Baseline,
-		RuleID: rule, Path: path, Line: f.Location.StartLine,
+		RuleID: rule, Path: path, Line: f.Location.StartLine, CWE: policy.SafeCWEs(f.References.CWE),
 	}
 }
 
@@ -614,6 +614,7 @@ func feedbackFindings(hits []policy.SecurityHit) []secfeedback.Finding {
 	for _, h := range hits {
 		out = append(out, secfeedback.Finding{
 			RuleID: h.RuleID, RuleNamed: h.RuleID != "", Category: h.Category, Severity: h.Severity, Confidence: h.Confidence, Path: h.Path, Line: h.Line,
+			CWE: h.CWE,
 		})
 	}
 	return out

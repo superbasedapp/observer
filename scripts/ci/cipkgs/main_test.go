@@ -763,3 +763,37 @@ func TestGateBase(t *testing.T) {
 		t.Errorf("gate base on gh JSON = %q, %v", out.String(), err)
 	}
 }
+
+// TestSplitRefinesAnOversizedGroup: when most tests share one three-letter
+// prefix, the group is refined by longer prefixes so k parts are all
+// non-empty, and the parts still cover every test exactly once (a name that
+// is itself a refined prefix, TestSecurityCI beside TestSecurityCIE2E,
+// included).
+func TestSplitRefinesAnOversizedGroup(t *testing.T) {
+	names := []string{"TestAlpha", "TestBeta", "TestSecurityCI", "TestSecurityCIE2E", "TestSecurityCIOff",
+		"TestSecurityH2A", "TestSecurityH2B", "TestSecurityP4", "TestSecurityLeft", "TestSec", "TestSecurity"}
+	for _, k := range []int{2, 4, 6, 8} {
+		seen := map[string]int{}
+		for i := 0; i < k; i++ {
+			flag := splitFlag(names, i, k)
+			n := 0
+			for _, name := range names {
+				if selects(t, flag, name) {
+					seen[name]++
+					n++
+				}
+			}
+			// Eleven names fill at most four parts by count; past that only
+			// the exactly-once rule below holds (TestSplitTableRows guards
+			// the real packages' balance).
+			if n == 0 && k <= 4 {
+				t.Errorf("k=%d part %d selects no test (%s)", k, i, flag)
+			}
+		}
+		for _, name := range names {
+			if seen[name] != 1 {
+				t.Errorf("k=%d: %s runs in %d parts, want 1", k, name, seen[name])
+			}
+		}
+	}
+}

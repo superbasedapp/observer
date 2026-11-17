@@ -132,7 +132,7 @@ func (g *Guard) evaluateCapturedPrompt(es *engineSet, in *ActionInput) (ActionVe
 	if strings.TrimSpace(text) == "" {
 		return ActionVerdict{}, false
 	}
-	secrets, pii, _ := g.buildPromptFindings(text, isScrubMarkerValue)
+	secrets, pii, _ := g.buildPromptFindings(text, func(_, value string) bool { return isScrubMarkerValue(value) })
 	secrets = append(secrets, g.typedMarkerFindings(text)...)
 	if len(secrets) == 0 && len(pii) == 0 {
 		return ActionVerdict{}, false
@@ -191,6 +191,7 @@ func (g *Guard) evaluateCapturedPrompt(es *engineSet, in *ActionInput) (ActionVe
 	if appr.approved() {
 		pv.DegradedFrom = "approved"
 	}
+	pv.GrantProject = g.grantProject(&ev)
 	pv.Lane = "capture"
 	if wanted >= policy.DecisionFlag {
 		pv.Action, pv.ActionDegradedFrom = ResolvePromptAction(wanted, PromptSeamCapture)

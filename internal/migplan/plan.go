@@ -147,6 +147,9 @@ type Plan struct {
 	// decreases.
 	Version      int
 	WriteVersion bool
+	// Prior is the 'version' record Decide read (0 when absent). Commits
+	// starts its running version record from it.
+	Prior int
 	// NewerThanLineage reports a version record above the highest embedded
 	// step (a database migrated by a newer binary).
 	NewerThanLineage bool
@@ -258,7 +261,7 @@ func Decide(in Input) (Plan, error) {
 	// An empty lineage on an uninitialised database writes nothing at all.
 	plan.WriteHorizon = (!l.HasHorizon && len(in.Embedded) > 0) || (l.HasHorizon && plan.Horizon != l.Horizon)
 
-	plan.Version = l.Version
+	plan.Version, plan.Prior = l.Version, l.Version
 	for _, v := range in.Embedded {
 		record, recorded := l.Steps[v]
 		present, late := in.Late[v]
@@ -303,6 +306,59 @@ func (p Plan) RunVersions() []int {
 		if s.Action == ActionRun {
 			out = append(out, s.Version)
 		}
+	}
+	return out
+}
+
+// Commit is one transaction of a per-step runner (plan 07 row M3a.0). A
+// runner that commits per step executes Plan.Commits in order, each in its
+// own transaction, so a failure leaves every earlier commit in place and a
+// rerun's Decide resumes at the first step whose commit did not land.
+type Commit struct {
+	// Forget lists per-step records to delete before recording Steps.
+	Forget []int
+	// Horizon is the ledger horizon to store when WriteHorizon is set.
+	Horizon      int
+	WriteHorizon bool
+	// Steps lists the steps this commit records, ascending: every adopted
+	// step in the ledger commit, exactly one ActionRun step in a step commit.
+	Steps []Step
+	// Version is the 'version' record to store when WriteVersion is set: the
+	// highest of the record before this commit and every step recorded so
+	// far. It never decreases, so the record is never below a per-step record
+	// at any commit boundary (Decide would forget such a record).
+	Version      int
+	WriteVersion bool
+}
+
+// Commits splits p into the transactions a per-step runner executes, in
+// order. The first is always the ledger commit: it forgets voided records,
+// stores the horizon and records every adopted step (bookkeeping only, so it
+// executes no step SQL), and it may write nothing at all. Each later commit
+// runs exactly one ActionRun step, ascending, and records it.
+//
+// Running every commit leaves the same ledger as executing p in one
+// transaction. Stopping after any commit leaves a ledger whose Decide plans
+// exactly the ActionRun steps that did not commit, and nothing else.
+func (p Plan) Commits() []Commit {
+	ledger := Commit{Forget: p.Forget, Horizon: p.Horizon, WriteHorizon: p.WriteHorizon}
+	version := p.Prior
+	var runs []Step
+	for _, s := range p.Steps {
+		if s.Action == ActionRun {
+			runs = append(runs, s)
+			continue
+		}
+		ledger.Steps = append(ledger.Steps, s)
+		version = max(version, s.Version)
+	}
+	ledger.Version, ledger.WriteVersion = version, version != p.Prior
+	out := make([]Commit, 0, 1+len(runs))
+	out = append(out, ledger)
+	for _, s := range runs {
+		next := max(version, s.Version)
+		out = append(out, Commit{Steps: []Step{s}, Version: next, WriteVersion: next != version})
+		version = next
 	}
 	return out
 }

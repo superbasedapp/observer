@@ -6,11 +6,13 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,6 +23,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/api"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/cloudtestpg"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/deletionjournal"
+	"github.com/marmutapp/superbased-observer/internal/cloudserver/enrichbudget"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/identity"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/jobs"
 	"github.com/marmutapp/superbased-observer/internal/cloudserver/store"
@@ -298,8 +301,9 @@ func TestExchangeAndAuthenticatedUsage(t *testing.T) {
 	}
 	var snap store.UsageSnapshot
 	decode(t, resp, &snap)
-	// free v3 (migration 0041, D-299): daily 100, monthly 3000.
-	if snap.DailyCap != 100 || snap.MonthlyCap != 3000 {
+	// free v5 (migration 0079, ruling R-AI1): token budgets, no count caps.
+	if snap.BudgetUnit != "tokens" || snap.DailyCap != 0 || snap.MonthlyCap != 0 ||
+		snap.EvidenceTokenBudget != 4000 || snap.DailyTokenBudget <= 0 || snap.ConcurrencyCap != 2 {
 		t.Fatalf("unexpected caps: %+v", snap)
 	}
 }
@@ -486,12 +490,61 @@ func TestJobHappyPathAndIdempotency(t *testing.T) {
 		t.Fatalf("get job status=%d", resp.StatusCode)
 	}
 
-	// Usage shows exactly one unit consumed.
+	// Usage shows exactly one job's worst-case hold (ruling R-AI1: the default
+	// free plan budgets tokens, not enrichments; the retry held nothing more).
 	resp = c.do(c.signedReq("GET", "/v1/usage", nil))
 	var snap store.UsageSnapshot
 	decode(t, resp, &snap)
-	if snap.DailyUsed != 1 {
-		t.Fatalf("daily used=%d, want 1", snap.DailyUsed)
+	if snap.BudgetUnit != "tokens" || snap.DailyUsed != 0 || snap.ConcurrencyUsed != 1 {
+		t.Fatalf("usage = %+v, want a token plan with one job in flight", snap)
+	}
+	if want := enrichbudget.WorstCaseTokens(int64(len(raw)), 1024); snap.DailyTokensUsed != want {
+		t.Fatalf("daily tokens used=%d, want one hold of %d", snap.DailyTokensUsed, want)
+	}
+}
+
+// TestJobEvidenceOverBudgetRefused pins the evidence budget at the hosted
+// wall (ruling R-AI1): an envelope over the tier's evidence budget is refused
+// with 413 evidence_over_budget before anything is reserved or stored; the
+// node is expected to step its settings down (cloudevidence.FitToBudget).
+func TestJobEvidenceOverBudgetRefused(t *testing.T) {
+	h := newHarness(t)
+	c := h.login(t, "grace")
+	env := cloudcontract.Envelope{
+		SchemaVersion: cloudcontract.EnvelopeSchemaVersion, CloudSessionID: "cs-big", CloudProjectID: "cp-big",
+		Tool: "codex", ModelFamily: "gpt-5.6", StartedAtBucket: time.Now().UTC().Format(time.RFC3339),
+		DurationSeconds: 120, Metrics: cloudcontract.MetricsBlock{TokensIn: 10, TokensOut: 5},
+		Outcomes:           cloudcontract.Outcomes{Build: "passed"},
+		DisclosurePurposes: []cloudcontract.Purpose{cloudcontract.PurposeStructuralInsights},
+		ScrubberVersion:    "scrub-v1",
+		Authority:          dataauthority.Classification{Authority: dataauthority.AuthorityPersonal, Version: dataauthority.Version},
+	}
+	for i := 0; i < cloudcontract.MaxActions; i++ {
+		env.Actions = append(env.Actions, cloudcontract.Action{Ref: fmt.Sprintf("a%d", i+1), Kind: "edit", Category: "go", Status: "ok"})
+	}
+	cd, err := cloudcontract.EvidenceContentDigest(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.EvidenceContentDigest = cd
+	raw, err := cloudcontract.UploadBytes(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cloudcontract.EvidenceFitsBudget(len(raw), 4000) {
+		t.Skipf("fixture envelope is only %d bytes, under the free tier's evidence budget", len(raw))
+	}
+	c.previewConfirm(t, cloudcontract.UploadDigest(raw), cd, []string{"structural_activity_insights"})
+	resp := c.do(c.signedReq("POST", "/v1/intelligence/jobs", raw))
+	body := readAll(resp)
+	if resp.StatusCode != http.StatusRequestEntityTooLarge || !strings.Contains(body, "evidence_over_budget") {
+		t.Fatalf("over-budget submit: status=%d body=%s, want 413 evidence_over_budget", resp.StatusCode, body)
+	}
+	resp = c.do(c.signedReq("GET", "/v1/usage", nil))
+	var snap store.UsageSnapshot
+	decode(t, resp, &snap)
+	if snap.DailyTokensUsed != 0 || snap.ConcurrencyUsed != 0 {
+		t.Fatalf("a refused envelope held budget: %+v", snap)
 	}
 }
 

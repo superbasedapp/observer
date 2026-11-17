@@ -87,6 +87,12 @@ export type SandboxSetupStep = {
   class: SandboxSetupClass | string;
   channel: SandboxSetupChannel | string;
   display?: string;
+  /** display is a command line to paste into a terminal, not a sentence. */
+  display_is_command?: boolean;
+  /** A credential step's field names (the provider's own variable names), never a value. */
+  fields?: string[];
+  /** A credential step's CLI form, which asks for the same fields. */
+  command?: string;
   reason?: string;
   disclosure?: string;
   after?: SandboxSetupAfter | string;
@@ -150,6 +156,8 @@ export type SandboxSetupRunRequest = {
   from_file?: string;
   /** hosted_connect only; never logged. */
   key?: string;
+  /** hosted_connect only: each typed credential field by name; never logged. */
+  fields?: Record<string, string>;
 };
 
 /** dashapi.SandboxSetupStarted. */

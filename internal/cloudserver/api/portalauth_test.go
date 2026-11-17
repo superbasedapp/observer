@@ -63,11 +63,23 @@ type fakeWorkOS struct {
 	lastVerifier string
 	// requireSecret asserts the client_secret the server sends.
 	requireSecret string
+	// emailVerifiedField is the user object's email_verified member as raw
+	// JSON (with its leading comma), or "" to omit it (A4 tests).
+	emailVerifiedField string
+}
+
+// setEmailVerifiedField changes what the user object says about
+// email_verified from now on: `,"email_verified":true`, `,"email_verified":false`
+// or "" (absent).
+func (f *fakeWorkOS) setEmailVerifiedField(raw string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.emailVerifiedField = raw
 }
 
 func newFakeWorkOS(t *testing.T, secret string) *fakeWorkOS {
 	t.Helper()
-	f := &fakeWorkOS{redeemed: map[string]bool{}, requireSecret: secret}
+	f := &fakeWorkOS{redeemed: map[string]bool{}, requireSecret: secret, emailVerifiedField: `,"email_verified":true`}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseForm(); err != nil {
 			http.Error(w, "bad form", http.StatusBadRequest)
@@ -112,10 +124,13 @@ func newFakeWorkOS(t *testing.T, secret string) *fakeWorkOS {
 		// the one place WorkOS hands the server an email and a name (the access
 		// token itself has no email claim). Shaped exactly like the provider's:
 		// snake_case first_name/last_name, plus fields the server ignores.
+		f.mu.Lock()
+		verifiedField := f.emailVerifiedField
+		f.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"access_token":"wtok:` + subject + `",` +
 			`"user":{"id":"user_` + subject + `","email":"` + subject + `@example.test",` +
-			`"first_name":"Ada","last_name":"Lovelace","email_verified":true}}`))
+			`"first_name":"Ada","last_name":"Lovelace"` + verifiedField + `}}`))
 	}))
 	t.Cleanup(f.srv.Close)
 	return f
@@ -441,8 +456,8 @@ func TestWorkOSCallbackMintsSessionAndClearsTxnCookie(t *testing.T) {
 	if sess == nil {
 		t.Fatal("callback set no session cookie")
 	}
-	if !sess.HttpOnly || sess.SameSite != http.SameSiteStrictMode {
-		t.Fatalf("session cookie attributes wrong: HttpOnly=%v SameSite=%v (want true/Strict)", sess.HttpOnly, sess.SameSite)
+	if !sess.HttpOnly || sess.SameSite != http.SameSiteLaxMode {
+		t.Fatalf("session cookie attributes wrong: HttpOnly=%v SameSite=%v (want true/Lax, ruling A7a)", sess.HttpOnly, sess.SameSite)
 	}
 	txn := cookieNamed(cb, devTxnCookieName)
 	if txn == nil || txn.MaxAge >= 0 || txn.Value != "" {

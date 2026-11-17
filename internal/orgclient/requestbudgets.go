@@ -3,6 +3,7 @@ package orgclient
 import (
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 )
@@ -33,6 +34,18 @@ type RequestableBudget struct {
 	// pool for everyone. It is listed because it may be the budget that ran
 	// out (D-334).
 	Grantable bool `json:"grantable"`
+	// GrantID names the org budget-increase grant that raised this budget,
+	// 0 when none does. While it is set, CapTokens / CapUSD are the RAISED
+	// numbers and BaseCapTokens / BaseCapUSD the budget's own (the same unit
+	// rule as the caps), so a surface can say what the grant raises
+	// ("2000.00 USD (+500.00 USD)") and list it among the exceptions in
+	// force. GrantExpiresAtNs is when the increase ends, 0 for a perpetual
+	// one. A grant already past its end on this machine's clock is dropped
+	// here, exactly as the enforcer drops it (RevertExpiredGrant).
+	GrantID          int64   `json:"grant_id,omitempty"`
+	BaseCapTokens    int64   `json:"base_cap_tokens,omitempty"`
+	BaseCapUSD       float64 `json:"base_cap_usd,omitempty"`
+	GrantExpiresAtNs int64   `json:"grant_expires_at_ns,omitempty"`
 }
 
 // RequestableBudgets lists the budgets named on the cached budget rail body,
@@ -48,11 +61,12 @@ func (c *Client) RequestableBudgets() []RequestableBudget {
 	if !have {
 		return nil
 	}
-	return requestableBudgets(body)
+	return requestableBudgets(body, time.Now())
 }
 
-// requestableBudgets is RequestableBudgets over a body (pure, for tests).
-func requestableBudgets(body orgcontract.BudgetPolicyBody) []RequestableBudget {
+// requestableBudgets is RequestableBudgets over a body at now (pure, for
+// tests).
+func requestableBudgets(body orgcontract.BudgetPolicyBody, now time.Time) []RequestableBudget {
 	seen := map[string]bool{}
 	var out []RequestableBudget
 	for _, cp := range body.Caps {
@@ -60,18 +74,29 @@ func requestableBudgets(body orgcontract.BudgetPolicyBody) []RequestableBudget {
 			continue
 		}
 		seen[cp.BudgetID] = true
+		cp = cp.RevertExpiredGrant(now)
 		b := RequestableBudget{
 			BudgetID: cp.BudgetID, Scope: cp.ResolvedScope, Period: cp.Period, Subject: cp.Subject,
 			Timezone: cp.Timezone, Enforcement: cp.Enforcement,
 			Grantable: strings.HasPrefix(cp.ResolvedScope, orgcontract.BudgetGrantableScopePrefix),
 		}
+		if cp.GrantID != 0 {
+			b.GrantID, b.GrantExpiresAtNs = cp.GrantID, cp.GrantExpiresAtNs
+		}
 		// BudgetID names the row behind ResolvedScope; a unit whose number a
-		// different row supplied (ScopeTokens / ScopeUSD) is not its cap.
+		// different row supplied (ScopeTokens / ScopeUSD) is not its cap,
+		// nor is that row's base.
 		if cp.ScopeTokens == "" || cp.ScopeTokens == cp.ResolvedScope {
 			b.CapTokens = cp.CapTokens
+			if b.GrantID != 0 {
+				b.BaseCapTokens = cp.BaseCapTokens
+			}
 		}
 		if cp.ScopeUSD == "" || cp.ScopeUSD == cp.ResolvedScope {
 			b.CapUSD = cp.CapUSD
+			if b.GrantID != 0 {
+				b.BaseCapUSD = cp.BaseCapUSD
+			}
 		}
 		out = append(out, b)
 	}

@@ -6,6 +6,8 @@ import type { LucideIcon } from "lucide-react";
 import { Button, type ButtonSize, type ButtonVariant } from "./Button";
 import { fieldClasses } from "./Input";
 import {
+  ARMED_CLASSES,
+  ARMED_DEFAULT_NOTE,
   ARMED_NOTE_FLOAT,
   armedBehaviour,
   armedFlow,
@@ -17,8 +19,9 @@ import {
 export { armedBehaviour, type ArmedBehaviour } from "./confirmButtonModel";
 
 // ConfirmButton — the in-place two-step confirm. First click ARMS the
-// button (its label becomes "Confirm?"), a second click within
-// `timeoutMs` fires; otherwise it disarms itself.
+// button (its label becomes "Confirm?", ringed so it reads as armed), a
+// second click fires. The armed step waits: it does not revert on its own
+// (an opt-in `timeoutMs` still can); a click elsewhere or Escape cancels.
 //
 // This exists so no app surface calls `window.confirm`: a native modal is
 // unstyled, un-themed, blocks the whole page, and cannot say anything the
@@ -65,7 +68,9 @@ export type ConfirmButtonProps = {
   armedNoteSide?: ArmedNoteSide;
   /** false fires on the first click (the confirm step is conditional). */
   requireConfirm?: boolean;
-  /** Auto-disarm delay (not applied while a reason field is shown). */
+  /** Opt-in auto-disarm delay. Unset (the default) the armed step waits
+   *  until the second click, a click elsewhere or Escape; it never reverts
+   *  silently. Not applied while a reason field is shown. */
   timeoutMs?: number;
   variant?: ButtonVariant;
   armedVariant?: ButtonVariant;
@@ -103,7 +108,7 @@ export function ConfirmButton(props: ConfirmButtonProps) {
     armedNote,
     armedNoteSide,
     requireConfirm = true,
-    timeoutMs = 4000,
+    timeoutMs,
     disabled,
     loading,
     unstyled,
@@ -119,7 +124,10 @@ export function ConfirmButton(props: ConfirmButtonProps) {
   const withReason = reason !== undefined && !unstyled && requireConfirm;
   const behaviour = armedBehaviour({ withReason, holdArmed: holdArmed && !unstyled, timeoutMs });
   const showArmed = armed && requireConfirm;
-  const showNote = showArmed && armedNote !== undefined;
+  // A waiting armed step (no timeout) always says how to cancel; a caller's
+  // own note wins.
+  const note: ReactNode = armedNote !== undefined ? armedNote : behaviour.autoDisarmMs === null && !withReason ? ARMED_DEFAULT_NOTE : undefined;
+  const showNote = showArmed && note !== undefined;
   const reasonMissing = withReason && showArmed && reason?.required === true && reasonText.trim() === "";
 
   const { refs, floatingStyles } = useFloating({
@@ -225,7 +233,7 @@ export function ConfirmButton(props: ConfirmButtonProps) {
           style={floatingStyles}
           textClassName={unstyled ? armedNoteClassName : undefined}
         >
-          {armedNote}
+          {note}
         </ArmedNote>
       )}
     </>
@@ -306,7 +314,7 @@ export function ConfirmButtonView({
       disabled={disabled || reasonMissing}
       loading={loading}
       title={title}
-      className={className}
+      className={clsx(className, armed && ARMED_CLASSES)}
       iconLeft={iconLeft}
       aria-label={ariaLabel}
       aria-describedby={noteId}

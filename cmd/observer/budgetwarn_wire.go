@@ -486,7 +486,7 @@ func fileWindows(in []budgetwarn.WindowStatus) []budgetwarnfile.Window {
 	out := make([]budgetwarnfile.Window, 0, len(in))
 	for _, w := range in {
 		out = append(out, budgetwarnfile.Window{
-			Window: w.Window, Unit: w.Unit, Subject: w.Subject, Period: w.Period, Cap: w.Cap, Spent: round6(w.Spent),
+			Window: w.Window, Unit: w.Unit, Subject: w.Subject, Period: w.Period, Timezone: w.Timezone, Cap: w.Cap, Spent: round6(w.Spent),
 			Ratio: round6(w.Ratio), Scope: w.Scope, Enforcement: w.Enforcement, Level: w.Level, Crossed: w.Crossed,
 		})
 	}

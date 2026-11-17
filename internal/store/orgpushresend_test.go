@@ -410,21 +410,27 @@ func TestPushResyncHeal(t *testing.T) {
 	if err := s.UpsertSession(ctx, models.Session{ID: "pre", ProjectID: pid, Tool: models.ToolClaudeCode, StartedAt: old}); err != nil {
 		t.Fatal(err)
 	}
-	insertTok := func(id string, ts time.Time, out int64) {
+	insertTok := func(session, id string, ts time.Time, out int64) {
 		if _, err := db.Exec(`INSERT INTO token_usage(session_id, timestamp, tool, model, input_tokens, output_tokens, source, source_file, source_event_id)
-			VALUES('pre', ?, 'claude-code', 'claude', 1, ?, 'jsonl', 'heal.jsonl', ?)`, ts.Format(time.RFC3339), out, id); err != nil {
+			VALUES(?, ?, 'claude-code', 'claude', 1, ?, 'jsonl', 'heal.jsonl', ?)`, session, ts.Format(time.RFC3339), out, id); err != nil {
 			t.Fatal(err)
 		}
 	}
-	insertTok("pre-1", old, 10) // pre-enrolment: must never ship
+	insertTok("pre", "pre-1", old, 10) // pre-enrolment: must never ship
 	// Enrolment at this point; recorded like WriteEnrolment would.
 	maxIDs, _ := s.CurrentMaxIDs(ctx)
 	if _, err := db.Exec(`INSERT INTO org_enrolment (id, org_id, org_name, org_server_url, user_id, user_email, enrolled_at, bearer_key_id)
 		VALUES (1, 'org', 'Org', 'https://org', 'u', 'dev@example.com', ?, 'k')`, enrolled.Format(time.RFC3339)); err != nil {
 		t.Fatal(err)
 	}
-	insertTok("post-1", enrolled.Add(time.Hour), 20)
-	insertTok("post-2", enrolled.Add(2*time.Hour), 30)
+	// The post-enrolment rows belong to a session captured under the org
+	// (agent migration 250): the "pre" session stays personal and none of
+	// its rows ever ship (D-43).
+	if err := s.UpsertSession(ctx, models.Session{ID: "post", ProjectID: pid, Tool: models.ToolClaudeCode, StartedAt: enrolled}); err != nil {
+		t.Fatal(err)
+	}
+	insertTok("post", "post-1", enrolled.Add(time.Hour), 20)
+	insertTok("post", "post-2", enrolled.Add(2*time.Hour), 30)
 	if err := s.SavePushCursor(ctx, maxIDs); err != nil {
 		t.Fatal(err)
 	}

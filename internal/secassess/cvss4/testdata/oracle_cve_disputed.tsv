@@ -1,0 +1,8 @@
+# The published rows of oracle_cve.tsv whose score differs from FIRST's calculator (the generated scorer).
+# Three vectors are errors of the publishing CNA (AMD twice, Docker once): both calculators agree with each other and not with the record.
+# One (CVE-2026-46749) is the 4.95 rounding tie of oracle_base_divergence.tsv: the CNA published 5.0, FIRST's calculator gives 4.9.
+# Columns: vector, published score, FIRST calculator score, go-cvss score, CVE id, publishing CNA.
+CVSS:4.0/AV:L/AC:H/AT:P/PR:H/UI:N/VC:L/VI:N/VA:N/SC:H/SI:H/SA:H	5.0	4.9	5.0	CVE-2026-46749	siemens
+CVSS:4.0/AV:L/AC:L/AT:N/PR:N/UI:A/VC:L/VI:L/VA:L/SC:L/SI:L/SA:L	7.3	4.6	4.6	CVE-2025-0041	AMD
+CVSS:4.0/AV:L/AC:L/AT:P/PR:L/UI:A/VC:L/VI:L/VA:L/SC:L/SI:L/SA:N	7.3	1.0	1.0	CVE-2025-61970	AMD
+CVSS:4.0/AV:N/AC:L/AT:P/PR:L/UI:A/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N	6.5	7.3	7.3	CVE-2026-15793	Docker

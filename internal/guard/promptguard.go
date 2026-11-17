@@ -300,6 +300,11 @@ type PromptVerdict struct {
 	// GrantID is the org access grant that let this prompt through
 	// (orggrant.go; 0 = none). Carried onto the audit row's grant_id.
 	GrantID int64
+	// GrantProject is the project the prompt's grant question was asked
+	// under (grantProject), carried onto the audit row's project_root /
+	// project_root_hash like ActionVerdict.GrantProject (GRANT-20). Zero on
+	// a verdict with no rule.
+	GrantProject GrantProject
 	// OrgLocked / RequestBase drive the org-locked request line on a
 	// blocked prompt (PromptRequestAccessHint, request-grants G4); derived
 	// state, stamped by EvaluatePrompt.
@@ -596,25 +601,34 @@ func (g *Guard) BuildPromptFindings(text string) (secrets []policy.SecretFinding
 	return g.buildPromptFindings(text, nil)
 }
 
-// buildPromptFindings is BuildPromptFindings with an optional extra
-// value filter: skip, when non-nil, drops a finding whose raw matched
-// value it reports true for. It runs in the same place the
-// [guard.prompt].allow filter does — the one place a raw value is read —
-// so the value still never survives this function. The post-hoc capture
-// lane (posthocprompt.go) uses it to drop a "match" whose value is the
-// storage scrubber's own redaction marker.
-func (g *Guard) buildPromptFindings(text string, skip func(value string) bool) (secrets []policy.SecretFinding, pii []policy.PIIFinding, truncated bool) {
-	opts := scrub.PromptDetectOptions{
+// promptDetectOptions is the one detector configuration every prompt
+// scan uses (the findings a lane judges and the generated values the
+// proxy lane notes run the same detectors with the same caps, so a value
+// fingerprints the same on both sides).
+func (g *Guard) promptDetectOptions() scrub.PromptDetectOptions {
+	return scrub.PromptDetectOptions{
 		MaxFindings:     g.cfg.Prompt.MaxFindings,
 		SuppressInCode:  g.cfg.Prompt.SuppressInCode,
 		ActiveDetectors: g.activePromptDetectors(),
 	}
-	findings, wasTruncated := scrub.DetectPromptFindings(text, opts)
+}
+
+// buildPromptFindings is BuildPromptFindings with an optional extra
+// value filter: skip, when non-nil, drops a finding whose class and raw
+// matched value it reports true for. It runs in the same place the
+// [guard.prompt].allow filter does — the one place a raw value is read —
+// so the value still never survives this function. The post-hoc capture
+// lane (posthocprompt.go) uses it to drop a "match" whose value is the
+// storage scrubber's own redaction marker; the proxy prompt lane uses it
+// to drop a value the model or a tool already put in the conversation
+// (promptprovenance.go).
+func (g *Guard) buildPromptFindings(text string, skip func(class, value string) bool) (secrets []policy.SecretFinding, pii []policy.PIIFinding, truncated bool) {
+	findings, wasTruncated := scrub.DetectPromptFindings(text, g.promptDetectOptions())
 	// D-672: on a managed node a local allow-pattern does not drop a finding
 	// of a class whose rule the organization pinned (orgPromptReach).
 	reach := g.orgPromptReach()
 	for _, f := range findings {
-		if (g.promptAllowed(f.Value) && !reach[f.Class]) || (skip != nil && skip(f.Value)) {
+		if (g.promptAllowed(f.Value) && !reach[f.Class]) || (skip != nil && skip(f.Class, f.Value)) {
 			continue
 		}
 		hash := normalizedSpanHash(f.Class, f.Value)
@@ -806,6 +820,9 @@ func (g *Guard) EvaluatePrompt(ev policy.Event) PromptVerdict {
 	}
 	pv := raisePromptSeverityOnDeny(g.evaluatePromptDecide(ev))
 	g.stampPromptOrgLock(&pv)
+	if pv.Verdict.RuleID != "" || pv.GuardError {
+		pv.GrantProject = g.grantProject(&ev)
+	}
 	return pv
 }
 

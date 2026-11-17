@@ -3,7 +3,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"log/slog"
 	"net/http"
@@ -60,7 +59,7 @@ func hostedConnectPost(h http.HandlerFunc, body string, confirm bool) *httptest.
 // the answer never echoes the key and the log never names it.
 func TestHostedConnectRouteStoresTheKey(t *testing.T) {
 	h, keys, obs := hostedConnectRig(t)
-	var logs bytes.Buffer
+	var logs syncBuffer // the default logger is process-wide: a relay goroutine from another test may write it (L-4)
 	old := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 	t.Cleanup(func() { slog.SetDefault(old) })

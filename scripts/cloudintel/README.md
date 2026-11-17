@@ -1,5 +1,15 @@
 # Cloud Intelligence — Azure staging IaC
 
+> **Historical (2026-11-11).** Azure is gone since the Azure exit on
+> 2026-10-19 (D-775, D-777): no Azure estate exists, and the hosted service
+> runs from `deploy/cloud-box` on Hetzner (D-838, D-843, D-864; see
+> `docs/cloud-intelligence.md`). This directory and `cloudintel-azure.sh` are
+> kept as the dated record of the Azure substrate; nothing here describes how
+> the service runs today. The `patch-worker-scale` verb's patch file
+> (`deploy/cloudintel/worker-scale-patch.yaml`) was deleted as a dead Azure
+> asset (R3-82, operator decision D-24); the verb now only prints how to
+> restore it from git history (`0853db8553`).
+
 Contract of record: `docs/plans/cloud-intelligence-azure-substrate-contract-2026-08-30.md`
 (binding — this directory implements it, not the other way around).
 
@@ -51,7 +61,7 @@ scripts/cloudintel/cloudintel-azure.sh up                   idempotent create-or
 scripts/cloudintel/cloudintel-azure.sh db-bootstrap         login roles (sbci_svc + api/worker split) + DSN rotate
 scripts/cloudintel/cloudintel-azure.sh status               read-only show/list
 scripts/cloudintel/cloudintel-azure.sh edge-check           dual-host public-vs-direct-origin/header-spoof probes
-scripts/cloudintel/cloudintel-azure.sh patch-worker-scale   fix an ALREADY-PROVISIONED worker's degenerate KEDA rule (gap 4.4)
+scripts/cloudintel/cloudintel-azure.sh patch-worker-scale   REMOVED 2026-11-11 (R3-82): prints how to restore its patch file
 scripts/cloudintel/cloudintel-azure.sh down                 delete the RG (typed confirm)
 ```
 
@@ -80,8 +90,9 @@ Azure Storage Queue depth, so the rule's type/metadata/auth never resolved
 against anything real, and that unresolved state is what has been blocking
 turning the worker's Foundry/evidence keys into Key Vault secretrefs, per
 §7/§11 of the launch runbook) via a YAML patch
-(`deploy/cloudintel/worker-scale-patch.yaml`) that sets fixed 1/1 replicas and
-removes the scale rule entirely. A FRESH `up` (this revision onward) creates
+(`deploy/cloudintel/worker-scale-patch.yaml`, deleted 2026-11-11 with R3-82;
+restore it from git history at `0853db8553` to use the verb) that set fixed
+1/1 replicas and removed the scale rule entirely. A FRESH `up` (this revision onward) creates
 new workers this way from the start — `patch-worker-scale` is only for an
 app an older revision of this script already created.
 

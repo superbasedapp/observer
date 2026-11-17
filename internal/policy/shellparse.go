@@ -255,6 +255,18 @@ type Command struct {
 	// later command calls it: every verdict a rule draws from the unit is
 	// capped at ASK (engine.go, D-338). "" when the unit can run.
 	uncalledDef string
+	// hadSub records that a command substitution ("$(...)", backticks) was
+	// stripped out of this unit's own text (unit.hadSub). fromSubst marks a
+	// unit that IS the top level of such a substitution: its output became
+	// part of some other unit's words. R-170 reads the pair so a fetch whose
+	// output is substituted into an interpreter's -c payload is told apart
+	// from a fetch the payload merely runs (demo finding #22).
+	hadSub, fromSubst bool
+	// procSubIn marks a unit that reads a process substitution as its input
+	// or an operand (`bash <(curl ...)`, `bash < <(curl ...)`), and
+	// procSubSrc the first unit of that substitution. Both are lexer facts;
+	// no other rule reads them.
+	procSubIn, procSubSrc bool
 	// altReading marks a unit from the event's second reading
 	// (Event.AltDialect). A unit rule's reason comes from that reading
 	// first (engine.go applyRuleCeiling); whether the rule hits never
@@ -496,9 +508,9 @@ func ParseArgv(argv []string, dialect Dialect) []Command {
 	}
 	var out []Command
 	st := newParseState()
-	processUnit(unit{words: words}, dialect, st, &out)
+	processUnit(unit{words: words, hadSub: len(subs) > 0}, dialect, st, &out)
 	for _, sub := range subs {
-		out = append(out, parseDepth(sub, dialect, st.deeper())...)
+		out = appendSubstitutionUnits(out, parseDepth(sub, dialect, st.deeper()), st.depth+1)
 	}
 	return settleDefinitions(out)
 }
@@ -526,6 +538,8 @@ type unit struct {
 	// this unit's text (stripSubstitutions leaves subMarker in its
 	// place), so a directory change or link it named cannot be resolved.
 	hadSub bool
+	// procSubIn / procSubSrc: see Command.procSubIn.
+	procSubIn, procSubSrc bool
 }
 
 // parseDepth lexes raw under the dialect's rules and processes each
@@ -641,7 +655,7 @@ func parseDepth(raw string, dialect Dialect, st parseState) []Command {
 	sst := st.deeper()
 	sst.cur, sst.curPos = seq, -1
 	for _, sub := range subs {
-		out = append(out, parseDepth(sub, dialect, sst)...)
+		out = appendSubstitutionUnits(out, parseDepth(sub, dialect, sst), sst.depth)
 	}
 	if ps && tickSpan && !st.psTicks {
 		out = appendPSTickReading(orig, st, out)
@@ -721,6 +735,19 @@ func markSubstitutionLimit(raw string, dialect Dialect, st parseState, out *[]Co
 	}
 }
 
+// appendSubstitutionUnits appends the units one command substitution parsed
+// into, marking the substitution's own top level (the units at depth) as
+// fromSubst. Deeper units (a payload the substitution unwrapped) are not
+// marked: their output is not what was substituted.
+func appendSubstitutionUnits(out, sub []Command, depth int) []Command {
+	for i := range sub {
+		if sub[i].Depth == depth {
+			sub[i].fromSubst = true
+		}
+	}
+	return append(out, sub...)
+}
+
 // processUnit turns one lexed unit into a Command (plus any nested
 // Commands its payloads unwrap into) and appends them to out.
 func processUnit(u unit, dialect Dialect, st parseState, out *[]Command) {
@@ -764,6 +791,9 @@ func processUnit(u unit, dialect Dialect, st parseState, out *[]Command) {
 		seq:              st.cur,
 		seqPos:           st.curPos,
 		chdir:            chdir,
+		hadSub:           u.hadSub,
+		procSubIn:        u.procSubIn,
+		procSubSrc:       u.procSubSrc,
 	}
 	nested := analyzeNested(&cmd, st)
 	// PowerShell script blocks passed as arguments are code too
@@ -1820,10 +1850,18 @@ func buildUnits(toks []ptoken, bodies []string) []unit {
 	// The list operator and parens seen since the last emitted unit
 	// belong to the NEXT unit; a flush that emits nothing keeps them.
 	nextSep, nextOpens, nextCloses := sepSeq, 0, 0
+	// nextProcSub marks the next emitted unit as the first command of a
+	// process substitution (`<(` : a "<" operator directly followed by a
+	// "(" opener).
+	nextProcSub := false
 	flush := func() {
 		if len(cur.words) > 0 || cur.heredoc != "" || len(cur.redirects) > 0 {
 			cur.pipeline = cur.pipeline || pipeNext
 			cur.sep, cur.opens, cur.closes = nextSep, nextOpens, nextCloses
+			if nextProcSub {
+				cur.procSubSrc = true
+				nextProcSub = false
+			}
 			units = append(units, cur)
 			nextSep, nextOpens, nextCloses = sepSeq, 0, 0
 		}
@@ -1840,7 +1878,14 @@ func buildUnits(toks []ptoken, bodies []string) []unit {
 				pipeNext = false
 				nextSep = listSep(t.text)
 			case "(":
+				procSub := inNext
+				if procSub {
+					// `cmd <(...)` / `cmd < <(...)`: cmd reads the
+					// process substitution that starts here.
+					cur.procSubIn = true
+				}
 				flush()
+				nextProcSub = procSub
 				pipeNext = false
 				nextOpens++
 			case ")":

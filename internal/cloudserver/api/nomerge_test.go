@@ -112,6 +112,13 @@ const storePkgDir = "../store"
 // resolves nothing and looks nothing up — the merge-by-email hazard this
 // tripwire exists for is a LOOKUP hazard, and there is no lookup here.
 //
+// Since migration 0074 (operator item A4) the same file also owns
+// `account_verified_emails`, the provider-asserted address the platform OIDC
+// issuer signs. It is narrowed deliberately rather than given a second exempt
+// file: it is the same shape (keyed by account_id, written after a sign-in
+// resolved the account, read only per account), and every check below applies
+// to its statements unchanged.
+//
 // The exemption is narrow in three ways, all enforced below:
 //
 //   - it names one file, not a pattern;

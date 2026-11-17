@@ -130,6 +130,7 @@ var notAToolHome = map[string]string{
 	"GIT_DIR":            "a git repository variable read from a child process env, not a home",
 	"GIT_COMMON_DIR":     "a git repository variable read from a child process env, not a home",
 	"GIT_CONFIG":         "a git variable read from a child process env, not a home",
+	"GIT_TEMPLATE_DIR":   "dropped from the default workspace's git init env (workspaceGitEnv), never read as a home",
 	"CLAUDE_PROJECT_DIR": "the project directory Claude Code hands its hooks, not a home",
 	"COPILOT_HOOK_DIR":   "a host signal the Copilot CLI runtime sets on its hook processes; foreignhost.go reads only whether it is set, never the path",
 	"CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR": "a boolean Claude Code knob, not a path",

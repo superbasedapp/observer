@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { Link } from "react-router-dom";
+import { GatedLink } from "@/components/GatedLink";
 import { ConfirmButton, EmptyState } from "@/components/primitives";
 import { useApi } from "@/lib/useApi";
 import type { ConfigResponse } from "@/lib/types";
@@ -105,9 +105,9 @@ export function ObsDisabled({
           >
             {obsEnableLabel(needs)}
           </ConfirmButton>
-          <Link to="/settings?section=observability" className="text-accent hover:underline">
+          <GatedLink to="/settings?section=observability" className="text-accent hover:underline">
             Settings &gt; Observability
-          </Link>
+          </GatedLink>
         </div>
         {cfg.data && patches === null && (
           <p className="mt-2">This daemon did not report the switch's state; turn it on in Settings &gt; Observability.</p>

@@ -1321,6 +1321,13 @@ var scannerBases = map[string]bool{
 	"nmap": true, "masscan": true, "zmap": true, "rustscan": true,
 	"naabu": true, "unicornscan": true, "hping3": true,
 	"nikto": true, "nuclei": true, "sqlmap": true,
+	// Web content, directory and credential fuzzers and the OWASP ZAP launchers
+	// (security-assessments depth arc, D33). The base is the command word with
+	// its directory and a .exe/.com/.bat/.cmd suffix stripped and lowercased, so
+	// `./zap.sh` and `ZAP.SH` match; an interpreter prefix (`python zap-baseline.py`)
+	// does not, the same limit every other base here has.
+	"ffuf": true, "gobuster": true, "feroxbuster": true, "hydra": true,
+	"wfuzz": true, "zaproxy": true, "zap.sh": true, "zap-baseline.py": true,
 }
 
 // matchNetworkScanner implements R-179: a network / vulnerability scanner.

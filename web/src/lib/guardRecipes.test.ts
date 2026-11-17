@@ -29,6 +29,8 @@ import {
   copyTitleToml,
   replayModeNote,
   replaySentence,
+  isReplayProgress,
+  replayProgressText,
   scopeBlockedReason,
   selectionFromApplied,
   selectionKey,
@@ -453,4 +455,20 @@ test("promptGuardLine says what the prompt guard does beside the guard mode", ()
   );
   assert.equal(promptGuardLine("observe", { enabled: true, mode: "off", enforce_independent: true }), "prompt guard: off");
   assert.equal(promptGuardLine("observe", undefined), "");
+});
+
+// Demo bug #14: the line a running replay shows, one row per state.
+test("replayProgressText describes each state of a running replay", () => {
+  const base = { running: true as const, queued: false, actions: 0, evaluated: 0, total: 0, elapsed_ms: 0 };
+  const rows: Array<[Partial<typeof base>, string]> = [
+    [{ queued: true, elapsed_ms: 3000 }, "Waiting for another replay on this machine to finish (3 s)..."],
+    [{ elapsed_ms: 1000 }, "Loading the captured actions (1 s)..."],
+    [{ actions: 38806, total: 116418, evaluated: 0, elapsed_ms: 2000 }, "Replaying 38,806 actions: 0% done (2 s)."],
+    [{ actions: 38806, total: 116418, evaluated: 58209, elapsed_ms: 4000 }, "Replaying 38,806 actions: 50% done (4 s), about 4 s left."],
+    [{ actions: 10, total: 30, evaluated: 30, elapsed_ms: 1500 }, "Replaying 10 actions: 100% done (2 s)."],
+  ];
+  for (const [over, want] of rows) assert.equal(replayProgressText({ ...base, ...over }), want);
+  assert.equal(isReplayProgress({ ...base }), true);
+  assert.equal(isReplayProgress({ window_hours: 168 }), false);
+  assert.equal(isReplayProgress(null), false);
 });

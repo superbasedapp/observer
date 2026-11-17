@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Link } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { GatedLink } from "@/components/GatedLink";
 import clsx from "clsx";
 import { ArrowRight, CopyPlus, Download, Eye, Layers, Trash2, Upload } from "lucide-react";
 import {
@@ -62,7 +62,10 @@ import {
   removeConfirmBody,
   renameRecipeToml,
   copyTitleToml,
+  REPLAY_POLL_MS,
+  isReplayProgress,
   replayModeNote,
+  replayProgressText,
   replaySentence,
   selectionFromApplied,
   selectionKey,
@@ -75,6 +78,7 @@ import {
   type Recipe,
   type RecipePreview,
   type RecipeReplay,
+  type ReplayProgress,
   type RecipeScope,
   type RecipeSelection,
   type RecipesState,
@@ -105,10 +109,32 @@ export function fetchRecipePreview(sel: RecipeSelection, remove: boolean, signal
 }
 
 /** fetchRecipeReplay replays a selection over the last `hours`; null when
- *  the daemon's simulate route has no recipe replay. */
-export async function fetchRecipeReplay(sel: RecipeSelection, hours: number, remove: boolean, signal?: AbortSignal): Promise<RecipeReplay | null> {
-  const out = await fetchJSON<SimulateResponse>("/api/guard/simulate", simulateQuery(sel, hours, remove), { signal });
-  return out.recipe_replay ?? null;
+ *  the daemon's simulate route has no recipe replay. It polls with
+ *  progress=1: the daemon answers 202 with the run's counts while it works
+ *  (reported through onProgress) and the result once it is done, and an
+ *  identical replay already running (another tab, a second click) is joined
+ *  rather than run again. A daemon without progress answers the result on the
+ *  first request, so the loop ends at once. */
+export async function fetchRecipeReplay(
+  sel: RecipeSelection,
+  hours: number,
+  remove: boolean,
+  signal?: AbortSignal,
+  onProgress?: (p: ReplayProgress) => void,
+): Promise<RecipeReplay | null> {
+  const query = { ...simulateQuery(sel, hours, remove), progress: 1 };
+  for (;;) {
+    const out = await fetchJSON<SimulateResponse | ReplayProgress>("/api/guard/simulate", query, { signal });
+    if (!isReplayProgress(out)) return (out as SimulateResponse).recipe_replay ?? null;
+    onProgress?.(out);
+    await new Promise<void>((resolve, reject) => {
+      const t = setTimeout(resolve, REPLAY_POLL_MS);
+      signal?.addEventListener("abort", () => {
+        clearTimeout(t);
+        reject(new DOMException("aborted", "AbortError"));
+      });
+    });
+  }
 }
 
 /** recipeWrite POSTs one owner-local recipe write with the confirm token
@@ -128,6 +154,10 @@ type ShowResponse = { recipe: Recipe; toml: string };
 export type Loaded<T> = { key: string; data: T | null; loading: boolean; error: string };
 
 const IDLE = { key: "", data: null, loading: false, error: "" };
+
+/** ReplayState is the replay block's view: the result, or the running run's
+ *  progress while it works. */
+type ReplayState = Loaded<RecipeReplay> & { hours: number; progress?: ReplayProgress | null };
 
 function shortenRoot(p: string): string {
   if (!p) return "-";
@@ -210,16 +240,26 @@ export function RecipesCard({ projects, onChanged }: { projects: ProjectRow[]; o
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [previewKey, gen]);
 
-  const [replay, setReplay] = useState<Loaded<RecipeReplay> & { hours: number }>({ ...IDLE, hours: 0 });
+  const [replay, setReplay] = useState<ReplayState>({ ...IDLE, hours: 0, progress: null });
+  // The running replay's poll loop stops when the card goes away; the daemon
+  // then drops the run once nobody polls it.
+  const replayAbort = useRef<AbortController | null>(null);
+  useEffect(() => () => replayAbort.current?.abort(), []);
   async function runReplay(hours: number) {
     if (!previewKey) return;
     const key = previewKey;
-    setReplay({ key, hours, data: null, loading: true, error: "" });
+    replayAbort.current?.abort();
+    const ctl = new AbortController();
+    replayAbort.current = ctl;
+    setReplay({ key, hours, data: null, loading: true, error: "", progress: null });
     try {
-      const data = await fetchRecipeReplay(sel, hours, removing);
-      setReplay({ key, hours, data, loading: false, error: data ? "" : "This daemon cannot replay a recipe yet." });
+      const data = await fetchRecipeReplay(sel, hours, removing, ctl.signal, (progress) =>
+        setReplay((r) => (r.key === key && r.hours === hours && r.loading ? { ...r, progress } : r)),
+      );
+      setReplay({ key, hours, data, loading: false, error: data ? "" : "This daemon cannot replay a recipe yet.", progress: null });
     } catch (e) {
-      setReplay({ key, hours, data: null, loading: false, error: apiReason(e) });
+      if (ctl.signal.aborted) return;
+      setReplay({ key, hours, data: null, loading: false, error: apiReason(e), progress: null });
     }
   }
 
@@ -501,7 +541,7 @@ export type RecipesViewProps = {
   onLevel: (name: string) => void;
   onTogglePack: (name: string) => void;
   preview: Loaded<RecipePreview>;
-  replay: (Loaded<RecipeReplay> & { hours: number }) | null;
+  replay: ReplayState | null;
   onReplay: (hours: number) => void;
   onApply: () => void;
   onStartRemove: () => void;
@@ -665,9 +705,15 @@ function LevelPicker({ catalog, level, onLevel }: { catalog: Recipe[]; level: st
         value={idx >= 0 ? idx : balanced}
         aria-label="Level"
         aria-valuetext={current ? current.title || current.name : "No level"}
+        data-level-state={noLevel ? "none" : "set"}
         onChange={(e) => onLevel(stops[Number(e.target.value)]?.name ?? "")}
-        className={clsx("w-full accent-accent", noLevel && "opacity-40")}
+        // With no level picked the thumb still has to sit somewhere, so it
+        // waits at Balanced - but neutral (grey, faded), never in the accent
+        // colour that reads as "Balanced is selected" (demo bug #9). Moving
+        // it picks that level and turns the toggle off.
+        className={clsx("w-full", noLevel ? "accent-fg-4 opacity-40 grayscale" : "accent-accent")}
       />
+      {noLevel && <div className="mt-0.5 text-[11px] text-fg-3">No level selected: move the slider or pick one below to choose a level.</div>}
       <div className="mt-1 grid gap-1" style={{ gridTemplateColumns: `repeat(${stops.length}, minmax(0, 1fr))` }}>
         {stops.map((s) => (
           <button
@@ -856,9 +902,9 @@ function PreviewPanel(props: RecipesViewProps & { catalog: Recipe[] }) {
                   return (
                     <li key={k}>
                       {inp.href ? (
-                        <Link to={inp.href} className="text-accent hover:underline" title={k}>
+                        <GatedLink to={inp.href} managed={<span title={k}>{inp.label}</span>} className="text-accent hover:underline" title={k}>
                           {inp.label}
-                        </Link>
+                        </GatedLink>
                       ) : (
                         <span title={k}>{inp.label}</span>
                       )}
@@ -923,6 +969,21 @@ function ReplayBlock(props: RecipesViewProps) {
           </Button>
         ))}
       </div>
+      {r?.loading && (
+        <div className="space-y-1" role="status" aria-live="polite" data-testid="recipes-replay-progress">
+          <p className="m-0 text-fg-3">
+            {r.progress ? replayProgressText(r.progress) : "Starting the replay..."}
+          </p>
+          {r.progress && r.progress.total > 0 && !r.progress.queued && (
+            <div className="h-1.5 w-full max-w-[520px] overflow-hidden rounded-2 bg-bg-3">
+              <div
+                className="h-full rounded-2 bg-accent transition-[width] duration-500"
+                style={{ width: `${Math.min(100, (r.progress.evaluated / r.progress.total) * 100)}%` }}
+              />
+            </div>
+          )}
+        </div>
+      )}
       {r?.error && <div className="text-danger">{r.error}</div>}
       {r?.data && (
         <>

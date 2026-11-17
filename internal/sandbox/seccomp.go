@@ -120,6 +120,30 @@ var bwrapFlagArity = map[string]int{
 	"--overlay": 3,
 }
 
+// BwrapUnsharesPID reports whether a bwrap command (the bwrap path, its
+// options, "--", the inner argv) gives the box a pid namespace of its own:
+// --unshare-pid or --unshare-all among its options, walked with
+// bwrapFlagArity like BwrapSeccompFD, so an operand that reads
+// "--unshare-pid" is never taken for the flag. An option the table does not
+// know is ErrBwrapFlagUnknown (the strace opt-in then refuses, fail closed).
+func BwrapUnsharesPID(cmd []string) (bool, error) {
+	for i := 1; i < len(cmd); i++ {
+		tok := cmd[i]
+		if tok == argSep || !strings.HasPrefix(tok, "-") {
+			break
+		}
+		n, ok := bwrapFlagArity[tok]
+		if !ok {
+			return false, fmt.Errorf("%w: %q", ErrBwrapFlagUnknown, tok)
+		}
+		if tok == flagUnsharePid || tok == "--unshare-all" {
+			return true, nil
+		}
+		i += n
+	}
+	return false, nil
+}
+
 // BwrapSeccompFD reads bwrap's --seccomp from a bwrap command (the host
 // helper's child: the bwrap path, its options, "--", the inner argv): the
 // descriptor and whether the flag is there. The options are walked with

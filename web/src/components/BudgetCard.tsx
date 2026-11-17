@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { GatedLink } from "@/components/GatedLink";
 import { ChartShell, ComboChip, InlineLoading, Meter, Pill } from "@/components/primitives";
 
 // rootBaseName is a project root's last path segment (the chip label).
@@ -56,12 +56,15 @@ export function BudgetCard() {
             {editing ? "close" : "edit budgets"}
           </button>
         ) : (
-          <Link
+          // Security is hidden by default on a managed machine (CG-21): no
+          // "set token caps" action there, rather than one that lands on a notice.
+          <GatedLink
             to="/security?tab=budgets"
+            managed={null}
             className="rounded-2 border border-line-2 bg-bg-3 px-2 py-0.5 text-[11px] text-fg-2 hover:bg-bg-4"
           >
             set token caps
-          </Link>
+          </GatedLink>
         )
       }
     >

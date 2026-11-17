@@ -73,6 +73,7 @@ test("every row is complete and keyed under security.", () => {
     "Security.Secrets.PostWriteCapKiB",
     "Security.Deps.UnknownAction",
     "Security.Deps.OnlineUnknownAction",
+    "Security.Deps.Provenance",
     "Security.Scanning.QuickScanBudgetS",
     "Security.Scanning.MaxScanStalenessMin",
     "Security.Scanning.MinBlockingSeverity",
@@ -95,7 +96,70 @@ test("every row is complete and keyed under security.", () => {
     "Security.Scan.Opengrep.TaintPassJobs",
     "Security.Scan.Opengrep.TaintPassMemoryMiB",
     "Security.Feedback.AfterWrite",
+    "Security.Assessments.RelaxPentestLocal",
+    "Security.Assessments.RelaxRedTeamLocal",
+    "Security.Assessments.ScopedApproval",
+    "Security.Assessments.MaxNetworkTier",
+    "Security.Assessments.RelaxationScope",
+    "Security.Assessments.RelaxationMaxMinutes",
+    "Security.Assessments.ReportToOrg",
+    "Security.Assessments.TimeBoxThreatModelMinutes",
+    "Security.Assessments.TimeBoxPentestLocalMinutes",
+    "Security.Assessments.TimeBoxRedTeamLocalMinutes",
+    "Security.Assessments.TimeBoxAction",
+    "Security.Assessments.BoundaryAudit",
+    "Security.Assessments.EvidenceRetentionDays",
+    "Security.Assessments.TMFrameworks",
+    "Security.Assessments.TMMethodExtras",
+    "Security.Assessments.PTCategories",
+    "Security.Assessments.PromptSelfcheck",
+    "Security.Assessments.ImportMinBand",
+    "Security.Assessments.FindingsCap",
+    "Security.Assessments.RerunDedup",
+    "Security.Assessments.ReportValidationToOrg",
+    "Security.Assessments.RefMatchWindowLines",
+    "Security.Assessments.ModelMaxMiB",
+    "Security.Assessments.RefBudgetFiles",
+    "Security.Assessments.RefBudgetMiB",
+    "Security.Assessments.RefBudgetSeconds",
+    "Security.Assessments.Grounding",
+    "Security.Assessments.WorkspaceSecretMode",
+    "Security.Assessments.PentestRequestBudget",
+    "Security.Assessments.PentestPaceRPS",
+    "Security.Assessments.ProbeHelper",
+    "Security.Assessments.DisplayRedaction",
+    "Security.Assessments.DiagramMaxNodes",
+    "Security.Assessments.DiagramLabelChars",
+    "Security.Licenses.Deny",
+    "Security.Licenses.Allow",
+    "Security.Licenses.Unknown",
   ]);
+});
+
+test("licence list rows pick presets, read nil as none and patch whole lists", () => {
+  const deny = CODE_SECURITY_SETTINGS.find((r) => r.key === "security.licenses.deny")!;
+  const allow = CODE_SECURITY_SETTINGS.find((r) => r.key === "security.licenses.allow")!;
+  const unknown = CODE_SECURITY_SETTINGS.find((r) => r.key === "security.licenses.unknown")!;
+  const cfg = (d: unknown) => ({ Security: { Licenses: { Deny: d, Allow: [], Unknown: "ignore" } } });
+  // A nil list arrives as null and is the empty preset; a missing key is unknown.
+  assert.deepEqual(codeSecurityValue(cfg(null), deny), []);
+  assert.equal(codeSecurityValue({ Security: { Licenses: {} } }, deny), null);
+  assert.deepEqual(codeSecurityValue(cfg(["network_copyleft", "strong_copyleft"]), deny), ["network_copyleft", "strong_copyleft"]);
+  // A hand-set list that is no preset offers no picker.
+  assert.equal(codeSecurityValue(cfg(["GPL-3.0-only"]), deny), null);
+  assert.equal(codeSecurityValue(cfg([1]), deny), null);
+  assert.deepEqual(codeSecurityValue(cfg([]), allow), []);
+  assert.equal(codeSecurityValue(cfg([]), unknown), "ignore");
+  // Labels and parse go through the joined form the <option> carries.
+  assert.equal(codeSecurityOptionLabel(deny, []), "None (default)");
+  assert.equal(codeSecurityOptionLabel(allow, ["permissive"]), "Permissive only (MIT, BSD, Apache-2.0)");
+  assert.deepEqual(codeSecurityParse(deny, "network_copyleft,strong_copyleft"), ["network_copyleft", "strong_copyleft"]);
+  assert.equal(codeSecurityParse(deny, "GPL-3.0-only"), null);
+  // A patch carries the whole list; the same list or a non-preset is no patch.
+  assert.deepEqual(codeSecurityPatch(deny, [], ["network_copyleft"]), { key: "security.licenses.deny", value: ["network_copyleft"], was: [] });
+  assert.equal(codeSecurityPatch(deny, ["network_copyleft"], ["network_copyleft"]), null);
+  assert.equal(codeSecurityPatch(deny, [], ["GPL-3.0-only"]), null);
+  assert.equal(codeSecurityPatch(unknown, "ignore", "flag")?.value, "flag");
 });
 
 test("a row shows only while its owning component is active", () => {
@@ -110,7 +174,44 @@ test("a row shows only while its owning component is active", () => {
     "security.scanning.reflog_hold_max_age_days",
     "security.scanning.reflog_hold_max_entries",
   ];
-  const root = ["security.retention.days", ...scanning, "security.mcp.tools", "security.statusline.segment", "security.notify.critical"];
+  // The module root's [security.assessments] rows (plan section 13.3): no component of their own, so they show whenever security is active.
+  const assessments = [
+    "security.assessments.relax_pentest_local",
+    "security.assessments.relax_red_team_local",
+    "security.assessments.scoped_approval",
+    "security.assessments.max_network_tier",
+    "security.assessments.relaxation_scope",
+    "security.assessments.relaxation_max_minutes",
+    "security.assessments.report_to_org",
+    "security.assessments.time_box_threat_model_minutes",
+    "security.assessments.time_box_pentest_local_minutes",
+    "security.assessments.time_box_red_team_local_minutes",
+    "security.assessments.time_box_action",
+    "security.assessments.boundary_audit",
+    "security.assessments.evidence_retention_days",
+    "security.assessments.tm_frameworks",
+    "security.assessments.tm_method_extras",
+    "security.assessments.pt_categories",
+    "security.assessments.prompt_selfcheck",
+    "security.assessments.import_min_band",
+    "security.assessments.findings_cap",
+    "security.assessments.rerun_dedup",
+    "security.assessments.report_validation_to_org",
+    "security.assessments.ref_match_window_lines",
+    "security.assessments.model_max_mib",
+    "security.assessments.ref_budget_files",
+    "security.assessments.ref_budget_mib",
+    "security.assessments.ref_budget_seconds",
+    "security.assessments.grounding",
+    "security.assessments.workspace_secret_mode",
+    "security.assessments.pentest_request_budget",
+    "security.assessments.pentest_pace_rps",
+    "security.assessments.probe_helper",
+    "security.assessments.display_redaction",
+    "security.assessments.diagram_max_nodes",
+    "security.assessments.diagram_label_chars",
+  ];
+  const root = ["security.retention.days", ...scanning, "security.mcp.tools", "security.statusline.segment", "security.notify.critical", ...assessments];
   assert.deepEqual(keys(codeSecurityRows(v([["security", "active"]]), all)), root);
   assert.deepEqual(keys(codeSecurityRows(v([["security", "active"], ["security.deps", "active"]]), all)), [
     "security.retention.days",
@@ -121,10 +222,15 @@ test("a row shows only while its owning component is active", () => {
     "security.deps.db_fallback_upstream",
     "security.deps.unknown_action",
     "security.deps.online_unknown_action",
+    "security.deps.provenance",
     ...scanning,
     "security.mcp.tools",
     "security.statusline.segment",
     "security.notify.critical",
+    ...assessments,
+    "security.licenses.deny",
+    "security.licenses.allow",
+    "security.licenses.unknown",
   ]);
   assert.deepEqual(keys(codeSecurityRows(v([["security", "active"], ["security.secrets", "active"]]), all)), [
     "security.retention.days",
@@ -135,6 +241,7 @@ test("a row shows only while its owning component is active", () => {
     "security.mcp.tools",
     "security.statusline.segment",
     "security.notify.critical",
+    ...assessments,
   ]);
   assert.deepEqual(keys(codeSecurityRows(v([["security", "active"], ["security.deps", "inactive"]]), all)), root);
   assert.deepEqual(codeSecurityRows(null, all), []);
@@ -218,4 +325,58 @@ test("the schedule row says when its loop starts (PT-32)", () => {
   assert.match(row.help, /starts when the daemon starts/);
   assert.match(row.help, /restart the daemon/);
   assert.match(row.help, /while it runs, a change here applies within 15 minutes/);
+});
+
+test("the request helper row is an on/off picker, on by default, in the Security assessments group next to the request limits, in plain words", () => {
+  const keys = CODE_SECURITY_SETTINGS.map((r) => r.key);
+  const row = CODE_SECURITY_SETTINGS.find((r) => r.key === "security.assessments.probe_helper")!;
+  assert.ok(row, "the row exists");
+  assert.equal(row.component, "security");
+  assert.equal(row.field, "Security.Assessments.ProbeHelper");
+  assert.deepEqual(row.values, [true, false]);
+  assert.equal(row.defaultValue, true, "every default is the recommended answer: the helper is written");
+  assert.equal(row.unit, "");
+  // It sits between the pace and the display settings, beside the budget and the pace it applies.
+  const at = keys.indexOf("security.assessments.probe_helper");
+  assert.equal(keys[at - 1], "security.assessments.pentest_pace_rps");
+  assert.equal(keys.indexOf("security.assessments.pentest_request_budget"), at - 2);
+  // The label and the help say what is written, what off does and that an organization may only pin it off.
+  assert.equal(row.label, "Request helper for penetration tests");
+  assert.match(row.help, /request helper and its settings file into a penetration test's or red team run's folder before the agent starts/);
+  assert.match(row.help, /the plan lists both files/);
+  assert.match(row.help, /The log is a file the agent can write, so a match is not proof\./);
+  assert.match(row.help, /Off writes nothing, and every finding's evidence reads No log\./);
+  assert.match(row.help, /An organization can pin it off, never on\./);
+  assert.match(row.help, /python3/);
+  // It reads and writes like any other on/off row.
+  assert.equal(codeSecurityValue({ Security: { Assessments: { ProbeHelper: true } } }, row), true);
+  assert.equal(codeSecurityValue({ Security: { Assessments: { ProbeHelper: false } } }, row), false);
+  assert.equal(codeSecurityValue({ Security: { Assessments: { ProbeHelper: "false" } } }, row), null);
+  assert.equal(codeSecurityValue({ Security: { Assessments: {} } }, row), null);
+  assert.equal(codeSecurityOptionLabel(row, true), "On (default)");
+  assert.equal(codeSecurityOptionLabel(row, false), "Off");
+  assert.deepEqual(codeSecurityPatch(row, true, false), { key: "security.assessments.probe_helper", value: false, was: true });
+  assert.equal(codeSecurityPatch(row, true, true), null);
+  // The request limits no longer say nothing counts them: the helper does, for what goes through it.
+  for (const k of ["security.assessments.pentest_request_budget", "security.assessments.pentest_pace_rps"]) {
+    const limit = CODE_SECURITY_SETTINGS.find((r) => r.key === k)!;
+    assert.doesNotMatch(limit.help, /prompt rule only|nothing between the agent and the target/, k);
+    assert.match(limit.help, /With the request helper on/, k);
+    assert.match(limit.help, /another way/, k);
+  }
+});
+
+test("a picker value of 1 is labelled with the singular unit, and every other count keeps the plural", () => {
+  const row = (key: string) => CODE_SECURITY_SETTINGS.find((r) => r.key === key)!;
+  const win = row("security.assessments.ref_match_window_lines");
+  assert.equal(codeSecurityOptionLabel(win, 1), "1 line");
+  assert.equal(codeSecurityOptionLabel(win, 3), "3 lines");
+  const pace = row("security.assessments.pentest_pace_rps");
+  assert.equal(codeSecurityOptionLabel(pace, 1), "1 request per second");
+  assert.equal(codeSecurityOptionLabel(pace, 5), "5 requests per second (default)");
+  // No row reads "1 <plural unit>": every plural unit a row uses has its singular in the table.
+  for (const r of CODE_SECURITY_SETTINGS) {
+    if (!r.unit || !r.values.includes(1)) continue;
+    assert.doesNotMatch(codeSecurityOptionLabel(r, 1), /^1 (lines|files|nodes|days|hours|minutes|seconds|requests|characters|entries|findings|jobs)\b/, `${r.key} reads ${codeSecurityOptionLabel(r, 1)}`);
+  }
 });

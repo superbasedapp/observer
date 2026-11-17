@@ -622,7 +622,7 @@ func nodeGuard(ctx context.Context, cfg config.Config, st *store.Store) *guard.G
 	if err != nil {
 		home = ""
 	}
-	gd, err := hookGuardNew(guard.Options{Config: cfg.Guard, Home: home, OrgKeyPinHash: pin, ManagedTenancy: managed, OrgBundleExpected: bundleExpected})
+	gd, err := hookGuardNew(guard.Options{Config: cfg.Guard, Home: home, OrgKeyPinHash: pin, ManagedTenancy: managed, OrgBundleExpected: bundleExpected, ApprovalPageHidden: approvalPageHiddenLookup(cfg, storeOpenerFor(st), nil)})
 	if err != nil {
 		return nil
 	}

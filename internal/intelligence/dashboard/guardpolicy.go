@@ -228,6 +228,12 @@ func (s *Server) saveGuardUserPolicy(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"saved": false, "problems": problems})
 		return
 	}
+	// The org-lock gate (guard_orglocked_edits.go): no new override of a
+	// rule the organization sets on this node.
+	if problems := s.policyEditOrgLockProblems(r.Context(), path, []byte(req.Content)); len(problems) > 0 {
+		writeOrgLockRefusal(w, problems)
+		return
+	}
 	if err := writeGuardPolicyFile(path, []byte(req.Content)); err != nil {
 		writeErr(w, err)
 		return
@@ -295,9 +301,24 @@ func (s *Server) saveGuardProjectPolicy(w http.ResponseWriter, r *http.Request) 
 		_ = json.NewEncoder(w).Encode(map[string]any{"saved": false, "problems": problems})
 		return
 	}
+	// The org-lock gate: no new override or disable of a rule the
+	// organization sets on this node.
+	if problems := s.policyEditOrgLockProblems(r.Context(), path, []byte(req.Content)); len(problems) > 0 {
+		writeOrgLockRefusal(w, problems)
+		return
+	}
 	if err := writeGuardPolicyFile(path, []byte(req.Content)); err != nil {
 		writeErr(w, err)
 		return
+	}
+	// The root record beside the hashed file lets the trusted layer name
+	// its own roots, so the organization's report covers this project even
+	// when the store later forgets it (review finding 10, 2026-11-12).
+	if rec := guard.TrustedProjectRootRecordPath(cfg.Guard, home, req.ProjectRoot); rec != "" {
+		if err := writeFileAtomic(rec, []byte(filepath.Clean(req.ProjectRoot)+"\n")); err != nil {
+			writeErr(w, fmt.Errorf("write trusted project root record: %w", err))
+			return
+		}
 	}
 	ov, decl, dis, _ := guard.PolicyRuleRefs([]byte(req.Content))
 	writeJSON(w, map[string]any{

@@ -6,7 +6,8 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/policy"
 )
 
-// The install gate, S-741 to S-749 (security plan section 5.4, Phase D1).
+// The install gate, S-741 to S-749 and S-757 (security plan section 5.4,
+// Phase D1; S-757 from the coverage-gaps plan 2026-11-13 section 4).
 // The hook context seam fills Event.Security.Installs for an agent's
 // install command (or a manifest edit) from the offline index, the
 // online-answer cache and, on a cache miss for a public name, the daemon's
@@ -23,6 +24,10 @@ import (
 //	S-749 some versions are listed as malicious, and
 //	      the install may resolve to one (unpinned, or
 //	      a listing by version range)                observe flag, enforce flag
+//	S-757 the version installed lacks the build
+//	      provenance an earlier version carried (npm
+//	      provenance, PyPI attestations), whatever
+//	      the verdict                                observe flag, enforce flag
 //
 // S-744 and S-748 each have two stricter variants (lane LEFT-SEC), chosen
 // by the node's [security.deps] unknown_action and online_unknown_action
@@ -63,6 +68,10 @@ type depsRow struct {
 	// action is the InstallCheck.Action the row answers ("" is the default
 	// action, InstallActionDefault included).
 	action string
+	// provenance, when set, makes the row match install checks on their
+	// InstallCheck.Provenance instead of their verdict (S-757): the
+	// provenance state is orthogonal to the verdict.
+	provenance policy.InstallProvenance
 }
 
 // depsTable is THE install gate table, one test case per row.
@@ -115,6 +124,10 @@ var depsTable = []depsRow{
 		id: "S-749", severity: policy.SeverityHigh, verdict: policy.InstallListedVersion, observe: policy.DecisionFlag, enforce: policy.DecisionFlag,
 		doc: "agent install of a package some of whose versions are listed as malicious, without a pin outside them",
 	},
+	{
+		id: "S-757", severity: policy.SeverityHigh, provenance: policy.InstallProvenanceRegressed, observe: policy.DecisionFlag, enforce: policy.DecisionFlag,
+		doc: "agent install of a version that lacks the build provenance earlier versions carried (npm provenance, PyPI attestations)",
+	},
 }
 
 // depsFlagged are the verdicts S-747 reports for a manifest edit.
@@ -157,11 +170,8 @@ func depsMatch(row depsRow) policy.MatchFn {
 		}
 		var names []string
 		for _, c := range st.Installs {
-			hit := c.Verdict == row.verdict && (!depsActionVerdicts[row.verdict] || checkAction(c) == row.action)
-			if row.manifest {
-				hit = depsFlagged[c.Verdict] && c.Reason != reasonNotSetUp
-			}
-			if hit && c.Reason == reasonNotSetUp && !row.manifest {
+			hit := depsCheckHit(row, c)
+			if hit && c.Reason == reasonNotSetUp && !row.manifest && row.provenance == "" {
 				return true, notSetUpDetail
 			}
 			if hit {
@@ -176,6 +186,48 @@ func depsMatch(row depsRow) policy.MatchFn {
 		}
 		return true, strings.Join(names, ", ")
 	}
+}
+
+// depsCheckMatcher is one row of the per-check match table: the first
+// whose applies holds for a gate row decides whether a check hits it.
+type depsCheckMatcher struct {
+	applies func(row depsRow) bool
+	hit     func(row depsRow, c policy.InstallCheck) bool
+}
+
+// depsCheckMatchers is THE per-check match table, walked top-down:
+//
+//   - a manifest row (S-747) hits any flagged verdict but the not-set-up note;
+//   - a provenance row (S-757) hits its provenance state whatever the verdict;
+//   - every other row hits its verdict, and for S-744 and S-748 the
+//     variant of the check's action.
+var depsCheckMatchers = []depsCheckMatcher{
+	{
+		applies: func(row depsRow) bool { return row.manifest },
+		hit: func(_ depsRow, c policy.InstallCheck) bool {
+			return depsFlagged[c.Verdict] && c.Reason != reasonNotSetUp
+		},
+	},
+	{
+		applies: func(row depsRow) bool { return row.provenance != "" },
+		hit:     func(row depsRow, c policy.InstallCheck) bool { return c.Provenance == row.provenance },
+	},
+	{
+		applies: func(depsRow) bool { return true },
+		hit: func(row depsRow, c policy.InstallCheck) bool {
+			return c.Verdict == row.verdict && (!depsActionVerdicts[row.verdict] || checkAction(c) == row.action)
+		},
+	},
+}
+
+// depsCheckHit reports whether check c hits gate row row.
+func depsCheckHit(row depsRow, c policy.InstallCheck) bool {
+	for _, m := range depsCheckMatchers {
+		if m.applies(row) {
+			return m.hit(row, c)
+		}
+	}
+	return false
 }
 
 // depsActionVerdicts are the verdicts whose rows pick a variant by the

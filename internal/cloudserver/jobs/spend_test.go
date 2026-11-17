@@ -44,8 +44,8 @@ func TestProcessOnceSpendCeilingParks(t *testing.T) {
 		t.Fatalf("want parked/budget_exhausted, got %+v", out)
 	}
 	snap, _ := s.Usage(ctx, acct, store.FeatureSessionEnrichment, now)
-	if snap.DailyUsed != 0 {
-		t.Fatalf("unit not refunded on park: daily=%d", snap.DailyUsed)
+	if snap.DailyTokensUsed != 0 || snap.ConcurrencyUsed != 0 { // R-AI1: the hold is given back
+		t.Fatalf("unit not refunded on park: daily=%d", snap.DailyTokensUsed)
 	}
 	j, _ := s.GetJob(ctx, acct, sub.JobID)
 	if j.State != "parked" {
@@ -92,5 +92,56 @@ func TestRejectedAttemptsCountAgainstTheCeiling(t *testing.T) {
 		if math.Abs(spent-0.006) > 1e-9 {
 			t.Fatalf("%s spend = %v, want 0.006", kind.kind, spent)
 		}
+	}
+}
+
+// providerFailExecutor is a call that reached (or did not reach) the provider
+// and failed without usage, carrying an estimate.
+type providerFailExecutor struct {
+	kind     jobs.FailKind
+	est      float64
+	terminal bool
+}
+
+func (e providerFailExecutor) Execute(context.Context, *store.LeasedJob, store.RouteInfo, string, int, func() time.Time, jobs.FinalGate) (jobs.ExecResult, error) {
+	return jobs.ExecResult{Outcome: jobs.ExecProviderError, FailKind: e.kind, EstimateUSD: e.est, Terminal: e.terminal, TerminalReason: store.ReasonPersistenceViolation, Detail: "test"}, nil
+}
+
+// TestFailedProviderCallsCountAgainstTheCeiling: #16 - a call that reached the
+// provider and failed without usage books its estimate per attempt; one that
+// never reached it books nothing.
+func TestFailedProviderCallsCountAgainstTheCeiling(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		kind     jobs.FailKind
+		terminal bool
+		want     float64
+	}{
+		{"timeout books estimate", jobs.FailTimeout, false, 0.004},
+		{"quota books nothing", jobs.FailQuota, false, 0},
+		{"terminal persistence violation books one estimate", jobs.FailPersistenceViolation, true, 0.002},
+		{"transport books nothing", jobs.FailTransport, false, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s, pool, acct := setup(t)
+			ctx := context.Background()
+			now := time.Now()
+			submit(t, s, acct, "canon-pf-"+c.name, now)
+			w := jobs.NewWorker(jobs.Config{WorkerID: "w1", LeaseFor: time.Hour},
+				jobs.NewPGQueue(s), s, verifiedAttestor{}, jobs.StaticCredentials{Key: "k"},
+				map[string]jobs.Executor{store.FeatureSessionEnrichment: providerFailExecutor{kind: c.kind, est: 0.002, terminal: c.terminal}})
+			if _, err := w.ProcessOnce(ctx, now); err != nil {
+				t.Fatalf("ProcessOnce: %v", err)
+			}
+			var spent float64
+			err := pool.QueryRow(ctx, `SELECT COALESCE(SUM(spent_usd),0)::float8 FROM budget_pool_spend WHERE pool=$1 AND window_kind='daily' AND window_key=$2`,
+				store.FreeBudgetPool, store.DailyWindowKey(now)).Scan(&spent)
+			if err != nil {
+				t.Fatalf("read spend: %v", err)
+			}
+			if math.Abs(spent-c.want) > 1e-9 {
+				t.Fatalf("spend = %v, want %v", spent, c.want)
+			}
+		})
 	}
 }

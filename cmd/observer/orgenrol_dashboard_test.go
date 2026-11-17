@@ -46,6 +46,10 @@ type enrolFakeOrg struct {
 	signKey         ed25519.PrivateKey
 	keyB64          string
 	enrolCalls      int
+	// pushStatus, when set, is the answer to every /api/agent/push (R3-78
+	// drain tests); zero keeps the 404 every other test relies on.
+	pushStatus int
+	pushCalls  int
 }
 
 func newEnrolFakeOrg(t *testing.T, tenancy string, authority []string) *enrolFakeOrg {
@@ -92,6 +96,13 @@ func (f *enrolFakeOrg) route(w http.ResponseWriter, r *http.Request) {
 		answer := map[string]any{"status": "approved"}
 		answer["one_time_"+"token"] = idpTestEnrolCode
 		f.json(w, http.StatusOK, answer)
+	case "/api/agent/push":
+		f.pushCalls++
+		if f.pushStatus == 0 {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		f.json(w, f.pushStatus, map[string]string{"error": "refused"})
 	case "/api/agent/enroll":
 		f.enrolCalls++
 		if f.enrolStatus != 0 {
@@ -342,7 +353,7 @@ func TestEnrolDashboardStaleOfferRefused(t *testing.T) {
 	d.mu.Lock()
 	p := d.offers[id]
 	d.mu.Unlock()
-	lv, err := d.Leave(ctx)
+	lv, err := d.Leave(ctx, dashapi.SwitchOptions{})
 	if err != nil || !lv.WasEnrolled || lv.OrgName != "Acme" {
 		t.Fatalf("Leave = (%+v, %v)", lv, err)
 	}
@@ -352,7 +363,7 @@ func TestEnrolDashboardStaleOfferRefused(t *testing.T) {
 	_, err = d.DecideGrant(ctx, id, true)
 	wantFailure(t, err, orgenrol.CodeStale)
 	// Leaving twice is a no-op, as `observer unenroll` is.
-	lv, err = d.Leave(ctx)
+	lv, err = d.Leave(ctx, dashapi.SwitchOptions{})
 	if err != nil || lv.WasEnrolled {
 		t.Fatalf("second Leave = (%+v, %v)", lv, err)
 	}
@@ -373,7 +384,7 @@ func TestEnrolDashboardIdPConsentIsTheApproval(t *testing.T) {
 	clock := time.Now()
 	d.now = func() time.Time { return clock }
 
-	start, err := d.StartIdP(ctx, org.url)
+	start, err := d.StartIdP(ctx, org.url, dashapi.SwitchOptions{})
 	if err != nil || start.UserCode != idpTestUserCode || !strings.Contains(start.VerificationURI, "user_code=") {
 		t.Fatalf("StartIdP = (%+v, %v)", start, err)
 	}

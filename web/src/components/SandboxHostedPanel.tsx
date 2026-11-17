@@ -33,7 +33,16 @@ export type SandboxHostedConfig = {
   e2b: SandboxHostedProvider;
   modal: SandboxHostedProvider;
   vercel: SandboxHostedProvider;
+  docker: SandboxHostedProvider;
+  // instabox is absent from a daemon that predates the row.
+  instabox?: SandboxHostedProvider;
+  // daytona is a hosted row's table; absent from a daemon that
+  // predates it.
+  daytona?: SandboxHostedProvider;
 };
+
+// EMPTY_PROVIDER stands in for a provider table the daemon did not send.
+const EMPTY_PROVIDER: SandboxHostedProvider = { region: "", template: "", box_binary: "" };
 
 // HOSTED_DRIVERS are the hosted rows: their component, their config table and
 // the regions each vendor documents (sandbox plan section 7.1; the vendor table
@@ -62,6 +71,30 @@ export const HOSTED_DRIVERS = [
     component: "terminals.sandbox.vercel",
     regions: ["arn1", "bom1", "cdg1", "cle1", "cpt1", "dub1", "fra1", "gru1", "hkg1", "hnd1", "iad1", "icn1", "kix1", "lhr1", "pdx1", "sfo1", "sin1", "syd1", "yul1"],
     regionNote: "The default is iad1. A Hobby plan caps a box at 45 minutes.",
+  },
+  {
+    id: "docker-sandboxes",
+    table: "docker" as const,
+    name: "Docker Sandboxes",
+    component: "terminals.sandbox.docker",
+    regions: [],
+    regionNote: "Docker documents no regions for cloud sandboxes: Docker chooses (an organization region floor then refuses the launch). A box lasts at most 24 hours.",
+  },
+  {
+    id: "instabox",
+    table: "instabox" as const,
+    name: "InstaBox",
+    component: "terminals.sandbox.instabox",
+    regions: [] as string[],
+    regionNote: "InstaBox takes no region: it places the machine itself (an organization region floor then refuses the launch). Internet tier only, and the free plan pauses a machine after 30 idle minutes and after 480 minutes of running.",
+  },
+  {
+    id: "daytona",
+    table: "daytona" as const,
+    name: "Daytona",
+    component: "terminals.sandbox.daytona",
+    regions: ["us", "eu"],
+    regionNote: "Unset means your Daytona organization's default target (an organization region floor then refuses the launch). The template is a Daytona snapshot name.",
   },
 ];
 
@@ -217,7 +250,7 @@ export function SandboxHostedPanel({
           </label>
         </div>
         {HOSTED_DRIVERS.filter((d) => selected.includes(d.id)).map((d) => {
-          const p = value[d.table];
+          const p = value[d.table] ?? EMPTY_PROVIDER;
           const setP = (k: keyof SandboxHostedProvider, v: string) => set(d.table, { ...p, [k]: v });
           return (
             <div key={d.id} className="space-y-2 rounded-2 border border-line-2 p-3">

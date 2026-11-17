@@ -50,6 +50,12 @@ type SecurityConfig struct {
 	// Reach is [security.reach]: the reachability checks' caps (today the
 	// Go source check's, component security.reach.go).
 	Reach SecurityReachConfig `toml:"reach"`
+	// Assessments is [security.assessments]: what the agent-run security
+	// assessments may ask to lift for one run (plan section 13.3).
+	Assessments SecurityAssessmentsConfig `toml:"assessments"`
+	// Licenses is [security.licenses]: the project licence policy
+	// (component security.deps, security_licenses.go).
+	Licenses SecurityLicensesConfig `toml:"licenses"`
 	// CommitGateFloor is not a setting: the org floor require.commit_gate
 	// (managed only) writes "quick_scan" here through the floors' read seam
 	// (cmd/observer securityFloorsAppliedAt, lane SEC-P4 decision 9); the
@@ -267,6 +273,14 @@ type SecurityDepsConfig struct {
 	// could not answer in time (S-748; its own decision is flag in
 	// observe, ask in enforce).
 	OnlineUnknownAction string `toml:"online_unknown_action"`
+	// Provenance is the build-provenance check of an agent install
+	// (security coverage-gaps plan 2026-11-13 section 4, rule S-757), one
+	// of SecurityDepsProvenance: "flag" (the default) reads, for an
+	// answered online check, whether the version installed lacks the
+	// provenance an earlier version carried (npm provenance, PyPI
+	// attestations) and flags it; "off" makes no PyPI provenance request
+	// and sets no provenance state.
+	Provenance string `toml:"provenance"`
 	// DBSource is where an INDIVIDUAL node's OSV databases (the dependency
 	// scanners' local copy) come from, one of SecurityDepsDBSources: "auto"
 	// (the default) takes SuperBased's signed mirror on superbased.app and
@@ -331,6 +345,9 @@ var SecurityDepsInstallWaitMS = []int{500, 1500, 3000}
 // SecurityDepsUnknownActions is the picker of [security.deps].unknown_action
 // and online_unknown_action: today's rule decision, then stricter ones.
 var SecurityDepsUnknownActions = []string{"default", "ask", "deny"}
+
+// SecurityDepsProvenance is the picker of [security.deps].provenance.
+var SecurityDepsProvenance = []string{"flag", "off"}
 
 // SecurityDepsDBSources is the picker of [security.deps].db_source.
 var SecurityDepsDBSources = []string{"auto", "feed", "upstream", "import"}
@@ -427,15 +444,17 @@ var SecurityRetentionDays = []int{90, 180, 365, 730}
 // DefaultSecurityConfig is the [security] default.
 func DefaultSecurityConfig() SecurityConfig {
 	return SecurityConfig{
-		Retention: SecurityRetentionConfig{Days: 365},
-		Deps:      SecurityDepsConfig{Online: true, InstallWaitMS: 1500, MinPackageAgeH: 72, IndexDownload: true, UnknownAction: "default", OnlineUnknownAction: "default", DBSource: "auto", DBFallbackUpstream: true, RemoteVia: "shards", RemotePrivate: "withhold"},
-		Secrets:   SecuritySecretsConfig{WriteCheck: true, CommitCheck: true, PostWriteCapKiB: 256},
-		MCP:       SecurityMCPConfig{Tools: true},
-		Custom:    SecurityCustomConfig{ScheduleHours: 0, PauseOnBattery: true},
-		Feedback:  SecurityFeedbackConfig{AfterWrite: true},
-		Scan:      SecurityScanConfig{Opengrep: SecurityOpengrepConfig{PostWrite: true, CommitDiff: true, ScheduleHours: 0, PauseOnBattery: true, Feed: true, TaintPass: "auto"}},
-		Scanning:  SecurityScanningConfig{QuickScanBudgetS: 2, MinBlockingSeverity: "high"},
-		Trust:     SecurityTrustConfig{Prelaunch: "warn"},
+		Retention:   SecurityRetentionConfig{Days: 365},
+		Deps:        SecurityDepsConfig{Online: true, InstallWaitMS: 1500, MinPackageAgeH: 72, IndexDownload: true, UnknownAction: "default", OnlineUnknownAction: "default", Provenance: "flag", DBSource: "auto", DBFallbackUpstream: true, RemoteVia: "shards", RemotePrivate: "withhold"},
+		Secrets:     SecuritySecretsConfig{WriteCheck: true, CommitCheck: true, PostWriteCapKiB: 256},
+		MCP:         SecurityMCPConfig{Tools: true},
+		Custom:      SecurityCustomConfig{ScheduleHours: 0, PauseOnBattery: true},
+		Feedback:    SecurityFeedbackConfig{AfterWrite: true},
+		Scan:        SecurityScanConfig{Opengrep: SecurityOpengrepConfig{PostWrite: true, CommitDiff: true, ScheduleHours: 0, PauseOnBattery: true, Feed: true, TaintPass: "auto"}},
+		Scanning:    SecurityScanningConfig{QuickScanBudgetS: 2, MinBlockingSeverity: "high"},
+		Trust:       SecurityTrustConfig{Prelaunch: "warn"},
+		Licenses:    DefaultSecurityLicensesConfig(),
+		Assessments: DefaultSecurityAssessmentsConfig(),
 	}
 }
 
@@ -510,6 +529,9 @@ func validateSecurityDeps(d SecurityDepsConfig) error {
 	}
 	if !slices.Contains(SecurityDepsUnknownActions, d.OnlineUnknownAction) {
 		return fmt.Errorf("config: security.deps.online_unknown_action %q not in %v", d.OnlineUnknownAction, SecurityDepsUnknownActions)
+	}
+	if !slices.Contains(SecurityDepsProvenance, d.Provenance) {
+		return fmt.Errorf("config: security.deps.provenance %q not in %v", d.Provenance, SecurityDepsProvenance)
 	}
 	if !slices.Contains(SecurityDepsDBSources, d.DBSource) {
 		return fmt.Errorf("config: security.deps.db_source %q not in %v", d.DBSource, SecurityDepsDBSources)
@@ -586,6 +608,7 @@ func SecuritySettings() []SecuritySetting {
 		{Key: "security.deps.remote_private", Class: SettingLocal, Values: "withhold / send", Default: "withhold", NodeHome: "Privacy"},
 		{Key: "security.deps.unknown_action", Class: SettingPolicy, Values: "default (flag) / ask / deny", Default: "default", NodeHome: "Code security"},
 		{Key: "security.deps.online_unknown_action", Class: SettingPolicy, Values: "default (flag in observe, ask in enforce) / ask / deny", Default: "default", NodeHome: "Code security"},
+		{Key: "security.deps.provenance", Class: SettingPolicy, Values: "flag / off", Default: "flag", NodeHome: "Code security"},
 		{Key: "security.scanning.quick_scan_budget_s", Class: SettingPolicy, Values: "2 / 5 / 10 / 30", Default: "2", NodeHome: "Code security"},
 		{Key: "security.scanning.max_scan_staleness_min", Class: SettingPolicy, Values: "0 (off) / 1440 / 240 / 60 / 30", Default: "0 (off)", NodeHome: "Code security"},
 		{Key: "security.scanning.min_blocking_severity", Class: SettingPolicy, Values: "high / medium / low", Default: "high", NodeHome: "Code security"},
@@ -619,5 +642,5 @@ func SecuritySettings() []SecuritySetting {
 		// managed node follows the managed pull's finding_share instead. Its
 		// picker is on the Privacy page (lane SEC-H2).
 		{Key: "org_client.share.security", Class: SettingPolicy, Values: "Off / Posture / Findings", Default: "Posture", NodeHome: "Privacy"},
-	}, append(iacSecuritySettings(), imageSecuritySettings()...)...) // lanes GATES-SEC (security_iac.go) and OS-2 T (security_image.go)
+	}, slices.Concat(iacSecuritySettings(), imageSecuritySettings(), licenseSecuritySettings(), assessmentsSecuritySettings())...) // lanes GATES-SEC (security_iac.go), OS-2 T (security_image.go), licences (security_licenses.go) and assessments (security_assess.go)
 }

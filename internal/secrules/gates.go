@@ -363,7 +363,7 @@ func stateWords(s *policy.Security) string {
 		case policy.QuickScanBlocking:
 			return "the quick scan found a blocking finding in the changes"
 		case policy.QuickScanUnknown:
-			return "the quick scan did not finish"
+			return quickScanUnknownWords(s.QuickScanDetail)
 		default:
 			return "the changes have not been scanned"
 		}

@@ -155,12 +155,13 @@ var hookContextInventory = []inventoryRow{
 	// tools it launches start in), read on hookLifecycleLoop's tick.
 	{"cmd/observer/hook_disabled_wire.go", "newHookDisableWatch", classDaemonLoop},
 	{"cmd/observer/hook_failure.go", "*", classObserverState},
-	// The guard approval register's existence check (72cd13ba56): it stats
+	// The guard approval register's existence check (72cd13ba56, now in the
+	// one hookApprovalRead that the approval and cover lookups share): it stats
 	// [observer].db_path, Observer's own database, before the lazy read-only
 	// open, never a payload path. hookctx.Context.Stat is the payload seam
 	// and on the relay path answers only under the run's roots, where the
 	// daemon's database is not.
-	{"cmd/observer/hook_approvals.go", "hookApprovalLookup", classObserverState},
+	{"cmd/observer/hook_approvals.go", "hookApprovalRead", classObserverState},
 	// The sibling tool-gate record markers (FU-127): Observer's own
 	// hash-named files beside the hook failure spool, never a payload path.
 	{"cmd/observer/hook_toolgate_sibling.go", "*", classObserverState},

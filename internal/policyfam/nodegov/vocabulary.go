@@ -48,14 +48,17 @@ type VocabNotPinnable struct {
 	Reason string `json:"reason"`
 }
 
-// VocabShareKey is the wire shape of one ShareKeys row. Direction is always
-// "lowering_only" — it is a property of the whole block (§2.1), restated per
-// row so a form renderer never has to know that out of band.
+// VocabShareKey is the wire shape of one ShareKeys row. Direction is
+// "lowering_only" for every share tier — a property of the whole block
+// (§2.1), restated per row so a form renderer never has to know that out of
+// band — and "managed_raise_only" for a raise directive (ShareKey.Raise).
 type VocabShareKey struct {
 	Key       string `json:"key"`
 	Kind      string `json:"kind"`
 	Direction string `json:"direction"`
 	Label     string `json:"label"`
+	// Help is the row's optional plain-language note (ShareKey.Help).
+	Help string `json:"help,omitempty"`
 }
 
 // VocabFeature is the wire shape of one Features row, INCLUDING the pin it
@@ -148,8 +151,12 @@ func Vocabulary() Vocab {
 		v.NotPinnableYet = append(v.NotPinnableYet, VocabNotPinnable{Key: k.Key, Label: k.Label, Reason: k.Reason})
 	}
 	for _, k := range ShareKeys {
+		dir := string(DirLoweringOnly)
+		if k.Raise != "" {
+			dir = ShareDirectionManagedRaise
+		}
 		v.ShareKeys = append(v.ShareKeys, VocabShareKey{
-			Key: k.Key, Kind: k.Kind, Direction: string(DirLoweringOnly), Label: k.Label,
+			Key: k.Key, Kind: k.Kind, Direction: dir, Label: k.Label, Help: k.Help,
 		})
 	}
 	for _, f := range Features {

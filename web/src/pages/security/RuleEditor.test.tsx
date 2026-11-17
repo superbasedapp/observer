@@ -138,3 +138,14 @@ test("withIntegrityOverrides normalizes every integrity row before the page save
     ],
   );
 });
+
+// The custom rule form is the shared one (shared/components/guard/
+// CustomRuleEditor.tsx); the node still opens it with its own wording.
+test("the node's custom rule editor renders the shared form with the local wording", () => {
+  const html = renderToStaticMarkup(<RuleEditor kind="rule" open onClose={() => {}} onSave={() => {}} />);
+  assert.match(html, /New custom rule/);
+  assert.match(html, /placeholder="U-100"/);
+  assert.match(html, /Must not collide with a built-in id\./);
+  assert.match(html, /What should this rule stop\?/);
+  assert.match(html, /File paths/);
+});

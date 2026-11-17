@@ -26,8 +26,19 @@ type SandboxSetupStep struct {
 	// terminal, elevated, guide, never).
 	Class string `json:"class"`
 	// Channel is sandboxsetup.Channel.
-	Channel    string `json:"channel"`
-	Display    string `json:"display,omitempty"`
+	Channel string `json:"channel"`
+	Display string `json:"display,omitempty"`
+	// DisplayIsCommand: Display is a command line to paste into a terminal,
+	// not a sentence (a surface offers "Copy command" only then).
+	DisplayIsCommand bool `json:"display_is_command,omitempty"`
+	// Fields are the credential names a credential step asks for, in the
+	// order the provider documents them (E2B_API_KEY; MODAL_TOKEN_ID and
+	// MODAL_TOKEN_SECRET; ...). Names only, never a value.
+	Fields []string `json:"fields,omitempty"`
+	// Command is the CLI form of a credential step (`observer sandbox
+	// hosted connect <provider>`), which asks for each field and stores it
+	// the same way; a surface shows it where it cannot take the key itself.
+	Command    string `json:"command,omitempty"`
 	Reason     string `json:"reason,omitempty"`
 	Disclosure string `json:"disclosure,omitempty"`
 	// After is what the person must do afterwards ("relogin", "reboot",
@@ -120,6 +131,10 @@ type SandboxSetupRunRequest struct {
 	// Key is the typed API key of a hosted_connect step only; never logged,
 	// never stored outside the keychain.
 	Key string `json:"key,omitempty"`
+	// Fields are the typed credential values of a hosted_connect step whose
+	// provider needs more than one (keyed by the step's Fields names); never
+	// logged, never stored outside the keychain.
+	Fields map[string]string `json:"fields,omitempty"`
 }
 
 // The closed SandboxSetupStarted.Kind vocabulary.

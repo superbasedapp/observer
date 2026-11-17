@@ -816,11 +816,18 @@ func TestOpenShellWorkspaceSources(t *testing.T) {
 // added there without a row here fails.
 func TestOpenShellMasksAreTheRuntimeMasks(t *testing.T) {
 	r := &sandboxRuntime{cfg: config.TerminalSandboxConfig{MaskPaths: []string{"/srv/secrets", " ", "/home/dev/src/app/.env"}}}
+	foreign, err := foreignMountRoots()
+	if err != nil {
+		t.Fatal(err)
+	}
 	var got []string
-	for _, m := range openShellMasks(r.cfg, foreignMountRoots()) {
+	for _, m := range openShellMasks(r.cfg, foreign) {
 		got = append(got, m.path)
 	}
-	want := r.maskPaths()
+	want, err := r.maskPaths()
+	if err != nil {
+		t.Fatal(err)
+	}
 	slices.Sort(got)
 	slices.Sort(want)
 	if !slices.Equal(slices.Compact(got), want) {

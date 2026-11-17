@@ -400,30 +400,7 @@ func buildStep(s *planState, id string) Step {
 	if p.Kind == KindComponent {
 		st.Package = s.in.ComponentID
 	}
-	// A pm step shows (and, when runnable, runs) its derived command, also
-	// when it degraded to a guide: the command is then the copyable step.
-	if c.hasRemedy && c.remedy.Channel == ChPM {
-		if pm, ok := pmForFamily(s.in.Family); ok {
-			if _, argv, ok := toolinstall.InstallArgvFor(pm, []string{c.remedy.Package}); ok {
-				st.Display = toolinstall.DisplayArgv(argv)
-				if st.Channel == ChPM {
-					st.Argv = argv
-				}
-			}
-		}
-		if st.Channel == ChPM && st.Argv == nil {
-			st.Class, st.Channel = ClassGuide, ChNone
-		}
-	}
-	if c.hasRemedy && st.Channel == ChCommand {
-		st.Argv = append([]string(nil), c.remedy.Argv...)
-		if c.remedy.ArgKey != "" {
-			// arg_unset made the step a guide without a usable value, so
-			// the value here is a digest-pinned reference from the config.
-			st.Argv = append(st.Argv, argValue(s.in, c.remedy))
-			st.Display = toolinstall.DisplayArgv(st.Argv)
-		}
-	}
+	commandDisplay(s, c, &st)
 	if st.Channel == ChPinned && pin != nil {
 		source := s.in.DownloadSource
 		if source == "" {
@@ -436,6 +413,44 @@ func buildStep(s *planState, id string) Step {
 		}
 	}
 	return st
+}
+
+// commandDisplay sets a pm or command step's display, argv and whether the
+// display is a command (DisplayIsCommand), from its remedy.
+func commandDisplay(s *planState, c stepCtx, st *Step) {
+	// A pm step shows (and, when runnable, runs) its derived command, also
+	// when it degraded to a guide: the command is then the copyable step.
+	if c.hasRemedy && c.remedy.Channel == ChPM {
+		if pm, ok := pmForFamily(s.in.Family); ok {
+			if _, argv, ok := toolinstall.InstallArgvFor(pm, []string{c.remedy.Package}); ok {
+				st.Display = toolinstall.DisplayArgv(argv)
+				st.DisplayIsCommand = true
+				if st.Channel == ChPM {
+					st.Argv = argv
+				}
+			}
+		}
+		if st.Channel == ChPM && st.Argv == nil {
+			st.Class, st.Channel = ClassGuide, ChNone
+		}
+	}
+	// A command remedy without an argument key shows its constant command,
+	// also when it degraded to a guide (the command is then the copyable
+	// step); one with an argument key shows a command only once the planner
+	// derived it from a usable value.
+	if c.hasRemedy && c.remedy.Channel == ChCommand && c.remedy.ArgKey == "" && len(c.remedy.Argv) > 0 {
+		st.DisplayIsCommand = true
+	}
+	if c.hasRemedy && st.Channel == ChCommand {
+		st.Argv = append([]string(nil), c.remedy.Argv...)
+		if c.remedy.ArgKey != "" {
+			// arg_unset made the step a guide without a usable value, so
+			// the value here is a digest-pinned reference from the config.
+			st.Argv = append(st.Argv, argValue(s.in, c.remedy))
+			st.Display = toolinstall.DisplayArgv(st.Argv)
+			st.DisplayIsCommand = true
+		}
+	}
 }
 
 // stepNotes adjusts a planned step's sentences: a never step's sentence

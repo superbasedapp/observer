@@ -105,6 +105,9 @@ type securityCoverageResponse struct {
 	Supported []securityCoverageSupportedJS `json:"supported"`
 	Projects  []securityCoverageProjectJS   `json:"projects"`
 	Reasons   map[string]string             `json:"reasons"`
+	// Families is "what is checked": one row per checking family with its
+	// components and state (security_coverage_families.go).
+	Families []securityCheckFamilyJS `json:"families"`
 }
 
 // handleSecurityCoverage serves GET /api/security/coverage.
@@ -140,6 +143,7 @@ func (s *Server) handleSecurityCoverage(w http.ResponseWriter, r *http.Request) 
 		}),
 		Projects: securityCoverageProjects(roots, index, runs),
 		Reasons:  map[string]string{},
+		Families: s.securityCoverageFamilies(ctx),
 	}
 	addReason := func(reason string) {
 		if reason == "" {

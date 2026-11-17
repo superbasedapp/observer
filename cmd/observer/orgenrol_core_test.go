@@ -66,7 +66,7 @@ func TestRunEnrolSequence(t *testing.T) {
 			org := newEnrolFakeOrg(t, tc.tenancy, nil)
 			b, cfgPath := enrolSequenceBundle(t, tc.cfg)
 			before, _ := os.ReadFile(cfgPath)
-			seq, err := runEnrolSequence(context.Background(), b, cfgPath, org.url, idpTestEnrolCode, tc.writeBlock)
+			seq, err := runEnrolSequence(context.Background(), b, cfgPath, org.url, idpTestEnrolCode, tc.writeBlock, false)
 			if err != nil {
 				t.Fatalf("runEnrolSequence: %v", err)
 			}
@@ -117,7 +117,7 @@ func TestRunEnrolSequenceRefusalWritesNothing(t *testing.T) {
 	org.enrolStatus = http.StatusUnauthorized
 	b, cfgPath := enrolSequenceBundle(t, "[observer]\n")
 	before, _ := os.ReadFile(cfgPath)
-	_, err := runEnrolSequence(context.Background(), b, cfgPath, org.url, idpTestEnrolCode, true)
+	_, err := runEnrolSequence(context.Background(), b, cfgPath, org.url, idpTestEnrolCode, true, false)
 	if !errors.Is(err, orgclient.ErrAuthFailed) {
 		t.Fatalf("err = %v, want orgclient.ErrAuthFailed", err)
 	}

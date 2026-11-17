@@ -149,7 +149,7 @@ function ProjectDigestsSection({
     }
     return (
       <div className="rounded-3 border border-line-2 bg-bg-2 px-4 py-3 text-[12px] text-fg-2">
-        Weekly project digests are part of Plus.{" "}
+        Weekly project digests are part of Personal Pro.{" "}
         <Link to="/billing" className="text-accent">
           See plans
         </Link>
@@ -321,10 +321,13 @@ export function Overview() {
   // window - not coverage.devices, which is all-history and would credit a
   // machine that has been offline for a year (F13).
   const windowDevices = data.window.devices;
+  // The busiest day's machine count, read once so the label below says
+  // "machine" in its own words.
+  const busiestDayMachines = s.max_device_count;
   const coverage = hasStructural
     ? `${s.active_days} day${s.active_days === 1 ? "" : "s"} with synced data, ` +
       `${fmtDateRange(s.first_day, s.last_day)}, from ` +
-      `${windowDevices} device${windowDevices === 1 ? "" : "s"} in this window.`
+      `${windowDevices} machine${windowDevices === 1 ? "" : "s"} in this window.`
     : "No structural windows have synced yet.";
 
   const enrichment = data.enrichment;
@@ -372,7 +375,7 @@ export function Overview() {
           title="No structural windows have synced yet"
           steps={[
             "Grant the metadata purpose.",
-            "Run a sync from a device.",
+            "Run a sync from a machine.",
             "The first completed day appears here after that day ends.",
           ]}
         />
@@ -401,7 +404,7 @@ export function Overview() {
           label="Sessions"
           icon={<MetricIcon metric="sessions" />}
           value={fmtInt(s.session_count)}
-          sub={`across ${fmtInt(s.max_device_count)} device${s.max_device_count === 1 ? "" : "s"} on the busiest day`}
+          sub={`across ${fmtInt(busiestDayMachines)} machine${busiestDayMachines === 1 ? "" : "s"} on the busiest day`}
           spark={sessionsSpark}
           sparkColor={SERIES_META.sessions.color}
           stale={stale}

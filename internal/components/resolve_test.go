@@ -150,6 +150,8 @@ func TestResolveCoversEveryRule(t *testing.T) {
 		// Managed-policy rows: TestResolveGovernanceTable.
 		ReasonAboveCeiling: true, ReasonPolicyDenied: true, ReasonPolicyUnlisted: true,
 		ReasonPolicyRequired: true, ReasonGranted: true,
+		// Availability rows: TestResolveAvailabilityRows.
+		ReasonNotAvailable: true, ReasonNotEntitled: true,
 	}
 	for _, r := range resolveRules {
 		if !covered[r.reason] {

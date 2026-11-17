@@ -64,3 +64,27 @@ if ! diff -rq "$COMMITTED_DIST" "$tmpdir/dist" >"$tmpdir/diff.log" 2>&1; then
 fi
 
 echo "webcloud dist: $COMMITTED_DIST matches a fresh vite build"
+
+# The staff console's build (lane w17/staff-console): its own entry and config
+# (vite.staff.config.ts) into its own committed embed dir, dist-staff
+# (webcloud/staff_embed.go), checked the same way.
+COMMITTED_STAFF="$WEBCLOUD_DIR/dist-staff"
+if [ ! -d "$COMMITTED_STAFF" ]; then
+    echo "verify-webcloud-dist: missing $COMMITTED_STAFF — run 'cd webcloud && npx vite build --config vite.staff.config.ts' and commit" >&2
+    exit 1
+fi
+(
+    cd "$WEBCLOUD_DIR"
+    npx vite build --config vite.staff.config.ts --outDir "$tmpdir/dist-staff" --emptyOutDir >"$tmpdir/build-staff.log" 2>&1
+) || {
+    echo "verify-webcloud-dist: staff vite build failed" >&2
+    cat "$tmpdir/build-staff.log" >&2
+    exit 1
+}
+if ! diff -rq "$COMMITTED_STAFF" "$tmpdir/dist-staff" >"$tmpdir/diff-staff.log" 2>&1; then
+    echo "verify-webcloud-dist: $COMMITTED_STAFF drifted from a fresh staff build" >&2
+    cat "$tmpdir/diff-staff.log" >&2
+    echo "verify-webcloud-dist: run 'cd webcloud && npx vite build --config vite.staff.config.ts' and commit the result." >&2
+    exit 1
+fi
+echo "webcloud dist-staff: $COMMITTED_STAFF matches a fresh staff build"

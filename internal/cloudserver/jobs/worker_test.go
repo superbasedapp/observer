@@ -86,8 +86,8 @@ func TestProcessOnceParksProviderUnverified(t *testing.T) {
 	}
 	// Reservation refunded, evidence deleted, job parked.
 	snap, _ := s.Usage(ctx, acct, store.FeatureSessionEnrichment, now)
-	if snap.DailyUsed != 0 {
-		t.Fatalf("unit not refunded on park: daily=%d", snap.DailyUsed)
+	if snap.DailyTokensUsed != 0 || snap.ConcurrencyUsed != 0 { // R-AI1: the hold is given back
+		t.Fatalf("unit not refunded on park: daily=%d", snap.DailyTokensUsed)
 	}
 	j, _ := s.GetJob(ctx, acct, sub.JobID)
 	if j.State != "parked" {
@@ -188,8 +188,8 @@ func TestProcessOnceExecutorDeclinesFailsAfterRetries(t *testing.T) {
 	}
 	// The user unit was refunded (no result produced).
 	snap, _ := s.Usage(ctx, acct, store.FeatureSessionEnrichment, now)
-	if snap.DailyUsed != 0 {
-		t.Fatalf("unit not refunded on terminal fail: daily=%d", snap.DailyUsed)
+	if snap.DailyTokensUsed != 0 || snap.ConcurrencyUsed != 0 { // R-AI1: the hold is given back
+		t.Fatalf("unit not refunded on terminal fail: daily=%d", snap.DailyTokensUsed)
 	}
 }
 

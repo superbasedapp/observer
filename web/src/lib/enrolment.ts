@@ -326,10 +326,34 @@ export function canSubmit(f: EnrolForm): boolean {
 }
 
 /** enrolBody builds the POST /api/enrolment/enrol body: only the fields the
- *  method uses ever leave the page. */
-export function enrolBody(f: EnrolForm): Record<string, string> {
-  if (f.method === "link") return { method: "link", link: f.link.trim() };
-  return { method: "code", org_url: f.orgUrl.trim(), token: f.token.trim() };
+ *  method uses ever leave the page. dropUnsent is the explicit "Switch anyway"
+ *  after an unsent_rows refusal (R3-78); it is sent only when true. */
+export function enrolBody(f: EnrolForm, dropUnsent = false): Record<string, string | boolean> {
+  const body: Record<string, string | boolean> =
+    f.method === "link"
+      ? { method: "link", link: f.link.trim() }
+      : { method: "code", org_url: f.orgUrl.trim(), token: f.token.trim() };
+  if (dropUnsent) body.drop_unsent = true;
+  return body;
+}
+
+/** UNSENT_ROWS is the code of a switch or a leave the daemon refused because
+ *  rows captured for the current organization could not be sent to it first
+ *  (R3-78). Nothing changed; the page offers "Switch anyway" / "Leave anyway"
+ *  (drop_unsent) or Cancel. */
+export const UNSENT_ROWS = "unsent_rows";
+
+/** apiErrorCode extracts the server's classified failure code ({error}) from a
+ *  failed call, or "" when there is none. */
+export function apiErrorCode(err: unknown): string {
+  const body = (err as { body?: unknown } | null)?.body;
+  if (typeof body !== "string" || !body.trim()) return "";
+  try {
+    const parsed = JSON.parse(body) as { error?: unknown };
+    return typeof parsed.error === "string" ? parsed.error : "";
+  } catch {
+    return "";
+  }
 }
 
 /** apiErrorMessage extracts the server's sentence from a failed call: the

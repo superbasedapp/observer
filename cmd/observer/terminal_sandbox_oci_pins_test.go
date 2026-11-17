@@ -62,7 +62,10 @@ func TestOCIPinsTheRepositories(t *testing.T) {
 			t.Fatalf("protection pins %v lack %s", pins, w)
 		}
 	}
-	p := d.bindPlan(home, run, spec, overlays, "/tmp/observer-sbx-runid9", nil)
+	p, err := d.bindPlan(home, run, spec, overlays, "/tmp/observer-sbx-runid9", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	unpinned := p
 	unpinned.Pins = nil
 	ociPinMounts(&p, pins)

@@ -48,7 +48,7 @@ func TestEnrolDashboardLinkReEnrolAfterLeave(t *testing.T) {
 		t.Fatalf("overview carries no structured leave plan: %+v", ov.LeaveSteps)
 	}
 
-	lv, err := d.Leave(ctx)
+	lv, err := d.Leave(ctx, dashapi.SwitchOptions{})
 	if err != nil || !lv.WasEnrolled {
 		t.Fatalf("Leave = (%+v, %v)", lv, err)
 	}
