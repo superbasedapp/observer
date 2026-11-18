@@ -13,6 +13,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/orgenrol"
 	"github.com/marmutapp/superbased-observer/internal/retention"
+	"github.com/marmutapp/superbased-observer/internal/settingslink"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
@@ -264,10 +265,7 @@ func (s *Server) handleEnrolmentInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.opts.OrgClient == nil {
-		writeJSONStatus(w, http.StatusConflict, map[string]string{
-			"error":   "not_enrolled",
-			"message": notEnrolledInviteMessage,
-		})
+		writeNeedsSetting(w, http.StatusConflict, "not_enrolled", notEnrolledInviteMessage, settingslink.Account)
 		return
 	}
 
@@ -288,10 +286,7 @@ func (s *Server) handleEnrolmentInvite(w http.ResponseWriter, r *http.Request) {
 	tok, err := s.opts.OrgClient.MintInviteToken(r.Context(), req.Email, req.TTLDays)
 	switch {
 	case errors.Is(err, orgclient.ErrNotEnrolled):
-		writeJSONStatus(w, http.StatusConflict, map[string]string{
-			"error":   "not_enrolled",
-			"message": notEnrolledInviteMessage,
-		})
+		writeNeedsSetting(w, http.StatusConflict, "not_enrolled", notEnrolledInviteMessage, settingslink.Account)
 		return
 	case errors.Is(err, orgclient.ErrInvitesDisabled):
 		writeJSONStatus(w, http.StatusForbidden, map[string]string{

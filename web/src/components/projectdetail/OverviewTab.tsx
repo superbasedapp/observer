@@ -85,7 +85,7 @@ export function OverviewTab({ d, onReload, win }: { d: ProjectDetail; onReload?:
       {d.loc.human_capture === "none" && (
         <p className="rounded-2 border border-line-2 bg-bg-2 px-3 py-2 text-[11px] text-fg-3">
           Human lines unmeasured for this project (no editor-reported saves) - no AI share is shown
-          against it. Install the SuperBased VS Code extension to measure human-authored lines.
+          against it. Install the superbased VS Code extension to measure human-authored lines.
         </p>
       )}
 

@@ -387,7 +387,7 @@ export function Overview() {
           label="Estimated cost"
           icon={<MetricIcon metric="spend" />}
           value={fmtUSD(s.cost_usd)}
-          sub="your provider estimate, not a SuperBased bill"
+          sub="your provider estimate, not a superbased bill"
           spark={costSpark}
           aurora
           stale={stale}

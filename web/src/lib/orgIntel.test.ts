@@ -16,6 +16,8 @@ import {
   orgIntelLevelLabel,
   orgIntelPhase,
   orgIntelSessionsBanner,
+  orgIntelFix,
+  ORG_INTEL_PHASE_FIX,
   ORG_SESSIONS_BANNER_STATES,
   type OrgIntelStatus,
   orgIntelBackgroundLine,
@@ -236,4 +238,71 @@ test("orgIntelOrgName never renders an org id", () => {
   assert.equal(orgIntelOrgName({ org_name: "07d3f6e5dcd736effa3c58dc818adb8a" }), "Your organization");
   assert.equal(orgIntelOrgName({ org_name: "  " }), "Your organization");
   assert.equal(orgIntelOrgName({ org_name: "Acme" }), "Acme");
+});
+
+// The dead-end sweep (2026-11-18): every status that is off says who can
+// change it and where. One case per phase row, plus the managed rail.
+test("orgIntelFix: each phase names its way forward", () => {
+  const ENR = "https://org.example/intelligence?tab=session-enrichment";
+  const cases: Array<[OrgIntelStatus, string | null, string | null]> = [
+    [st({ class: "unenrolled" }), "/settings?section=enrolment", null],
+    [st({ requirement: undefined }), null, ENR],
+    [st({ class: "managed", notice_only: true }), null, null],
+    [st({ class: "managed", notice_only: true, managed_rail: { on: false, reason: "no_policy", message: "x" } }), null, ENR],
+    [st({ org_enabled: false }), null, ENR],
+    [st({ pending: true }), null, null],
+    [st({ effective_opt_in: true }), null, null],
+    [st({}), null, null],
+  ];
+  for (const [s, local, org] of cases) {
+    const f = orgIntelFix({ ...s, org_dashboard: "https://org.example" });
+    assert.equal(f.settings?.href ?? null, local, JSON.stringify(s));
+    assert.equal(f.org?.href ?? null, org, JSON.stringify(s));
+    if (org) assert.equal(f.org?.label, "Intelligence > Session enrichment");
+  }
+  assert.equal(Object.keys(ORG_INTEL_PHASE_FIX).length, ORG_INTEL_PHASES.length);
+  // No safe address: the place is named in words, no URL.
+  const words = orgIntelFix(st({ org_enabled: false, org_dashboard: undefined }));
+  assert.deepEqual(words.org, { href: null, label: "Intelligence > Session enrichment", personal: false });
+  // A personal dashboard: the org fix speaks to its only admin, the person.
+  assert.equal(orgIntelFix(st({ org_enabled: false, dashboard_kind: "personal" })).org?.personal, true);
+});
+
+test("a personal dashboard's org-level states name the dashboard, not the org called Personal", () => {
+  const off = orgIntelSessionsBanner(st({ org_name: "Personal", org_enabled: false, dashboard_kind: "personal" }), ["org"])!;
+  assert.equal(off.text, "Your personal dashboard has session enrichment off. Nothing is sent from this machine.");
+  assert.equal(off.org?.personal, true);
+  const unset = orgIntelSessionsBanner(st({ org_name: "Personal", requirement: undefined, dashboard_kind: "personal" }), ["org"])!;
+  assert.match(unset.text, /^Your personal dashboard has not published/);
+  const team = orgIntelSessionsBanner(st({ org_enabled: false, dashboard_kind: "team" }), ["org"])!;
+  assert.match(team.text, /^Acme has team AI summaries turned off/);
+  assert.equal(team.org?.personal, false);
+});
+
+test("the Sessions banner names the org's place for the states only it can change", () => {
+  const want: Record<string, boolean> = {
+    "Not set up": true,
+    Off: true,
+    "Not running": true,
+    Running: false,
+    "Terms changed": false,
+    "Your answer needed": false,
+    Accepted: false,
+    "Not accepted": false,
+  };
+  const states: OrgIntelStatus[] = [
+    st({ requirement: undefined }),
+    st({ org_enabled: false }),
+    st({ class: "managed", notice_only: true, managed_rail: { on: false, reason: "no_policy", message: "m" } }),
+    st({ class: "managed", notice_only: true, managed_rail: { on: true, reason: "on", message: "" } }),
+    st({ pending: true, pending_reason: "terms_changed", effective_opt_in: true }),
+    st({ pending: true, pending_reason: "not_accepted" }),
+    st({ effective_opt_in: true }),
+    st({}),
+  ];
+  for (const s of states) {
+    const b = orgIntelSessionsBanner({ ...s, org_dashboard: "https://org.example" }, ["org"])!;
+    assert.equal(!!b.org, want[b.state], b.state);
+    if (b.org) assert.equal(b.org.href, "https://org.example/intelligence?tab=session-enrichment");
+  }
 });

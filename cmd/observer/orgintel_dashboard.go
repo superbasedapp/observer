@@ -13,6 +13,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/dashapi"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
 	"github.com/marmutapp/superbased-observer/internal/orgintel"
+	"github.com/marmutapp/superbased-observer/internal/settingslink"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
@@ -75,6 +76,9 @@ func (d *orgIntelDashboard) status(ctx context.Context, b orgBundle) (dashapi.Or
 	noteManagedNoticeShown(ctx, b.store, snap)
 	v, err := buildOrgIntelStatusView(ctx, b.store, snap)
 	setOrgIntelManagedRail(&v, snap, orgIntelGovernance(ctx, b))
+	if snap.Enrolment != nil {
+		v.DashboardKind = readConnectKind(d.configPath, snap.Enrolment.OrgID)
+	}
 	return v, err
 }
 
@@ -174,6 +178,7 @@ func newOrgIntelStatusView(snap orgIntelSnapshot) dashapi.OrgIntelStatus {
 		if v.OrgName == "" {
 			v.OrgName = snap.Enrolment.OrgID
 		}
+		v.OrgDashboard = settingslink.OrgDashboardBase(orgDashboardAddress(snap.Enrolment))
 	}
 	if snap.Body != nil {
 		b := snap.Body

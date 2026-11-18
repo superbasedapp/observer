@@ -15,6 +15,7 @@ import { ConsentSetup } from "./pages/ConsentSetup";
 import { SecondFactor } from "./pages/SecondFactor";
 import { legacyView } from "./lib/personalModel";
 import { CONNECT_CODE_KEY, routerPath, safeReturnTo } from "./lib/connectModel";
+import { SIGN_UP_ROUTE } from "./lib/signInModel";
 // Signed-in pages load per route: a signed-out visitor (SignIn, eager above)
 // never downloads recharts or the dashboard pages, and each page's chunk is
 // fetched in parallel with its data. The shell shows a page-shaped skeleton
@@ -185,6 +186,20 @@ function RootRoute() {
   return <Navigate to={back ? routerPath(back) : "/home"} replace />;
 }
 
+// SignUpRoute is "/sign-up", the create-an-account entry the marketing
+// site's "Get started" links to (hosted sign-in fix, lane A): signed out it
+// is the sign-up variant of the sign-in page, which leaves for the
+// provider's sign-up screen by itself; signed in there is nothing to create,
+// so it goes where a sign-in would (the return_to, else Home).
+function SignUpRoute() {
+  const { search } = useLocation();
+  if (!hasCsrf()) {
+    return <SignIn variant="sign-up" />;
+  }
+  const back = safeReturnTo(new URLSearchParams(search).get("return_to"));
+  return <Navigate to={back ? routerPath(back) : "/home"} replace />;
+}
+
 // ConsentRoute guards "/consent" itself: signed out bounces to sign-in, and
 // an account whose choices are already stored goes back to the console
 // (revisiting the choice lives on the Privacy page, not here). Nothing sends
@@ -269,6 +284,7 @@ export function App() {
   return (
     <Routes>
       <Route path="/" element={<RootRoute />} />
+      <Route path={SIGN_UP_ROUTE} element={<SignUpRoute />} />
       <Route path="/consent" element={<ConsentRoute />} />
       {/* C2: the team sign-in sends a member here when it needs a passkey. */}
       <Route path="/second-factor" element={hasCsrf() ? <SecondFactor /> : <Navigate to="/" replace />} />

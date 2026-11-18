@@ -17,7 +17,9 @@ import { BrandMark } from "../../primitives/BrandMark";
 //     subtitle naming the app);
 //   - one raised card (bg-1, shadow-2) holding the page's single h1;
 //   - whatever the app puts `below` the card (the org's help line, the
-//     portal's flow strip and privacy promise).
+//     portal's flow strip and privacy promise);
+//   - an optional `corner` control pinned to the top right of the screen
+//     (the portal's theme toggle on its signed-out screens).
 //
 // It renders OUTSIDE the authenticated app tree. Purely presentational: no
 // fetch, no state, no routing.
@@ -90,6 +92,7 @@ export function AuthShell({
   width = "narrow",
   children,
   below,
+  corner,
 }: {
   /** Names the app under the wordmark ("Org dashboard"); optional. */
   subtitle?: string;
@@ -100,10 +103,13 @@ export function AuthShell({
   children: ReactNode;
   /** Blocks under the card, in order. */
   below?: ReactNode;
+  /** A control pinned to the screen's top right (a theme toggle); optional. */
+  corner?: ReactNode;
 }) {
   return (
     <div className="relative flex min-h-screen w-full items-center justify-center overflow-hidden bg-bg-0 px-4 py-10">
       <AuthBackdrop />
+      {corner && <div className="absolute right-4 top-4 z-10">{corner}</div>}
       <main className={clsx("relative flex w-full flex-col gap-5", AUTH_WIDTH[width])}>
         <section className="rounded-3 border border-line-2 bg-bg-1 p-6 shadow-2 sm:p-8">
           <AuthLockup subtitle={subtitle} />

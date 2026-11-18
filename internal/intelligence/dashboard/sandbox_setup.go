@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/marmutapp/superbased-observer/internal/dashapi"
+	"github.com/marmutapp/superbased-observer/internal/settingslink"
 )
 
 // sandbox_setup.go serves the sandbox setup routes (sandbox installation
@@ -68,11 +69,27 @@ func writeSandboxSetupErr(w http.ResponseWriter, err error) {
 	writeJSONStatus(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 }
 
-// writeSandboxSetupCode writes one refusal.
+// sandboxSetupCodePlaces maps the setup codes whose fix is a setting to the
+// place that changes it (internal/settingslink). A code without a row is not
+// fixed by a setting and carries no link.
+var sandboxSetupCodePlaces = map[string]settingslink.Place{
+	dashapi.SandboxSetupCodeInstallDisabled:   settingslink.TerminalLaunchPolicy,
+	dashapi.SandboxSetupCodeElevationDisabled: settingslink.TerminalSandbox,
+}
+
+// writeSandboxSetupCode writes one refusal. A code whose fix is a setting
+// also carries the deep link fields ("settings", "settings_label").
 func writeSandboxSetupCode(w http.ResponseWriter, status int, code, msg string, plan *dashapi.SandboxSetupPlan) {
 	body := map[string]any{"error": msg, "code": code}
 	if plan != nil {
 		body["plan"] = plan
+	}
+	if p, ok := sandboxSetupCodePlaces[code]; ok {
+		if l, ok := settingslink.For(p); ok {
+			body["message"] = msg
+			body["settings"] = l.Href
+			body["settings_label"] = l.Label
+		}
 	}
 	writeJSONStatus(w, status, body)
 }

@@ -285,7 +285,7 @@ export function runningProcessCount(roots: ProcessNode[] | null | undefined): nu
 // Network traffic — the server-side aggregate from
 // GET /api/session/<id>/network?summary=1 (wire shape FROZEN):
 //   {"proxied_calls":N,"request_bytes":N,"response_bytes":N,"os_connections":N}
-// The server discriminates PROXIED API calls (SuperBased-proxied/plaintext
+// The server discriminates PROXIED API calls (superbased-proxied/plaintext
 // flows, which carry body byte totals) from OS-OBSERVED process connections
 // (`os_connections` — raw sockets seen on the process tree, NOT proxied API
 // calls and with no body bytes). The old event-list summary conflated the two

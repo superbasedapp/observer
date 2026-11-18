@@ -194,26 +194,26 @@ const VERDICT_COPY: Record<
     tone: "info",
     blocking: false,
     headline: (tool, bin) =>
-      // Plain words: "SuperBased" (the product the user runs), never "the
+      // Plain words: "superbased" (the product the user runs), never "the
       // daemon". An empty bin is a launch target with no PATH spelling - in
-      // practice a Windows app a WSL SuperBased opens across the boundary.
+      // practice a Windows app a WSL superbased opens across the boundary.
       bin
-        ? `${tool}: not on PATH - SuperBased will use ${bin}.`
-        : `${tool}: found outside PATH - SuperBased will open it from where it's installed.`,
+        ? `${tool}: not on PATH - superbased will use ${bin}.`
+        : `${tool}: found outside PATH - superbased will open it from where it's installed.`,
   },
   shadowed: {
     tone: "info",
     blocking: false,
     headline: (tool, bin) =>
       bin
-        ? `${tool}: a Windows copy comes first on PATH - SuperBased will use the Linux install at ${bin} instead.`
-        : `${tool}: a Windows copy comes first on PATH - SuperBased will use the Linux install instead.`,
+        ? `${tool}: a Windows copy comes first on PATH - superbased will use the Linux install at ${bin} instead.`
+        : `${tool}: a Windows copy comes first on PATH - superbased will use the Linux install instead.`,
   },
   foreign_only: {
     tone: "warn",
     blocking: true,
     headline: (tool) =>
-      `${tool} is installed on Windows, not in WSL - SuperBased can't launch it from here.`,
+      `${tool} is installed on Windows, not in WSL - superbased can't launch it from here.`,
   },
   not_found: {
     tone: "warn",
@@ -249,7 +249,7 @@ export function preflightStripCopy(
       tone: "info",
       blocking: false,
       offerInstall: false,
-      headline: `${tool}: ${verdict || "no verdict"} - SuperBased doesn't recognise this availability verdict, so it is not blocking the launch. The launch itself stays the authority.`,
+      headline: `${tool}: ${verdict || "no verdict"} - superbased doesn't recognise this availability verdict, so it is not blocking the launch. The launch itself stays the authority.`,
       notes,
     };
   }

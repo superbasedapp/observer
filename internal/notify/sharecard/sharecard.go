@@ -87,7 +87,7 @@ func (d Data) Markdown() string {
 		fmt.Fprintf(&b, "\n**Tool mix:** %s\n", strings.Join(names, ", "))
 	}
 
-	b.WriteString("\n_Tracked locally by SuperBased Observer - superbased.app_\n")
+	b.WriteString("\n_Tracked locally by superbased Observer - superbased.app_\n")
 	return b.String()
 }
 

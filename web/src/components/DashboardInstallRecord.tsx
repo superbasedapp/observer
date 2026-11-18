@@ -1,7 +1,9 @@
 import { useState } from "react";
 import { SquareTerminal, Trash2 } from "lucide-react";
 import { Button, ConfirmButton } from "@/components/primitives";
-import { ApiError, apiReason, fetchJSON } from "@/lib/api";
+import { ApiErrorNotice } from "@/components/NeedsSettingNotice";
+import { ApiError, apiReason, fetchJSON, localConfirmHeaders } from "@/lib/api";
+import { errorNote, type ErrorNote } from "@/lib/needsSetting";
 import { installRecordView, uninstallErrorMessage } from "@/lib/toolUninstall";
 import type { ToolInstallRecord, ToolUninstallStarted } from "@/lib/types";
 
@@ -14,7 +16,8 @@ import type { ToolInstallRecord, ToolUninstallStarted } from "@/lib/types";
 // the server derives the uninstall command from its own record of what it
 // installed, so the confirm note here names exactly what the server will run.
 // Both actions are Local + confirm-token gated like the install route; the
-// token is read from /api/remote/config exactly as installTool does.
+// token comes from localConfirmHeaders exactly as installTool's does (never
+// /api/remote/config, a Remote dashboard route that is off on most machines).
 
 type Props = {
   record: ToolInstallRecord;
@@ -29,19 +32,15 @@ type Props = {
 };
 
 async function postAction<T>(path: string, rec: ToolInstallRecord): Promise<T> {
-  const cfg = await fetchJSON<{ confirm_token?: string }>("/api/remote/config");
-  const ctok = cfg.confirm_token ?? "";
-  if (!ctok) throw new Error("No confirm token - reload the page.");
   return fetchJSON<T>(path, undefined, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Observer-Confirm": ctok },
+    headers: await localConfirmHeaders(),
     body: JSON.stringify({ tool: rec.tool, record_id: rec.id }),
   });
 }
 
-function errorCopy(e: unknown): string {
-  if (e instanceof ApiError) return uninstallErrorMessage(e.status, apiReason(e));
-  return e instanceof Error ? e.message : String(e);
+function errorCopy(e: unknown): ErrorNote {
+  return errorNote(e, (x) => (x instanceof ApiError ? uninstallErrorMessage(x.status, apiReason(x)) : null));
 }
 
 const TONE_CLASS = {
@@ -52,7 +51,7 @@ const TONE_CLASS = {
 
 export function DashboardInstallRecord({ record, onUninstallStarted, onChanged, onOpenTerminal }: Props) {
   const [busy, setBusy] = useState<"" | "uninstall" | "forget">("");
-  const [err, setErr] = useState<string | null>(null);
+  const [err, setErr] = useState<ErrorNote | null>(null);
   const v = installRecordView(record);
 
   async function uninstall() {
@@ -139,7 +138,7 @@ export function DashboardInstallRecord({ record, onUninstallStarted, onChanged, 
           )}
         </div>
       )}
-      {err && <div className="mt-1.5 text-danger">{err}</div>}
+      <ApiErrorNotice note={err} className="mt-1.5" plainClassName="mt-1.5 text-danger" />
     </div>
   );
 }

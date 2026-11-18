@@ -34,9 +34,9 @@ func TestSentence(t *testing.T) {
 	}{
 		{"unsigned, local", Facts{}, "Local only"},
 		{"signed out, local", Facts{Identity: IdentitySignedOut}, "Local only"},
-		{"signed in, local", Facts{Identity: IdentitySignedIn}, "Local only · signed in to SuperBased"},
+		{"signed in, local", Facts{Identity: IdentitySignedIn}, "Local only · signed in to superbased"},
 		{"managed", Facts{Destination: acme}, "Acme (managed) as dev@acme.example"},
-		{"managed, signed in", Facts{Destination: acme, Identity: IdentitySignedIn}, "Acme (managed) as dev@acme.example · signed in to SuperBased"},
+		{"managed, signed in", Facts{Destination: acme, Identity: IdentitySignedIn}, "Acme (managed) as dev@acme.example · signed in to superbased"},
 		{"managed, locked", Facts{Destination: func() Destination { d := acme; d.Locked = true; return d }()}, "Acme (managed, locked) as dev@acme.example"},
 		{"individual", Facts{Destination: Destination{Attached: true, OrgName: "Personal", MemberEmail: "you@example.com"}}, "Personal (individual) as you@example.com"},
 		{"no name: the host", Facts{Destination: Destination{Attached: true, ServerURL: "https://org.example:8443/"}}, "org.example:8443 (individual)"},

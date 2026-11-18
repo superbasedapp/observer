@@ -16,6 +16,9 @@ import (
 // unavailable rather than failing to compile. The public tree keeps the
 // judge wiring (operator ruling D-438 on T-665), so a plain public build
 // uses projects_judge_wire.go, not this stub.
+// judgeClientInBuild is false: this build has no judge client to turn on.
+const judgeClientInBuild = false
+
 func projectsJudgeGradeSeam(cfg *config.Config) (func(context.Context, alignment.Input) (alignment.Result, string, error), string) {
 	return nil, "the judge tier is not available in this build (judge client compiled out)"
 }

@@ -13,8 +13,12 @@ import (
 // short: an auth transaction only has to survive one AuthKit round-trip, and a
 // step-up authorization only has to survive the user clicking "confirm".
 const (
-	// DefaultAuthTransactionTTL bounds the OAuth leg (plan: ≤10 min).
-	DefaultAuthTransactionTTL = 10 * time.Minute
+	// DefaultAuthTransactionTTL bounds the OAuth leg. It was 10 minutes (plan
+	// §3 W1); a sign-up with email verification (find the code, come back) runs
+	// past that, so it is 30 (L-142). The state is still single-use, bound to
+	// its cookie and PKCE-protected; the window only decides how long a
+	// started sign-in may take.
+	DefaultAuthTransactionTTL = 30 * time.Minute
 	// DefaultStepUpTTL bounds a minted step-up authorization (plan: ≤5 min).
 	DefaultStepUpTTL = 5 * time.Minute
 	// authTransactionSweepBatch bounds one opportunistic expired-row delete so a

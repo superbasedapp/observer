@@ -155,7 +155,7 @@ func newConnectCmdWith(deps connectDeps) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "connect [<team> | <server>]",
 		Short: "Sign in and connect this machine to your personal dashboard or a team",
-		Long: `One step to see this machine online: sign in to your SuperBased account and
+		Long: `One step to see this machine online: sign in to your superbased account and
 choose where this machine's data goes, in one browser approval.
 
 observer connect
@@ -196,7 +196,7 @@ configuration connects only where that configuration says.`,
 	fl := cmd.Flags()
 	fl.StringVar(&f.configPath, "config", "", "Path to config.toml (defaults to ~/.observer/config.toml)")
 	fl.StringVar(&f.pairFile, "pair-file", "", "read a pairing code from this file (else "+pairing.EnvVar+")")
-	fl.BoolVar(&f.identityOnly, "identity-only", false, "sign in to SuperBased only; never changes where data goes")
+	fl.BoolVar(&f.identityOnly, "identity-only", false, "sign in to superbased only; never changes where data goes")
 	fl.BoolVar(&f.statusOnly, "status", false, "print the one-sentence status and exit")
 	fl.BoolVar(&f.yes, "yes", false, "confirm without a prompt: switching away from a company-managed destination, or the one team (or your personal dashboard) offered by discovery")
 	fl.BoolVar(&f.dropUnsent, "drop-unsent", false, "switch even when rows still waiting for the current dashboard cannot be sent to it")
@@ -204,7 +204,7 @@ configuration connects only where that configuration says.`,
 	fl.BoolVar(&f.acceptIntel, "accept-intel-consent", false, "accept a team's AI summaries terms without a prompt")
 	fl.BoolVar(&f.writeBlock, "write-block", true, "write a default [org_client] block to config.toml")
 	fl.BoolVar(&f.wireClients, "wire-clients", true, "register hooks, MCP and proxy routing for detected AI clients")
-	fl.StringVar(&f.baseURL, "base-url", "", "SuperBased cloud address for sign-in (else $SBO_CLOUD_BASE_URL, else [cloud].base_url)")
+	fl.StringVar(&f.baseURL, "base-url", "", "superbased cloud address for sign-in (else $SBO_CLOUD_BASE_URL, else [cloud].base_url)")
 	fl.StringVar(&f.devToken, "dev-token", "", "dev token for sign-in in local testing (never stored)")
 	fl.BoolVar(&f.jsonOut, "json", false, "print one JSON object per line instead of text (for the dashboard and editor extensions)")
 	fl.BoolVar(&f.noBrowser, "no-browser", false, "print the code-entry page and a short code instead of opening a browser")
@@ -405,7 +405,7 @@ func printConnectNeedsAddress(out io.Writer, st frontdoor.Status) {
 	fmt.Fprintln(out, "Make a pairing code on that team's install page and set "+pairing.EnvVar+" first,")
 	fmt.Fprintln(out, "or run it without one to approve this machine in a browser.")
 	fmt.Fprintln(out, "")
-	fmt.Fprintln(out, "Finding your teams through a SuperBased sign-in is not in this build.")
+	fmt.Fprintln(out, "Finding your teams through a superbased sign-in is not in this build.")
 }
 
 // connectStatus builds the one sentence from this machine's facts.

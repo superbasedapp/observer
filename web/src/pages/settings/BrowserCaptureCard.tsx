@@ -19,7 +19,7 @@ import { BTN, CODE, OutcomeView, PRIMARY_BTN, PreviewActions, SetupCardShell, us
 //
 // Two controls that used to need the command line or config.toml:
 //   1. "Set up browser capture": write the native-messaging host and the
-//      per-browser manifests the SuperBased extension talks to (same code as
+//      per-browser manifests the superbased extension talks to (same code as
 //      `observer init --browser`), previewed first, then confirmed.
 //   2. Per-site switches: turn capture of one chat site (ChatGPT, Claude.ai,
 //      Perplexity, Gemini, Copilot) off at the daemon, whatever the extension
@@ -75,7 +75,7 @@ function BrowserHostPart({ readOnly }: { readOnly: boolean }) {
   return (
     <SetupCardShell title="Set up browser capture" badge={browserBadge(st)}>
       <p className="text-[11.5px] leading-relaxed text-fg-2">
-        Lets the SuperBased browser extension hand captured ChatGPT, Claude.ai, Perplexity, Gemini and Copilot turns
+        Lets the superbased browser extension hand captured ChatGPT, Claude.ai, Perplexity, Gemini and Copilot turns
         to Observer. This writes a small helper (the native-messaging host) and one manifest per Chromium-family
         browser. Nothing is written until you preview and confirm. The same control exists on the command line as{" "}
         <code className={CODE}>observer init --browser</code>.

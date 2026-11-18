@@ -54,7 +54,7 @@ func TestConnectStatusRoute(t *testing.T) {
 		{"no cloud seam", nil, frontdoor.IdentityUnknown, "Local only"},
 		{"signed in", dashapi.NewCloudAccountSeams(func() (dashapi.CloudSignInState, error) {
 			return dashapi.CloudSignInState{APITokenPresent: true}, nil
-		}, nil, nil), frontdoor.IdentitySignedIn, "Local only · signed in to SuperBased"},
+		}, nil, nil), frontdoor.IdentitySignedIn, "Local only · signed in to superbased"},
 		{"signed out", dashapi.NewCloudAccountSeams(func() (dashapi.CloudSignInState, error) {
 			return dashapi.CloudSignInState{}, nil
 		}, nil, nil), frontdoor.IdentitySignedOut, "Local only"},

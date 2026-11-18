@@ -4,6 +4,81 @@ All notable changes to SuperBased Observer are documented here.
 
 ## [Unreleased]
 
+## [1.40.0] - 2026-11-18
+
+Stable release on the `stable` channel (npm dist-tags `latest` and `stable`, PyPI, the VS Code
+Marketplace and Open VSX). Everything below is new since 1.39.0. It gives the local dashboard a
+first run: two ways in on an empty machine, a live ribbon for the agent you are running, and a
+launchpad that starts your first agent with one consent. Every "this is off" message now says
+where to turn it on. Sign-in and connect are steadier, and the brand reads lowercase superbased
+everywhere. Like 1.37.x to 1.39.0 it needs macOS 13 Ventura or later: a Mac on macOS 12 stays
+on v1.36.0.
+
+Price snapshot: 2026-09-17 (aws us-east-1, azure eastus2, gcp us-central1)
+
+### Highlights
+
+- **A first run for the local dashboard.** On a machine with no AI coding history yet, the
+  Overview offers two doors: start a coding agent here, or explore with sample data (your real
+  data stays untouched). On a machine that has history, it shows what it found ("We found 2,199
+  sessions from Claude Code, Codex and 36 more") as it reads it.
+- **A live ribbon.** The top bar shows the agent you are running now (tool, project, tokens and
+  cost so far) with a link to its live view, or "Start one" when nothing is running. Your first
+  prompt gets a receipt with what it cost.
+- **The launchpad starts your first agent.** Choosing an agent and a folder asks one
+  first-launch consent that lists exactly what changes (allow the tool, allow fresh launches,
+  allow the folder, create it if needed), shows the exact config change before it is saved, and
+  then installs the tool when it is missing and opens it in a docked terminal.
+- **No more dead ends.** A status or refusal that says something is off now names the place to
+  turn it on and links there: launch policy, SSH and remote systems, explain, messages, OTel
+  export, routing, guard, process capture, team AI summaries and more. On a team, a setting
+  only an admin can change says so and links to the team dashboard. Installing an agent no
+  longer needs the Remote dashboard.
+- **Two dashboards, one set of words.** `connect.sh`, the CLI, the local dashboard and the
+  console all describe "this local dashboard" and the team or personal dashboard the same way.
+  `connect.sh` shows the local dashboard first, then connects, then restarts Observer so the
+  machine starts sending.
+
+### Changed
+
+- **The tour never starts by itself** and is five steps.
+- **The brand is lowercase superbased** in the apps, the server, the CLI, email, the marketing
+  site and the Agent Access sign-in page.
+- **Get started on the account console counts down ten seconds** and says it opens the WorkOS
+  sign-up page, with "Continue now" and "Stay on this page".
+
+### Fixed
+
+- **A machine with a wrong clock can connect.** Proof-of-possession is signed on the server's
+  clock and retried once.
+- **On Linux a new user never meets a keyring prompt:** the 0600 file store is the default
+  credential store.
+- **A sign-in that cannot finish returns to the sign-in page,** and a started sign-in lives 30
+  minutes.
+- **The hosted team dashboard stays signed in under parallel requests.** A session check that
+  cannot reach its store answers 503 with `Retry-After` instead of 401, and the hosted API's
+  connection pools fit inside its database logins' limits.
+
+- **Hosted sign-in, console and website side.** "Get started" on superbased.app now opens the
+  account console's sign-up screen (`cloud.superbased.app/portal/sign-up`) instead of the sign-in
+  page, and the sign-in page shows a visible "Create an account" action. "Start a team" lands on
+  the create-a-team form after sign-in or sign-up (an older `/?intent=team` link still works).
+  Every "Open your dashboard" button opens a link the console server builds (`open_url`), so the
+  console no longer composes a dashboard address itself. The console's theme now offers light,
+  dark and system (system is the default), and the theme control also appears on the sign-in,
+  sign-up and machine-connect pages. "connected to your personal dashboard" is no longer
+  capitalised mid-sentence.
+- **Hosted org dashboards sign in with your SuperBased account.** Opening any dashboard link
+  (`/`, `/me/profile`, `/people-access?tab=invites`) on a hosted organization now starts the
+  SuperBased account sign-in and returns you to that page, instead of stopping on a password
+  form your account cannot use. `/login` leads with "Continue with your SuperBased account",
+  keeps the password form behind "Sign in with a password instead" (open by itself when the
+  account sign-in is unavailable), says "Personal dashboard" on a personal organization, and
+  carries `next` on every sign-in link. Signing out lands on `/login?signed_out=1`, which never
+  signs you straight back in. `GET /auth/rails` names the account rail "SuperBased account" and
+  reports the hosted organization's kind (`org_kind`). Self-hosted organization servers behave
+  as before.
+
 ## [1.39.0] - 2026-11-17
 
 Stable release on the `stable` channel (npm dist-tags `latest` and `stable`, PyPI, the VS Code

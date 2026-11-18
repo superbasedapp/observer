@@ -409,8 +409,11 @@ func TestWorkOSStartRedirectsAndSetsLaxTxnCookie(t *testing.T) {
 	if !c.HttpOnly {
 		t.Fatal("txn cookie is not HttpOnly")
 	}
-	if c.MaxAge <= 0 || c.MaxAge > 600 {
-		t.Fatalf("txn cookie MaxAge=%d, want 0<max_age<=600", c.MaxAge)
+	// Short-lived, but as long as the transaction row it names (30 minutes
+	// since L-142, so a sign-up that took a while can still finish);
+	// TestWorkOSTxnCookieLivesAsLongAsItsTransaction pins the equality.
+	if maxAge := int(store.DefaultAuthTransactionTTL.Seconds()); c.MaxAge <= 0 || c.MaxAge > maxAge {
+		t.Fatalf("txn cookie MaxAge=%d, want 0<max_age<=%d", c.MaxAge, maxAge)
 	}
 	if cookieNamed(resp, devCookieName) != nil {
 		t.Fatal("start minted a SESSION cookie before authentication")

@@ -34,7 +34,7 @@ func printWelcome(cmd *cobra.Command) error {
 	proxyUp := portUp(fmt.Sprintf("127.0.0.1:%d", proxyPort))
 	proxyInBuild := !proxyNotInBuild()
 
-	fmt.Fprintf(out, "SuperBased Observer %s\n\n", version)
+	fmt.Fprintf(out, "superbased Observer %s\n\n", version)
 	switch {
 	case dashUp && proxyInBuild:
 		fmt.Fprintf(out, "  daemon      running - dashboard at http://%s (proxy :%d)\n", dashAddr, proxyPort)

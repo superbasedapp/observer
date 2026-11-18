@@ -22,6 +22,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/intelligence/cost"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/planlimitssvc"
+	"github.com/marmutapp/superbased-observer/internal/settingslink"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
@@ -703,6 +704,10 @@ type Options struct {
 	// JudgeGradeReason explains why JudgeGrade is nil. Empty when
 	// JudgeGrade is non-nil.
 	JudgeGradeReason string
+	// JudgeGradePlace is where the person turns the tier on while
+	// JudgeGrade is nil ("" when no setting changes it, e.g. a build
+	// without the judge client).
+	JudgeGradePlace settingslink.Place
 	// CloudGradeAvailability reports whether the Cloud Intelligence
 	// commit-alignment grading job (§3.6 tier C) is available right now,
 	// and the honest reason when it is not - wired from

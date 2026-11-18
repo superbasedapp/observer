@@ -1405,9 +1405,13 @@ export interface PortalOrg {
    * user's own machines in this team (server-built; active teams only). The
    * console links to it rather than reading tenants from the browser. */
   machines_page_url?: string;
-  /** dashboard_url opens the org's dashboard (active orgs only). A personal
-   * dashboard's address is opened from buttons, never shown as text. */
-  dashboard_url?: string;
+  /** open_url opens the org's dashboard (active orgs only), built by the
+   * server's one link function (tenantlink.go): every "Open your dashboard"
+   * button reads it and the console never composes a tenant address. A
+   * personal dashboard's address is opened from buttons, never shown as
+   * text. (The server still sends the older dashboard_url for one release;
+   * nothing here reads it.) */
+  open_url?: string;
   /** invite_url is a team dashboard's invite page (active teams only). */
   invite_url?: string;
   /** members is the team's member count from its latest usage report (the
@@ -1902,8 +1906,9 @@ export interface ConnectRequestView {
   network: { prefix: string; same_as_you: boolean };
   choices: ConnectChoice[];
   target: ConnectTarget | null;
-  /** online_url opens the chosen dashboard (a button, never text). */
-  online_url?: string;
+  /** open_url opens the chosen dashboard (a button, never text), built by
+   * the server (tenantlink.go). The older online_url is not read. */
+  open_url?: string;
 }
 
 /** ConnectMachine is one recent approval on the account home. */
@@ -1913,7 +1918,8 @@ export interface ConnectMachine {
   os: string;
   approved_at: string;
   target: ConnectTarget | null;
-  online_url?: string;
+  /** open_url opens the dashboard the machine connected to (server-built). */
+  open_url?: string;
 }
 
 /** ConnectHome is GET /portal/api/connect/machines. */

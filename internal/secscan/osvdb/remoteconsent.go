@@ -69,7 +69,7 @@ const RemoteSource = FeedHost + " (the signed shard manifest) and " + RemoteShar
 // RemoteConsentText is what the developer accepts for the SuperBased lookup,
 // on both surfaces (version RemoteConsentVersion;
 // docs/dependency-scanning.md "Remote lookup" quotes it).
-var RemoteConsentText = fmt.Sprintf("Instead of downloading the OSV vulnerability databases, Observer looks your dependencies up at SuperBased. "+
+var RemoteConsentText = fmt.Sprintf("Instead of downloading the OSV vulnerability databases, Observer looks your dependencies up at superbased. "+
 	"For each dependency scan it asks %s for the advisory shards your packages fall in: it sends a short hash prefix of each "+
 	"package name (a number shared by hundreds of other names), never a package name or version, and never code. It first "+
 	"reads the signed list of shards from %s. Shards already on this machine are not asked for again. The kinds of packages "+

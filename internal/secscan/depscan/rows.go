@@ -152,7 +152,7 @@ func ScalibrRow(extractors []string) secscan.DriverRow {
 		Offline:    secscan.Offline{NoNetwork: true, Database: "OSV per-ecosystem exports, downloaded by Observer (internal/secscan/osvdb)"},
 		Processes:  []secscan.ProcessDecl{{Binary: "observer (the scan child: `observer security scan-child`)"}},
 		Egress: []secscan.EgressDecl{
-			{Host: "superbased.app", Trigger: "database refresh from SuperBased's signed mirror (Observer's download, never SCALIBR's)"},
+			{Host: "superbased.app", Trigger: "database refresh from superbased's signed mirror (Observer's download, never SCALIBR's)"},
 			{Host: "osv-vulnerabilities.storage.googleapis.com", Trigger: "database refresh, the fallback source (Observer's download, never SCALIBR's)"},
 			{Host: "api.osv.dev", Trigger: "online matching, a user command only"},
 		},
@@ -206,7 +206,7 @@ func OSVRow() secscan.DriverRow {
 		// osv-scanner itself runs --offline; the database it reads is
 		// Observer's download, declared here like the SCALIBR row's.
 		Egress: []secscan.EgressDecl{
-			{Host: "superbased.app", Trigger: "database refresh from SuperBased's signed mirror (Observer's download, never osv-scanner's)"},
+			{Host: "superbased.app", Trigger: "database refresh from superbased's signed mirror (Observer's download, never osv-scanner's)"},
 			{Host: "osv-vulnerabilities.storage.googleapis.com", Trigger: "database refresh, the fallback source (Observer's download, never osv-scanner's)"},
 		},
 		MinVersion: OSVScannerMinVersion, TestedRange: OSVScannerTested,

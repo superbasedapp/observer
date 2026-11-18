@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+
+	"github.com/marmutapp/superbased-observer/internal/settingslink"
 )
 
 // ssh.go serves the SSH remote-system terminal surface
@@ -130,11 +132,12 @@ func (s *Server) handleSSHLaunch(w http.ResponseWriter, r *http.Request) {
 		// A nil launch manager is the terminal switch or the OS (the one
 		// sentence names the dashboard control); a manager without the SSH
 		// seam is a build without it.
-		why := "this daemon's terminal stack has no SSH launcher"
 		if s.opts.LaunchManager == nil {
-			why = errTerminalUnavailable
+			writeNeedsSetting(w, http.StatusNotImplemented, "SSH remote-system terminals are not available: "+errTerminalUnavailable,
+				msgTerminalUnavailable, settingslink.SessionAttach)
+			return
 		}
-		http.Error(w, "SSH remote-system terminals are not available: "+why, http.StatusNotImplemented)
+		http.Error(w, "SSH remote-system terminals are not available: this daemon's terminal stack has no SSH launcher", http.StatusNotImplemented)
 		return
 	}
 	var body sshLaunchRequest
@@ -162,7 +165,7 @@ func (s *Server) handleSSHLaunch(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrLaunchSSHDisabled):
-			http.Error(w, err.Error(), http.StatusForbidden)
+			writeSettingRefusal(w, err, http.StatusForbidden)
 		case errors.Is(err, ErrLaunchSSHProfileUnknown):
 			http.Error(w, err.Error(), http.StatusBadRequest)
 		case errors.Is(err, ErrLaunchSSHProfileInvalid):

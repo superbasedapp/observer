@@ -1,4 +1,6 @@
 import { FlaskConical, History, RefreshCw, ScanSearch, ShieldCheck, FileText, Wrench } from "lucide-react";
+import { placeLink } from "@/lib/settingsPlaces";
+import { NeedsSettingLink } from "@/components/NeedsSettingNotice";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Button, ChartShell, ConfirmButton, Input, Pill, SegmentedControl } from "@/components/primitives";
@@ -265,7 +267,8 @@ export function ApplyPolicyCard() {
           </ConfirmButton>
           {!compileOn && (
             <span className="text-fg-3">
-              Native rule compilation is off. Turn on Compile on init in Settings &gt; Guard &gt; Native dialects to use it.
+              Native rule compilation is off. Turn on Compile on init in Settings &gt; Guard &gt; Native dialects to use it.{" "}
+              <NeedsSettingLink link={placeLink("guard_settings")} />
             </span>
           )}
         </div>

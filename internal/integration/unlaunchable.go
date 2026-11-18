@@ -57,7 +57,7 @@ var unlaunchableRules = []struct {
 		kind:  UnlaunchableBrowser,
 		match: func(f unlaunchableFacts) bool { return f.c.Hook.Mechanism == HookBrowserExtension },
 		note: func(unlaunchableFacts) string {
-			return "Used in your web browser and captured by the SuperBased browser extension. There is nothing to start here."
+			return "Used in your web browser and captured by the superbased browser extension. There is nothing to start here."
 		},
 	},
 	{

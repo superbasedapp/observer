@@ -161,11 +161,11 @@ func (s *Server) handleTerminalUninstall(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if s.opts.LaunchManager == nil {
-		writeErrStatus(w, errors.New(errTerminalUnavailable), http.StatusServiceUnavailable)
+		writeTerminalUnavailable(w, "")
 		return
 	}
 	if !s.installKillSwitchOn() {
-		writeErrStatus(w, errors.New("guided install and uninstall are disabled; turn on \"Allow guided install and uninstall\" in Terminals > Settings > Fresh-agent launch policy ([terminal.launch].allow_install)"), http.StatusForbidden)
+		writeGuidedUninstallOff(w)
 		return
 	}
 	if s.opts.ToolInstalls == nil {

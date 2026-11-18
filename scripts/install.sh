@@ -1,5 +1,5 @@
 #!/bin/sh
-# install.sh: install a SuperBased Observer edition on Linux or macOS.
+# install.sh: install a superbased Observer edition on Linux or macOS.
 #
 #   sh install.sh [options]
 #
@@ -856,7 +856,7 @@ connect_edition_ok() {
   [ "$connect" -eq 1 ] || return 0
   case "$edition" in
     developer|full) ;;
-    *) die "--connect needs the developer or full edition (the $edition edition has no SuperBased sign-in); drop --edition or pass --edition developer" ;;
+    *) die "--connect needs the developer or full edition (the $edition edition has no superbased sign-in); drop --edition or pass --edition developer" ;;
   esac
 }
 
@@ -869,9 +869,9 @@ tty_in() {
 
 # connect_machine: `observer connect [team]` for --connect. The browser
 # approval (or the printed code with no browser) is observer's own; the
-# installer only starts it. Hooks are wired by the service's `observer
-# start` (or below, when there is no service), so connect wires nothing
-# itself. A failure is reported, never fatal: the install stays.
+# installer only starts it. Hooks are wired by `observer start` (the service
+# or the background start below), so connect wires nothing itself. A failure
+# is reported, never fatal: the install stays.
 connect_machine() {
   say ""
   say "Connecting this machine. Nothing is sent before you approve it."
@@ -885,45 +885,158 @@ connect_machine() {
 }
 
 # connect_hooks: wire hooks into the detected AI tools the way `observer
-# start` does when no service runs it (MCP and proxy routes stay opt-in).
+# start` does when nothing runs it (MCP and proxy routes stay opt-in).
 connect_hooks() {
   "$installed" init --skip-mcp --skip-proxy-route <"$(tty_in)" >/dev/null 2>&1 \
     || warn "could not register hooks for your AI tools; run: observer init"
 }
 
-# open_local_dashboard: wait up to 20 s for the local dashboard, then open
-# it when a browser can open here. Best effort and silent.
-open_local_dashboard() {
-  # Tests (with --from-dir only): no wait and no browser.
-  if [ -n "${OBSERVER_INSTALL_TEST_NO_OPEN:-}" ] && [ -n "$from_dir" ]; then return 0; fi
-  od_url="http://127.0.0.1:8081"
-  od_i=0
-  while [ "$od_i" -lt 40 ]; do
-    if have curl && curl -fs -o /dev/null --max-time 1 "$od_url/" 2>/dev/null; then break; fi
-    if ! have curl; then break; fi
-    sleep 0.5 2>/dev/null || sleep 1
-    od_i=$((od_i + 1))
-  done
-  case "$os" in
-    darwin) open "$od_url" >/dev/null 2>&1 || true ;;
-    linux)
-      if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && have xdg-open; then
-        xdg-open "$od_url" >/dev/null 2>&1 || true
-      elif [ -n "${WSL_DISTRO_NAME:-}" ]; then
-        if have wslview; then wslview "$od_url" >/dev/null 2>&1 || true
-        elif have explorer.exe; then explorer.exe "$od_url" >/dev/null 2>&1 || true
-        fi
-      fi
-      ;;
+# test_mode: the hermetic tests (with --from-dir only) never wait, open a
+# browser or probe a port.
+test_mode() { [ -n "${OBSERVER_INSTALL_TEST_NO_OPEN:-}" ] && [ -n "$from_dir" ]; }
+
+LOCAL_DASHBOARD="http://127.0.0.1:8081"
+
+# dashboard_answers: the local dashboard answers on its port now.
+dashboard_answers() {
+  test_mode && return 1
+  have curl && curl -fs -o /dev/null --max-time 1 "$LOCAL_DASHBOARD/" 2>/dev/null
+}
+
+# launch_background: the detached `observer start --no-open`, output appended
+# to $bg_log; its pid is left in bg_pid.
+launch_background() {
+  if have setsid; then
+    setsid "$installed" start --no-open </dev/null >>"$bg_log" 2>&1 &
+  elif have nohup; then
+    nohup "$installed" start --no-open </dev/null >>"$bg_log" 2>&1 &
+  else
+    "$installed" start --no-open </dev/null >>"$bg_log" 2>&1 &
+  fi
+  bg_pid=$!
+}
+
+# pid_is_ours <pid>: the pid is still an `observer start` of this install.
+pid_is_ours() {
+  [ -n "${1:-}" ] || return 1
+  po_cmd=$(ps -p "$1" -o command= 2>/dev/null) || return 1
+  case "$po_cmd" in
+    *observer*" start"*) return 0 ;;
+    *) return 1 ;;
   esac
 }
 
+# restart_after_connect: `observer connect` succeeded, and the daemon builds
+# its push loop only at start-up, so restart it once. Non-fatal.
+restart_after_connect() {
+  say ""
+  if [ -n "$connect_team" ]; then rc_to="team $connect_team"; else rc_to="your personal dashboard"; fi
+  say "Restarting Observer so it starts sending to $rc_to."
+  if [ "$service_done" -eq 1 ]; then
+    "$installed" service restart || warn "could not restart the service; run: observer service restart"
+    return 0
+  fi
+  [ "$bg_started" -eq 1 ] || return 0
+  # Tests (with --from-dir only): the stub has already exited; just start again.
+  if test_mode; then launch_background; return 0; fi
+  if ! pid_is_ours "$bg_pid"; then
+    warn "could not find the Observer started by this installer (pid ${bg_pid:-none}); restart it so it starts sending: observer start"
+    return 0
+  fi
+  kill -TERM "$bg_pid" 2>/dev/null || true
+  rc_i=0
+  while [ "$rc_i" -lt 20 ] && kill -0 "$bg_pid" 2>/dev/null; do
+    sleep 0.5 2>/dev/null || sleep 1
+    rc_i=$((rc_i + 1))
+  done
+  if kill -0 "$bg_pid" 2>/dev/null; then
+    warn "Observer (pid $bg_pid) did not stop; restart it so it starts sending: observer start"
+    return 0
+  fi
+  launch_background
+}
+
+# start_in_background: `observer start` for this session when no service
+# runs Observer: detached, no input, output in a log under ~/.observer/logs.
+# --no-open because the installer opens the page itself. `observer start`
+# registers the hooks. Status 0 when it was started.
+start_in_background() {
+  sb_dir="$HOME/.observer/logs"
+  ( umask 077; mkdir -p "$sb_dir" ) 2>/dev/null || sb_dir=""
+  sb_log=/dev/null
+  if [ -n "$sb_dir" ]; then sb_log="$sb_dir/observer-start.log"; fi
+  bg_log=$sb_log
+  launch_background
+  say ""
+  say "Observer is running in the background until you sign out or restart."
+  say "To keep it running: observer service install --now"
+  return 0
+}
+
+# can_open_browser: a browser can open on this machine from the installer.
+can_open_browser() {
+  case "$os" in
+    darwin) have open ;;
+    linux)
+      if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && have xdg-open; then return 0; fi
+      if [ -n "${WSL_DISTRO_NAME:-}" ] && { have wslview || have explorer.exe; }; then return 0; fi
+      return 1
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# show_local_dashboard: the local dashboard comes first. Wait up to 20 s for
+# it to answer, then open it (with ?connecting=1 so it tells the person to
+# approve this machine in the tab `observer connect` opens next), or print how
+# to reach it. Never opens a page that did not answer.
+show_local_dashboard() {
+  sd_url="$LOCAL_DASHBOARD/?connecting=1"
+  if [ -n "$connect_team" ]; then sd_url="$sd_url&team=$connect_team"; fi
+  sd_up=0
+  if test_mode; then
+    sd_up=1
+  else
+    sd_i=0
+    while [ "$sd_i" -lt 40 ]; do
+      if ! have curl; then break; fi
+      if curl -fs -o /dev/null --max-time 1 "$LOCAL_DASHBOARD/" 2>/dev/null; then sd_up=1; break; fi
+      sleep 0.5 2>/dev/null || sleep 1
+      sd_i=$((sd_i + 1))
+    done
+  fi
+  say ""
+  if [ "$sd_up" -ne 1 ]; then
+    say "Observer is still starting. The local dashboard will be at $LOCAL_DASHBOARD"
+    return 0
+  fi
+  if can_open_browser; then
+    say "Opening the local dashboard: $LOCAL_DASHBOARD"
+    if ! test_mode; then
+      case "$os" in
+        darwin) open "$sd_url" >/dev/null 2>&1 || true ;;
+        linux)
+          if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && have xdg-open; then
+            xdg-open "$sd_url" >/dev/null 2>&1 || true
+          elif have wslview; then wslview "$sd_url" >/dev/null 2>&1 || true
+          elif have explorer.exe; then explorer.exe "$sd_url" >/dev/null 2>&1 || true
+          fi
+          ;;
+      esac
+    fi
+  else
+    say "Open $LOCAL_DASHBOARD in a browser on this machine,"
+    say "or from your own computer: ssh -L 8081:127.0.0.1:8081 $(hostname 2>/dev/null || echo this-host)"
+    say "then open $LOCAL_DASHBOARD there."
+  fi
+}
+
 # connect_finish: the end of a --connect install, after the binary is in
-# place. upgrading is 1 when an install was replaced.
+# place. upgrading is 1 when an install was replaced. Order: make Observer
+# run, show the local dashboard, then connect (the approval tab opens on top).
 connect_finish() {
-  connected=0
-  connect_machine && connected=1
   service_done=0
+  stale=""
   if [ "${1:-0}" -eq 1 ]; then
     upgrade_service || offer_service
     stale=$(stale_daemons)
@@ -935,16 +1048,44 @@ connect_finish() {
   else
     offer_service
   fi
-  if [ "$service_done" -ne 1 ]; then
+  bg_started=0 already_running=0
+  if [ "$service_done" -ne 1 ] && [ -z "$stale" ]; then
+    if dashboard_answers; then
+      already_running=1
+    else
+      start_in_background && bg_started=1
+    fi
+  fi
+  if [ "$service_done" -ne 1 ] && [ "$bg_started" -ne 1 ]; then
     connect_hooks
+  fi
+  show_local_dashboard
+  connected=0
+  connect_machine && connected=1
+  if [ "$connected" -eq 1 ] && [ -z "$stale" ] && { [ "$service_done" -eq 1 ] || [ "$bg_started" -eq 1 ]; }; then
+    restart_after_connect
+  fi
+  if [ "$connected" -eq 1 ] && [ "$already_running" -eq 1 ]; then
+    say ""
+    say "Observer was already running here. Restart it so it starts sending: stop it, then run observer start"
   fi
   say ""
   if [ "$connected" -eq 1 ]; then say "This machine is connected."; else say "This machine is not connected yet: observer connect"; fi
-  say "Local dashboard http://127.0.0.1:8081"
-  say "Online dashboard https://cloud.superbased.app"
+  say "Local dashboard   $LOCAL_DASHBOARD"
+  say "  everything Observer records on this computer, in full; it stays here"
+  if [ -n "$connect_team" ] && [ "$connected" -eq 1 ]; then
+    say "Team dashboard    https://cloud.superbased.app"
+    say "  full detail (prompts, responses, file paths); the team's admins can read it"
+  else
+    say "Online dashboard  https://cloud.superbased.app"
+    say "  a summary from each machine you connect"
+  fi
   if [ "$service_done" -eq 1 ]; then
     say "Observer runs in the background and starts when you sign in (observer service status)."
-    open_local_dashboard
+  elif [ "$bg_started" -eq 1 ]; then
+    say "Observer runs in the background until you sign out or restart (observer service install --now keeps it running)."
+  elif [ "$already_running" -eq 1 ]; then
+    say "Observer is running (started before this install)."
   else
     say "Start Observer: observer start   (it opens the local dashboard)"
   fi
@@ -1178,7 +1319,7 @@ do_install() {
   asset=$(asset_name)
   if [ -z "$prefix" ]; then prefix=$(default_prefix); fi
 
-  say "SuperBased Observer $version, $edition edition"
+  say "superbased Observer $version, $edition edition"
   say "  edition   $(edition_line "$edition")"
   say "  platform  $os-$arch"
   say "  archive   $asset"
@@ -1270,8 +1411,7 @@ do_install() {
     fi
   fi
 
-  # --connect: connect first, then start the service, so the daemon starts
-  # with the connection in place (its push loop starts only at start-up).
+  # --connect: make Observer run, show the local dashboard, then connect.
   if [ "$connect" -eq 1 ] && [ -z "$other_daemons" ]; then
     if [ -n "$previous" ]; then connect_finish 1; else connect_finish 0; fi
     return 0

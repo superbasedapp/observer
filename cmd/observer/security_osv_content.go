@@ -76,7 +76,7 @@ type osvContentRemote struct {
 // lines.
 var osvSourceWords = map[string]string{
 	osvdb.SourceOrgMirror: "the org mirror",
-	osvdb.SourceFeed:      "the SuperBased signed mirror",
+	osvdb.SourceFeed:      "the superbased signed mirror",
 	osvdb.SourceImport:    "the imported set",
 	osvdb.SourceUpstream:  "the OSV bucket",
 }

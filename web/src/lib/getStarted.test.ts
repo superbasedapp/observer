@@ -274,6 +274,7 @@ test("the top bar's account control: one case per rule, in order", () => {
     ["unknown", { account: null, available: true, progress: null, managed: false }, "hidden"],
     ["connected", { account: account({ connected: true, displayName: "Acme Dev" }), available: false, progress: null, managed: false }, "connected"],
     ["connecting", { account: account(), available: true, progress: waiting, managed: false }, "connecting"],
+    ["terminal_connecting", { account: account(), available: true, progress: null, managed: false, handoffWaiting: true }, "connecting"],
     ["cannot_start_here", { account: account(), available: false, progress: null, managed: false }, "hidden"],
     ["signed_in", { account: account({ signedIn: true }), available: true, progress: null, managed: false }, "connect"],
     ["signed_out", { account: account(), available: true, progress: null, managed: false }, "sign_in"],
@@ -298,6 +299,40 @@ test("the top bar's account control: one case per rule, in order", () => {
     assert.equal(managed.onlineUrl, "https://acme.superbased.app/");
     assert.match(managed.tooltip, /sam@acme\.example/);
   }
+  if (managed.kind === "connected") {
+    // A managed machine's tooltips say what the team receives.
+    assert.match(managed.tooltip, /Team dashboard: full detail \(prompts, responses, file paths\); the team's admins can read it\./);
+    assert.match(managed.tooltip, /This local dashboard: everything Observer records on this computer, in full; it stays here\./);
+    assert.equal(
+      managed.onlineTooltip,
+      "Open the online dashboard in a new tab: full detail (prompts, responses, file paths); the team's admins can read it.",
+    );
+  }
+  // A personal dashboard: "Connected · personal dashboard" and the summary role.
+  const personal = topBarAccountView({
+    account: account({ connected: true, displayName: "your personal dashboard", onlineUrl: "https://cloud.superbased.app/" }),
+    available: true,
+    progress: null,
+    managed: false,
+  });
+  assert.equal(personal.kind, "connected");
+  if (personal.kind === "connected") {
+    assert.equal(personal.label, "Connected · personal dashboard");
+    assert.match(personal.tooltip, /Online dashboard: a summary from each machine you connect\./);
+    assert.equal(personal.onlineTooltip, "Open the online dashboard in a new tab: a summary from each machine you connect.");
+  }
+  // A team the machine is not managed by is named.
+  const team = topBarAccountView({
+    account: account({ connected: true, displayName: "Acme", kind: "team" }),
+    available: true,
+    progress: null,
+    managed: false,
+  });
+  assert.equal(team.kind === "connected" ? team.label : "", "Connected · Acme");
+  // While the installer's terminal connects, nothing offers a second flow.
+  const terminal = topBarAccountView({ account: account(), available: true, progress: null, managed: false, handoffWaiting: true });
+  assert.equal(terminal.kind, "connecting");
+  assert.match(terminal.kind === "connecting" ? terminal.tooltip : "", /browser tab that just opened/);
   const code = topBarAccountView({ account: account(), available: true, progress: waiting, managed: false });
   assert.match(code.kind === "connecting" ? code.tooltip : "", /KTRW-4821/);
   assert.equal(

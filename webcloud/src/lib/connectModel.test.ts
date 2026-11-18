@@ -8,6 +8,8 @@ import {
   ageLabel,
   choiceLabel,
   connectPageState,
+  connectedDashboards,
+  PORTAL_HOME,
   homeMachineState,
   homeMachineView,
   installCommand,
@@ -52,7 +54,7 @@ const machine = (name: string, url?: string) => ({
   os: "darwin",
   approved_at: "2026-11-17T10:00:00Z",
   target: null,
-  online_url: url,
+  open_url: url,
 });
 
 test("home machine state table: one case per row", () => {
@@ -103,6 +105,10 @@ test("the approval page wordings", () => {
   assert.equal(networkLine({ prefix: "", same_as_you: false }).warn, true);
   assert.equal(choiceLabel({ kind: "personal", display_name: "Personal" }), "Your personal dashboard");
   assert.equal(choiceLabel({ kind: "team", display_name: "Acme" }), "Acme");
+  // Mid-sentence ("... is connected to your personal dashboard.") the
+  // personal name is lower case; a team keeps its own name.
+  assert.equal(choiceLabel({ kind: "personal", display_name: "Personal" }, "inline"), "your personal dashboard");
+  assert.equal(choiceLabel({ kind: "team", display_name: "Acme" }, "inline"), "Acme");
 });
 
 test("approval page state per status", () => {
@@ -128,4 +134,58 @@ test("the sign-in return path stays under /portal/", () => {
   }
   assert.equal(routerPath("/portal/connect/abc"), "/connect/abc");
   assert.equal(routerPath("/portal/"), "/");
+});
+
+test("after approval the page shows both dashboards, each with its role", () => {
+  const personal = { org_id: "p", slug: "u-abc", kind: "personal" as const, display_name: "Sam", share_level: "summary" as const };
+  const team = { org_id: "o", slug: "acme", kind: "team" as const, display_name: "Acme", share_level: "full" as const };
+
+  const p = connectedDashboards({ status: "approved", target: personal, open_url: "https://u-abc.superbased.app/dashboard" });
+  assert.ok(p);
+  assert.deepEqual(p.map((d) => d.id), ["local", "online"]);
+  const [local, online] = p;
+  assert.equal(local.title, "Local dashboard");
+  assert.equal(local.role, "Everything Observer records on this computer, in full; it stays here.");
+  assert.equal(local.button, "Open the local dashboard");
+  assert.equal(local.href, "http://127.0.0.1:8081");
+  assert.equal(local.opens, "external");
+  assert.equal(local.note, "On the computer you just connected.");
+  // The personal dashboard opens its own address (what "Open your dashboard"
+  // opened before), in a new tab.
+  assert.equal(online.title, "Online dashboard");
+  assert.equal(online.role, "A summary from each machine you connect.");
+  assert.equal(online.button, "Open your online dashboard");
+  assert.equal(online.href, "https://u-abc.superbased.app/dashboard");
+  assert.equal(online.opens, "external");
+  // ... and this portal's home when the server sent no usable address.
+  const pNone = connectedDashboards({ status: "approved", target: personal });
+  assert.equal(pNone?.[1].href, PORTAL_HOME);
+  assert.equal(pNone?.[1].opens, "portal");
+
+  const t = connectedDashboards({ status: "approved", target: team, open_url: "https://acme.superbased.app/dashboard" });
+  assert.ok(t);
+  assert.equal(t[1].title, "Team dashboard: Acme");
+  assert.equal(t[1].role, "Full detail (prompts, responses, file paths); the team's admins can read it.");
+  assert.equal(t[1].button, "Open the team dashboard");
+  assert.equal(t[1].href, "https://acme.superbased.app/dashboard");
+  assert.equal(t[1].opens, "external");
+
+  // No usable address (a team here) falls back to this portal's home.
+  for (const bad of [undefined, "http://acme.superbased.app/", "javascript:alert(1)", "https://u:p@acme.superbased.app/"]) {
+    const d = connectedDashboards({ status: "approved", target: team, open_url: bad });
+    assert.equal(d?.[1].href, PORTAL_HOME, String(bad));
+    assert.equal(d?.[1].opens, "portal", String(bad));
+  }
+  // A team with no display name is named by its slug.
+  assert.equal(connectedDashboards({ status: "approved", target: { ...team, display_name: "" } })?.[1].title, "Team dashboard: acme");
+
+  // Nothing to open before approval, after Not now, or when declined.
+  assert.equal(connectedDashboards({ status: "pending", target: null }), null);
+  assert.equal(connectedDashboards({ status: "approved", target: null }), null);
+  assert.equal(connectedDashboards({ status: "declined", target: null }), null);
+});
+
+test("the connected line still lets the person close the page", () => {
+  assert.match(CONNECT_PAGE_TEXT.connected.line, /close this page\.$/);
+  assert.match(CONNECT_PAGE_TEXT.connected.line, /finishes connecting by itself/);
 });

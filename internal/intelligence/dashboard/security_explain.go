@@ -62,7 +62,7 @@ func (s *Server) handleSecurityExplain(w http.ResponseWriter, r *http.Request) {
 	ex, err := explain(r.Context(), id)
 	switch {
 	case errors.Is(err, dashapi.ErrExplainNotSelected):
-		http.Error(w, err.Error(), http.StatusConflict)
+		writeSettingRefusal(w, err, http.StatusConflict)
 		return
 	case errors.Is(err, dashapi.ErrExplainUnknownFinding):
 		http.Error(w, err.Error(), http.StatusNotFound)

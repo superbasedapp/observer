@@ -569,7 +569,7 @@ func (s *Server) handleSessionLaunch(w http.ResponseWriter, r *http.Request, ses
 		return
 	}
 	if s.opts.LaunchManager == nil {
-		http.Error(w, "launch unavailable: "+errTerminalUnavailable, http.StatusServiceUnavailable)
+		writeTerminalUnavailable(w, "launch unavailable: ")
 		return
 	}
 	if strings.TrimSpace(sessionID) == "" {
@@ -702,7 +702,7 @@ func (s *Server) handleSessionResume(w http.ResponseWriter, r *http.Request, ses
 		return
 	}
 	if s.opts.LaunchManager == nil {
-		http.Error(w, "resume unavailable: "+errTerminalUnavailable, http.StatusServiceUnavailable)
+		writeTerminalUnavailable(w, "resume unavailable: ")
 		return
 	}
 	if strings.TrimSpace(sessionID) == "" {
@@ -787,10 +787,8 @@ func (s *Server) handleSessionResume(w http.ResponseWriter, r *http.Request, ses
 	})
 	if err != nil {
 		switch {
-		case errors.Is(err, ErrLaunchFreshDisabled):
-			http.Error(w, err.Error(), http.StatusForbidden)
-		case errors.Is(err, ErrLaunchToolNotAllowed):
-			http.Error(w, err.Error(), http.StatusForbidden)
+		case errors.Is(err, ErrLaunchFreshDisabled), errors.Is(err, ErrLaunchToolNotAllowed):
+			writeSettingRefusal(w, err, http.StatusForbidden)
 		case errors.Is(err, ErrLaunchProjectRootDenied):
 			// F6: the project root is loaded server-side from the stored session,
 			// so an allow-list rejection is an AUTHORIZATION-policy refusal (403),
@@ -1040,13 +1038,9 @@ func (s *Server) startFreshTerminal(w http.ResponseWriter, r *http.Request, body
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusConflict)
 			_ = json.NewEncoder(w).Encode(signInConsentResponse{Error: "sign_in_consent", Tool: consent.Tool, Files: consent.Files, Text: consent.Text})
-		case errors.Is(err, ErrLaunchFreshDisabled):
-			http.Error(w, err.Error(), http.StatusForbidden)
-		case errors.Is(err, ErrLaunchToolNotAllowed):
-			http.Error(w, err.Error(), http.StatusForbidden)
+		case errors.Is(err, ErrLaunchFreshDisabled), errors.Is(err, ErrLaunchToolNotAllowed), errors.Is(err, ErrLaunchShellDisabled):
+			writeSettingRefusal(w, err, http.StatusForbidden)
 		case errors.Is(err, ErrLaunchSandboxRequired):
-			http.Error(w, err.Error(), http.StatusForbidden)
-		case errors.Is(err, ErrLaunchShellDisabled):
 			http.Error(w, err.Error(), http.StatusForbidden)
 		case errors.Is(err, ErrLaunchProjectRootDenied):
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -1127,7 +1121,7 @@ func (s *Server) sandboxRequestOK(w http.ResponseWriter, r *http.Request, body t
 			return false
 		}
 	} else if !av.Available {
-		http.Error(w, "sandbox unavailable ("+av.Verdict+"): "+av.Reason, statusForSandboxVerdict(av.Verdict))
+		writeSandboxUnavailable(w, "sandbox unavailable ("+av.Verdict+"): "+av.Reason, av.Verdict, av.Reason)
 		return false
 	}
 	src, ok := sandboxSourceByID(av.Sources, workspaceSource)
@@ -1185,7 +1179,7 @@ func sandboxChosenBackendOK(w http.ResponseWriter, rows []SandboxBackendAvail, c
 			http.Error(w, "sandbox backend "+choice+" is not offered yet", http.StatusBadRequest)
 			return false
 		case !b.Available:
-			http.Error(w, "sandbox backend "+choice+" unavailable ("+b.Verdict+"): "+b.Reason, statusForSandboxVerdict(b.Verdict))
+			writeSandboxUnavailable(w, "sandbox backend "+choice+" unavailable ("+b.Verdict+"): "+b.Reason, b.Verdict, b.Reason)
 			return false
 		}
 		return true
@@ -1379,7 +1373,7 @@ func (s *Server) handleTerminalSessions(w http.ResponseWriter, r *http.Request) 
 		// Two causes, both honest (DI-16): the operator turned the launch
 		// surface off, or this OS cannot build a PTY. JSON so the SPA can read
 		// the reason instead of rendering "no launchable tools" (DI-05).
-		writeErrStatus(w, errors.New(errTerminalUnavailable), http.StatusServiceUnavailable)
+		writeTerminalUnavailable(w, "")
 		return
 	}
 	// Surface the operator's canonicalized [terminal.launch].allowed_project_roots
@@ -1549,11 +1543,11 @@ func (s *Server) handleTerminalInstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.opts.LaunchManager == nil {
-		writeErrStatus(w, errors.New(errTerminalUnavailable), http.StatusServiceUnavailable)
+		writeTerminalUnavailable(w, "")
 		return
 	}
 	if s.opts.AllowToolInstall == nil || !s.opts.AllowToolInstall() {
-		writeErrStatus(w, errors.New(errGuidedInstallOff), http.StatusForbidden)
+		writeGuidedInstallOff(w)
 		return
 	}
 	var body terminalInstallRequest
@@ -1667,7 +1661,7 @@ func (s *Server) handleSandboxReadoptTerminal(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if s.opts.LaunchManager == nil {
-		writeErrStatus(w, errors.New(errTerminalUnavailable), http.StatusServiceUnavailable)
+		writeTerminalUnavailable(w, "")
 		return
 	}
 	var body struct {

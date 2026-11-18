@@ -89,9 +89,9 @@ func runConnectDiscovery(cmd *cobra.Command, deps connectDeps, f connectFlags, p
 	opts := connectCloudOpts{configPath: f.configPath, baseURL: f.baseURL, devToken: f.devToken}
 
 	if deps.identity(f.configPath) != frontdoor.IdentitySignedIn {
-		fmt.Fprintln(out, "Finding your dashboards needs your SuperBased sign-in first (signing in never moves data).")
+		fmt.Fprintln(out, "Finding your dashboards needs your superbased sign-in first (signing in never moves data).")
 		if err := deps.runIdentity(cmd, connectIdentityArgs(f)); err != nil {
-			return "", fmt.Errorf("observer connect: sign in to SuperBased: %w", err)
+			return "", fmt.Errorf("observer connect: sign in to superbased: %w", err)
 		}
 	}
 	list, err := deps.listOrgs(ctx, opts)
@@ -132,7 +132,7 @@ func runConnectDiscovery(cmd *cobra.Command, deps connectDeps, f connectFlags, p
 		org = listed[pick]
 		fmt.Fprintln(out, "Only activity from now on is sent to "+connectOrgName(org)+"; earlier sessions stay on this machine.")
 	case attachrule.OutcomeOfferCreatePersonal:
-		fmt.Fprintln(out, "No dashboards are listed for your SuperBased sign-in.")
+		fmt.Fprintln(out, "No dashboards are listed for your superbased sign-in.")
 		if hidden > 0 {
 			fmt.Fprintf(out, "(%d dashboard(s) not shown: suspended or being deleted.)\n", hidden)
 		}

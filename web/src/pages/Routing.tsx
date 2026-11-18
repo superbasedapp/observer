@@ -1,4 +1,6 @@
 import { Fragment, useState } from "react";
+import { placeLink } from "@/lib/settingsPlaces";
+import { NeedsSettingLink, NeedsSettingNotice } from "@/components/NeedsSettingNotice";
 import { Link, useSearchParams } from "react-router-dom";
 import { GatedLink } from "@/components/GatedLink";
 import {
@@ -639,11 +641,12 @@ export function RoutingPage() {
         {shadow.loading || (!shadow.data && !shadow.error) ? (
           <InlineLoading block />
         ) : st && !st.enabled ? (
-          <p className="py-2 text-[12px] text-fg-3">
-            Routing is off - the shadow accrues once advise mode runs (every advise decision is a recorded
-            counterfactual; requests stay untouched). The savings preview on the Overview tab answers "is it worth
-            enabling?" without turning anything on.
-          </p>
+          <NeedsSettingNotice
+            variant="inline"
+            className="py-2 text-[12px]"
+            text={'Routing is off, so there is no shadow yet. It accrues once advise mode runs (every advise decision is a recorded counterfactual; requests stay untouched). Turn routing on in advise mode in Settings > Routing. The savings preview on the Overview tab answers "is it worth enabling?" without turning anything on.'}
+            link={placeLink("routing_settings")}
+          />
         ) : sh ? (
           <>
             <p className="text-[12px] leading-relaxed text-fg-2">
@@ -1432,7 +1435,7 @@ function RoutingApplyCard({ days }: { days: number }) {
             <div className="space-y-1.5">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h3 className="text-[11px] font-semibold uppercase tracking-[0.06em] text-fg-3">
-                  SuperBased backups (revertable)
+                  superbased backups (revertable)
                 </h3>
                 <RevertAllControl count={backups.length} />
               </div>
@@ -1583,7 +1586,13 @@ function RoutingPreviewCard() {
   return (
     <ChartShell
       title={<TitleWithHelp text="Preview savings" helpId="card.routing_preview" />}
-      sub="Routing is off. Preview what a policy would have saved over your last 30 days - a read-only replay of recorded turns. No restart, no traffic touched, nothing persisted."
+      sub={
+        <>
+          Routing is off (turn it on in <NeedsSettingLink link={placeLink("routing_settings")}>Settings &gt; Routing</NeedsSettingLink>). Preview
+          what a policy would have saved over your last 30 days - a read-only replay of recorded turns. No restart, no
+          traffic touched, nothing persisted.
+        </>
+      }
       right={
         <div className="flex flex-wrap items-center gap-2">
           <select value={template} onChange={(e) => setTemplate(e.target.value)} className={SELECT_CLASS}>

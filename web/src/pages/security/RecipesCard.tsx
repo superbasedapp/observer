@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { NeedsSettingLink } from "@/components/NeedsSettingNotice";
+import { placeLink } from "@/lib/settingsPlaces";
 import { GatedLink } from "@/components/GatedLink";
 import clsx from "clsx";
 import { ArrowRight, CopyPlus, Download, Eye, Layers, Trash2, Upload } from "lucide-react";
@@ -674,7 +676,11 @@ function CurrentState(props: RecipesViewProps & { catalog: Recipe[] }) {
         <div className="mt-1 text-warn">No longer in the catalog: {(applied?.missing ?? []).join(", ")}. Remove it or apply another recipe.</div>
       )}
       {drift && <div className="mt-1 text-warn" data-testid="recipes-drift">{drift}</div>}
-      {state.enabled === false && <div className="mt-1 text-warn" data-testid="recipes-guard-off">{GUARD_OFF_NOTE}</div>}
+      {state.enabled === false && (
+        <div className="mt-1 text-warn" data-testid="recipes-guard-off">
+          {GUARD_OFF_NOTE} <NeedsSettingLink link={placeLink("guard_settings")} />
+        </div>
+      )}
       {(state.issues ?? []).map((i, n) => (
         <div key={n} className="mt-1 text-warn">
           {i}
@@ -951,7 +957,17 @@ function PreviewPanel(props: RecipesViewProps & { catalog: Recipe[] }) {
             Apply recipe
           </Button>
         )}
-        {applyReason && !removing && !preview.error && <span className="text-[11px] text-fg-3">{applyReason}</span>}
+        {applyReason && !removing && !preview.error && (
+          <span className="text-[11px] text-fg-3">
+            {applyReason}
+            {blocked && (
+              <>
+                {" "}
+                <NeedsSettingLink link={placeLink("guard_settings")} />
+              </>
+            )}
+          </span>
+        )}
       </div>
     </div>
   );

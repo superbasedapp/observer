@@ -7,6 +7,7 @@
 
 import { markRemoteAuthLost } from "@/lib/authLoss";
 import { getRemoteCSRF, isRemoteView, setRemoteCSRF } from "@/lib/remote";
+import { bodyText, parseErrorBody } from "@/lib/needsSetting";
 import { errorMachineSuffix } from "@/lib/remoteIdentity";
 import type {
   InstanceInfo,
@@ -410,8 +411,16 @@ export function fetchLOCSummary(
 // apiReason extracts the SERVER's own message from an ApiError so the UI can
 // show the honest, actionable reason (notably the known_hosts guidance) rather
 // than a generic "request failed". Falls back to the raw error text.
+//
+// A JSON body yields its sentence ("message", or an "error" that is a
+// sentence) read from the FULL body, never the message's 200-char excerpt,
+// so a structured refusal never shows as raw, cut-off JSON (operator report
+// 2026-11-18). An error whose fix is a setting also carries a deep link:
+// render it with NeedsSettingNotice (lib/needsSetting.ts errorNote).
 export function apiReason(e: unknown): string {
   if (e instanceof ApiError) {
+    const text = bodyText(parseErrorBody(e.body));
+    if (text) return `${text}${errorMachineSuffix()}`;
     const marker = `${e.path}: `;
     const at = e.message.indexOf(marker);
     if (at >= 0) {

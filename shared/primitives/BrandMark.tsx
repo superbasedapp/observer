@@ -1,6 +1,6 @@
 import clsx from "clsx";
 
-// BrandMark — the SuperBased mark as SVG (the favicon's geometry: a Blueprint
+// BrandMark — the superbased mark as SVG (the favicon's geometry: a Blueprint
 // badge holding two squares in the U+259E quadrant arrangement), used by the
 // three sidebars, web2's Login and webcloud. It replaced a typed "▞"
 // character, which fell back to the OS monospace font whenever the loaded

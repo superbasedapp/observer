@@ -1,4 +1,6 @@
 import { Link } from "react-router-dom";
+import { NeedsSettingLink } from "@/components/NeedsSettingNotice";
+import { placeLink } from "@/lib/settingsPlaces";
 import { LOC_SUMMARY_PATH } from "@/lib/api";
 import { fmtInt, fmtUSD } from "@/lib/format";
 import { useApi } from "@/lib/useApi";
@@ -104,7 +106,10 @@ export function LOCPerDollarTile({
           {!uncounted && noCost && (
             <p>
               No spend was recorded for this window, so there is nothing to
-              divide by. Cost needs proxy or transcript token capture.
+              divide by. Cost needs proxy or transcript token capture; some
+              tools never record tokens. Routing a tool through the proxy is
+              set up in Settings &gt; Connected tools.{" "}
+              <NeedsSettingLink link={placeLink("connected_tools")} />
             </p>
           )}
           <p>

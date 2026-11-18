@@ -11,7 +11,7 @@ import (
 )
 
 // RPName is the relying-party name a portal passkey prompt shows.
-const RPName = "SuperBased"
+const RPName = "superbased"
 
 // userHandleDomain separates the portal's user handles from any other hash
 // of an account id.

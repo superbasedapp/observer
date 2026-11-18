@@ -42,7 +42,7 @@ test("with no personal dashboard yet the card says it is being set up, with no b
 });
 
 test("an active personal dashboard opens from a button and never shows its address", () => {
-  const out = html(<PersonalOrgCard org={org({ dashboard_url: "https://u-3f9a2c1d.superbased.app/" })} />);
+  const out = html(<PersonalOrgCard org={org({ open_url: "https://u-3f9a2c1d.superbased.app/" })} />);
   assert.match(out, /Active/);
   assert.match(out, /Open your dashboard/);
   assert.match(out, /href="https:\/\/u-3f9a2c1d\.superbased\.app\/"/);

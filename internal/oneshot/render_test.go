@@ -36,7 +36,7 @@ func TestRenderMultiRowStructure(t *testing.T) {
 	out := Render(baseTable(), RenderOptions{})
 	lines := strings.Split(out, "\n")
 
-	if !strings.HasPrefix(lines[0], "SuperBased - observed agent spend, last 30 days") {
+	if !strings.HasPrefix(lines[0], "superbased - observed agent spend, last 30 days") {
 		t.Errorf("title line = %q", lines[0])
 	}
 	if !strings.Contains(lines[0], "one-shot · no daemon") {

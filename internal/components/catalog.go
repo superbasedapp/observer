@@ -117,7 +117,7 @@ func Artifacts() []ArtifactComponent {
 		{
 			ID: "artifact.vscode-extension", Kind: ArtifactEditorExtension,
 			Title:     "VS Code extension",
-			About:     "The SuperBased Observer extension for VS Code and its forks, installed from the VS Code Marketplace or Open VSX. It bundles its own observer binary per platform and prefers an installed observer that is strictly newer.",
+			About:     "The superbased Observer extension for VS Code and its forks, installed from the VS Code Marketplace or Open VSX. It bundles its own observer binary per platform and prefers an installed observer that is strictly newer.",
 			Platforms: []string{"VS Code", "VS Code Server", "Cursor", "Windsurf", "VSCodium"},
 			Source:    "VS Code Marketplace and Open VSX (5 platform VSIXes)",
 			Signer:    "the marketplace (the bundled observer binary is the release build)",

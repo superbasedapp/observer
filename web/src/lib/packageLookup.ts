@@ -4,7 +4,7 @@
 //
 // Observer checks a project's dependencies against known vulnerabilities in
 // one of three ways the developer chooses: download the OSV databases and
-// match here (local), look the dependencies up at SuperBased with no
+// match here (local), look the dependencies up at superbased with no
 // download (remote: a short hash prefix of each package name, never a name,
 // a version or code), or both (local first, remote only for what local
 // cannot answer). Every choice that sends or downloads data has its own
@@ -107,15 +107,15 @@ export const LOOKUP_MODES: LookupModeChoice[] = [
   },
   {
     id: "remote",
-    label: "SuperBased lookup (no download)",
+    label: "superbased lookup (no download)",
     sends:
       "A short hash prefix of each package name, shared by hundreds of other names; never a name, a version or code. superbased.app sees your IP address and the time.",
   },
   {
     id: "both",
-    label: "Both: local first, SuperBased for the gaps",
+    label: "Both: local first, superbased for the gaps",
     sends:
-      "Nothing for an ecosystem a downloaded database answers; for the rest, the same hash prefixes as the SuperBased lookup.",
+      "Nothing for an ecosystem a downloaded database answers; for the rest, the same hash prefixes as the superbased lookup.",
   },
 ];
 
@@ -144,19 +144,19 @@ export function lookupModeLine(st: PackageLookupStatus): string {
   }
   switch (st.mode) {
     case "":
-      return "Not chosen yet: dependencies show as not scanned until you choose a download or the SuperBased lookup.";
+      return "Not chosen yet: dependencies show as not scanned until you choose a download or the superbased lookup.";
     case "local":
       return st.download.accepted
         ? `Local: the OSV databases are downloaded and matched on this machine (accepted ${dateOf(st.download.accepted_at)} on the ${st.download.accepted_on ?? "cli"}).`
         : "Local: waiting for the database download's accept.";
     case "remote":
       return st.remote.accepted
-        ? `SuperBased lookup, no download (accepted ${dateOf(st.remote.accepted_at)} on the ${st.remote.accepted_on ?? "cli"}).`
-        : "SuperBased lookup chosen, but its consent is not recorded: dependencies show as not scanned.";
+        ? `superbased lookup, no download (accepted ${dateOf(st.remote.accepted_at)} on the ${st.remote.accepted_on ?? "cli"}).`
+        : "superbased lookup chosen, but its consent is not recorded: dependencies show as not scanned.";
     case "both":
       return st.remote.accepted
-        ? "Both: downloaded databases first, the SuperBased lookup only for the ecosystems with none."
-        : "Both chosen, but the SuperBased lookup's consent is not recorded: only the downloaded databases match.";
+        ? "Both: downloaded databases first, the superbased lookup only for the ecosystems with none."
+        : "Both chosen, but the superbased lookup's consent is not recorded: only the downloaded databases match.";
   }
   return st.mode;
 }
@@ -228,7 +228,7 @@ export function orgPostureLines(st: PackageLookupStatus): string[] {
     lines.push(`Looked up: ${o.kinds.join(", ")}. The org server's mirror answers what its databases do not; this machine sends it only the shard digests your packages' hash prefixes fall in.`);
     lines.push(o.private === "send" ? "Private package names: looked up too (your organization's rule)." : "Private package names: withheld (your organization's rule).");
   } else {
-    lines.push("The SuperBased lookup is off by your organization's policy: no package lookup leaves this machine.");
+    lines.push("The superbased lookup is off by your organization's policy: no package lookup leaves this machine.");
   }
   lines.push("Databases on this machine: from your organization's mirror only.");
   lines.push(`Security policy version ${o.version}${o.source === "org" ? " (org state)" : ""}.`);

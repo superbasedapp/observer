@@ -149,9 +149,9 @@ export function captureChips(t: FirstRunTool): CaptureChip[] {
   const h = t.hooks;
   if (h && !h.no_hooks && !h.unprobed) {
     if (h.registered) {
-      out.push({ key: "hooks", label: "Hooks on", tone: "success", title: h.detail || "Hooks point at SuperBased." });
+      out.push({ key: "hooks", label: "Hooks on", tone: "success", title: h.detail || "Hooks point at superbased." });
     } else if (h.partial) {
-      out.push({ key: "hooks", label: "Hooks partly on", tone: "warn", title: h.detail || "Some hook events point at SuperBased." });
+      out.push({ key: "hooks", label: "Hooks partly on", tone: "warn", title: h.detail || "Some hook events point at superbased." });
     } else {
       out.push({ key: "hooks", label: "Hooks off", tone: "neutral", title: h.detail || "Hooks are not registered yet." });
     }
@@ -226,7 +226,7 @@ export function headline(d: FirstRunResponse): { headline: string; detail: strin
     case "not_running":
       return {
         headline: "The background watcher is not running here",
-        detail: "Start SuperBased with observer start to capture past and new sessions.",
+        detail: "Start superbased with observer start to capture past and new sessions.",
       };
     default:
       return { headline: "Starting history capture", detail: `${found}${across} captured so far.` };

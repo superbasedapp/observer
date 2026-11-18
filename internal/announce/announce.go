@@ -139,8 +139,8 @@ var releaseAnnouncements = []Announcement{
 	{
 		ID:        "2026-08-plugin-coverage",
 		Severity:  SeverityInfo,
-		Title:     "SuperBased now installs as a native plugin in 22 AI coding tools",
-		Body:      "Claude Code, Codex, Cursor, Copilot, Gemini, OpenCode and 16 more now have a native SuperBased plugin. See the plugins repo for the install command for your tool.",
+		Title:     "superbased now installs as a native plugin in 22 AI coding tools",
+		Body:      "Claude Code, Codex, Cursor, Copilot, Gemini, OpenCode and 16 more now have a native superbased plugin. See the plugins repo for the install command for your tool.",
 		URL:       "https://github.com/superbasedapp/plugins",
 		ExpiresAt: "2026-10-01T00:00:00Z",
 		Source:    SourceRelease,

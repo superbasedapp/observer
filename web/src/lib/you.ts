@@ -133,7 +133,7 @@ export function consentRows(i: ConsentInputs, cloudLabel: (purpose: string) => s
     }
   }
 
-  // Package checks: the SuperBased lookup, private names, and the database download.
+  // Package checks: the superbased lookup, private names, and the database download.
   const scanOwner = "/code-security?tab=scanners";
   if (!i.lookup) {
     rows.push(unreadable("package-checks", "Online package checks", scanOwner));

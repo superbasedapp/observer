@@ -60,7 +60,7 @@ export function MCPCallsPanel({
   return (
     <div className="space-y-3">
       <p className="text-[11px] text-fg-3">
-        MCP tool calls that went through the SuperBased MCP relay or gateway, each tied to where it happened in this
+        MCP tool calls that went through the superbased MCP relay or gateway, each tied to where it happened in this
         session. <span className="text-fg-2">exact</span> means an id the client sent pins the link;{" "}
         <span className="text-fg-2">inferred</span> means a heuristic picked it: the nearest matching action inside the
         anchored session, or - for a client that sends no anchor - the captured tool call with the same tool and server

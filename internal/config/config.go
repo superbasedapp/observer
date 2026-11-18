@@ -4810,6 +4810,17 @@ type DashboardConfig struct {
 	// that seed, adding the key would have silently disabled the rail
 	// for every install that had ever set a dashboard address.
 	OrgAnnouncements bool `toml:"org_announcements"`
+	// LiveRibbon shows the live ribbon in the local dashboard's shell: the
+	// top-bar chip ("No agent running · Start one", or "N live") and the
+	// slim strip under the top bar while an agent session is live
+	// (docs/plans/local-dashboard-first-run-options-2026-11-18.md §8).
+	// Default TRUE. Local-only: the node operator's own display switch,
+	// never distributed and with no org toggle (an org that hides the Live
+	// page hides the ribbon through page visibility instead). Read on each
+	// ribbon request, so a save applies without a restart. Off removes the
+	// chip and the strip; the nav's Live count stays. Seeded true in
+	// Default() for the same partial-merge reason as OrgAnnouncements.
+	LiveRibbon bool `toml:"live_ribbon"`
 }
 
 // CompressionConfig groups all four compression layers' toggles.
@@ -5480,6 +5491,7 @@ func Default() Config {
 		// (the built-in 127.0.0.1:8081 default resolves in cmd).
 		Dashboard: DashboardConfig{
 			OrgAnnouncements: true,
+			LiveRibbon:       true,
 		},
 		// CacheTrack is default-ON per spec §11: local, passive,
 		// network-free, hashes/counts/enums only. An install with

@@ -7,7 +7,7 @@ const base: OrgDigestsResponse = { state: "ok", org_name: "Acme", projects: 1, d
 
 test("orgDigestNotice: one row per state, first match wins", () => {
   const cases: Array<[Partial<OrgDigestsResponse>, string | null]> = [
-    [{ state: "not_enrolled" }, "not enrolled"],
+    [{ state: "not_enrolled" }, "not connected"],
     [{ state: "not_supported" }, "does not offer"],
     [{ state: "auth_failed" }, "refused"],
     [{ state: "channel_off" }, "switched off"],

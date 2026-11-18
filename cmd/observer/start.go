@@ -976,6 +976,7 @@ func newStartCmd() *cobra.Command {
 					CloudGradeAvailability: CommitAlignmentAvailability,
 					JudgeGrade:             projectsJudgeGrade,
 					JudgeGradeReason:       projectsJudgeGradeReason,
+					JudgeGradePlace:        projectsJudgeGradePlace(&cfg, projectsJudgeGrade != nil),
 					// Projects page "Rescan now" (commitscan_wire.go): the daemon's own
 					// commit scanner, nil when [projects].commit_scan is off.
 					CommitRescan: commitRescanWithDelivery(cfg, database),

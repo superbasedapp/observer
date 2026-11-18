@@ -833,7 +833,7 @@ function NetworkTraffic({
       <Tooltip
         content={
           (hasBytes
-            ? "Body byte totals exist only for SuperBased-proxied/plaintext API flows; per-process network bytes are not captured."
+            ? "Body byte totals exist only for superbased-proxied/plaintext API flows; per-process network bytes are not captured."
             : bodyCapture === false
               ? "Body byte capture is off (Settings > Process capture, More settings: observer.process.network.capture_bodies) - proxied calls are counted, but their request/response bytes were not measured."
               : "No request/response bytes have been recorded yet for this session's proxied calls.") +

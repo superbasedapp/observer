@@ -125,7 +125,7 @@ func (s *Server) handleRemoteTailscaleOperatorGrant(w http.ResponseWriter, r *ht
 		// Q16: the setup PTY here is exactly as ConPTY-capable as the New
 		// Terminal launch path since 2026-07-04 — reuse errTerminalUnavailable
 		// (audit DI-16) instead of the stale "run under WSL/Linux" claim.
-		http.Error(w, `{"error":"`+errTerminalUnavailable+`, or run `+"`sudo tailscale set --operator=<you>`"+` manually"}`, http.StatusServiceUnavailable)
+		writeTerminalUnavailableOr(w, errTerminalUnavailable+", or run `sudo tailscale set --operator=<you>` manually", "Or run `sudo tailscale set --operator=<you>` yourself.")
 		return
 	}
 	user, isRoot, err := tailnet.CurrentDaemonUser()
@@ -174,7 +174,7 @@ func (s *Server) handleRemoteTailscaleLogin(w http.ResponseWriter, r *http.Reque
 	}
 	if s.opts.LaunchManager == nil {
 		// Q16: same reasoning as handleRemoteTailscaleOperatorGrant above.
-		http.Error(w, `{"error":"`+errTerminalUnavailable+`, or run `+"`tailscale up`"+` manually"}`, http.StatusServiceUnavailable)
+		writeTerminalUnavailableOr(w, errTerminalUnavailable+", or run `tailscale up` manually", "Or run `tailscale up` yourself.")
 		return
 	}
 	_, isRoot, err := tailnet.CurrentDaemonUser()
@@ -226,7 +226,7 @@ func (s *Server) handleRemoteTailscaleInstall(w http.ResponseWriter, r *http.Req
 	}
 	if s.opts.LaunchManager == nil {
 		// Q16: same reasoning as handleRemoteTailscaleOperatorGrant above.
-		http.Error(w, `{"error":"`+errTerminalUnavailable+`, or install Tailscale manually"}`, http.StatusServiceUnavailable)
+		writeTerminalUnavailableOr(w, errTerminalUnavailable+", or install Tailscale manually", "Or install Tailscale yourself.")
 		return
 	}
 	// Re-check presence at the FINAL spawn boundary (not just the early advisory

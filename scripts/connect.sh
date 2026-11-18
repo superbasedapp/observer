@@ -1,5 +1,5 @@
 #!/bin/sh
-# connect.sh: install SuperBased Observer and connect this machine, in one
+# connect.sh: install superbased Observer and connect this machine, in one
 # step, on Linux or macOS.
 #
 #   curl -fsSL https://superbased.app/connect.sh | sh               # personal dashboard
@@ -140,7 +140,7 @@ pick_verifier() {
   return 1
 }
 
-say "Getting the SuperBased Observer installer."
+say "Getting the superbased Observer installer."
 fetch SHA256SUMS 0
 fetch install.sh 0
 want=$(awk '{ f = $2; sub(/^\*/, "", f); if (f == "install.sh") print $1 }' "$work/SHA256SUMS" | head -n 1)

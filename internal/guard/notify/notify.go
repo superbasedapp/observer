@@ -115,13 +115,13 @@ func notifyCommand(goos, title, body string) (name string, args []string, ok boo
 			`$null=$t.Item(0).AppendChild($x.CreateTextNode('` + psQuote(title) + `'));` +
 			`$null=$t.Item(1).AppendChild($x.CreateTextNode('` + psQuote(body) + `'));` +
 			`$n=[Windows.UI.Notifications.ToastNotification]::new($x);` +
-			`[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('SuperBased Observer').Show($n)`
+			`[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('superbased Observer').Show($n)`
 		return "powershell", []string{"-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script}, true
 	case "darwin":
 		script := `display notification "` + osaQuote(body) + `" with title "` + osaQuote(title) + `"`
 		return "osascript", []string{"-e", script}, true
 	case "linux":
-		return "notify-send", []string{"--app-name=SuperBased Observer", title, body}, true
+		return "notify-send", []string{"--app-name=superbased Observer", title, body}, true
 	default:
 		return "", nil, false
 	}

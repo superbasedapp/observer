@@ -278,7 +278,7 @@ export const ORG_DELETION_STATE: Readonly<Record<OrgDeletionState, OrgDeletionSt
   blocked: {
     label: "Deletion blocked",
     tone: "danger",
-    sentence: () => "The deletion stopped and needs our attention. SuperBased has been alerted and will finish it.",
+    sentence: () => "The deletion stopped and needs our attention. superbased has been alerted and will finish it.",
   },
 };
 
@@ -328,7 +328,7 @@ export function stateDate(d: OrgDeletionStatus): string | undefined {
 export const ORG_DELETION_ORIGIN: Readonly<Record<OrgDeletionOrigin, string>> = {
   owner: "An owner of this team",
   account_deletion: "The deletion of the owner's account",
-  staff: "SuperBased support",
+  staff: "superbased support",
 };
 
 /** KEPT_TEXT words what the purge keeps. */

@@ -120,6 +120,7 @@ export type ConfigKeyPath =
   "proxy.org_route.direct_fallback_custody_ack" |
   "dashboard.addr" |
   "dashboard.org_announcements" |
+  "dashboard.live_ribbon" |
   "compression.shell.enabled" |
   "compression.shell.exclude_commands" |
   "compression.indexing.enabled" |

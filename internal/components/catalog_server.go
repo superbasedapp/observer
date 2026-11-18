@@ -287,7 +287,7 @@ func serverRows() []Component {
 			// sync`, scheduled only with [security.relay].mirror_shards).
 			ID: "org.security.relay", Class: ClassServer, Binary: BinaryOrg,
 			Title:         "Code security relay and mirror",
-			About:         "Answers managed nodes' online package checks (relay mode, querying the public sources on their behalf) or from the org's imported mirror (mirror mode, air-gapped), and serves the mirrored security content, including the SuperBased package lookup's advisory shards.",
+			About:         "Answers managed nodes' online package checks (relay mode, querying the public sources on their behalf) or from the org's imported mirror (mirror mode, air-gapped), and serves the mirrored security content, including the superbased package lookup's advisory shards.",
 			Levels:        l1Done,
 			Routes:        []string{"/api/agent/security/lookup", "/api/agent/security/content", "/api/agent/security/shards", "/api/org/security/relay"},
 			Packages:      []string{"internal/orgserver/secrelay", "internal/secfeed", "internal/secfeed/online", "internal/secscan/osvshard/shardnet"},

@@ -74,7 +74,7 @@ export function StarPrompt({ sessions }: { sessions: number | null }) {
     <section className="flex items-center gap-3 rounded-3 border border-line-2 bg-bg-2 px-4 py-2.5">
       <Icon icon={Star} size="sm" fill="currentColor" className="shrink-0 text-accent" />
       <span className="min-w-0 flex-1 text-[12px] text-fg-2">
-        Enjoying SuperBased? A GitHub star helps a lot.
+        Enjoying superbased? A GitHub star helps a lot.
       </span>
       <button
         type="button"

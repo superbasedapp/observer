@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { Button, Card, EmptyState, Select } from "@/components/primitives";
 import { ChartState } from "@/components/ChartState";
+import { ApiErrorNotice } from "@/components/NeedsSettingNotice";
+import { errorNote, type ErrorNote } from "@/lib/needsSetting";
 import { BaselineStatus } from "@/components/security/BaselineStatus";
 import { useApi } from "@/lib/useApi";
 import {
@@ -31,7 +33,7 @@ import { projectLabel, type SecurityProject } from "@/lib/codeSecurity";
 function GithooksCard({ project }: { project: string }) {
   const state = useApi<GithooksResponse>(project ? "/api/security/githooks" : null, { project }, [project]);
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const [err, setErr] = useState<ErrorNote | null>(null);
   const d = state.data;
   const installed = (d?.hooks ?? []).some((h) => h.installed || h.outdated);
   async function act(action: "install" | "uninstall") {
@@ -42,7 +44,7 @@ function GithooksCard({ project }: { project: string }) {
       await securityPost("/api/security/githooks", d.confirm_token, { project, action });
       state.reload();
     } catch (e: unknown) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(errorNote(e));
     } finally {
       setBusy(false);
     }
@@ -74,7 +76,7 @@ function GithooksCard({ project }: { project: string }) {
             </Button>
           )}
         </div>
-        {err && <p className="m-0 text-danger">{err}</p>}
+        <ApiErrorNotice note={err} plainClassName="m-0 text-danger" />
       </div>
     </Card>
   );

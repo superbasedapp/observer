@@ -57,6 +57,7 @@ public static class P {
   public static int Main(string[] a) {
     File.AppendAllText(@"$log", string.Join(" ", a) + Environment.NewLine);
     if (a.Length > 0 && a[0] == "--version") Console.WriteLine("observer version $($ver.Substring(1)) ($ed stub)");
+    if (a.Length > 0 && a[0] == "connect" && Environment.GetEnvironmentVariable("FAKE_CONNECT_FAIL") == "1") return 1;
     if (a.Length > 0 && a[0] == "uninstall" && Environment.GetEnvironmentVariable("FAKE_UNINSTALL_FAIL") == "1") return 1;
     return 0;
   }
@@ -244,17 +245,34 @@ public static class P {
   $r = Run @("-FromDir", $rel, "-Prefix", $pM, "-Edition", "developer", "-Yes")
   if ($r.rc -eq 0 -and [IO.File]::ReadAllText("$pM\mxc\wxc-exec.exe") -eq "fake exe!") { Ok "an archive without mxc\ leaves the installed sandbox files alone" } else { Bad "no mxc in the archive" $r.out }
 
-  # -Connect (Getting started v2): the default edition is developer, the
-  # stub's `connect <team> --wire-clients=false` runs before the daemon is
-  # started (`setup launch --open`), and the dashboard lines close it. The
-  # sign-in entry is written to a stand-in Run key path, never the real one.
-  $r = Run @("-FromDir", $rel, "-Prefix", "$T\pc1", "-Connect", "acme", "-Yes") @{ OBSERVER_INSTALL_TEST_RUNKEY = "HKCU:\Software\SuperBasedObserverInstallTest\Run" }
+  # -Connect: the default edition is developer; the daemon is started
+  # (`setup launch`, no --open: the installer opens the page itself), the
+  # local dashboard is shown BEFORE the stub's `connect <team>
+  # --wire-clients=false` runs, and the role lines close it. The sign-in
+  # entry is written to a stand-in Run key path, never the real one, and no
+  # browser opens (OBSERVER_INSTALL_TEST_NO_OPEN).
+  $r = Run @("-FromDir", $rel, "-Prefix", "$T\pc1", "-Connect", "acme", "-Yes") @{ OBSERVER_INSTALL_TEST_RUNKEY = "HKCU:\Software\SuperBasedObserverInstallTest\Run"; OBSERVER_INSTALL_TEST_NO_OPEN = "1" }
   $calls = @(Get-Content $log)
   $ci = [array]::IndexOf($calls, "connect acme --wire-clients=false")
-  $li = [array]::IndexOf($calls, "setup launch --open")
-  if ($r.rc -eq 0 -and $r.out -match "developer edition" -and $ci -ge 0 -and $li -gt $ci -and $r.out -match "Local dashboard http://127.0.0.1:8081" -and $r.out -match "Online dashboard https://cloud.superbased.app") {
-    Ok "-Connect acme: developer edition, connect before the daemon starts, dashboard lines"
+  $li = [array]::IndexOf($calls, "setup launch")
+  $li2 = [array]::LastIndexOf($calls, "setup launch")
+  $oi = $r.out.IndexOf("Opening the local dashboard: http://127.0.0.1:8081")
+  $ki = $r.out.IndexOf("Connecting this machine.")
+  if ($r.rc -eq 0 -and $r.out -match "developer edition" -and $li -ge 0 -and $ci -gt $li -and $oi -ge 0 -and $ki -gt $oi `
+      -and $r.out -match "Local dashboard   http://127.0.0.1:8081" -and $r.out -match "everything Observer records on this computer, in full; it stays here" `
+      -and $r.out -match "Team dashboard    https://cloud.superbased.app" -and $r.out.Contains("full detail (prompts, responses, file paths); the team's admins can read it") -and $r.out -match "Undo any time: observer disconnect" `
+      -and $r.out -match "Restarting Observer so it starts sending to team acme\." -and $li2 -gt $ci) {
+    Ok "-Connect acme: daemon started, local dashboard shown before connect, role lines, restart after connect"
   } else { Bad "-Connect acme" ($r.out + ($calls -join "`n")) }
+  Remove-Item -Path "HKCU:\Software\SuperBasedObserverInstallTest" -Recurse -Force -ErrorAction SilentlyContinue
+
+  # A failed connect is never followed by a restart: setup launch runs once.
+  Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue
+  $r = Run @("-FromDir", $rel, "-Prefix", "$T\pc1b", "-Connect", "acme", "-Yes") @{ OBSERVER_INSTALL_TEST_RUNKEY = "HKCU:\Software\SuperBasedObserverInstallTest\Run"; OBSERVER_INSTALL_TEST_NO_OPEN = "1"; FAKE_CONNECT_FAIL = "1" }
+  $calls = @(Get-Content $log)
+  if ($r.rc -eq 0 -and @($calls | Where-Object { $_ -eq "setup launch" }).Count -eq 1 -and $r.out -notmatch "Restarting Observer" -and $r.out -match "not connected yet") {
+    Ok "-Connect: a failed connect is not followed by a restart"
+  } else { Bad "-Connect failed connect" ($r.out + ($calls -join "`n")) }
   Remove-Item -Path "HKCU:\Software\SuperBasedObserverInstallTest" -Recurse -Force -ErrorAction SilentlyContinue
 
   $r = Run @("-FromDir", $rel, "-Prefix", "$T\pc2", "-Connect", "-Edition", "minimal", "-Yes")

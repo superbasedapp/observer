@@ -404,8 +404,8 @@ function CloudAccountCard({
           </div>
           <p className="mt-1 max-w-[62ch] text-[11.5px] leading-relaxed text-fg-3">
             {accountOwnsSignIn
-              ? "Uses your SuperBased account from the card above. Nothing about your sessions leaves this machine until you agree to what is sent."
-              : "Sign in with your SuperBased account to enable optional cloud enrichment. Signing in only stores a credential that is bound to this machine; nothing about your sessions leaves it until you grant consent for a purpose."}
+              ? "Uses your superbased account from the card above. Nothing about your sessions leaves this machine until you agree to what is sent."
+              : "Sign in with your superbased account to enable optional cloud enrichment. Signing in only stores a credential that is bound to this machine; nothing about your sessions leaves it until you grant consent for a purpose."}
           </p>
           <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[10.5px] text-fg-3">
             {signIn?.known && (

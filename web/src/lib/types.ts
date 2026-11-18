@@ -282,7 +282,7 @@ export type ProjectCaptureInfo = {
   // Project detail only: the full scan health behind the banner.
   commit_scan?: CommitScanInfo;
   // "none": no editor-reported human LOC capture for this project (never
-  // render an AI share against it). "vscode": the SuperBased VS Code
+  // render an AI share against it). "vscode": the superbased VS Code
   // extension has reported saves for it.
   human_loc: "none" | "vscode";
 };
@@ -721,6 +721,9 @@ export type ProjectPromptGradeAvailable = {
   judge: boolean;
   cloud: boolean;
   reason?: string;
+  /** Where the judge tier is turned on while it is off (needsSetting.fixOf). */
+  settings?: string;
+  settings_label?: string;
 };
 
 export type ProjectPromptRow = {
@@ -993,6 +996,9 @@ export type ProjectPromptGradeRequest = {
 export type ProjectPromptGradeResponse = {
   status: "ok" | "not_available" | "queued";
   reason?: string;
+  /** Where the judge tier is turned on (read with needsSetting.fixOf). */
+  settings?: string;
+  settings_label?: string;
   alignment?: ProjectPromptAlignment;
 };
 
@@ -4428,7 +4434,7 @@ export type ToolPreflight = {
   // them). The dialog phrases its own copy from these and does not render
   // `notes`, which stay on the wire for observer adapters / doctor. ---
   /**
-   * GUI rows only: whether a launch would deliver the SuperBased proxy route
+   * GUI rows only: whether a launch would deliver the superbased proxy route
    * to the app — the launcher's own wrap verdict, dry-run. Absent = unknown.
    */
   routing_reaches_app?: boolean;
@@ -4671,7 +4677,7 @@ export type TerminalSessionsMeta = {
 
 // ModelSuggestion is one entry in ToolModels.models — either a model the tool
 // has actually been launched with before ("history", carrying the observed
-// count + last-used timestamp) or a model SuperBased knows the tool supports
+// count + last-used timestamp) or a model superbased knows the tool supports
 // but has no local usage for ("known"). `count`/`last_used` are present only
 // for source "history".
 export type ModelSuggestion = {

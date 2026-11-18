@@ -304,7 +304,7 @@ var editorRules = []editorRule{
 		name: "none-found", state: StateNotDetected,
 		when: func(f editorFacts) bool { return len(f.in.Installs) == 0 },
 		out: func(f editorFacts) (string, string) {
-			return "no SuperBased extension under the extension folders Observer checks; a portable or custom-location install is not visible to it", ""
+			return "no superbased extension under the extension folders Observer checks; a portable or custom-location install is not visible to it", ""
 		},
 	},
 	{

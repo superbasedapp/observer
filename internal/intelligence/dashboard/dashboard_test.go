@@ -67,7 +67,7 @@ func TestIndexHTML_Served(t *testing.T) {
 		t.Fatalf("GET /: %d", rr.Code)
 	}
 	body, _ := io.ReadAll(rr.Body)
-	if !strings.Contains(string(body), "<title>SuperBased</title>") {
+	if !strings.Contains(string(body), "<title>superbased</title>") {
 		t.Errorf("missing title: %s", body)
 	}
 	// The root carries the branded boot screen until React mounts over it,

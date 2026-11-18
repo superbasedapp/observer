@@ -35,7 +35,7 @@ import (
 
 // teamCreateInviteOnlyMessage is what a refused account reads: plain words,
 // what still works, and how to ask.
-const teamCreateInviteOnlyMessage = "Team workspaces are by invitation while SuperBased is in early access. " +
+const teamCreateInviteOnlyMessage = "Team workspaces are by invitation while superbased is in early access. " +
 	"Your personal workspace works as usual. To ask for a team workspace, contact support and quote your account reference."
 
 // teamCreateInviteOnlyBody is the 403 body of a refused team create.

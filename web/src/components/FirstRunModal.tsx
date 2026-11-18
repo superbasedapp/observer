@@ -93,7 +93,7 @@ export function FirstRunModal({ open }: { open: boolean }) {
       open={open}
       onClose={close}
       title="Your AI tools on this machine"
-      subtitle="SuperBased found these tools and is capturing the sessions they already have."
+      subtitle="superbased found these tools and is capturing the sessions they already have."
       icon={History}
       width={620}
       fullOnPhone
@@ -154,7 +154,7 @@ export function FirstRunBody({
           body={
             view.watcherRunning
               ? "Install or open a supported tool, such as Claude Code, Codex or Cursor, and run it once. Its sessions show up here by themselves."
-              : "The background watcher is not running here. Start SuperBased with observer start, then run one of your AI tools."
+              : "The background watcher is not running here. Start superbased with observer start, then run one of your AI tools."
           }
         >
           <div className="mt-3 flex justify-center">

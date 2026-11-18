@@ -87,6 +87,8 @@ import {
   TERMINALS_REMOTE_SYSTEMS_HASH,
 } from "@/lib/nodePageTabs";
 import { pushToast } from "@/components/Toast";
+import { ApiErrorNotice } from "@/components/NeedsSettingNotice";
+import { errorNote, type ErrorNote } from "@/lib/needsSetting";
 import {
   AllowFolderStep,
   FreshLaunchStep,
@@ -97,6 +99,17 @@ import {
   type SignInConsent,
 } from "@/components/LaunchPolicyInline";
 import { folderNeedsAllow, isPermittedRoot, stepHoldsStart } from "@/lib/launchPolicyStep";
+import { isRemoteView } from "@/lib/remote";
+import {
+  consentChanges,
+  consentTriggers,
+  continueAction,
+  firstLaunchFolder,
+  homeShortPath,
+  isInstalledVerdict,
+  type ContinueMode,
+} from "@/lib/launchpad";
+import { FirstLaunchConsent, type FirstLaunchSaved } from "@/components/launchpad/FirstLaunchConsent";
 import {
   taskLaunchRequest,
   taskPasteText,
@@ -275,6 +288,10 @@ function shortenPath(p: string): string {
 // (Allow this folder, Turn on fresh-agent launch) has a change open.
 const POLICY_STEP_PENDING = "Save or cancel the config change above first";
 
+// FIRST_LAUNCH_PENDING is Start's tip while the launchpad's first-launch
+// consent (FirstLaunchConsent) is open: Allow or Cancel answers it.
+const FIRST_LAUNCH_PENDING = "Allow or cancel the step above first";
+
 // TASK_FOLDER_PENDING is Start's tip in task mode while the task's project
 // folder is not allow-listed yet (the inline step above allows it).
 const TASK_FOLDER_PENDING = "Allow the project folder above first";
@@ -359,6 +376,13 @@ type Props = {
   initialLaunchSwitches?: { fresh: boolean; shell: boolean };
   resumedAfterInstall?: boolean;
   /**
+   * The launchpad (door A): this dialog reopened after a launchpad guided
+   * install, so it starts the agent by itself once the availability check
+   * says it is installed (lib/launchpad.ts continueAction, "after_install").
+   * It never installs again. Absent: the person presses Start as usual.
+   */
+  autoStart?: boolean;
+  /**
    * Task mode (fix findings with an agent, lib/terminalTask.ts): the
    * project folder is fixed to task.projectRoot, the picker lists terminal
    * agents only (no IDE or desktop rows, no Shell, no SSH system) with each
@@ -404,6 +428,7 @@ export function NewTerminalDialog({
   initialSetupPlan,
   initialLaunchSwitches,
   resumedAfterInstall = false,
+  autoStart = false,
   task,
   onTaskStarted,
 }: Props) {
@@ -444,6 +469,23 @@ export function NewTerminalDialog({
   // An inline launch-policy step that is confirming, reviewing or saving its
   // change holds Start until it ends (lib/launchPolicyStep.ts stepHoldsStart).
   const [policyStepBusy, setPolicyStepBusy] = useState(false);
+  // The launchpad's first-launch consent (door A, lib/launchpad.ts): the
+  // playground folder the route names (null until it answers; path "" when
+  // it cannot, e.g. a remote viewer), whether the person cancelled the
+  // consent for this tool, whether it is previewing or saving, and what the
+  // dialog does on its own next (after the consent saved, or after a
+  // launchpad install).
+  const [playground, setPlayground] = useState<{ path: string; exists: boolean } | null>(null);
+  const [projectsLoaded, setProjectsLoaded] = useState(false);
+  const [consentDismissed, setConsentDismissed] = useState(false);
+  const [consentBusy, setConsentBusy] = useState(false);
+  // The consent for this tool saved: it closes at once (no second preview
+  // while the policy is re-read).
+  const [consentDone, setConsentDone] = useState(false);
+  const [continueMode, setContinueMode] = useState<ContinueMode | null>(autoStart ? "after_install" : null);
+  // The first-launch folder is suggested once, and only when the person has
+  // not chosen one (a resumed draft that names a folder keeps it).
+  const folderDefaulted = useRef(!!(initialDraft?.rootSel || initialDraft?.customRoot));
   // Task mode: whether the sessions meta (the allow-list) has answered, so
   // the task folder's "Allow this folder" step does not flash before it;
   // and the task text kept for copying after a launch that was not started
@@ -456,6 +498,17 @@ export function NewTerminalDialog({
     return fetchJSON<TerminalSessionsMeta>("/api/terminal/sessions").then((d) =>
       setAllowedRoots(d.allowed_project_roots ?? []),
     );
+  }
+  // refreshLaunchMeta re-reads every launch-policy fact the dialog shows after
+  // the first-launch consent saved (the tool's allowed flag, fresh launch,
+  // the folders), so Start reflects the new policy at once.
+  function refreshLaunchMeta() {
+    return fetchJSON<TerminalSessionsMeta>("/api/terminal/sessions").then((d) => {
+      setToolInfo(d.launchable_tool_info ?? []);
+      setAllowedRoots(d.allowed_project_roots ?? []);
+      setShellEnabled(d.shell_enabled ?? false);
+      setFreshEnabled(d.fresh_enabled);
+    });
   }
   // shell_enabled from GET /api/terminal/sessions — the SEPARATE
   // [terminal.launch].allow_shell opt-in that gates the Shell option below,
@@ -496,7 +549,7 @@ export function NewTerminalDialog({
   const [rootSel, setRootSel] = useState(initialDraft?.rootSel ?? "");
   const [customRoot, setCustomRoot] = useState(initialDraft?.customRoot ?? "");
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const [err, setErr] = useState<ErrorNote | string | null>(null);
   // Pre-launch binary-resolution verdict for the selected tool (tool-binary-
   // resolution arc). Null when unknown, the seam is disabled (501), or the fetch
   // failed — in every case the strip simply doesn't render (fail-silent), so an
@@ -532,6 +585,9 @@ export function NewTerminalDialog({
     if (previousTool.current === tool) return;
     previousTool.current = tool;
     setModelSel("");
+    // A new tool asks its own first-launch consent.
+    setConsentDismissed(false);
+    setConsentDone(false);
     // A failure belonging to the PREVIOUS tool must not be read as a verdict on
     // the new one (DI-17) — e.g. "codex is not installed" left hanging under a
     // freshly-selected claude-code.
@@ -633,6 +689,19 @@ export function NewTerminalDialog({
       })
       .catch(() => {
         /* no project index yet — leave the launcher-default selection */
+      })
+      .finally(() => {
+        if (!cancelled) setProjectsLoaded(true);
+      });
+    // The playground folder a first launch uses on a machine with no
+    // project history (owner-local route: a remote viewer gets 403 and the
+    // launchpad then suggests no new folder).
+    fetchJSON<{ playground_path?: string; playground_exists?: boolean }>("/api/terminal/first-launch")
+      .then((d) => {
+        if (!cancelled) setPlayground({ path: d.playground_path ?? "", exists: d.playground_exists === true });
+      })
+      .catch(() => {
+        if (!cancelled) setPlayground({ path: "", exists: false });
       });
     // SSH systems. The route is owner-LOCAL, so a paired remote device gets a
     // 403 here — which lands in .catch() and correctly leaves the selector
@@ -787,10 +856,14 @@ export function NewTerminalDialog({
   // installTool spawns the tool's grounded install command in a fresh embedded
   // terminal (POST /api/terminal/install), the guided fix for a not_found /
   // foreign_only verdict. It is a Local + confirm-token-gated EXECUTE, so it
-  // reads the double-submit token from /api/remote/config exactly like the
-  // Remote page's privileged POSTs, then opens the returned handle in the dock
-  // like any launch (labelled "<tool> install"). The server owns the argv — the
-  // request carries only the tool name.
+  // takes the owner-local confirm token from localConfirmHeaders (the core
+  // command-job list mints it), then opens the returned handle in the dock
+  // like any launch (labelled "<tool> install"). It never reads the token
+  // from /api/remote/config: that route belongs to the Remote dashboard
+  // component, which is off by default in the developer edition, so an
+  // install was refused for an unrelated component (operator report
+  // 2026-11-18). The server owns the argv: the request carries only the tool
+  // name.
   // currentDraft is the exact launch draft the dock restores when a guided
   // install / uninstall terminal exits, so the dialog reopens where it was
   // with a fresh availability check.
@@ -832,18 +905,12 @@ export function NewTerminalDialog({
     setInstallBusy(true);
     setErr(null);
     try {
-      const cfg = await fetchJSON<{ confirm_token?: string }>("/api/remote/config");
-      const ctok = cfg.confirm_token ?? "";
-      if (!ctok) {
-        setErr("No confirm token - reload the page.");
-        return;
-      }
       const r = await fetchJSON<{ handle: string; tool: string; command: string }>(
         "/api/terminal/install",
         undefined,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json", "X-Observer-Confirm": ctok },
+          headers: await localConfirmHeaders(),
           body: JSON.stringify({ tool }),
         },
       );
@@ -853,7 +920,7 @@ export function NewTerminalDialog({
       // route's statuses names one specific, fixable blocker — see
       // installErrorMessage's doc comment for why status dispatch is right here
       // and message dispatch is right on the launch path.
-      setErr(installErrorMessage(e));
+      setErr(errorNote(e, installErrorMessage));
     } finally {
       setInstallBusy(false);
     }
@@ -1107,10 +1174,10 @@ export function NewTerminalDialog({
     const opts: ComboOption[] = [
       {
         value: "",
-        label: "Agent's default directory (where SuperBased runs)",
+        label: "Agent's default directory (where superbased runs)",
         searchable: "agent's default directory where superbased runs",
         title:
-          "No project root: the fresh agent runs in the SuperBased daemon's own working directory (where observer start / observer dashboard was launched from).",
+          "No project root: the fresh agent runs in the superbased daemon's own working directory (where observer start / observer dashboard was launched from).",
       },
     ];
     for (const r of permittedRoots) {
@@ -1196,7 +1263,7 @@ export function NewTerminalDialog({
   // Honest disabled copy, one string, reused by every control the remote path
   // switches off (CLAUDE.md honest-disabled-control convention).
   const SSH_NA_MSG =
-    "Not available for a remote system - the remote host's own SuperBased install owns project context, models, and sandboxing.";
+    "Not available for a remote system - the remote host's own superbased install owns project context, models, and sandboxing.";
 
   // A profile that vanishes from the server's list (config edited while the
   // dialog was open, or an installer-resumed draft naming a since-removed
@@ -1218,6 +1285,99 @@ export function NewTerminalDialog({
   useEffect(() => {
     if (sandboxOn && (sandboxCheckboxDisabled || isolationPicker.value === ISOLATION_NONE)) setSandboxOn(false);
   }, [sandboxCheckboxDisabled, sandboxOn, isolationPicker.value]);
+
+  // The launchpad's first-launch consent (door A, lib/launchpad.ts): an AI
+  // terminal tool that is not allowed yet, or fresh launch off, gets ONE
+  // previewed step here (allow the tool, fresh launches and the folder)
+  // instead of a trip to Terminals > Settings. GUI rows, Shell, SSH systems
+  // and task mode keep their own steps; a remote viewer cannot write the
+  // owner's launch policy, so it keeps the note.
+  const consentEligible =
+    !sshMode && !gui && !task && !!tool && tool !== SHELL_TOOL && metaLoaded && !isRemoteView();
+  const changes = useMemo(
+    () =>
+      consentChanges({
+        toolAllowed: selectedToolAllowed,
+        freshOn: freshEnabled === true,
+        folder: effectiveRoot,
+        folderPermitted: isPermittedRoot(effectiveRoot, allowedRoots) || savedRoots.includes(effectiveRoot),
+        folderMissing: !!playground?.path && effectiveRoot === playground.path && !playground.exists,
+      }),
+    [selectedToolAllowed, freshEnabled, effectiveRoot, allowedRoots, savedRoots, playground],
+  );
+  const consentShown = consentEligible && !consentDismissed && !consentDone && consentTriggers(changes);
+
+  // The first-launch folder (operator rule): the most recent project from
+  // history, else a new ~/observer-playground, created only on consent. Set
+  // once, when the consent first shows and the person has not chosen a
+  // folder; it stays editable like any other choice.
+  const suggestedFolder = useMemo(
+    () => firstLaunchFolder(projects, playground?.path ?? ""),
+    [projects, playground],
+  );
+  useEffect(() => {
+    if (folderDefaulted.current || !consentShown || !projectsLoaded || playground === null) return;
+    folderDefaulted.current = true;
+    if (rootSel !== "" || customRoot !== "") return;
+    const f = suggestedFolder.path;
+    if (!f) return;
+    if (permittedRoots.includes(f)) {
+      setRootSel(f);
+    } else {
+      setRootSel(CUSTOM_ROOT);
+      setCustomRoot(f);
+    }
+  }, [consentShown, projectsLoaded, playground, suggestedFolder, permittedRoots, rootSel, customRoot]);
+
+  // After the consent saved: remember the folder (the server may store
+  // another spelling), re-read the policy, then go on by itself.
+  async function afterConsent(saved: FirstLaunchSaved) {
+    setConsentDone(true);
+    const typed = effectiveRoot;
+    setSavedRoots((s) => Array.from(new Set([...s, ...(typed ? [typed] : []), ...(saved.folder ? [saved.folder] : [])])));
+    if (saved.folder_created) setPlayground((p) => (p ? { ...p, exists: true } : p));
+    await refreshLaunchMeta().catch(() => undefined);
+    setContinueMode("after_consent");
+  }
+
+  // Going on by itself (lib/launchpad.ts continueAction): a guided install
+  // when the tool is missing (only right after the consent), else the launch.
+  const installedNow =
+    preflightState === "ok" && preflight && preflight.tool === tool ? isInstalledVerdict(preflight.verdict) : null;
+  useEffect(() => {
+    // A request or step in flight is a wait, never a stop.
+    if (!continueMode || busy || installBusy || consentBusy || policyStepBusy) return;
+    const act = continueAction({
+      mode: continueMode,
+      allowed: selectedToolAllowed && freshEnabled !== false,
+      otherBlock: sshMode || gui || remoteBlocked || sandboxBlocksStart || preflightState === "error",
+      installed: installedNow,
+      verdictBlocks: launchBlockedByVerdict,
+      canInstall: !!preflight?.can_install,
+    });
+    if (act === "wait") return;
+    setContinueMode(null);
+    if (act === "install") void installTool();
+    else if (act === "launch") void submit();
+    // submit and installTool read this render's state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    continueMode,
+    busy,
+    installBusy,
+    selectedToolAllowed,
+    freshEnabled,
+    sshMode,
+    gui,
+    remoteBlocked,
+    sandboxBlocksStart,
+    policyStepBusy,
+    consentBusy,
+    preflightState,
+    installedNow,
+    launchBlockedByVerdict,
+    preflight,
+  ]);
 
   // A new tool, sandbox choice or row asks the sign-in question again.
   useEffect(() => {
@@ -1247,7 +1407,7 @@ export function NewTerminalDialog({
         // another machine, so the local Files/Git panels have nothing to browse.
         onLaunched(r.token, `ssh · ${r.label || r.profile || sshProfile}`, false);
       } catch (e) {
-        setErr(e instanceof Error ? e.message : String(e));
+        setErr(errorNote(e));
       } finally {
         setBusy(false);
       }
@@ -1282,13 +1442,13 @@ export function NewTerminalDialog({
           }),
         });
         // wrap_note is NOT shown: it is the launch planner's engineering
-        // explanation, not user copy. "routed through the SuperBased proxy"
+        // explanation, not user copy. "routed through the superbased proxy"
         // comes only from the launch's own structured verdict
         // (routing_reaches_app; wrap_applied on an older daemon).
         pushToast(guiLaunchedToast(r), "success");
         onClose();
       } catch (e) {
-        setErr(guiLaunchErrorMessage(e));
+        setErr(errorNote(e, guiLaunchErrorMessage));
       } finally {
         setBusy(false);
       }
@@ -1396,15 +1556,16 @@ export function NewTerminalDialog({
       // Swap the raw server body for actionable guidance on the two known
       // policy gates — the remote allow_terminal 403 and the allowed_project_roots
       // 400 — and keep the verbatim message for every other failure so it stays
-      // diagnosable.
+      // diagnosable. A refusal whose fix is a setting (the terminal stack off,
+      // a component off) keeps the server's sentence and its deep link.
       setErr(
-        isTerminalCapabilityError(e)
-          ? REMOTE_TERMINAL_OFF_MSG
-          : isProjectRootDeniedError(e)
-            ? PROJECT_ROOT_DENIED_MSG
-            : e instanceof Error
-              ? e.message
-              : String(e),
+        errorNote(e, (x) =>
+          isTerminalCapabilityError(x)
+            ? REMOTE_TERMINAL_OFF_MSG
+            : isProjectRootDeniedError(x)
+              ? PROJECT_ROOT_DENIED_MSG
+              : null,
+        ),
       );
     } finally {
       setBusy(false);
@@ -1467,6 +1628,8 @@ export function NewTerminalDialog({
               ? null
               : policyStepBusy
               ? POLICY_STEP_PENDING
+              : consentShown || consentBusy
+              ? FIRST_LAUNCH_PENDING
               : taskFolderNeedsAllow
               ? TASK_FOLDER_PENDING
               : remoteBlocked
@@ -1501,7 +1664,14 @@ export function NewTerminalDialog({
                       // [remote].allow_terminal INBOUND tier - an orthogonal
                       // feature (the route is owner-local anyway).
                       !sshProfile
-                    : !tool || remoteBlocked || launchBlockedByVerdict || sandboxBlocksStart || policyStepBusy || taskFolderNeedsAllow)
+                    : !tool ||
+                      remoteBlocked ||
+                      launchBlockedByVerdict ||
+                      sandboxBlocksStart ||
+                      policyStepBusy ||
+                      consentShown ||
+                      consentBusy ||
+                      taskFolderNeedsAllow)
                 }
                 onClick={() => void submit()}
               >
@@ -1562,7 +1732,7 @@ export function NewTerminalDialog({
         </div>
       )}
 
-      {launchSwitchesOff(freshEnabled, shellEnabled) && (
+      {launchSwitchesOff(freshEnabled, shellEnabled) && !consentShown && (
         <div
           data-testid="launch-switches-off"
           className="mb-3 rounded-2 border border-warn/40 bg-warn/10 px-2 py-1.5 text-[11px] text-warn"
@@ -1624,7 +1794,7 @@ export function NewTerminalDialog({
             onChange={(e) => setSshProfile(e.target.value)}
             className="w-full rounded-2 border bg-bg-0 px-2 py-1.5 text-[12px] text-fg-1"
           >
-            <option value={LOCAL_SYSTEM} title="Run on the machine SuperBased is running on">
+            <option value={LOCAL_SYSTEM} title="Run on the machine superbased is running on">
               This machine (local)
             </option>
             {/* Systems come from [[terminal.ssh.profiles]] in the operator's
@@ -1667,10 +1837,10 @@ export function NewTerminalDialog({
               {" "}using key <code className="font-mono">{selectedSSH.key_hint}</code>
             </>
           ) : null}
-          . If the host key is unknown, or a passphrase is needed, SuperBased
+          . If the host key is unknown, or a passphrase is needed, superbased
           does not answer for you - <strong>ssh asks in the terminal</strong> and
           you answer there. Sessions on this system are not captured here; the
-          remote host's own SuperBased install owns that.
+          remote host's own superbased install owns that.
         </div>
       )}
 
@@ -1754,7 +1924,20 @@ export function NewTerminalDialog({
           its Install button below stay fully live — installing is not
           launching (DI-21). One block for AI tools AND GUI rows: both read
           the same [terminal.launch].allowed_tools list (selectedToolAllowed). */}
-      {!sshMode && tool && tool !== SHELL_TOOL && !selectedToolAllowed && (
+      {consentShown && (
+        <FirstLaunchConsent
+          tool={tool}
+          toolLabel={pickerItemFor.get(tool)?.name ?? toolMeta(tool).label}
+          folder={effectiveRoot}
+          displayFolder={homeShortPath(effectiveRoot, playground?.path ?? "")}
+          changes={changes}
+          onBusy={setConsentBusy}
+          onAllowed={(saved) => void afterConsent(saved)}
+          onCancel={() => setConsentDismissed(true)}
+        />
+      )}
+
+      {!consentShown && !sshMode && tool && tool !== SHELL_TOOL && !selectedToolAllowed && (
         <div
           role="note"
           className="-mt-1 mb-3 flex gap-2 rounded-2 border border-line-2 bg-bg-2 px-2.5 py-2 text-[11px] leading-relaxed text-fg-2"
@@ -1883,14 +2066,14 @@ export function NewTerminalDialog({
                 emptyHint="No folders match. Try “Custom path…” or add a root in Terminals → Settings → Folder Selection."
                 buttonValueRender={(sel) => (
                   <span className="min-w-0 flex-1 truncate text-left font-semibold text-fg-0">
-                    {sel?.label ?? "Agent's default directory (where SuperBased runs)"}
+                    {sel?.label ?? "Agent's default directory (where superbased runs)"}
                   </span>
                 )}
               />
               {noAllowList && projects.length > 0 && (
                 <p className="mt-1 text-[10.5px] leading-relaxed text-fg-3">
                   No project roots are allow-listed, so only the agent's
-                  default directory can launch - that's the SuperBased
+                  default directory can launch - that's the superbased
                   daemon's own working directory (where{" "}
                   <code className="font-mono">observer start</code> ran).{" "}
                   <Link
@@ -1985,14 +2168,14 @@ export function NewTerminalDialog({
         emptyHint="No folders match. Try “Custom path…” or add a root in Terminals → Settings → Folder Selection."
         buttonValueRender={(sel) => (
           <span className="min-w-0 flex-1 truncate text-left font-semibold text-fg-0">
-            {sel?.label ?? "Agent's default directory (where SuperBased runs)"}
+            {sel?.label ?? "Agent's default directory (where superbased runs)"}
           </span>
         )}
       />
       {noAllowList && projects.length > 0 && (
         <p className="mt-1 text-[10.5px] leading-relaxed text-fg-3">
           No project roots are allow-listed, so only the agent's default
-          directory can launch - that's the SuperBased daemon's own working
+          directory can launch - that's the superbased daemon's own working
           directory (where <code className="font-mono">observer start</code> ran).{" "}
           <Link
             to={TERMINALS_FOLDERS_HASH_PATH}
@@ -2020,7 +2203,7 @@ export function NewTerminalDialog({
           </div>
         </Tooltip>
       ) : null}
-      {rootSel === CUSTOM_ROOT && customFolderNeedsAllow && (
+      {rootSel === CUSTOM_ROOT && customFolderNeedsAllow && !consentShown && (
         <AllowFolderStep
           path={customRoot.trim()}
           onPhase={(p) => setPolicyStepBusy(stepHoldsStart(p))}
@@ -2442,11 +2625,15 @@ export function NewTerminalDialog({
           />
         </div>
       )}
-      {err && (
-        <div className="mb-3 rounded-2 border border-danger/30 bg-danger/10 px-2 py-1.5 text-[11px] text-danger">
-          {err}
-        </div>
-      )}
+      {/* One renderer for every refusal (components/NeedsSettingNotice):
+          a "turn this on" refusal shows its sentence and a button to the
+          setting; the dialog closes as the dashboard navigates there. */}
+      <ApiErrorNotice
+        note={err}
+        onNavigate={onClose}
+        className="mb-3"
+        plainClassName="mb-3 rounded-2 border border-danger/30 bg-danger/10 px-2 py-1.5 text-[11px] text-danger"
+      />
 
     </Modal>
   );

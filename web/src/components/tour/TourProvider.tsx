@@ -4,8 +4,7 @@ import { TOUR_STEPS } from "@/lib/tour";
 import { NAV_ITEMS } from "@/lib/nav";
 import { useGovernanceVisibility } from "@/lib/governance";
 import { hiddenNavIds, withoutHiddenPaths } from "@/lib/visibility";
-import { firstRunSnapshot, subscribeFirstRun, tourHeld } from "@/lib/firstRun";
-import { dismissalsSnapshot, isDismissed, subscribeDismissals } from "@/lib/uiDismissals";
+import { dismissalsSnapshot, subscribeDismissals } from "@/lib/uiDismissals";
 import { useDismissNotice } from "@/lib/useDismissNotice";
 
 // The node dashboard's tour adapter. The provider and overlay live in
@@ -24,25 +23,16 @@ export function TourProvider({ children }: { children: ReactNode }) {
     () => withoutHiddenPaths(TOUR_STEPS, (s) => s.path, hiddenNavIds(gov), NAV_ITEMS),
     [gov],
   );
-  // The first-visit auto-start waits for the first-run capture view (T-922,
-  // components/FirstRunModal.tsx): until the shell's first read has answered
-  // (it carries the tour's daemon-kept dismissal), and while the dialog is
-  // open. The dialog no longer opens by itself (Getting started v2), so on a
-  // fresh install the tour starts once that read answers.
-  const firstRun = useSyncExternalStore(subscribeFirstRun, firstRunSnapshot, firstRunSnapshot);
-  // A tour finished or skipped is also kept on the daemon, so it stays
-  // dismissed where this browser's own storage does not persist (WINNODE2
-  // 16b). The first-run read reports it before the auto-start is released.
+  // The tour never starts by itself (local dashboard first-run design,
+  // docs/plans/local-dashboard-first-run-options-2026-11-18.md section 5): the
+  // Overview welcome band (components/firstrun/WelcomeBand.tsx), the Help
+  // drawer and the command palette start it. A tour finished or skipped is
+  // still kept on the daemon (WINNODE2 16b), so the welcome band can tell.
   useSyncExternalStore(subscribeDismissals, dismissalsSnapshot, dismissalsSnapshot);
   const dismissNotice = useDismissNotice();
   const onComplete = useCallback(() => dismissNotice("tour"), [dismissNotice]);
   return (
-    <SharedTourProvider
-      steps={steps}
-      storageKey="sb_tour_completed"
-      autoStart={!tourHeld(firstRun) && !isDismissed("tour")}
-      onComplete={onComplete}
-    >
+    <SharedTourProvider steps={steps} storageKey="sb_tour_completed" autoStart={false} onComplete={onComplete}>
       {children}
     </SharedTourProvider>
   );

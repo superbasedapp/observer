@@ -47,6 +47,9 @@ var keychainProbeErr = KeychainProbe
 // KeychainProbe is KeychainUsable with the error: a full set/get/delete
 // cycle of a throwaway record under service.
 func KeychainProbe(service, probe string) error {
+	if !KeychainChosen(service) {
+		return ErrKeychainNotChosen
+	}
 	if err := keyring.Set(Namespace(service), probe, "1"); err != nil {
 		return err
 	}
@@ -206,6 +209,8 @@ func FallbackReason(err error) string {
 	switch {
 	case err == nil:
 		return ""
+	case errors.Is(err, ErrKeychainNotChosen):
+		return ReasonKeychainNotChosen
 	case errors.Is(err, ErrProbeTimeout):
 		return ReasonProbeTimeout
 	case IsInteractionNotAllowed(err):
@@ -223,6 +228,8 @@ func FallbackDetail(reason string) string {
 		return "the macOS login keychain is locked in this non-interactive session (errSecInteractionNotAllowed)"
 	case ReasonProbeTimeout:
 		return "the OS keychain did not answer in time"
+	case ReasonKeychainNotChosen:
+		return "this machine keeps credentials in the 0600 file store (set " + EnvOSKeychain + "=1 to use the OS keyring)"
 	}
 	return "the OS keychain is not reachable"
 }
@@ -254,6 +261,10 @@ func OpenReport(service, fallbackDir string, logger *slog.Logger) Opened {
 		logger.Warn("credentials: OS keychain unavailable and this platform build's file "+
 			"fallback has no verified protection; failing closed", "service", service, "reason", reason)
 		return Opened{Store: FailClosed(), Reason: reason}
+	}
+	if reason == ReasonKeychainNotChosen || !keychainChosen(service) {
+		// The file store is this machine's choice, not a fallback: no WARN.
+		return Opened{Store: NewFileStore(service, fallbackDir), Reason: ReasonKeychainNotChosen}
 	}
 	if _, serr := os.Stat(sentinel); serr != nil {
 		logger.Warn("credentials: OS keychain unavailable, falling back to hardened 0600 file store",

@@ -103,7 +103,7 @@ func openBearerStore(service, fallbackDir string, logger *slog.Logger, warn bool
 	if keychainUsable(service) {
 		return &keychainStore{service: service, fallbackDir: fallbackDir}
 	}
-	if warn && noticeFirst(fallbackDir, bearerNoticeKey(service), "keychain unavailable") {
+	if warn && keystore.KeychainChosen(service) && noticeFirst(fallbackDir, bearerNoticeKey(service), "keychain unavailable") {
 		logger.Warn(
 			"org bearer: OS keychain unavailable, falling back to 0600 file store",
 			"service", service, "dir", fallbackDir,
@@ -124,14 +124,11 @@ type agentAccessKeyClearer interface {
 // keychainUsable probes the keyring with a throwaway record. A full
 // set/get/delete cycle is the only reliable cross-platform availability test
 // (ErrUnsupportedPlatform alone misses headless Linux without a Secret
-// Service). The probe record is always deleted.
+// Service). The probe record is always deleted. It goes through
+// keystore.KeychainUsable, so where the OS keyring is not chosen (Linux by
+// default, KEYSTORE-LINUX-1) it is false without touching the keyring.
 func keychainUsable(service string) bool {
-	if err := keystore.KeyringSet(service, recProbe, "1"); err != nil {
-		return false
-	}
-	got, err := keystore.KeyringGet(service, recProbe)
-	_ = keystore.KeyringDelete(service, recProbe)
-	return err == nil && got == "1"
+	return keystore.KeychainUsable(service, recProbe)
 }
 
 // --- keychain-backed store -------------------------------------------------

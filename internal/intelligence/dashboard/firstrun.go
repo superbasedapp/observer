@@ -126,9 +126,10 @@ type firstRunResponse struct {
 }
 
 // uiDismissKeys is the closed set of notices POST /api/firstrun/seen
-// {"dismiss": key} records: the first-visit product tour and the "Review
-// components" setup card. Anything else is refused.
-var uiDismissKeys = map[string]bool{"tour": true, "components_setup": true}
+// {"dismiss": key} records: the first-visit product tour, the "Review
+// components" setup card and the live ribbon's one-time first-prompt receipt
+// (ribbonReceiptKey, live_ribbon.go). Anything else is refused.
+var uiDismissKeys = map[string]bool{"tour": true, "components_setup": true, ribbonReceiptKey: true}
 
 // uiSnoozeKeys is the closed set of notices POST /api/firstrun/seen
 // {"snooze": key} records: the Overview "Get started" panel, which comes

@@ -30,7 +30,10 @@ func returnFixture(t *testing.T) (workspace.ReturnRequest, func(args ...string) 
 	copyDir := filepath.Join(managed, "RUN000000000001", "src")
 	git := func(dir string, args ...string) string {
 		t.Helper()
-		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		// No background auto-maintenance: a detached `git maintenance run`
+		// after a fixture commit leaves a short-lived objects/maintenance.lock
+		// that the return's scan of the copy can list and then miss.
+		cmd := exec.Command("git", append([]string{"-c", "maintenance.auto=false", "-c", "gc.auto=0", "-C", dir}, args...)...)
 		cmd.Env = append(os.Environ(), "GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@e", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@e", "GIT_CONFIG_NOSYSTEM=1")
 		out, err := cmd.CombinedOutput()
 		if err != nil {

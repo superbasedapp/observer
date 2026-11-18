@@ -64,7 +64,7 @@ func (s *Server) handleHealthUpdateTerminal(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if s.opts.LaunchManager == nil {
-		writeErrStatus(w, errors.New(errTerminalUnavailable), http.StatusServiceUnavailable)
+		writeTerminalUnavailable(w, "")
 		return
 	}
 	handle, err := s.opts.LaunchManager.CreateSetup(SetupSpec{Argv: plan.argv, Label: "update"})

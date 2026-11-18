@@ -215,6 +215,9 @@ var rules = []rule{
 	{prefix: "dashboard", tier: TierPlain, restart: RestartRequired, section: "dashboard"},
 	// Network exposure (§4.2).
 	{prefix: "dashboard.addr", exact: true, tier: TierSensitive},
+	// The live ribbon switch is read on every ribbon request (live, no
+	// restart) and is a plain display preference.
+	{prefix: "dashboard.live_ribbon", exact: true, restart: RestartLive},
 
 	// ------------------------------------------------------------- compression
 	{prefix: "compression", tier: TierPlain, restart: RestartRequired, section: "compression"},

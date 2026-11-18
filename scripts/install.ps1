@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Install a SuperBased Observer edition on Windows.
+  Install a superbased Observer edition on Windows.
 
 .DESCRIPTION
   install.ps1 [-Edition minimal|developer|managed|full] [-Version vX.Y.Z]
@@ -26,12 +26,13 @@
                     asking (otherwise asked on an interactive console, and
                     only printed with -Yes)
   -Connect [team]   one step to see this machine online: install, add the
-                    install directory to your user Path, run `observer
+                    install directory to your user Path, start Observer and
+                    open the local dashboard, then run `observer
                     connect [team]` (approve in your browser, or enter the
                     printed code on any device), set Observer to start
                     when you sign in to Windows (a per-user sign-in entry,
-                    no administrator rights, no Windows service), start it
-                    and open the local dashboard. The team is a team's
+                    no administrator rights, no Windows service). The
+                    team is a team's
                     short name; without one you choose on the approval
                     page (your personal dashboard by default). Also read
                     from the SBO_CONNECT_TEAM environment variable. Needs
@@ -682,21 +683,12 @@ function Get-ConnectTeam {
 }
 
 # Complete-Connect: the end of a -Connect install, after the binary is in
-# place. Connect first, then start the daemon, so it starts with the
-# connection in place (its push loop starts only at start-up). Hooks are
-# wired by the daemon's own `observer start`. Failures are reported, never
-# fatal: the install stays.
+# place. Order: make Observer run (the sign-in entry, then `observer setup
+# launch`, which starts `observer start` with no window and registers the
+# hooks), show the local dashboard, then connect (the approval tab opens on
+# top). Failures are reported, never fatal: the install stays.
 function Complete-Connect([string]$exe, [string]$dir, $running) {
   $team = Get-ConnectTeam
-  Say ""
-  Say "Connecting this machine. Nothing is sent before you approve it."
-  $connectArgs = @("connect")
-  if ($team) { $connectArgs += $team }
-  $connectArgs += "--wire-clients=false"
-  & $exe @connectArgs
-  $connected = ($LASTEXITCODE -eq 0)
-  if (-not $connected) { Warn "not connected; Observer still works on this machine. Connect any time: observer connect" }
-
   $autostart = Set-SignInStart $exe $dir
   $started = $false
   if (@($running).Count -gt 0) {
@@ -707,16 +699,66 @@ function Complete-Connect([string]$exe, [string]$dir, $running) {
       Say "(Ctrl+C in its window, or Stop-Process -Id $($p.Id)), then run ``observer start`` again. Nothing was stopped."
     }
   } else {
-    # Starts `observer start` with no window (hooks are registered there),
-    # waits for it and opens the local dashboard.
-    & $exe setup launch --open
+    # Starts `observer start` with no window and waits for it; the
+    # installer opens the page itself, below.
+    & $exe setup launch
     $started = ($LASTEXITCODE -eq 0)
     if (-not $started) { Warn "``observer setup launch`` reported a problem; start Observer with: observer start" }
   }
+
+  # The local dashboard comes first: with ?connecting=1 it tells the person
+  # to approve this machine in the tab `observer connect` opens next.
+  $url = "$LocalDashboard/?connecting=1"
+  if ($team) { $url += "&team=$team" }
+  Say ""
+  if ($started -or @($running).Count -gt 0) {
+    Say "Opening the local dashboard: $LocalDashboard"
+    # Tests (with -FromDir only) never open a browser.
+    if (-not ($env:OBSERVER_INSTALL_TEST_NO_OPEN -and $FromDir)) {
+      try { Start-Process $url } catch { Say "Open $LocalDashboard in a browser on this machine." }
+    }
+  } else {
+    Say "Observer is still starting. The local dashboard will be at $LocalDashboard"
+  }
+
+  Say ""
+  Say "Connecting this machine. Nothing is sent before you approve it."
+  $connectArgs = @("connect")
+  if ($team) { $connectArgs += $team }
+  $connectArgs += "--wire-clients=false"
+  & $exe @connectArgs
+  $connected = ($LASTEXITCODE -eq 0)
+  if (-not $connected) { Warn "not connected; Observer still works on this machine. Connect any time: observer connect" }
+
+  # The daemon builds its push loop only at start-up, so after a successful
+  # connect the one this installer started is restarted once (stop it, then
+  # `observer setup launch` again; no browser is opened). Non-fatal.
+  if ($connected -and $started) {
+    Say ""
+    if ($team) { $to = "team $team" } else { $to = "your personal dashboard" }
+    Say "Restarting Observer so it starts sending to $to."
+    try {
+      $alias = Join-Path $dir "superbased.exe"
+      foreach ($p in @(Get-RunningFrom @($exe, $alias))) {
+        Stop-Process -Id $p.Id -ErrorAction Stop
+        [void]$p.WaitForExit(10000)
+      }
+    } catch { Warn "could not stop Observer ($($_.Exception.Message)); restart it so it starts sending: observer start" }
+    & $exe setup launch
+    if ($LASTEXITCODE -ne 0) { Warn "``observer setup launch`` reported a problem; start Observer with: observer start" }
+  }
+
   Say ""
   if ($connected) { Say "This machine is connected." } else { Say "This machine is not connected yet: observer connect" }
-  Say "Local dashboard $LocalDashboard"
-  Say "Online dashboard $OnlineDashboard"
+  Say "Local dashboard   $LocalDashboard"
+  Say "  everything Observer records on this computer, in full; it stays here"
+  if ($team -and $connected) {
+    Say "Team dashboard    $OnlineDashboard"
+    Say "  full detail (prompts, responses, file paths); the team's admins can read it"
+  } else {
+    Say "Online dashboard  $OnlineDashboard"
+    Say "  a summary from each machine you connect"
+  }
   if ($autostart) { Say "Observer starts when you sign in to Windows." }
   if ($connected) { Say "Undo any time: observer disconnect" }
 }
@@ -765,7 +807,7 @@ function Invoke-Install {
 
   # Signing in lives in the developer and full editions only.
   if ($Connect -and $ed -ne "developer" -and $ed -ne "full") {
-    Fail "-Connect needs the developer or full edition (the $ed edition has no SuperBased sign-in); drop -Edition or pass -Edition developer"
+    Fail "-Connect needs the developer or full edition (the $ed edition has no superbased sign-in); drop -Edition or pass -Edition developer"
   }
   if ($env:OBSERVER_INSTALL_TEST_VENDOR_KEY -and -not $FromDir) { Fail "OBSERVER_INSTALL_TEST_VENDOR_KEY is honoured only with -FromDir" }
   if ($BaseUrl -and -not $BaseUrl.StartsWith("https://")) { Fail "-BaseUrl must be https" }
@@ -796,7 +838,7 @@ function Invoke-Install {
     $script:AssetBase = "$base/download/$ver"
     $asset = if ($ed -eq "full") { "observer-$ver-win32-x64.zip" } else { "observer-$ver-$ed-win32-x64.zip" }
 
-    Say "SuperBased Observer $ver, $ed edition"
+    Say "superbased Observer $ver, $ed edition"
     Say "  edition   $($Editions[$ed])"
     Say "  platform  win32-x64"
     Say "  archive   $asset"

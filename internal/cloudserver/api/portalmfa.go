@@ -252,7 +252,7 @@ func (s *Server) handlePortalPasskeyRegisterBegin(w http.ResponseWriter, r *http
 		writeErr(w, http.StatusInternalServerError, "internal", "could not start")
 		return
 	}
-	name := "SuperBased account"
+	name := "superbased account"
 	if prof := s.lookupProfile(r.Context(), p.AccountID); prof.Email != "" {
 		name = prof.Email
 	}

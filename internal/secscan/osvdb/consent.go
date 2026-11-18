@@ -74,7 +74,7 @@ const Source = FeedHost + " (falling back to " + UpstreamHost + ")"
 // ConsentVersion; docs/dependency-scanning.md "The one-time accept" quotes
 // it verbatim).
 var ConsentText = fmt.Sprintf("Observer's dependency scanners match your projects' lockfiles against a local copy of the OSV "+
-	"vulnerability database. Accepting downloads it, about %d MB at first, from SuperBased's signed mirror on %s, "+
+	"vulnerability database. Accepting downloads it, about %d MB at first, from superbased's signed mirror on %s, "+
 	"falling back to the OSV project's public export bucket (%s) when the mirror is unavailable, unless you turn "+
 	"the fallback off. After the first download Observer checks every 6 hours and fetches only the changed records "+
 	"or deltas. The download sends nothing about your projects: it fetches the same public files for everyone, and "+

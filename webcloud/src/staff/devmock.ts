@@ -9,7 +9,7 @@ const ORGS = [
     org_id: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
     kind: "team",
     slug: "superbased-internal",
-    display_name: "SuperBased internal",
+    display_name: "superbased internal",
     status: "active",
     tenancy: "managed",
     host_id: "app-0",

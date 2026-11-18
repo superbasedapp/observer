@@ -12,6 +12,8 @@ import {
   ORG_INTEL_RECEIPT_LABELS,
   orgIntelBackgroundLine,
   orgIntelLevelLabel,
+  orgIntelFix,
+  orgIntelIsPersonal,
   orgIntelOrgName,
   orgIntelPhase,
   orgIntelPurposeLabel,
@@ -22,6 +24,7 @@ import {
   type OrgIntelStatus,
   type OrgIntelStatusResponse,
 } from "@/lib/orgIntel";
+import { NeedsSettingNotice } from "@/components/NeedsSettingNotice";
 
 // OrgIntelSection is Settings > Org enrichment: the ORG-PLANE Cloud
 // Intelligence of the organization this machine is enrolled with (design
@@ -125,24 +128,33 @@ function OrgIntelBody({
 }) {
   const phase = orgIntelPhase(s);
   const org = orgIntelOrgName(s);
+  const fix = orgIntelFix(s);
   if (phase === "unenrolled") {
     return (
+      <div className="space-y-2">
+      <NeedsSettingNotice
+        tone="info"
+        text="This machine is not connected to a team, so there are no team AI summaries here. Connect it to a team in Settings > Account."
+        link={fix.settings}
+      />
       <p className="text-[12px] leading-relaxed text-fg-2">
-        This machine is not connected to a team, so there are no team AI summaries here. Personal AI summaries are
+        Personal AI summaries are
         under{" "}
         <GatedLink to="/settings?section=cloud" managed="AI summaries (managed by your team)" className="font-medium text-accent hover:text-accent-strong">
           AI summaries
         </GatedLink>
         .
       </p>
+      </div>
     );
   }
   if (phase === "no_terms") {
     return (
-      <p className="text-[12px] leading-relaxed text-fg-2">
-        {org} has not sent its AI summaries terms yet. Its server may predate this feature, or the next sync has
-        not run. Nothing is sent for enrichment from this machine.
-      </p>
+      <NeedsSettingNotice
+        tone="info"
+        text={`${orgIntelIsPersonal(s) ? "Your personal dashboard" : org} has not sent its AI summaries terms yet. Its server may predate this feature, or the next sync has not run. Nothing is sent for enrichment from this machine.`}
+        org={fix.org}
+      />
     );
   }
   return (
@@ -156,13 +168,25 @@ function OrgIntelBody({
           {s.managed_rail && (
             <div className="mt-1.5 flex flex-wrap items-center gap-2">
               <Pill variant={s.managed_rail.on ? "success" : "neutral"}>{s.managed_rail.on ? "running" : "not running"}</Pill>
-              <span>{s.managed_rail.message}</span>
+              {s.managed_rail.on || !fix.org ? (
+                <span>{s.managed_rail.message}</span>
+              ) : (
+                <NeedsSettingNotice variant="inline" className="min-w-0 flex-1" text={s.managed_rail.message} org={fix.org} />
+              )}
             </div>
           )}
         </div>
       )}
       {phase === "org_off" && (
-        <p className="text-[12px] text-fg-2">{org} has not turned on session enrichment. Nothing is sent.</p>
+        <NeedsSettingNotice
+          tone="info"
+          text={
+            orgIntelIsPersonal(s)
+              ? "Your personal dashboard has session enrichment off. Nothing is sent."
+              : `${org} has not turned on session enrichment. Nothing is sent.`
+          }
+          org={fix.org}
+        />
       )}
       {(phase === "pending_required" || phase === "terms_changed" || phase === "not_opted_in" || phase === "accepted") && (
         <ConsentCard s={s} phase={phase} readOnly={readOnly} busy={busy} onRun={onRun} />

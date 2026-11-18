@@ -71,7 +71,13 @@ type connectRequestViewJSON struct {
 	Choices []connectChoiceJSON `json:"choices"`
 	// Target is the chosen dashboard once approved.
 	Target *connectTargetJSON `json:"target"`
-	// OnlineURL opens the chosen dashboard (a button, never text).
+	// OpenURL opens the chosen dashboard (a button, never text), built by
+	// tenantLink.
+	OpenURL string `json:"open_url,omitempty"`
+	// OnlineURL is OpenURL under its first name, kept for one release so an
+	// older console bundle keeps working (additive wire).
+	//
+	// Deprecated: read open_url.
 	OnlineURL string `json:"online_url,omitempty"`
 }
 
@@ -96,15 +102,13 @@ func (s *Server) connectRequestForCaller(w http.ResponseWriter, r *http.Request,
 	return c, true
 }
 
-// connectOnlineURL is the dashboard's address for an Open button, or "".
-func (s *Server) connectOnlineURL(t *store.ConnectTarget) string {
+// connectOpenURL is the chosen dashboard's Open button target (tenantLink's
+// dashboard page), or "" with no target.
+func (s *Server) connectOpenURL(t *store.ConnectTarget) string {
 	if t == nil {
 		return ""
 	}
-	if host := s.tenantHost(t.Slug); host != "" {
-		return "https://" + host + "/"
-	}
-	return ""
+	return s.tenantLink(t.Slug, tenantPageDashboard)
 }
 
 // connectChoices lists the dashboards the caller may connect a machine to:
@@ -169,8 +173,9 @@ func (s *Server) connectView(r *http.Request, accountID string, c store.ConnectR
 		Network:    connectNetworkJSON{Prefix: c.OriginNetwork, SameAsYou: connectflow.SameNetwork(c.OriginNetwork, ip)},
 		Choices:    []connectChoiceJSON{},
 		Target:     connectTarget(c.Target),
-		OnlineURL:  s.connectOnlineURL(c.Target),
 	}
+	v.OpenURL = s.connectOpenURL(c.Target)
+	v.OnlineURL = v.OpenURL
 	if status == connectflow.StatusPending {
 		v.UserCode = c.UserCode
 		v.ExpiresIn = int64(c.ExpiresAt.Sub(now) / time.Second)
@@ -340,7 +345,12 @@ type connectMachineJSON struct {
 	OS          string             `json:"os"`
 	ApprovedAt  string             `json:"approved_at"`
 	Target      *connectTargetJSON `json:"target"`
-	OnlineURL   string             `json:"online_url,omitempty"`
+	// OpenURL opens the dashboard the machine connected to (tenantLink).
+	OpenURL string `json:"open_url,omitempty"`
+	// OnlineURL is OpenURL under its first name, kept for one release.
+	//
+	// Deprecated: read open_url.
+	OnlineURL string `json:"online_url,omitempty"`
 }
 
 // handlePortalConnectMachines is GET /portal/api/connect/machines: the
@@ -358,10 +368,11 @@ func (s *Server) handlePortalConnectMachines(w http.ResponseWriter, r *http.Requ
 	}
 	recent := make([]connectMachineJSON, 0, len(home.Recent))
 	for _, c := range home.Recent {
+		open := s.connectOpenURL(c.Target)
 		recent = append(recent, connectMachineJSON{
 			RequestID: c.RequestID, MachineName: c.MachineName, OS: c.OS,
 			ApprovedAt: rfc3339(c.ResolvedAt), Target: connectTarget(c.Target),
-			OnlineURL: s.connectOnlineURL(c.Target),
+			OpenURL: open, OnlineURL: open,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"devices": home.Devices, "recent": recent})

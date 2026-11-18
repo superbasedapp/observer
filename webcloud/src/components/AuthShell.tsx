@@ -4,12 +4,17 @@ import type { LucideIcon } from "lucide-react";
 import { ChevronRight, Eye, LayoutDashboard, Lock, MonitorSmartphone, ShieldCheck } from "lucide-react";
 import { AuthShell as SharedAuthShell, type AuthWidth } from "@shared/components/auth/AuthShell";
 import { Icon } from "@shared/primitives/Icon";
+import { ThemeToggle } from "./ThemeToggle";
 
-// The portal's pre-app screens (SignIn, ConsentSetup) on the ONE shared
-// sign-in recipe (shared/components/auth/AuthShell.tsx: backdrop, lockup,
-// raised card; the same one the org dashboard uses). What stays here is
-// portal CONTENT under the card: the "device -> preview -> portal" strip and
-// the trust row. Purely presentational: no fetch, no state, no routing.
+// The portal's pre-app screens (SignIn and its sign-up variant, the connect
+// code entry and approval pages, ConsentSetup) on the ONE shared sign-in
+// recipe (shared/components/auth/AuthShell.tsx: backdrop, lockup, raised
+// card; the same one the org dashboard uses). What stays here is portal
+// CONTENT: the "device -> preview -> portal" strip and the trust row under
+// the card, and the shared theme toggle in the corner (these screens have no
+// top bar, so the toggle the signed-in TopBar carries lives here). Purely
+// presentational: no fetch, no routing; the toggle reads the shared theme
+// state.
 
 /** A step of the upload flow the strip explains. */
 export type AuthStep = "device" | "preview" | "portal";
@@ -37,7 +42,7 @@ const TRUST_ROW: readonly { icon: LucideIcon; label: string }[] = [
  *  the step this screen is (aria-current="step"). */
 export function StepStrip({ current }: { current?: AuthStep }) {
   return (
-    <ol aria-label="How SuperBased works" className="auth-steps">
+    <ol aria-label="How superbased works" className="auth-steps">
       {AUTH_STEPS.map((s, i) => {
         const on = s.id === current;
         return (
@@ -114,6 +119,7 @@ export function AuthShell({
       title={title}
       intro={intro}
       width={width}
+      corner={<ThemeToggle />}
       below={
         <>
           <StepStrip current={step} />

@@ -194,7 +194,7 @@ test("the ungrouped tab reads the list and the counts its URL names", async () =
   // The reach note, quietly.
   assert.match(html, /Reachability is still being checked, so the order may change/);
   // No mascot in a working surface.
-  assert.doesNotMatch(html, /SuperBased mascot/);
+  assert.doesNotMatch(html, /superbased mascot/);
 });
 
 test("the grouped tab reads the groups and counts issues and findings", async () => {
@@ -232,7 +232,7 @@ test("the grouped tab reads the groups and counts issues and findings", async ()
 test("before any read answers, the tab names what it loads, over the skeleton", () => {
   const html = renderAt("/code-security?tab=findings&lang=rust");
   assert.match(html, /data-testid="named-loading"/);
-  assert.doesNotMatch(html, /SuperBased mascot/);
+  assert.doesNotMatch(html, /superbased mascot/);
 });
 
 // The global filter bar writes its project (a root path) as proj= on every

@@ -275,7 +275,7 @@ func CredentialAlgorithms() []int {
 }
 
 // RPName is the relying-party name a passkey prompt shows.
-const RPName = "SuperBased staff console"
+const RPName = "superbased staff console"
 
 // NewCreationOptions builds the options for a registration ceremony: a
 // discoverable credential, user verification required, no attestation, and

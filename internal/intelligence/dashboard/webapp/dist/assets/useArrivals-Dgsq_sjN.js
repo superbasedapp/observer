@@ -1,1 +1,0 @@
-import{f as s}from"./vendor-react-BT-Z05uK.js";import{dt as a,fb as f}from"./index-DLoyCBnG.js";function c(e,t){const r=s.useRef(null);s.useEffect(()=>{r.current=t?a(r.current,e):null});const n=t?r.current:null;return u=>f(n,u)}export{c as u};

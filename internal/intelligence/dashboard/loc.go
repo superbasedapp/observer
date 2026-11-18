@@ -139,7 +139,7 @@ type SessionLOCResponse struct {
 // captureNoteNone is the one wording for "we are not measuring the human
 // side". It says what is missing and why no share is shown.
 const captureNoteNone = "No editor is reporting saves, so human lines are not measured " +
-	"and no AI share is shown. Install the SuperBased VS Code extension to capture them."
+	"and no AI share is shown. Install the superbased VS Code extension to capture them."
 
 // captureNoteVSCode labels a measured human number for what it is.
 const captureNoteVSCode = "Human lines are editor-reported (VS Code saves), not a filesystem measurement."

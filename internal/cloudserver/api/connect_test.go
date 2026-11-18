@@ -102,6 +102,7 @@ type connectView struct {
 		Kind       string `json:"kind"`
 		ShareLevel string `json:"share_level"`
 	} `json:"target"`
+	OpenURL   string `json:"open_url"`
 	OnlineURL string `json:"online_url"`
 }
 
@@ -314,6 +315,12 @@ func TestConnectApprovePersonalDeliversSignIn(t *testing.T) {
 	decode(t, resp, &after)
 	if after.Status != "approved" || after.Target == nil || after.Target.Kind != "personal" || after.UserCode != "" {
 		t.Fatalf("approved view = %+v", after)
+	}
+	// The Open button's target is the server-built open_url (tenantLink),
+	// with online_url kept beside it for one release.
+	// (A personal choice carries no slug, so the host is checked by shape.)
+	if !strings.HasPrefix(after.OpenURL, "https://u-") || !strings.HasSuffix(after.OpenURL, "."+orgsTenantDomain+"/") || after.OnlineURL != after.OpenURL {
+		t.Fatalf("approved view open_url=%q online_url=%q, want https://u-...%s/", after.OpenURL, after.OnlineURL, orgsTenantDomain)
 	}
 
 	first := m.poll(c.RequestID)

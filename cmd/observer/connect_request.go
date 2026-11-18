@@ -135,6 +135,11 @@ func connectAttachFor(ap connectApproval) connectAttachVia {
 var (
 	errConnectRequestGone = errors.New("the approval request expired")
 	errConnectSlowDown    = errors.New("polled too fast")
+	// errConnectProofRefused: the cloud refused this machine's proof of its
+	// key even on the server's clock (L-142).
+	errConnectProofRefused = errors.New("the superbased cloud refused this machine's signed check-in. " +
+		"If this machine's clock is wrong, set it (for example `sudo timedatectl set-ntp true`; `date -u` shows it) " +
+		"and run `observer connect` again")
 	errConnectUnsupported = errors.New("this cloud does not offer connect requests")
 )
 
@@ -252,7 +257,7 @@ func runConnectRequest(cmd *cobra.Command, deps connectDeps, f connectFlags, pol
 	})
 	if errors.Is(err, errConnectUnsupported) {
 		if f.jsonOut || !connectDiscoveryAvailable(deps) {
-			return em.fail(connectErrUnsupportedHere, errors.New("observer connect: this SuperBased cloud does not offer browser approval yet; update Observer, or run `observer connect` in a terminal"))
+			return em.fail(connectErrUnsupportedHere, errors.New("observer connect: this superbased cloud does not offer browser approval yet; update Observer, or run `observer connect` in a terminal"))
 		}
 		target, derr := runConnectDiscovery(cmd, deps, f, pol, enr)
 		if derr != nil || target == "" {
@@ -350,7 +355,7 @@ func runConnectRequest(cmd *cobra.Command, deps connectDeps, f connectFlags, pol
 		}
 	}
 	em.emit(connectEvent{State: "connected", DisplayName: name, Kind: t.Kind, OnlineURL: online})
-	printConnectedLines(em.text, deps, f, machine, name, deps.request.onlineBase(opts))
+	printConnectedLines(em.text, deps, f, machine, name, t.Kind, deps.request.onlineBase(opts))
 	return nil
 }
 
@@ -372,7 +377,7 @@ func attachConnectTarget(cmd *cobra.Command, deps connectDeps, f connectFlags, e
 		fmt.Fprintf(em.text, "%s does not take the one-step approval yet; finishing with its own sign-in.\n", name)
 		via = attachViaIdP
 	case attachViaIdP:
-		fmt.Fprintln(em.text, "This SuperBased cloud sent no one-step approval; finishing with the dashboard's own sign-in.")
+		fmt.Fprintln(em.text, "This superbased cloud sent no one-step approval; finishing with the dashboard's own sign-in.")
 	}
 	stdin := strings.NewReader("")
 	if via == attachViaCode {
@@ -400,6 +405,8 @@ func waitForConnectApproval(ctx context.Context, deps connectDeps, opts connectC
 			interval = min(interval+connectRequestSlowDownStep, connectRequestMaxInterval)
 		case errors.Is(err, errConnectRequestGone):
 			return connectApproval{}, fmt.Errorf("observer connect: %w; run `observer connect` again", errConnectRequestGone)
+		case errors.Is(err, errConnectProofRefused):
+			return connectApproval{}, fmt.Errorf("observer connect: %w", errConnectProofRefused)
 		case err != nil:
 			return connectApproval{}, fmt.Errorf("observer connect: check on the approval: %w", err)
 		case ap.Status != connectStatusPending:
@@ -522,20 +529,51 @@ func runConnectEnrollTo(cmd *cobra.Command, deps connectDeps, w io.Writer, args 
 	return deps.runEnroll(cmd, args, stdin)
 }
 
-// printConnectedLines is the text ending of a successful connect. It never
-// prints a personal dashboard's own address: the online line is the cloud
-// origin the person signs in to.
-func printConnectedLines(w io.Writer, deps connectDeps, f connectFlags, machine, name, onlineBase string) {
+// The two dashboards' role lines. The installer, the online approval page
+// (webcloud connectModel) and the local dashboard (shared/lib/twoDashboards)
+// say the same words: the local dashboard keeps everything on this computer,
+// the online one receives what this machine shares (a summary for the
+// personal dashboard, full detail for a team, whose admins can read it).
+const (
+	connectRoleLocal    = "everything Observer records on this computer, in full; it stays here"
+	connectRolePersonal = "a summary from each machine you connect"
+	connectRoleTeam     = "full detail (prompts, responses, file paths); the team's admins can read it"
+)
+
+// connectOnlineRow is the online dashboard's label and role line for an
+// approved target's kind: the personal dashboard, else a team.
+func connectOnlineRow(kind string) (label, role string) {
+	if kind == "personal" {
+		return "Online dashboard", connectRolePersonal
+	}
+	return "Team dashboard", connectRoleTeam
+}
+
+// connectDashboardLabelWidth aligns the dashboards' addresses in one column.
+const connectDashboardLabelWidth = 18
+
+// printConnectedLines is the text ending of a successful connect: each
+// dashboard with its address and, under it, what it holds. It never prints a
+// personal dashboard's own address: the online line is the cloud origin the
+// person signs in to.
+func printConnectedLines(w io.Writer, deps connectDeps, f connectFlags, machine, name, kind, onlineBase string) {
 	fmt.Fprintf(w, "\nConnected: %s -> %s\n", machine, name)
 	if deps.dashboardURL != nil {
 		if u := deps.dashboardURL(f.configPath); u != "" {
-			fmt.Fprintf(w, "Local dashboard %s\n", u)
+			printDashboardRow(w, "Local dashboard", u, connectRoleLocal)
 		}
 	}
 	if onlineBase != "" {
-		fmt.Fprintf(w, "Online dashboard %s\n", onlineBase)
+		label, role := connectOnlineRow(kind)
+		printDashboardRow(w, label, onlineBase, role)
 	}
 	fmt.Fprintln(w, "Undo any time: observer disconnect")
+}
+
+// printDashboardRow prints one dashboard: its label and address on one line,
+// what it holds indented under it.
+func printDashboardRow(w io.Writer, label, address, role string) {
+	fmt.Fprintf(w, "%-*s%s\n  %s\n", connectDashboardLabelWidth, label, address, role)
 }
 
 // connectLocalDashboardURL is the local dashboard's address from config (the
@@ -585,6 +623,36 @@ func writeConnectConsent(configPath string, rec connectConsentRecord) error {
 		return fmt.Errorf("create %s: %w", dir, err)
 	}
 	return fsatomic.WriteFile(filepath.Join(dir, connectConsentFile), append(b, '\n'), fsatomic.Options{FilePerm: 0o600})
+}
+
+// readConnectKind is the online dashboard kind ("personal" or "team") this
+// machine was last connected to, from the approval record writeConnectConsent
+// keeps beside config.toml, when that record is for orgID. "" when there is
+// no record, it is for another organization, or it names no known kind (an
+// enrolment made by invite or `observer enroll` records none). The
+// dashboard reads it to word an org-level status for the person who can
+// change it: on a personal dashboard that is the person themselves.
+func readConnectKind(configPath, orgID string) string {
+	if strings.TrimSpace(orgID) == "" {
+		return ""
+	}
+	cfgPath, err := resolveConfigPath(configPath)
+	if err != nil {
+		return ""
+	}
+	b, err := os.ReadFile(filepath.Join(filepath.Dir(cfgPath), connectConsentFile)) //nolint:gosec // G703: false positive; a fixed file name beside this node's own config.toml, read only
+	if err != nil {
+		return ""
+	}
+	var rec connectConsentRecord
+	if json.Unmarshal(b, &rec) != nil || rec.OrgID != orgID {
+		return ""
+	}
+	switch rec.Kind {
+	case "personal", "team":
+		return rec.Kind
+	}
+	return ""
 }
 
 // connectHasBrowser reports whether a browser can plausibly open here: the

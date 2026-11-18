@@ -602,7 +602,7 @@ func SecuritySettings() []SecuritySetting {
 		// The package lookup posture (lane RM-2, plan section 13.10): the
 		// individual developer's to set, from the Privacy page; a managed
 		// node's organization decides (no remote toggle on the node).
-		{Key: "security.deps.match", Class: SettingLocal, Values: "local (download the databases) / remote (SuperBased lookup) / both (local first, remote for the gaps)", Default: "not chosen (an install with the database accept reads local)", NodeHome: "Privacy"},
+		{Key: "security.deps.match", Class: SettingLocal, Values: "local (download the databases) / remote (superbased lookup) / both (local first, remote for the gaps)", Default: "not chosen (an install with the database accept reads local)", NodeHome: "Privacy"},
 		{Key: "security.deps.remote_via", Class: SettingLocal, Values: "shards (service reserved)", Default: "shards", NodeHome: "Privacy"},
 		{Key: "security.deps.remote_kinds", Class: SettingLocal, Values: "language, actions (os reserved)", Default: "every kind this build serves", NodeHome: "Privacy"},
 		{Key: "security.deps.remote_private", Class: SettingLocal, Values: "withhold / send", Default: "withhold", NodeHome: "Privacy"},

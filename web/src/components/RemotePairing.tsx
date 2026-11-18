@@ -35,7 +35,7 @@ type PairState = "pairing" | "error";
 // a working-looking shell) read as a broken product.
 const EXPIRED_TITLE = "Session expired - pair this device again";
 const EXPIRED_BODY =
-  "This device's secure session with your SuperBased dashboard has ended, so it can't load your data. On the host machine open Remote → Pair a device, then scan the QR code (or open the pairing link) here to sign back in.";
+  "This device's secure session with your superbased dashboard has ended, so it can't load your data. On the host machine open Remote → Pair a device, then scan the QR code (or open the pairing link) here to sign back in.";
 
 export function RemotePairingGate({ children }: { children: ReactNode }) {
   // Capture the secret during the first render pass (before any data fetch
@@ -106,7 +106,7 @@ export function RemotePairingGate({ children }: { children: ReactNode }) {
     return (
       <PairingScreen
         title="Pairing this device…"
-        body="Securely linking to your SuperBased dashboard over your tailnet."
+        body="Securely linking to your superbased dashboard over your tailnet."
       />
     );
   }

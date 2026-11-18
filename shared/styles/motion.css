@@ -1,4 +1,4 @@
-/* SuperBased shared motion layer.
+/* superbased shared motion layer.
  *
  * ONE owner for every keyframe and composite motion class used by the
  * application surfaces (web/, web2/, webcloud/). Each app's entry CSS imports
@@ -446,7 +446,7 @@
 }
 
 /* ------------------------------------------------ brand + live + illustration
-   (2026-09-28 dashboard visual upgrade). Brand loader: the SuperBased mark
+   (2026-09-28 dashboard visual upgrade). Brand loader: the superbased mark
    (U+259E: two squares on the upper-right / lower-left diagonal) hops to the
    other diagonal and back; the BrandLoader primitive. Uses --brand-blueprint
    (tokens.css). */

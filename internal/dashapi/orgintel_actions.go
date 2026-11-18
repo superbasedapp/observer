@@ -3,6 +3,8 @@ package dashapi
 import (
 	"errors"
 	"net/http"
+
+	"github.com/marmutapp/superbased-observer/internal/settingslink"
 )
 
 // OrgIntelActionsView is what the developer may do with one session.
@@ -12,6 +14,12 @@ type OrgIntelActionsView struct {
 	NeedsPreview bool   `json:"needs_preview"`
 	Reason       string `json:"reason,omitempty"`
 	ReasonText   string `json:"reason_text,omitempty"`
+	// The way forward for Reason (internal/orgintel.ActionReasonFix): a
+	// place on this machine (settings, settings_label) and/or the team
+	// dashboard place only the organization's admins change (org_settings,
+	// org_settings_label). Each field is omitted when it does not apply.
+	settingslink.Fields
+	settingslink.OrgFields
 }
 
 // OrgIntelSubmissionView is one org_intel_outbox row as the surfaces render it.
@@ -43,12 +51,15 @@ type OrgIntelSessionView struct {
 	SessionID string `json:"session_id"`
 	// Authority is the session's data-authority stamp: org | personal |
 	// unknown. Only an org session is part of the org plane.
-	Authority   string                  `json:"authority"`
-	OrgName     string                  `json:"org_name,omitempty"`
-	Class       string                  `json:"class"`
-	Actions     OrgIntelActionsView     `json:"actions"`
-	Latest      *OrgIntelSubmissionView `json:"latest,omitempty"`
-	Submissions int                     `json:"submissions"`
+	Authority string `json:"authority"`
+	// DashboardKind is "personal", "team" or omitted (see
+	// OrgIntelStatus.DashboardKind).
+	DashboardKind string                  `json:"dashboard_kind,omitempty"`
+	OrgName       string                  `json:"org_name,omitempty"`
+	Class         string                  `json:"class"`
+	Actions       OrgIntelActionsView     `json:"actions"`
+	Latest        *OrgIntelSubmissionView `json:"latest,omitempty"`
+	Submissions   int                     `json:"submissions"`
 	// Enriched / Result are the newest cached org result (filled here from
 	// the node-local cache, the /api/session/{id}/org-intel read).
 	Enriched bool                `json:"enriched"`

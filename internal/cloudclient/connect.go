@@ -230,7 +230,7 @@ func (c *Client) PollConnectRequest(ctx context.Context, requestID string) (Conn
 			Method:      http.MethodGet,
 			URL:         fullURL,
 			AccessToken: requestID,
-			IssuedAt:    c.clock(),
+			IssuedAt:    c.proofTime(),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("mint proof: %w", err)

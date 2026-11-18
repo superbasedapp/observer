@@ -481,6 +481,7 @@ var expectedClassification = map[string]string{
 	// folders and project roots, and its seen flag is a node write.
 	"/api/firstrun":                       "L",
 	"/api/firstrun/seen":                  "L",
+	"/api/firstrun/glance":                "L",
 	"/api/tasks":                          "V", // Phase-2 task-tracking project/tool/window rollup — read-side aggregate over already-captured actions/token_usage rows, same posture as /api/cache/status
 	"/api/terminal/":                      "V",
 	"/api/terminal/install":               "L", // spawns the registry-constant install command in a local-only setup PTY — owner-local only
@@ -501,6 +502,7 @@ var expectedClassification = map[string]string{
 	"/api/terminal/ssh/profiles/test":     "L", // T-488 draft test-connect: runs a bounded ssh probe to another machine
 	"/api/terminal/limits":                "L",
 	"/api/terminal/policy":                "L",
+	"/api/terminal/first-launch":          "L", // the launchpad's first-launch consent: writes [terminal.launch] and may create ~/observer-playground, owner-local only
 	"/api/terminal/project/":              "V",
 	"/api/terminal/session/":              "V",
 	"/api/terminal/runs":                  "V",
@@ -734,6 +736,8 @@ var mutationRoutes = []string{
 	"/api/terminal/launch",
 	"/api/terminal/limits",
 	"/api/terminal/policy",
+	// The launchpad's first-launch consent writes the same policy.
+	"/api/terminal/first-launch",
 	// T-488: writes the SSH remote-systems allow-list / probes a draft host.
 	"/api/terminal/ssh/profiles",
 	"/api/terminal/ssh/profiles/test",

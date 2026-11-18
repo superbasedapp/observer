@@ -145,7 +145,7 @@ func Sentence(f Facts) Status {
 		}
 	}
 	if st.SignedIn {
-		b.WriteString(" · signed in to SuperBased")
+		b.WriteString(" · signed in to superbased")
 	}
 	st.Sentence = b.String()
 	return st

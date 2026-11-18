@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { NeedsSettingLink } from "@/components/NeedsSettingNotice";
+import { fixOf, type SettingsLink } from "@/lib/needsSetting";
 import { useNavigate } from "react-router-dom";
 import { IdLink, Table, Tooltip } from "@/components/primitives";
 import { ChartState } from "@/components/ChartState";
@@ -255,6 +257,10 @@ function GradeButton({
   onGraded: (next: ProjectPromptRow) => void;
 }) {
   const disabledReason = tier == null ? p.grade_available?.reason || "no grading tier available" : undefined;
+  // Where the judge tier is turned on, when the daemon named a place; a
+  // not_available grade answer may name it too.
+  const [fixFromGrade, setFixFromGrade] = useState<SettingsLink | null>(null);
+  const fix = fixFromGrade ?? (tier == null ? fixOf(p.grade_available).settings : null);
 
   const onClick = async () => {
     if (!tier) return;
@@ -274,6 +280,7 @@ function GradeButton({
         onGraded({ ...p, alignment: resp.alignment });
       } else if (resp.status === "not_available") {
         setGradeError(resp.reason || "grading not available");
+        setFixFromGrade(fixOf(resp).settings);
       } else {
         setGradeError("grading queued - check back shortly");
       }
@@ -303,6 +310,11 @@ function GradeButton({
           }`}
         >
           {isOrgDataJudgeRefusal(gradeError) ? `org-owned session: ${gradeError}` : gradeError}
+        </span>
+      )}
+      {fix && (
+        <span className="max-w-[160px] text-right text-[9.5px]">
+          <NeedsSettingLink link={fix}>Turn on grading</NeedsSettingLink>
         </span>
       )}
     </div>

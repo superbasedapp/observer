@@ -222,19 +222,6 @@ export function personalCardView(i: PersonalCardInput): PersonalCardView {
   }
 }
 
-/** dashboardUrl is the org's own dashboard address, taken from the
- * server-built machines page URL (its origin); null when the server sent
- * none. The console never composes a tenant host itself. */
-export function dashboardUrl(org: Pick<PortalOrg, "machines_page_url">): string | null {
-  if (!org.machines_page_url) return null;
-  try {
-    const u = new URL(org.machines_page_url);
-    return u.protocol === "https:" || u.protocol === "http:" ? u.origin + "/" : null;
-  } catch {
-    return null;
-  }
-}
-
 /** PERSONAL_CREATE_ERROR_TEXT words the personal create route's refusals;
  * an unknown code falls back to the server's own message. */
 export const PERSONAL_CREATE_ERROR_TEXT: Readonly<Record<string, string>> = {

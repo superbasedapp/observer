@@ -34,6 +34,7 @@ import { joinList, keepSelected, splitList } from "@/lib/pickerOptions";
 import { usePricedModels } from "@/lib/usePickerSources";
 import { StructuredConfigSection } from "./settings/StructuredConfigSection";
 import { MessageSurfacesCard } from "./settings/MessageSurfacesCard";
+import { LIVE_RIBBON_FIELD, LiveRibbonCard } from "@/components/ribbon/LiveRibbonCard";
 import { SURFACE_SETTINGS } from "@/lib/adminMessages";
 import { SchemaSection } from "./settings/SchemaSection";
 import { AntigravityHelperCard } from "./settings/AntigravityHelperCard";
@@ -305,7 +306,7 @@ const SECTIONS: SectionDef[] = [
     icon: Users,
     about: {
       summary:
-        "Your SuperBased account and where this machine is connected. Sign in and connect this machine to see it in your personal dashboard or your team's online dashboard; what is sent is either Summary only (counts, costs and timings) or Full detail (prompts, responses and file paths, which team admins can read). AI summaries, the optional online names, tags and summaries for your sessions, live here too. Everything works on this machine without an account.",
+        "Your superbased account and where this machine is connected. Sign in and connect this machine to see it in your personal dashboard or your team's online dashboard; what is sent is either Summary only (counts, costs and timings) or Full detail (prompts, responses and file paths, which team admins can read). AI summaries, the optional online names, tags and summaries for your sessions, live here too. Everything works on this machine without an account.",
       whenModified:
         "Signing in, connecting this machine or disconnecting it, checking what is sent and when it was last sent, or turning AI summaries on. A self-hosted server is under the Advanced disclosure. The same actions are `observer connect` and `observer status` in a terminal.",
       behavior:
@@ -437,10 +438,10 @@ const SECTIONS: SectionDef[] = [
     status: "restart",
     icon: MonitorCog,
     about: {
-      summary: "Durable dashboard listen address.",
-      whenModified: "Setting a fixed host:port for the dashboard listener.",
+      summary: "Durable dashboard listen address, and the live ribbon.",
+      whenModified: "Setting a fixed host:port for the dashboard listener, or turning the live ribbon off.",
       behavior:
-        "Restart required - the dashboard listener binds at daemon start. Precedence: --dashboard-addr flag > OBSERVER_DASHBOARD_ADDR env > this config value > default 127.0.0.1:8081.",
+        "Restart required for the listen address - the dashboard listener binds at daemon start. Precedence: --dashboard-addr flag > OBSERVER_DASHBOARD_ADDR env > this config value > default 127.0.0.1:8081. The live ribbon switch applies at once.",
     },
   },
   {
@@ -599,7 +600,7 @@ const SECTIONS: SectionDef[] = [
     icon: ScanEye,
     about: {
       summary:
-        "Generalized observability (admin plane) - the OTLP /v1/traces receiver, trajectory capture, and the eval plane for an admin/org-hosted LLM app whose END-USER requests route through SuperBased. This is NOT your own coding-agent usage (every other section is); the captured traces + evals are viewed on the admin/org dashboard, not this node dashboard. Opt-in and node-local: trace data never leaves this machine unless you opt into an obs share tier under Org sharing.",
+        "Generalized observability (admin plane) - the OTLP /v1/traces receiver, trajectory capture, and the eval plane for an admin/org-hosted LLM app whose END-USER requests route through superbased. This is NOT your own coding-agent usage (every other section is); the captured traces + evals are viewed on the admin/org dashboard, not this node dashboard. Opt-in and node-local: trace data never leaves this machine unless you opt into an obs share tier under Org sharing.",
       whenModified:
         "Turning the subsystem on or off. The judge model + online-sampling eval knobs ([observability.eval]) are under More settings in this section.",
       behavior:
@@ -2418,6 +2419,8 @@ function SectionView({
               <BrowserCaptureCard readOnly={readOnly} />
             ) : section === "org" ? (
               <MessageSurfacesCard config={config} readOnly={readOnly} onSaved={onReload} />
+            ) : section === "dashboard" ? (
+              <LiveRibbonCard config={config} readOnly={readOnly} onSaved={onReload} />
             ) : showCodeSecurity ? (
               <Suspense fallback={null}>
                 <CodeSecurityCardLazy
@@ -2436,7 +2439,9 @@ function SectionView({
                 excludeFieldPaths={
                   section === "org"
                     ? withMessageSurfaces(specFieldPaths(spec))
-                    : showCodeSecurity
+                    : section === "dashboard"
+                      ? withFields(specFieldPaths(spec), [LIVE_RIBBON_FIELD])
+                      : showCodeSecurity
                       ? withFields(specFieldPaths(spec), codeSecurityFieldPaths())
                       : specFieldPaths(spec)
                 }

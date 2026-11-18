@@ -19,6 +19,7 @@ import {
   type MFAStatus,
 } from "../api";
 import { RecoveryCodes } from "../components/security/RecoveryCodes";
+import { ThemeToggle } from "../components/ThemeToggle";
 import { createPasskey, passkeyErrorText, passkeysSupported, safeNext, usePasskey } from "../lib/webauthn";
 
 // SecondFactor - the portal's passkey step (C2; internal/cloudserver/api/
@@ -127,7 +128,7 @@ export function SecondFactor() {
 
   if (codes) {
     return (
-      <AuthShell title="Passkey added" intro="From now on, signing in asks for your passkey.">
+      <AuthShell title="Passkey added" intro="From now on, signing in asks for your passkey." corner={<ThemeToggle />}>
         <RecoveryCodes codes={codes} onDone={() => go(returnTo)} />
       </AuthShell>
     );
@@ -143,7 +144,7 @@ export function SecondFactor() {
       : "Your team requires a second factor. Add a passkey to this account to continue: it takes a few seconds.";
 
   return (
-    <AuthShell title={title} intro={intro}>
+    <AuthShell title={title} intro={intro} corner={<ThemeToggle />}>
       <div className="flex flex-col gap-4">
         {loadError && <Callout tone="danger" title="Could not load">{loadError}</Callout>}
         {!status && !loadError && <InlineLoading label="Loading" />}
@@ -154,7 +155,7 @@ export function SecondFactor() {
         )}
         {status && !passkeysSupported() && (
           <Callout tone="warn" title="This browser cannot use passkeys">
-            Open SuperBased in an up-to-date browser that supports passkeys.
+            Open superbased in an up-to-date browser that supports passkeys.
           </Callout>
         )}
         {usedRecovery && (

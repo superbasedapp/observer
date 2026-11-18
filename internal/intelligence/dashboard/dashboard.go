@@ -801,6 +801,9 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	// mutation. Never hidden as a route (it is the welcome on a fresh node).
 	reg("/api/firstrun", L, secNone, s.handleFirstRun)
 	reg("/api/firstrun/seen", L, secNone, s.handleFirstRunSeen)
+	// The first-run "at a glance" card (firstrun_glance.go): 30-day spend,
+	// top model, busiest project, re-reads. Local, like /api/firstrun.
+	reg("/api/firstrun/glance", L, secNone, s.handleFirstRunGlance)
 	// Admin and developer messaging (T-854, messages.go): the Messages
 	// page's own section, which sits on the unhideable floor (D-695), so an
 	// org message is never hidden from the developer it was sent to. Local:
@@ -1475,6 +1478,11 @@ func (s *Server) registerRoutes(remote RemoteController) (*http.ServeMux, map[st
 	// writes the privilege-expanding allow_fresh_agent/allowed_tools/
 	// allowed_project_roots block. The runs history is a metadata-only View read.
 	reg("/api/terminal/policy", L, secTerminals, s.handleTerminalPolicy)
+	// The launchpad's first-launch consent (door A): the three launch-policy
+	// opt-ins a first launch needs, previewed and applied as one save, plus
+	// the playground folder created only on consent. Whole-route Local like
+	// the policy editor; the guard's self-approval rule denies it to an agent.
+	reg("/api/terminal/first-launch", L, secTerminals, s.handleTerminalFirstLaunch)
 	reg("/api/terminal/runs", V, secTerminals, s.handleTerminalRuns)
 	// Runtime bounds (max_concurrent / idle_timeout) — a Local write that
 	// live-applies to the PTY manager with no restart, unlike the start-captured

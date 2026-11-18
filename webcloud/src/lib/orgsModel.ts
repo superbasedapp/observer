@@ -170,7 +170,7 @@ export function createFormView(input: CreateFormInput): CreateFormView {
  * portal_teamallowlist.go): team workspaces are by invitation, the personal
  * workspace is unaffected, and how to ask. */
 export const TEAM_INVITE_ONLY_TEXT =
-  "Teams are by invitation while SuperBased is in early access. " +
+  "Teams are by invitation while superbased is in early access. " +
   "Your personal dashboard works as usual. To ask for a team, contact support and quote your account reference.";
 
 /** CREATE_ERROR_TEXT words the create route's refusals (portal_orgs.go
@@ -334,7 +334,7 @@ export const ROLE_LABEL: Readonly<Record<PortalOrg["console_role"], string>> = {
 /** PLAN_SOURCE_TEXT says why the org is on its plan. */
 export const PLAN_SOURCE_TEXT: Readonly<Record<OrgPlan["source"], string>> = {
   subscription: "From your subscription",
-  org_grant: "Granted by SuperBased",
+  org_grant: "Granted by superbased",
   launch: "Free launch period",
   floor: "No active subscription",
 };

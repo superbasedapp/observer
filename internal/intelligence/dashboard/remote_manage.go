@@ -11,6 +11,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/remotecfg"
+	"github.com/marmutapp/superbased-observer/internal/settingslink"
 	"github.com/marmutapp/superbased-observer/internal/store"
 	"github.com/marmutapp/superbased-observer/internal/tailnet"
 )
@@ -276,7 +277,7 @@ func (s *Server) handleRemoteSetAllowTerminal(w http.ResponseWriter, r *http.Req
 		// Terminal policy is meaningless while remote is off — the arm form
 		// carries the allow_terminal checkbox for the disabled case. 400 (a
 		// precondition, not a server fault) with a panel-renderable message.
-		http.Error(w, `{"error":"remote access is off - arm remote access first (the arm form has the terminal option)"}`, http.StatusBadRequest)
+		writeNeedsSetting(w, http.StatusBadRequest, "remote access is off - arm remote access first (the arm form has the terminal option)", msgRemoteOffTerminal, settingslink.RemoteAccess)
 		return
 	}
 	cfg.Remote.AllowTerminal = next
@@ -377,7 +378,7 @@ func (s *Server) handleRemoteSetAllowTerminalView(w http.ResponseWriter, r *http
 	if !cfg.Remote.Enabled {
 		// Terminal-view policy is meaningless while remote is off. 400 (a
 		// precondition, not a server fault) with a panel-renderable message.
-		http.Error(w, `{"error":"remote access is off - arm remote access first"}`, http.StatusBadRequest)
+		writeNeedsSetting(w, http.StatusBadRequest, "remote access is off - arm remote access first", msgRemoteOff, settingslink.RemoteAccess)
 		return
 	}
 	cfg.Remote.AllowTerminalView = next
@@ -607,7 +608,7 @@ func (s *Server) handleRemoteApproveExecute(w http.ResponseWriter, r *http.Reque
 		}
 	}
 	if s.opts.Remote == nil {
-		http.Error(w, "remote access is not configured", http.StatusServiceUnavailable)
+		writeNeedsSetting(w, http.StatusServiceUnavailable, "remote access is not configured", msgRemoteNotSetUp, settingslink.RemoteAccess)
 		return
 	}
 	authz, ok := s.opts.Remote.(TerminalControlAuthorizer)

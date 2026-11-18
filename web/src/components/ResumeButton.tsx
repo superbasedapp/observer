@@ -5,6 +5,7 @@ import { ApiError, fetchJSON } from "@/lib/api";
 import { useApi } from "@/lib/useApi";
 import { useLaunchDock } from "@/components/LaunchDock";
 import { pushToast } from "@/components/Toast";
+import { useErrorToast } from "@/components/NeedsSettingNotice";
 import {
   isProjectRootDeniedError,
   isTerminalCapabilityError,
@@ -57,6 +58,7 @@ export function ResumeButton({
   resume: SessionResumeInfo;
 }) {
   const dock = useLaunchDock();
+  const errorToast = useErrorToast();
   // Poll the live-attach list so this card HIDES the moment the session is
   // joinable (Jump in owns that case) and reappears when it isn't. 15s matches
   // the JumpInButton cadence; the hook pauses on a hidden tab.
@@ -118,10 +120,9 @@ export function ResumeButton({
         // — NOT that "allow terminal view" is off. Give resume-accurate guidance.
         pushToast(RESUME_EXECUTE_REQUIRED_MSG, "danger");
       } else {
-        pushToast(
-          e instanceof Error ? e.message : "Couldn't resume this session.",
-          "danger",
-        );
+        // A refusal whose fix is a setting (the terminal off) carries a
+        // button to it; anything else shows the server's sentence.
+        errorToast(e, (x) => (x instanceof Error ? null : "Couldn't resume this session."));
       }
     } finally {
       setPosting(false);

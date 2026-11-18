@@ -1,17 +1,19 @@
 import { useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { ExternalLink } from "lucide-react";
 import { Button } from "@shared/primitives/Button";
 import { Callout } from "@shared/primitives/Callout";
 import { Skeleton } from "@shared/primitives/Skeleton";
 import { ApiError, approveConnect, connectNotNow, declineConnect, getConnectRequest } from "../api";
 import type { ConnectChoice, ConnectRequestView } from "../api";
+import type { DashboardCard } from "../lib/connectModel";
 import { AuthShell } from "../components/AuthShell";
 import {
   CONNECT_PAGE_TEXT,
   ageLabel,
   choiceLabel,
   connectPageState,
+  connectedDashboards,
   networkLine,
   osLabel,
 } from "../lib/connectModel";
@@ -65,23 +67,33 @@ export function ConnectApprove() {
   const state = connectPageState(v);
   if (state !== "choose") {
     const t = CONNECT_PAGE_TEXT[state];
+    const dashboards = connectedDashboards(v);
     return (
       <AuthShell title={t.title} width="wide">
         <div className="flex flex-col gap-3">
           <p className="text-[13px] leading-snug text-fg-1">
             <strong className="font-semibold text-fg-0">{v.machine_name}</strong>
-            {v.target && state === "connected" ? ` is connected to ${choiceLabel(v.target)}.` : ""}
+            {v.target && state === "connected" ? ` is connected to ${choiceLabel(v.target, "inline")}.` : ""}
           </p>
           <p className="text-[12.5px] leading-snug text-fg-2">{t.line}</p>
+          {dashboards && (
+            <div className="grid gap-3 sm:grid-cols-2" data-testid="connect-two-dashboards">
+              {dashboards.map((d) => (
+                <DashboardCardView key={d.id} card={d} />
+              ))}
+            </div>
+          )}
           <div className="flex flex-wrap items-center gap-2">
-            {state === "connected" && v.online_url && (
-              <Button variant="primary" iconRight={ExternalLink} href={v.online_url} target="_blank" rel="noopener">
+            {state === "connected" && !dashboards && v.open_url && (
+              <Button variant="primary" iconRight={ExternalLink} href={v.open_url} target="_blank" rel="noopener">
                 Open your dashboard
               </Button>
             )}
-            <Link to="/home" className="text-[12.5px] font-medium text-accent hover:underline">
-              Go to Home
-            </Link>
+            {!dashboards?.some((d) => d.opens === "portal") && (
+              <Link to="/home" className="text-[12.5px] font-medium text-accent hover:underline">
+                Go to Home
+              </Link>
+            )}
           </div>
         </div>
       </AuthShell>
@@ -197,5 +209,40 @@ export function ConnectApprove() {
         </p>
       </div>
     </AuthShell>
+  );
+}
+
+/** DashboardCardView is one of the two dashboards after approval: its name,
+ * what it holds, and the button that opens it (connectModel decides all of
+ * it). The online card opens inside this portal, or the team's own
+ * dashboard in a new tab. */
+function DashboardCardView({ card }: { card: DashboardCard }) {
+  const navigate = useNavigate();
+  return (
+    <div
+      className="flex min-w-0 flex-col gap-2 rounded-2 border border-line-2 bg-bg-1 px-3 py-2.5"
+      data-testid={`dashboard-card-${card.id}`}
+    >
+      <div className="text-[13px] font-semibold text-fg-0">{card.title}</div>
+      <p className="flex-1 text-[12px] leading-snug text-fg-2">{card.role}</p>
+      <div>
+        {card.opens === "external" ? (
+          <Button
+            variant={card.id === "online" ? "primary" : "secondary"}
+            iconRight={ExternalLink}
+            href={card.href}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            {card.button}
+          </Button>
+        ) : (
+          <Button variant="primary" onClick={() => navigate(card.href)}>
+            {card.button}
+          </Button>
+        )}
+      </div>
+      {card.note && <p className="text-[11.5px] text-fg-3">{card.note}</p>}
+    </div>
   );
 }

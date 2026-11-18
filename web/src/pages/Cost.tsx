@@ -770,7 +770,7 @@ function CoworkReconcileCard({ data }: { data: CoworkReconcileResult }) {
     <ChartShell
       title={costLabel("Cowork cost reconciliation", "Cowork reconciliation")}
       icon={SECTION_ICONS.coworkReconcile}
-      sub={`SuperBased-derived vs Cowork-${costLabel("authoritative spend", "reported drift")} · drift threshold ${data.drift_threshold_percent.toFixed(1)}%`}
+      sub={`superbased-derived vs Cowork-${costLabel("authoritative spend", "reported drift")} · drift threshold ${data.drift_threshold_percent.toFixed(1)}%`}
     >
       <Stagger className={dollarsShown() ? "grid grid-cols-2 gap-3 md:grid-cols-4" : "grid grid-cols-2 gap-3"}>
         <StatCard
@@ -790,7 +790,7 @@ function CoworkReconcileCard({ data }: { data: CoworkReconcileResult }) {
         )}
         {dollarsShown() && (
           <StatCard
-            label="SuperBased derived"
+            label="superbased derived"
             icon={<MetricIcon metric="derivedCost" />}
             value={fmtUSD(data.derived_total_usd)}
             sub="pricing-table × tokens"
@@ -849,7 +849,7 @@ const COWORK_COLUMNS: ColumnDef<CoworkReconcileRow, unknown>[] = [
   },
   {
     id: "derived",
-    header: "SuperBased $",
+    header: "superbased $",
     accessorFn: (r) => r.derived_cost_usd,
     meta: { align: "right", mono: true },
     cell: ({ row }) => fmtUSD(row.original.derived_cost_usd),

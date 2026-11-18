@@ -8,7 +8,6 @@ import {
   PERSONAL_ORG_FACTS,
   PERSONAL_STAGE_SENTENCE,
   billingTextFor,
-  dashboardUrl,
   legacyView,
   orgNoun,
   personalCardState,
@@ -127,13 +126,6 @@ test("every stage keeps the shared label, tone and pending flag, with a personal
   // An unknown stage reads as unknown for both kinds.
   assert.equal(stageViewFor("bogus", "personal").sentence, PERSONAL_STAGE_SENTENCE.unknown);
   assert.equal(stageViewFor(undefined, "personal").label, "Unknown");
-});
-
-test("the dashboard address comes from the server-built machines page URL only", () => {
-  assert.equal(dashboardUrl({ machines_page_url: "https://u-3f9a2c1d.superbased.app/me/profile" }), "https://u-3f9a2c1d.superbased.app/");
-  assert.equal(dashboardUrl({}), null);
-  assert.equal(dashboardUrl({ machines_page_url: "not a url" }), null);
-  assert.equal(dashboardUrl({ machines_page_url: "javascript:alert(1)" }), null);
 });
 
 test("what a personal dashboard is says one member, Summary only and free", () => {

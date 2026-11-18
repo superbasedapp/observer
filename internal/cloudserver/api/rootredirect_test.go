@@ -63,6 +63,8 @@ func TestRootRedirectRoutes(t *testing.T) {
 		{name: "GET / redirects", method: http.MethodGet, path: "/", wantStatus: http.StatusFound, wantLocation: target, wantBody: true},
 		{name: "HEAD / redirects with no body", method: http.MethodHead, path: "/", wantStatus: http.StatusFound, wantLocation: target, wantBody: false},
 		{name: "POST / is refused", method: http.MethodPost, path: "/", wantStatus: http.StatusMethodNotAllowed},
+		// Without the portal SPA there is no create-a-team route: an intent is ignored.
+		{name: "GET /?intent=team without the portal redirects to marketing", method: http.MethodGet, path: "/?intent=team", wantStatus: http.StatusFound, wantLocation: target, wantBody: true},
 		{name: "GET /nope stays 404", method: http.MethodGet, path: "/nope", wantStatus: http.StatusNotFound},
 		// The checkout-domain review's four conventional pages (2026-09-14
 		// provisional approval mail): each redirects to the same path under
@@ -122,6 +124,12 @@ func TestRootRedirectToPortal(t *testing.T) {
 		{name: "GET / goes to the portal", marketing: strPtr(marketing), method: http.MethodGet, path: "/", wantStatus: http.StatusFound, wantLocation: portalRootPath},
 		{name: "HEAD / goes to the portal", marketing: strPtr(marketing), method: http.MethodHead, path: "/", wantStatus: http.StatusFound, wantLocation: portalRootPath},
 		{name: "POST / is refused", marketing: strPtr(marketing), method: http.MethodPost, path: "/", wantStatus: http.StatusMethodNotAllowed},
+		// rootIntents: an already-published "Start a team" link keeps its
+		// intent; anything else falls back to the plain portal root.
+		{name: "GET /?intent=team goes to create a team", marketing: strPtr(marketing), method: http.MethodGet, path: "/?intent=team", wantStatus: http.StatusFound, wantLocation: portalCreateTeamPath},
+		{name: "GET /?intent=unknown goes to the portal", marketing: strPtr(marketing), method: http.MethodGet, path: "/?intent=nope", wantStatus: http.StatusFound, wantLocation: portalRootPath},
+		{name: "GET /?intent=/evil goes to the portal", marketing: strPtr(marketing), method: http.MethodGet, path: "/?intent=%2F%2Fevil.example", wantStatus: http.StatusFound, wantLocation: portalRootPath},
+		{name: "GET / with a repeated intent goes to the portal", marketing: strPtr(marketing), method: http.MethodGet, path: "/?intent=team&intent=team", wantStatus: http.StatusFound, wantLocation: portalRootPath},
 		{name: "GET /portal/ serves the SPA", marketing: strPtr(marketing), method: http.MethodGet, path: "/portal/", wantStatus: http.StatusOK, wantBody: "portal-spa"},
 		{name: "GET /terms still goes to marketing", marketing: strPtr(marketing), method: http.MethodGet, path: "/terms", wantStatus: http.StatusFound, wantLocation: marketing + "terms"},
 		{name: "GET /privacy still goes to marketing", marketing: strPtr(marketing), method: http.MethodGet, path: "/privacy", wantStatus: http.StatusFound, wantLocation: marketing + "privacy"},

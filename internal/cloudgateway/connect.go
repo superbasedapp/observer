@@ -29,6 +29,12 @@ var (
 	ErrConnectSlowDown = cloudclient.ErrConnectSlowDown
 )
 
+// IsProofRejected reports whether err is the cloud refusing this machine's
+// proof of its key (re-exported from the lane, like the errors above). The
+// lane already re-sends once on the server's clock, so a refusal that
+// remains means a clock far off or a key the request was not made with.
+func IsProofRejected(err error) bool { return cloudclient.IsProofRejected(err) }
+
 // ConnectRequestInput, ConnectRequest, ConnectStatus and ConnectTarget are
 // the lane's plain result types, re-exported for the same reason.
 type (

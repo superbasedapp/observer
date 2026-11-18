@@ -35,7 +35,7 @@ export type GUIRoutingVerdict = {
 };
 
 /** Shared phrase for "the proxy route will not reach this app". */
-const NOT_ROUTED = "It can't be routed through the SuperBased proxy.";
+const NOT_ROUTED = "It can't be routed through the superbased proxy.";
 
 // ROUTED_COPY: what to say when the verdict is that routing DOES reach the
 // app, per wrap kind (only child_env can be delivered at launch).
@@ -47,12 +47,12 @@ export const ROUTED_COPY: Readonly<Record<string, string>> = {
 // the app, per closed guilaunch.WrapReason.
 export const NOT_ROUTED_COPY: Readonly<Record<string, string>> = {
   interop_env_not_propagated:
-    "Launched from WSL, it can't be routed through the SuperBased proxy. Start it on Windows with the proxy address set, or set the proxy in the app's own settings.",
-  packaged_app_no_env: "Opened as a Windows Store app, it can't be routed through the SuperBased proxy.",
-  handoff_launcher: "It opens in a copy that's already running, so it won't be routed through the SuperBased proxy.",
-  no_proxy_url: "SuperBased couldn't find its proxy address, so this launch won't be routed through it.",
+    "Launched from WSL, it can't be routed through the superbased proxy. Start it on Windows with the proxy address set, or set the proxy in the app's own settings.",
+  packaged_app_no_env: "Opened as a Windows Store app, it can't be routed through the superbased proxy.",
+  handoff_launcher: "It opens in a copy that's already running, so it won't be routed through the superbased proxy.",
+  no_proxy_url: "superbased couldn't find its proxy address, so this launch won't be routed through it.",
   no_routing_vars: NOT_ROUTED,
-  config_write: "It reaches the proxy through the settings SuperBased writes during setup, not through this launch.",
+  config_write: "It reaches the proxy through the settings superbased writes during setup, not through this launch.",
   no_wrap_mechanism: NOT_ROUTED,
 };
 
@@ -87,7 +87,7 @@ export function guiLaunchSummary(row: GUICopyRow, verdict?: GUIRoutingVerdict | 
 }
 
 // guiLaunchedToast is the success toast after a GUI launch. "routed through
-// the SuperBased proxy" comes ONLY from the launch's own verdict
+// the superbased proxy" comes ONLY from the launch's own verdict
 // (routing_reaches_app, falling back to wrap_applied on an older daemon).
 export function guiLaunchedToast(r: {
   label: string;
@@ -96,14 +96,14 @@ export function guiLaunchedToast(r: {
   routing_reaches_app?: boolean;
 }): string {
   const routed = r.routing_reaches_app ?? r.wrap_applied;
-  return `Launched ${r.label} (pid ${r.pid})${routed ? " - routed through the SuperBased proxy" : ""}`;
+  return `Launched ${r.label} (pid ${r.pid})${routed ? " - routed through the superbased proxy" : ""}`;
 }
 
 // guiNotGroundedReason replaces the registry `note` for a row with no known
 // executable layout (Grounded=false): the user-facing consequence, not the
 // provenance record.
 export function guiNotGroundedReason(row: Pick<GUICopyRow, "label">): string {
-  return `SuperBased doesn't know where ${row.label} is installed yet, so it can't launch it from here.`;
+  return `superbased doesn't know where ${row.label} is installed yet, so it can't launch it from here.`;
 }
 
 // guiAvailabilityName is the name the dialog's availability copy ("X is not

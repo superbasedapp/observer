@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { NeedsSettingLink } from "@/components/NeedsSettingNotice";
+import { placeLink } from "@/lib/settingsPlaces";
 import { Link } from "react-router-dom";
 import { ChartShell, PageHeader, Pill, Table } from "@/components/primitives";
 import { TitleWithHelp } from "@/components/HelpInd";
@@ -409,8 +411,8 @@ function SharingSourceCard({ config }: { config: Record<string, any> | undefined
     >
       {enrol.data && !enrol.data.enrolled && (
         <p className="pb-2 text-[11.5px] text-fg-2">
-          This machine is not enrolled in any organization, so nothing below is shared with anyone. The settings are
-          what would apply if you enrolled.
+          This machine is not connected to any organization, so nothing below is shared with anyone. The settings are
+          what would apply if you connected it, in Settings &gt; Account. <NeedsSettingLink link={placeLink("account")} />
         </p>
       )}
       <Table

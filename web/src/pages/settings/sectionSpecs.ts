@@ -584,20 +584,20 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
         label: "Network capture",
         path: ["Observer", "Process", "Network"],
         description:
-          "Network events for AI-tool sessions. Body excerpts are only available for SuperBased-proxied/plaintext flows; non-proxied TLS remains metadata-only.",
+          "Network events for AI-tool sessions. Body excerpts are only available for superbased-proxied/plaintext flows; non-proxied TLS remains metadata-only.",
         fields: [
           {
             id: "Enabled",
             label: "Enabled",
             kind: "bool",
-            help: "Records network_connect events for attributed sessions, including SuperBased proxy calls. Required for the session API/network calls table.",
+            help: "Records network_connect events for attributed sessions, including superbased proxy calls. Required for the session API/network calls table.",
           },
           {
             id: "CaptureBodies",
             label: "Body capture",
             kind: "select",
             options: ["off", "proxied", "available"],
-            help: "`off` stores metadata only. `proxied` stores capped/scrubbed excerpts for SuperBased proxy flows. `available` is reserved for future plaintext/instrumented backends.",
+            help: "`off` stores metadata only. `proxied` stores capped/scrubbed excerpts for superbased proxy flows. `available` is reserved for future plaintext/instrumented backends.",
           },
           {
             id: "MaxRequestBytes",
@@ -831,7 +831,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
     id: "observability",
     path: ["Observability"],
     description:
-      "Generalized observability subsystem (admin plane) - the OTLP /v1/traces receiver, trajectory capture, and the eval plane for an admin/org-hosted LLM app whose end-users route through SuperBased. Distinct from your own coding-agent usage; the captured data is viewed on the admin/org dashboard. Opt-in and node-local: trace data never leaves this machine unless an obs share tier is enabled. The receiver binds at daemon start, so enabling here needs a restart to take effect. Note the receiver is SHARED with the log-ingest path - it also comes alive whenever [ingest.otel] is enabled, so this toggle is not the only thing that binds :4317/:4318.",
+      "Generalized observability subsystem (admin plane) - the OTLP /v1/traces receiver, trajectory capture, and the eval plane for an admin/org-hosted LLM app whose end-users route through superbased. Distinct from your own coding-agent usage; the captured data is viewed on the admin/org dashboard. Opt-in and node-local: trace data never leaves this machine unless an obs share tier is enabled. The receiver binds at daemon start, so enabling here needs a restart to take effect. Note the receiver is SHARED with the log-ingest path - it also comes alive whenever [ingest.otel] is enabled, so this toggle is not the only thing that binds :4317/:4318.",
     fields: [
       {
         id: "Enabled",
@@ -1173,7 +1173,7 @@ export const SECTION_SPECS: Record<string, SectionSpec> = {
     // touch it (test-pinned).
     path: ["OrgClient"],
     description:
-      "What this node shares with your organization's SuperBased server - and only when enrolled ([org_client] enabled by enrolling in the Enrolment section). The privacy default is metadata-only: sha256 hashes and counts, never raw commands, prose, or paths. Raw-content sharing (full_content) is node opt-in only - the org admin has no remote switch for it. The reporting-tier shares below (routing_summary, obs.summary, etc.) are node opt-in, or can be raised by the org on a managed node via node governance policy.",
+      "What this node shares with your organization's superbased server - and only when enrolled ([org_client] enabled by enrolling in the Enrolment section). The privacy default is metadata-only: sha256 hashes and counts, never raw commands, prose, or paths. Raw-content sharing (full_content) is node opt-in only - the org admin has no remote switch for it. The reporting-tier shares below (routing_summary, obs.summary, etc.) are node opt-in, or can be raised by the org on a managed node via node governance policy.",
     fields: [
       {
         id: "PushIntervalSeconds",

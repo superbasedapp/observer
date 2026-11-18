@@ -42,7 +42,7 @@ import (
 // lookupChooseHint is the one sentence a scan that waits for the posture
 // prints.
 var lookupChooseHint = fmt.Sprintf("choose how dependencies are checked: download the OSV databases (about %d MB, `observer security lookup mode local`) "+
-	"or the SuperBased lookup with no download (`observer security lookup mode remote`), or on the dashboard's Privacy page (Package lookup)", osvdb.ApproxDownloadMB)
+	"or the superbased lookup with no download (`observer security lookup mode remote`), or on the dashboard's Privacy page (Package lookup)", osvdb.ApproxDownloadMB)
 
 // The posture's config keys.
 const (
@@ -173,7 +173,7 @@ func applyLookupChange(ctx context.Context, e *depsScanEnv, ch lookupChange) err
 			}
 		case lookupRemote, lookupBoth:
 			if (!e.remoteConsent.Accepted() || ch.WithdrawRemote) && !ch.AcceptRemote {
-				return errors.New("the SuperBased lookup sends hash prefixes of your package names: it needs its own consent (accept_remote, or `--yes` after reading the text)")
+				return errors.New("the superbased lookup sends hash prefixes of your package names: it needs its own consent (accept_remote, or `--yes` after reading the text)")
 			}
 		}
 	}
@@ -288,7 +288,7 @@ func writeLookupState(ctx context.Context, w io.Writer, e *depsScanEnv) {
 	case "":
 		fmt.Fprintln(w, "  "+lookupChooseHint)
 	case lookupRemote, lookupBoth:
-		fmt.Fprintf(w, "  SuperBased lookup via %s, kinds %s; private names %s\n", st.Via, strings.Join(st.Kinds, ", "), map[bool]string{true: "sent", false: "withheld"}[st.PrivateSending])
+		fmt.Fprintf(w, "  superbased lookup via %s, kinds %s; private names %s\n", st.Via, strings.Join(st.Kinds, ", "), map[bool]string{true: "sent", false: "withheld"}[st.PrivateSending])
 		if st.Remote.Accepted {
 			fmt.Fprintf(w, "  consent recorded %s (%s)\n", st.Remote.AcceptedAt, st.Remote.AcceptedOn)
 		}
@@ -323,7 +323,7 @@ func writeOrgLookupState(w io.Writer, st dashapi.PackageLookupStatus) {
 	}
 	fmt.Fprintf(w, "package lookup: set by your organization (security policy version %d); nothing is downloaded from or sent to a public host\n", o.Version)
 	if !o.On {
-		fmt.Fprintln(w, "  SuperBased lookup: off by your organization's policy; no package lookup leaves this machine")
+		fmt.Fprintln(w, "  superbased lookup: off by your organization's policy; no package lookup leaves this machine")
 	} else {
 		fmt.Fprintf(w, "  lookups go to %s, mirror mode: local databases from its mirror first, its shards for the rest\n", server)
 		fmt.Fprintf(w, "  kinds %s; private package names %s (your organization's rule)\n", strings.Join(o.Kinds, ", "), map[string]string{"send": "sent", "withhold": "withheld"}[o.Private])
@@ -342,9 +342,9 @@ func writeOrgLookupState(w io.Writer, st dashapi.PackageLookupStatus) {
 func newSecurityLookupCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "lookup",
-		Short: "Show, or choose, how dependencies are checked: downloaded databases (local), the SuperBased lookup (remote), or both",
+		Short: "Show, or choose, how dependencies are checked: downloaded databases (local), the superbased lookup (remote), or both",
 		Long: "The package lookup posture (the dashboard's Privacy page, Package lookup). local downloads the OSV databases\n" +
-			"and matches here; remote downloads nothing and looks every ecosystem up at SuperBased, sending a short hash\n" +
+			"and matches here; remote downloads nothing and looks every ecosystem up at superbased, sending a short hash\n" +
 			"prefix of each package name, never a name, a version or code; both matches locally where a database is\n" +
 			"installed and looks up only the rest. Each choice that sends or downloads data asks for its own consent.",
 		Args: cobra.NoArgs,
@@ -354,7 +354,7 @@ func newSecurityLookupCmd() *cobra.Command {
 	var yes bool
 	mode := &cobra.Command{
 		Use:   "mode local|remote|both",
-		Short: "Choose the lookup mode, recording its consent (the database accept for local, the SuperBased lookup's for remote and both)",
+		Short: "Choose the lookup mode, recording its consent (the database accept for local, the superbased lookup's for remote and both)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return withLookupEnv(cmd, func(e *depsScanEnv, w io.Writer, in io.Reader, tty bool) error {
@@ -372,7 +372,7 @@ func newSecurityLookupCmd() *cobra.Command {
 					}
 				case lookupRemote, lookupBoth:
 					if !e.remoteConsent.Accepted() {
-						ok, err := askLookupConsent(w, in, osvdb.RemoteConsentText, "Use the SuperBased lookup for your dependency scans?", yes, tty)
+						ok, err := askLookupConsent(w, in, osvdb.RemoteConsentText, "Use the superbased lookup for your dependency scans?", yes, tty)
 						if err != nil || !ok {
 							return err
 						}
@@ -390,7 +390,7 @@ func newSecurityLookupCmd() *cobra.Command {
 	mode.Flags().BoolVar(&yes, "yes", false, "record the consent without asking (you read the text above)")
 	kinds := &cobra.Command{
 		Use:   "kinds LIST",
-		Short: "Choose which package kinds the SuperBased lookup covers (comma separated: " + strings.Join(config.SecurityDepsRemoteKinds, ", ") + ")",
+		Short: "Choose which package kinds the superbased lookup covers (comma separated: " + strings.Join(config.SecurityDepsRemoteKinds, ", ") + ")",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return withLookupEnv(cmd, func(e *depsScanEnv, w io.Writer, _ io.Reader, _ bool) error {
@@ -416,7 +416,7 @@ func newSecurityLookupCmd() *cobra.Command {
 	var yesPrivate bool
 	private := &cobra.Command{
 		Use:   "private withhold|send",
-		Short: "Choose whether the SuperBased lookup sends private and internal package names too (send records its own consent)",
+		Short: "Choose whether the superbased lookup sends private and internal package names too (send records its own consent)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return withLookupEnv(cmd, func(e *depsScanEnv, w io.Writer, in io.Reader, tty bool) error {
@@ -442,7 +442,7 @@ func newSecurityLookupCmd() *cobra.Command {
 	var withdrawPrivate bool
 	withdraw := &cobra.Command{
 		Use:   "withdraw",
-		Short: "Withdraw the SuperBased lookup's consent (or, with --private, only the private-names consent); takes effect at the next lookup",
+		Short: "Withdraw the superbased lookup's consent (or, with --private, only the private-names consent); takes effect at the next lookup",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return withLookupEnv(cmd, func(e *depsScanEnv, w io.Writer, _ io.Reader, _ bool) error {
@@ -457,7 +457,7 @@ func newSecurityLookupCmd() *cobra.Command {
 				if withdrawPrivate {
 					fmt.Fprintln(w, "Withdrawn: private package names are withheld from the next lookup on.")
 				} else {
-					fmt.Fprintln(w, "Withdrawn: the next dependency scan makes no SuperBased lookup (ecosystems it would have looked up read not scanned).")
+					fmt.Fprintln(w, "Withdrawn: the next dependency scan makes no superbased lookup (ecosystems it would have looked up read not scanned).")
 				}
 				return nil
 			})

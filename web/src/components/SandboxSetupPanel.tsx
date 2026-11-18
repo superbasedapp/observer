@@ -22,7 +22,9 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { CircleHelp, Copy, KeyRound, SquareTerminal } from "lucide-react";
 import { Button, ComboChip, ConfirmButton, Pill } from "@/components/primitives";
-import { ApiError, fetchJSON } from "@/lib/api";
+import { ApiError, fetchJSON, localConfirmHeaders } from "@/lib/api";
+import { noteWithText, type ErrorNote } from "@/lib/needsSetting";
+import { ApiErrorNotice } from "@/components/NeedsSettingNotice";
 import { TERMINALS_SANDBOX_BACKENDS_HASH } from "@/lib/nodePageTabs";
 import { HostedKeyFields } from "@/components/SandboxHostedStatus";
 import { hostedConnectReady } from "@/lib/sandboxParity";
@@ -117,11 +119,13 @@ const OP_RUNNING = new Set(["installing", "uninstalling", "running", "queued", "
 
 const enc = encodeURIComponent;
 
+// confirmHeaders is the owner-local confirm header from localConfirmHeaders
+// (the core command-job list mints it). Never /api/remote/config: that is a
+// Remote dashboard route, refused while that component is off. Null when no
+// token could be had (the panel then says to reload).
 async function confirmHeaders(): Promise<Record<string, string> | null> {
-  const cfg = await fetchJSON<{ confirm_token?: string }>("/api/remote/config");
-  const ctok = cfg.confirm_token ?? "";
-  if (!ctok) return null;
-  return { "Content-Type": "application/json", "X-Observer-Confirm": ctok };
+  const headers = await localConfirmHeaders();
+  return headers["X-Observer-Confirm"] ? headers : null;
 }
 
 export function SandboxSetupPanel(props: SandboxSetupPanelProps & SandboxSetupPanelExtras) {
@@ -135,7 +139,7 @@ export function SandboxSetupPanel(props: SandboxSetupPanelProps & SandboxSetupPa
   const [planNonce, setPlanNonce] = useState(0);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
+  const [err, setErr] = useState<ErrorNote | string | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [op, setOp] = useState<(SandboxSetupOp & { step: string }) | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -216,7 +220,7 @@ export function SandboxSetupPanel(props: SandboxSetupPanelProps & SandboxSetupPa
         })
         .catch((e: unknown) => {
           if (cancelled) return;
-          setErr(e instanceof ApiError ? setupErrorSentence(e.status, e.body) : setupErrorSentence(0, ""));
+          setErr(e instanceof ApiError ? noteWithText(e, setupErrorSentence(e.status, e.body)) : setupErrorSentence(0, ""));
           setOp(null);
           setPlanNonce((n) => n + 1);
         });
@@ -303,7 +307,7 @@ export function SandboxSetupPanel(props: SandboxSetupPanelProps & SandboxSetupPa
         const parsed = parseSetupError(e.body);
         // 409 plan_changed: show the fresh plan and ask again.
         if (parsed.code === "plan_changed" && parsed.plan) setPlan(parsed.plan);
-        setErr(fields ? credentialErrorSentence(e.status, e.body) : setupErrorSentence(e.status, e.body));
+        setErr(noteWithText(e, fields ? credentialErrorSentence(e.status, e.body) : setupErrorSentence(e.status, e.body)));
       } else {
         setErr(setupErrorSentence(0, ""));
       }
@@ -331,7 +335,7 @@ export function SandboxSetupPanel(props: SandboxSetupPanelProps & SandboxSetupPa
       setPlan(p);
       onSettled?.();
     } catch (e) {
-      setErr(e instanceof ApiError ? setupErrorSentence(e.status, e.body) : setupErrorSentence(0, ""));
+      setErr(e instanceof ApiError ? noteWithText(e, setupErrorSentence(e.status, e.body)) : setupErrorSentence(0, ""));
     } finally {
       setBusy(null);
     }
@@ -436,11 +440,7 @@ export function SandboxSetupPanel(props: SandboxSetupPanelProps & SandboxSetupPa
           </ol>
         </>
       )}
-      {err && (
-        <p role="alert" className="mt-1 text-danger">
-          {err}
-        </p>
-      )}
+      <ApiErrorNotice note={err} onNavigate={onNavigate} className="mt-1" plainClassName="mt-1 text-danger" />
       {note && <p className="mt-1 text-fg-2">{note}</p>}
       {compact && (
         <Link to={`/terminals${TERMINALS_SANDBOX_BACKENDS_HASH}`} onClick={onNavigate} className="mt-1 inline-block text-accent hover:underline">

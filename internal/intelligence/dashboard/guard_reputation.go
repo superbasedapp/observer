@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/marmutapp/superbased-observer/internal/guard/notify"
+	"github.com/marmutapp/superbased-observer/internal/settingslink"
 )
 
 // The dashboard control for `observer guard mcp reputation <package>`
@@ -122,7 +123,7 @@ func (s *Server) guardReputationLookup(w http.ResponseWriter, r *http.Request) {
 	})
 	switch {
 	case errors.Is(err, notify.ErrReputationOff):
-		writeJSONStatus(w, http.StatusConflict, map[string]any{"error": "reputation_off", "message": err.Error()})
+		writeNeedsSetting(w, http.StatusConflict, "reputation_off", msgReputationOff, settingslink.GuardNetwork)
 		return
 	case errors.Is(err, notify.ErrPackageNotFound):
 		s.recordManageAudit(r, "guard_mcp_reputation", "package="+pkg+" result=not_found")

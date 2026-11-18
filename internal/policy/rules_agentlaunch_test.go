@@ -246,6 +246,7 @@ func TestTerminalLaunchPolicyIsSelfApproval(t *testing.T) {
 	cases := []coreRuleCase{
 		sh("PUT terminal policy", `curl -X PUT http://127.0.0.1:8821/api/terminal/policy -d '{"allow_fresh_agent":true}'`, "R-165", DecisionDeny),
 		sh("GET terminal policy is a read", `curl http://127.0.0.1:8821/api/terminal/policy`, "", 0),
+		sh("POST first-launch consent", `curl -X POST http://127.0.0.1:8821/api/terminal/first-launch -d '{"tool":"claude-code","folder":"","changes":["allow_tool"]}'`, "R-165", DecisionDeny),
 		sh("config set terminal.launch key", `observer config set terminal.launch.allow_fresh_agent true`, "R-165", DecisionDeny),
 		sh("config set another terminal key", `observer config set terminal.attach.enabled true`, "", 0),
 		sh("config keys body names terminal.launch", `curl -X POST http://127.0.0.1:8821/api/config/keys -d '{"patches":[{"key":"terminal.launch.allowed_tools","value":["codex"]}]}'`, "R-165", DecisionDeny),

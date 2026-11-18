@@ -191,10 +191,8 @@ func (s *Server) handleGUILaunch(w http.ResponseWriter, r *http.Request, body te
 	res, err := s.opts.LaunchManager.CreateGUI(GUILaunchSpec{ID: id, ProjectRoot: body.ProjectRoot, Initiator: initiator, ParentSessionID: parent})
 	if err != nil {
 		switch {
-		case errors.Is(err, ErrLaunchFreshDisabled):
-			writeErrStatus(w, err, http.StatusForbidden)
-		case errors.Is(err, ErrLaunchToolNotAllowed):
-			writeErrStatus(w, err, http.StatusForbidden)
+		case errors.Is(err, ErrLaunchFreshDisabled), errors.Is(err, ErrLaunchToolNotAllowed):
+			writeSettingRefusal(w, err, http.StatusForbidden)
 		case errors.Is(err, ErrLaunchProjectRootDenied):
 			writeErrStatus(w, err, http.StatusBadRequest)
 		case errors.Is(err, ErrLaunchGUINotLaunchable):

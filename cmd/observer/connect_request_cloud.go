@@ -53,6 +53,8 @@ func defaultConnectRequestSeams() connectRequestSeams {
 				return connectApproval{}, errConnectRequestGone
 			case errors.Is(err, cloudgateway.ErrConnectSlowDown):
 				return connectApproval{}, errConnectSlowDown
+			case cloudgateway.IsProofRejected(err):
+				return connectApproval{}, errConnectProofRefused
 			case err != nil:
 				return connectApproval{}, err
 			}

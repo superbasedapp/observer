@@ -36,6 +36,7 @@ import {
   withDotClass,
 } from "@/lib/liveSignals";
 import { topBarAccountView } from "@/lib/getStarted";
+import { useConnectHandoff } from "@/lib/useConnectHandoff";
 import { useAccount, useConnectFlow } from "@/lib/useConnectFlow";
 import { capturePillView, type CapturePillState } from "@/lib/capturePill";
 import { InstanceSwitcher } from "@/components/InstanceSwitcher";
@@ -43,6 +44,7 @@ import { RemoteMachineChip } from "@/components/RemoteMachineChip";
 import { NotificationBell } from "@/components/NotificationBell";
 import { avatarInitials, identityLabel, type MeMachine } from "@/lib/you";
 import { PhoneTerminalButton } from "@/components/LaunchDock";
+import { RibbonChip } from "@/components/ribbon/RibbonChip";
 
 // `dashboard-refresh` is a window-level CustomEvent that useApi
 // listens for to re-fire its fetch. TopBar's Refresh button is the
@@ -163,6 +165,11 @@ export function TopBar({
         <RemoteMachineChip />
       </div>
       <div className="flex shrink-0 items-center gap-2 whitespace-nowrap text-[11px] text-fg-3">
+        {/* The live ribbon's chip (components/ribbon): "No agent running ·
+            Start one" when nothing is live, "N live" when the strip under
+            the bar is folded away. Renders nothing when the ribbon is off or
+            the org hid the Live page. */}
+        <RibbonChip />
         {/* Secondary status + Export — hidden on phones (< md) to keep
             the header uncluttered; the drawer + Refresh stay reachable.
             Between md and xl the column is too narrow for every chip (at
@@ -370,11 +377,13 @@ function UpdateAvailablePill({ current }: { current?: string }) {
 function AccountControl() {
   const flow = useConnectFlow();
   const { account, enrolment } = useAccount(flow);
+  const handoff = useConnectHandoff(account);
   const view = topBarAccountView({
     account,
     available: flow.available,
     progress: flow.progress,
     managed: !!enrolment?.enrolled && enrolment.tenancy === "managed",
+    handoffWaiting: handoff.phase === "waiting",
   });
   switch (view.kind) {
     case "hidden":
@@ -398,7 +407,7 @@ function AccountControl() {
             </RouterLink>
           </Tooltip>
           {view.onlineUrl && (
-            <Tooltip content="Open the online dashboard in a new tab">
+            <Tooltip content={view.onlineTooltip}>
               <a
                 href={view.onlineUrl}
                 target="_blank"

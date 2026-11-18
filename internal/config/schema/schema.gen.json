@@ -3081,6 +3081,22 @@
       "doc": "OrgAnnouncements gates rail R3 of the announcements plan (§4):\nwhether the banner shows announcements published by the org this\nnode is enrolled with. Default TRUE — enrolment already implies\nconsent to org communication, so silently swallowing the admin's\nmessage would be the dishonest default; and on a solo install the\nswitch is inert (there is no org cache to read).\n\nThis is the node operator's OWN opt-out and it lives only here:\nthe org admin has no remote toggle for it, the same posture as\n[org_client.share].full_content. Turning it off never affects\npush, enrolment, or the release rail — the dashboard simply stops\nreading the cached document.\n\nDefault() seeds it true so the loader's partial-merge keeps it\ntrue for an existing config that has a [dashboard] section with\nonly `addr` in it (the CacheTrack partial-merge rule) — without\nthat seed, adding the key would have silently disabled the rail\nfor every install that had ever set a dashboard address."
     },
     {
+      "path": "dashboard.live_ribbon",
+      "field_path": "Dashboard.LiveRibbon",
+      "kind": "bool",
+      "go_type": "bool",
+      "owner": "github.com/marmutapp/superbased-observer/internal/config.DashboardConfig",
+      "field": "LiveRibbon",
+      "block": "dashboard",
+      "table": "dashboard",
+      "tier": "plain",
+      "restart": "live",
+      "section": "dashboard",
+      "prominence": "primary",
+      "secret": false,
+      "doc": "LiveRibbon shows the live ribbon in the local dashboard's shell: the\ntop-bar chip (\"No agent running · Start one\", or \"N live\") and the\nslim strip under the top bar while an agent session is live\n(docs/plans/local-dashboard-first-run-options-2026-11-18.md §8).\nDefault TRUE. Local-only: the node operator's own display switch,\nnever distributed and with no org toggle (an org that hides the Live\npage hides the ribbon through page visibility instead). Read on each\nribbon request, so a save applies without a restart. Off removes the\nchip and the strip; the nav's Live count stays. Seeded true in\nDefault() for the same partial-merge reason as OrgAnnouncements."
+    },
+    {
       "path": "compression.shell.enabled",
       "field_path": "Compression.Shell.Enabled",
       "kind": "bool",

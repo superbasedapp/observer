@@ -7,6 +7,8 @@
 // 3.3 (consent and notice screens) and 3.7 (compulsory consent).
 
 import { orgDisplayLabelSentence } from "./orgName.ts";
+import type { Fix } from "./needsSetting.ts";
+import { orgPlaceLink, placeLink, type OrgPlace, type Place } from "./settingsPlaces.ts";
 import type { OrgIntelResultRow } from "./types";
 
 export type OrgIntelClass = "unenrolled" | "individual" | "managed";
@@ -81,6 +83,11 @@ export type OrgIntelStatus = {
   cached_results: number;
   managed_rail?: OrgIntelRail;
   note?: string;
+  /** The team dashboard's origin, when the node knows a safe address. */
+  org_dashboard?: string;
+  /** "personal" when this machine is connected to the person's own
+   *  personal dashboard (they are its only admin), else "team" or absent. */
+  dashboard_kind?: string;
 };
 
 export type OrgIntelStatusResponse = {
@@ -143,6 +150,13 @@ export function orgIntelOrgName(st: Pick<OrgIntelStatus, "org_name">): string {
   return orgDisplayLabelSentence(st.org_name);
 }
 
+// orgIntelIsPersonal reports a personal dashboard: its org is named
+// "Personal", so an org-level status names the dashboard instead and speaks
+// to its only admin, the person (shared/lib/twoDashboards.ts wording).
+export function orgIntelIsPersonal(st: Pick<OrgIntelStatus, "dashboard_kind"> | null | undefined): boolean {
+  return st?.dashboard_kind === "personal";
+}
+
 // OrgIntelPhase is what the Settings section renders, decided by an ordered
 // table (first match wins), one test row per entry.
 export type OrgIntelPhase =
@@ -171,6 +185,41 @@ export function orgIntelPhase(s: OrgIntelStatus): OrgIntelPhase {
 }
 
 export const ORG_INTEL_PHASES: readonly OrgIntelPhase[] = PHASE_RULES.map((r) => r.phase);
+
+// OrgIntelFixRule is the way forward of a status: a place on this machine
+// (the person changes it here) and/or a team-dashboard place (only the
+// organization's admins change it). Neither means this page itself is the
+// place (the consent card) or nothing is off.
+type OrgIntelFixRule = { place?: Place; org?: OrgPlace };
+
+// ORG_INTEL_PHASE_FIX is one row per Settings phase. A managed machine whose
+// rail does not run is the org's to change (orgIntelFix).
+export const ORG_INTEL_PHASE_FIX: Record<OrgIntelPhase, OrgIntelFixRule> = {
+  unenrolled: { place: "account" },
+  no_terms: { org: "org_session_enrichment" },
+  managed_notice: {},
+  org_off: { org: "org_session_enrichment" },
+  pending_required: {},
+  terms_changed: {},
+  accepted: {},
+  not_opted_in: {},
+};
+
+function fixOfRule(s: OrgIntelStatus, r: OrgIntelFixRule): Fix {
+  return {
+    settings: r.place ? placeLink(r.place) : null,
+    org: r.org ? orgPlaceLink(s.org_dashboard, r.org, s.dashboard_kind) : null,
+  };
+}
+
+// orgIntelFix is the way forward of the Settings section's status.
+export function orgIntelFix(s: OrgIntelStatus): Fix {
+  const phase = orgIntelPhase(s);
+  if (phase === "managed_notice" && s.managed_rail && !s.managed_rail.on) {
+    return fixOfRule(s, { org: "org_session_enrichment" });
+  }
+  return fixOfRule(s, ORG_INTEL_PHASE_FIX[phase]);
+}
 
 // orgIntelBanner is the global pending-consent banner (design 3.7 step 3):
 // shown on every page while an individual node has a compulsory requirement
@@ -211,6 +260,9 @@ export type OrgSessionsBanner = {
   text: string;
   terms: string;
   link: string;
+  /** The team-dashboard place, when only the organization's admins can
+   *  change the state (not set up, off, not running). */
+  org: Fix["org"];
 };
 
 // SESSIONS_BANNER_RULES decides the org banner's state, first match wins, one
@@ -219,21 +271,32 @@ const SESSIONS_BANNER_RULES: ReadonlyArray<{
   state: string;
   match: (s: OrgIntelStatus) => boolean;
   text: (s: OrgIntelStatus, org: string) => string;
+  /** Set when only the organization's admins can change this state. */
+  org?: OrgPlace;
 }> = [
   {
     state: "Not set up",
     match: (s) => !s.requirement,
-    text: (_s, org) => `${org} has not published enrichment terms yet. Nothing is sent from this machine.`,
+    text: (s, org) =>
+      orgIntelIsPersonal(s)
+        ? "Your personal dashboard has not published enrichment terms yet. Nothing is sent from this machine."
+        : `${org} has not published enrichment terms yet. Nothing is sent from this machine.`,
+    org: "org_session_enrichment",
   },
   {
     state: "Off",
     match: (s) => !s.org_enabled,
-    text: (_s, org) => `${org} has team AI summaries turned off. Nothing is sent from this machine.`,
+    text: (s, org) =>
+      orgIntelIsPersonal(s)
+        ? "Your personal dashboard has session enrichment off. Nothing is sent from this machine."
+        : `${org} has team AI summaries turned off. Nothing is sent from this machine.`,
+    org: "org_session_enrichment",
   },
   {
     state: "Not running",
     match: (s) => s.class === "managed" && !!s.managed_rail && !s.managed_rail.on,
     text: (s, org) => s.managed_rail?.message || `Team AI summaries are not running on this machine yet under ${org}'s terms.`,
+    org: "org_session_enrichment",
   },
   {
     state: "Running",
@@ -262,6 +325,8 @@ const SESSIONS_BANNER_RULES: ReadonlyArray<{
   },
 ];
 
+const PLACE_TEAM_SUMMARIES = placeLink("team_summaries").href;
+
 export const ORG_SESSIONS_BANNER_STATES: readonly string[] = SESSIONS_BANNER_RULES.map((r) => r.state);
 
 // orgIntelSessionsBanner returns the org banner for the listed sessions'
@@ -276,7 +341,15 @@ export function orgIntelSessionsBanner(s: OrgIntelStatus | null | undefined, pla
   if (mode === "mixed") text += " Sessions marked personal use your own AI summaries, described below.";
   const r = s.requirement;
   const terms = r ? `${r.provider_label} / ${r.model} · ${orgIntelLevelLabel(r.evidence_level)} · Background: ${orgIntelBackgroundLine(r)}` : "";
-  return { mode, title: `Team AI summaries · ${rule.state}`, state: rule.state, text, terms, link: "/settings?section=intel" };
+  return {
+    mode,
+    title: `Team AI summaries · ${rule.state}`,
+    state: rule.state,
+    text,
+    terms,
+    link: PLACE_TEAM_SUMMARIES,
+    org: rule.org ? orgPlaceLink(s.org_dashboard, rule.org, s.dashboard_kind) : null,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -291,6 +364,14 @@ export type OrgIntelActions = {
   needs_preview: boolean;
   reason?: string;
   reason_text?: string;
+  // The way forward for `reason` (internal/orgintel.ActionReasonFix): a place
+  // on this machine and/or the team-dashboard place only the org's admins
+  // change. Read with needsSetting.fixOf.
+  settings?: string;
+  settings_label?: string;
+  org_settings?: string;
+  org_settings_label?: string;
+  org_dashboard_kind?: string;
 };
 
 export type OrgIntelSubmission = {
@@ -317,6 +398,8 @@ export type OrgIntelSessionView = {
   session_id: string;
   authority: "org" | "personal" | "unknown" | string;
   org_name?: string;
+  /** "personal" or "team" (OrgIntelStatus.dashboard_kind). */
+  dashboard_kind?: string;
   class: OrgIntelClass;
   actions: OrgIntelActions;
   latest?: OrgIntelSubmission;

@@ -140,7 +140,7 @@ function VerbosityBody({ data }: { data: VerbosityResponse }) {
           >
             Run Backfill
           </Link>{" "}
-          with the current SuperBased build, then refresh this session.
+          with the current superbased build, then refresh this session.
         </p>
       )}
     </div>

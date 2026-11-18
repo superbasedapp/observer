@@ -305,10 +305,10 @@ var reasonWords = map[string]string{
 	ReasonDBNotAccepted:    "databases not downloaded: waiting for your one-time accept",
 
 	// The package lookup posture (lane RM-2).
-	ReasonLookupNotChosen:    "no package lookup chosen yet: download the databases or use the SuperBased lookup",
-	ReasonRemoteNotAccepted:  "SuperBased lookup chosen but not accepted",
-	ReasonRemoteUnavailable:  "the SuperBased lookup is unavailable",
-	ReasonRemoteLookupFailed: "the SuperBased lookup could not fetch this package's advisories",
+	ReasonLookupNotChosen:    "no package lookup chosen yet: download the databases or use the superbased lookup",
+	ReasonRemoteNotAccepted:  "superbased lookup chosen but not accepted",
+	ReasonRemoteUnavailable:  "the superbased lookup is unavailable",
+	ReasonRemoteLookupFailed: "the superbased lookup could not fetch this package's advisories",
 
 	ReasonExtractorFailed:  "could not be read",
 	ReasonUnpinned:         "no exact version pinned",

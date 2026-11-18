@@ -153,7 +153,7 @@ export function uninstallErrorMessage(status: number, reason: string): string {
     case 404:
       return "This dashboard has no record of installing this tool, so it will not uninstall it.";
     case 501:
-      return "This dashboard runs without the install record (run SuperBased with `observer start`).";
+      return "This dashboard runs without the install record (run superbased with `observer start`).";
     default:
       return reason || "The uninstall could not be started.";
   }

@@ -151,7 +151,7 @@ export function Security() {
       )}
       {st && !passkeysSupported() && (
         <Callout tone="warn" title="This browser cannot use passkeys">
-          Open SuperBased in an up-to-date browser to add or use a passkey.
+          Open superbased in an up-to-date browser to add or use a passkey.
         </Callout>
       )}
       {!st ? (
@@ -162,7 +162,7 @@ export function Security() {
           icon={KeyRound}
           sub={
             keys.length === 0
-              ? "No passkey yet. Signing in uses only your SuperBased sign-in."
+              ? "No passkey yet. Signing in uses only your superbased sign-in."
               : "Every sign-in asks for one of these."
           }
         >
@@ -253,7 +253,7 @@ export function Security() {
         <Card
           title="Approve a machine"
           icon={Laptop}
-          sub="Signing in to SuperBased from a new computer needs this step. Paste the machine id it showed you."
+          sub="Signing in to superbased from a new computer needs this step. Paste the machine id it showed you."
         >
           <form
             className="flex flex-wrap items-end gap-3"

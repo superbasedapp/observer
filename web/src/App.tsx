@@ -21,6 +21,9 @@ import { OrgIntelConsentBanner } from "@/components/OrgIntelConsentBanner";
 import { BudgetWarningBanner } from "@/components/BudgetWarningBanner";
 import { UpdateBanner } from "@/components/UpdateBanner";
 import { FirstCaptureToast } from "@/components/FirstCaptureToast";
+import { LiveRibbon } from "@/components/ribbon/LiveRibbon";
+import { useLiveRibbon } from "@/components/ribbon/useLiveRibbon";
+import { firstCaptureToastAllowed } from "@/lib/ribbon";
 import { FirstRunHost } from "@/components/FirstRunHost";
 import { ToastViewport } from "@/components/Toast";
 import { MessageToast } from "@/components/MessageToast";
@@ -238,6 +241,20 @@ function ActivityProgress() {
   return <TopProgress active={active} rider={rider} className="z-40" />;
 }
 
+// FirstCaptureGate keeps one celebration, not two: where the live ribbon can
+// show its first-prompt receipt, the receipt owns the first capture and the
+// older FirstCaptureToast stays away; where it cannot (the ribbon is off, the
+// org hid Live, an older daemon), the toast behaves as before.
+function FirstCaptureGate() {
+  const ribbon = useLiveRibbon();
+  const allowed = firstCaptureToastAllowed({
+    answered: ribbon.answered,
+    supported: ribbon.supported,
+    ribbonOn: !ribbon.off,
+  });
+  return allowed ? <FirstCaptureToast /> : null;
+}
+
 // Renderer injected into the shared design-system help slot: DS components
 // (StatCard/HeroStat/PageHeader) render this app's HelpInd for their helpId,
 // which the delegated data-help-id click handler below turns into a drawer.
@@ -375,7 +392,11 @@ export default function App() {
                 every page - Terminals included - and toasts a new notice
                 once per browser through the ToastViewport below. */}
             <BudgetWarningBanner />
-            <FirstCaptureToast />
+            {/* The live ribbon's strip (components/ribbon): under the state
+                banners, above the page, only while an agent session is live.
+                It also hosts the one-time first-prompt receipt. */}
+            <LiveRibbon />
+            <FirstCaptureGate />
             {/* The first-run capture view (T-922): detected AI tools and the
                 watcher's progress over their existing history. Opens by
                 itself once on a fresh install; reopened from the command

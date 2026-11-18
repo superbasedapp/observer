@@ -132,3 +132,36 @@ func TestSnoozeReplacesEarlierTime(t *testing.T) {
 		t.Fatalf("empty path keeps nothing: %+v %v", st, err)
 	}
 }
+
+// TestReceiptArmsAndFiresOnce pins the first-prompt receipt milestone: armed
+// once (a second arm keeps the first time), fired once (a second fire keeps
+// the first session), never fired before it is armed, and a bad body refused.
+func TestReceiptArmsAndFiresOnce(t *testing.T) {
+	s := New(filepath.Join(t.TempDir(), Filename))
+	if st, err := s.FireReceipt("early", []byte(`{}`), t0); err != nil || st.Receipt != nil {
+		t.Fatalf("fire before arm: %+v err=%v", st.Receipt, err)
+	}
+	if _, err := s.ArmReceipt(t0); err != nil {
+		t.Fatal(err)
+	}
+	st, err := s.ArmReceipt(t0.Add(time.Hour))
+	if err != nil || !st.Receipt.ArmedAt.Equal(t0) {
+		t.Fatalf("second arm moved ArmedAt: %+v err=%v", st.Receipt, err)
+	}
+	if _, err := s.FireReceipt("s1", []byte(`not json`), t0.Add(time.Minute)); err == nil {
+		t.Fatal("invalid body accepted")
+	}
+	if _, err := s.FireReceipt("s1", []byte(`{"tokens":10}`), t0.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	st, err = s.FireReceipt("s2", []byte(`{"tokens":99}`), t0.Add(2*time.Minute))
+	if err != nil || st.Receipt.SessionID != "s1" || string(st.Receipt.Body) != `{"tokens":10}` {
+		t.Fatalf("second fire replaced the first: %+v err=%v", st.Receipt, err)
+	}
+	if got := s.Load(); got.Receipt == nil || got.Receipt.FiredAt == nil || !got.Receipt.FiredAt.Equal(t0.Add(time.Minute)) {
+		t.Fatalf("reloaded receipt: %+v", got.Receipt)
+	}
+	if st, _ := New("").ArmReceipt(t0); st.Receipt != nil {
+		t.Fatal("a store with no path armed a receipt")
+	}
+}

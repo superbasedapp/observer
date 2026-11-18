@@ -26,7 +26,7 @@ import {
 // PackageLookupCard - the Privacy page's "Package lookup" card (OS and CI
 // vulnerability scanning plan section 13.10, lane RM-2), beside the Code
 // security sharing picker, because it decides what leaves the machine:
-// download the OSV databases (local), the SuperBased lookup with no
+// download the OSV databases (local), the superbased lookup with no
 // download (remote), or both. A fresh install sees the first-run choice
 // (ruling Q8 (a)): the download and the lookup side by side, and nothing is
 // scanned until one is picked.
@@ -65,10 +65,10 @@ function pendingFor(st: PackageLookupStatus, change: PackageLookupChange): Pendi
   }
   if (change.accept_remote) {
     return {
-      title: "Use the SuperBased lookup?",
+      title: "Use the superbased lookup?",
       text: st.remote.text,
       extra: `Hosts: ${(st.remote_hosts ?? []).join(" and ")}.`,
-      accept: "Accept the SuperBased lookup",
+      accept: "Accept the superbased lookup",
       change,
     };
   }
@@ -154,7 +154,7 @@ export function PackageLookupView({ st, onChanged }: { st: PackageLookupStatus; 
 
 /**
  * PackageLookupFirstRun is the first-run choice (ruling Q8 (a)): the
- * download and the SuperBased lookup side by side, each with what it sends;
+ * download and the superbased lookup side by side, each with what it sends;
  * a click opens that choice's consent dialog.
  */
 export function PackageLookupFirstRun({
@@ -174,7 +174,7 @@ export function PackageLookupFirstRun({
           <div className="font-medium text-fg-1">{m.label}</div>
           <p className="m-0 text-[11.5px] text-fg-3">{m.sends}</p>
           <Button variant="primary" disabled={busy} onClick={() => onChoose(modeChange(st, m.id))} data-testid={`package-lookup-choose-${m.id}`}>
-            {m.id === "local" ? `Download (about ${st.approx_mb} MB)...` : "Use the SuperBased lookup..."}
+            {m.id === "local" ? `Download (about ${st.approx_mb} MB)...` : "Use the superbased lookup..."}
           </Button>
         </div>
       ))}
@@ -209,7 +209,7 @@ function LookupControls({ st, busy, onChoose }: { st: PackageLookupStatus; busy:
       </div>
       {remote && (
         <div className="space-y-2 border-t border-line-1 pt-3" data-testid="package-lookup-remote">
-          <div className="text-fg-2">What the SuperBased lookup covers</div>
+          <div className="text-fg-2">What the superbased lookup covers</div>
           <div className="flex flex-wrap gap-3">
             {(st.kind_choices ?? []).map((k) => {
               const on = (st.kinds ?? []).includes(k);
@@ -243,7 +243,7 @@ function LookupControls({ st, busy, onChoose }: { st: PackageLookupStatus; busy:
           <div className="flex flex-wrap gap-2">
             {st.remote.accepted && (
               <Button variant="secondary" disabled={busy} onClick={() => onChoose({ withdraw_remote: true, withdraw_private: true })} data-testid="package-lookup-withdraw">
-                Withdraw the SuperBased lookup consent
+                Withdraw the superbased lookup consent
               </Button>
             )}
             {st.remote_private.accepted && (

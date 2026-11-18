@@ -5,11 +5,13 @@
 // broken profile, a fresh automation profile, a second browser). The daemon
 // now keeps the dismissal beside its database (GET /api/firstrun lists it;
 // POST /api/firstrun/seen {"dismiss": key} records it), and the browser's
-// own storage stays the fast path. Pure: no fetch here (the caller posts
-// dismissRequestInit), pinned by uiDismissals.test.ts.
+// own storage stays the fast path. "first_prompt_receipt" is the live
+// ribbon's one-time first-prompt receipt (lib/ribbon.ts RECEIPT_NOTICE).
+// Pure: no fetch here (the caller posts dismissRequestInit), pinned by
+// uiDismissals.test.ts.
 
 /** The closed set of notice keys the daemon accepts. */
-export type UiNotice = "tour" | "components_setup";
+export type UiNotice = "tour" | "components_setup" | "first_prompt_receipt";
 
 let known: ReadonlySet<string> = new Set();
 let confirmToken = "";

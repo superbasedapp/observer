@@ -257,6 +257,17 @@ func (s *Server) configDryRun(w http.ResponseWriter, sv configSave) {
 	writeJSON(w, resp)
 }
 
+// editPatches is sectionFilePatches, except that an edit with keysOnNewFile
+// writes only its changed keys into a file that does not exist yet.
+func editPatches(ed configEdit, prev, cfg config.Config, fileExists bool) []config.Patch {
+	if ed.keysOnNewFile && !fileExists {
+		if patches, err := config.StructuralPatches(prev, cloneConfig(cfg)); err == nil && len(patches) > 0 {
+			return patches
+		}
+	}
+	return sectionFilePatches(ed.section, prev, cfg, fileExists)
+}
+
 // sectionFilePatches is what a whole-section save hands config.PatchFile.
 // A section body can change values the schema does not model as scalar
 // leaves (lists, tables, compound rule blocks). Since T-524 the save names
@@ -327,6 +338,12 @@ type configEdit struct {
 	// afterWrite runs after a real save (never a dry run) and returns
 	// fields merged into the response (a live reload's warnings).
 	afterWrite func(cfg config.Config) map[string]any
+	// keysOnNewFile, when set, writes only the changed keys into a config
+	// file that does not exist yet (config.StructuralPatches, T-741/D-551),
+	// instead of the whole section's re-serialize that pins every default.
+	// The launchpad's first-launch consent sets it: on a fresh machine its
+	// preview shows the three keys it writes, not a 900-line file.
+	keysOnNewFile bool
 }
 
 // configEditRefusal is an edit's refusal answered with its own status (a
@@ -436,7 +453,7 @@ func (s *Server) commitConfigEdit(w http.ResponseWriter, r *http.Request, ed con
 		prev:           prev,
 		cfg:            cfg,
 		changed:        changed,
-		patches:        sectionFilePatches(ed.section, prev, cfg, statErr == nil),
+		patches:        editPatches(ed, prev, cfg, statErr == nil),
 		etag:           current,
 		needsConfirm:   changedNeedsConfirm(changed),
 		secretWarnings: secretWarningsFor(changedLeafValues(&cfg, changed)),

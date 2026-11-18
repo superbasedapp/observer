@@ -9,7 +9,7 @@ import type { LucideIcon, LucideProps } from "lucide-react";
 // strokeWidth 1.75 with absoluteStrokeWidth off, which lands within ~0.1px of
 // the existing set at size 14, and snaps sizes to a 4-step scale.
 //
-// Brand marks (tool / model / host / IdP logos, the SuperBased mark) are NOT
+// Brand marks (tool / model / host / IdP logos, the superbased mark) are NOT
 // icons in this sense — they stay in their generated tables.
 
 export type IconSize = "xs" | "sm" | "md" | "lg" | "xl";

@@ -287,9 +287,12 @@ function detail(mo: MockOrg): OrgDetail {
 }
 
 // listRow is an org as the list answers it: an active org carries its
-// machines page link (portal_orgs.go orgJSON).
+// open and machines page links (portal_orgs.go orgJSON, built there by
+// tenantlink.go; this dev mock stands in for that server).
 function listRow(o: PortalOrg): PortalOrg {
-  return o.status === "active" && o.host ? { ...o, machines_page_url: "https://" + o.host + "/me/profile" } : o;
+  return o.status === "active" && o.host
+    ? { ...o, open_url: "https://" + o.host + "/", machines_page_url: "https://" + o.host + "/me/profile" }
+    : o;
 }
 
 // teamOrgs is the account's team count against the cap: the teams it owns

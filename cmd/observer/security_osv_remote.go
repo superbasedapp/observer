@@ -225,7 +225,7 @@ func (e *depsScanEnv) postureNote(driverID string) string {
 		return ""
 	}
 	if e.remoteBlocked() != "" {
-		return "package lookup: " + mode + ", the SuperBased lookup did not run (" + e.remoteBlocked() + ")"
+		return "package lookup: " + mode + ", the superbased lookup did not run (" + e.remoteBlocked() + ")"
 	}
 	if driverID != depscan.ScalibrID {
 		return "package lookup: " + mode + "; this driver matches local databases only"
@@ -485,7 +485,7 @@ type gatedFetcher struct {
 
 func (g gatedFetcher) Fetch(ctx context.Context, path string, max int64) ([]byte, error) {
 	if !g.live() {
-		return nil, errors.New("the SuperBased lookup was turned off")
+		return nil, errors.New("the superbased lookup was turned off")
 	}
 	return g.inner.Fetch(ctx, path, max)
 }

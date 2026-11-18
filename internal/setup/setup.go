@@ -224,7 +224,7 @@ var channelRules = []struct {
 	{"npm install", "npm i -g @superbased/observer@latest", func(lower, dir string, sib func(string, string) bool) bool {
 		return strings.Contains(lower, "node_modules/@superbased/observer") || strings.Contains(lower, "/node_modules/.bin/") || sib(dir, npmShimMarker)
 	}},
-	{"VS Code extension copy", "update the SuperBased Observer extension in VS Code", func(lower, _ string, _ func(string, string) bool) bool {
+	{"VS Code extension copy", "update the superbased Observer extension in VS Code", func(lower, _ string, _ func(string, string) bool) bool {
 		return strings.Contains(lower, "superbased.superbased-observer") || strings.Contains(lower, "globalstorage/superbased")
 	}},
 	{"pipx install", "pipx upgrade superbased-observer", func(lower, _ string, _ func(string, string) bool) bool {
@@ -266,7 +266,7 @@ func PreflightReport(r PreflightResult, forceHint string) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("SuperBased Observer is already installed on this computer:\n")
+	b.WriteString("superbased Observer is already installed on this computer:\n")
 	for _, o := range r.Others {
 		fmt.Fprintf(&b, "  %s: %s\n", o.Kind, o.Path)
 		if o.Upgrade != "" {

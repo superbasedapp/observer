@@ -7,6 +7,13 @@
 // the pages read these and connectModel.test.ts pins them.
 
 import type { ConnectHome, ConnectRequestView, PortalOrg } from "../api.ts";
+import {
+  DASHBOARD_ROLES,
+  LOCAL_DASHBOARD_URL,
+  asSentence,
+  onlineDashboardLabel,
+  onlineRole,
+} from "../../../shared/lib/twoDashboards.ts";
 
 // ---------------------------------------------------------------------------
 // The install commands
@@ -106,7 +113,7 @@ export function homeMachineView(home: ConnectHome | null, personalUrl: string | 
         showInstall: false,
         poll: false,
         headline: `Connected: ${newest.machine_name}`,
-        openUrl: newest.online_url ?? personalUrl,
+        openUrl: newest.open_url ?? personalUrl,
       };
     }
     case "signed_in":
@@ -192,7 +199,7 @@ export function connectPageState(v: Pick<ConnectRequestView, "status" | "target"
 export const CONNECT_PAGE_TEXT: Readonly<Record<Exclude<ConnectPageState, "choose">, { title: string; line: string }>> = {
   connected: {
     title: "Machine connected",
-    line: "Observer on that machine finishes connecting by itself. You can close this page.",
+    line: "Observer on that machine finishes connecting by itself. Open either dashboard below, or close this page.",
   },
   signed_in_only: {
     title: "Signed in, nothing sent",
@@ -208,9 +215,89 @@ export const CONNECT_PAGE_TEXT: Readonly<Record<Exclude<ConnectPageState, "choos
   },
 };
 
-/** choiceLabel names a dashboard in the chooser. */
-export function choiceLabel(c: { kind: "personal" | "team"; display_name: string }): string {
-  return c.kind === "personal" ? "Your personal dashboard" : c.display_name;
+// ---------------------------------------------------------------------------
+// The two dashboards, after approval
+// ---------------------------------------------------------------------------
+
+/** DashboardCard is one of the two dashboards the approved page shows side
+ * by side: what it holds and the button that opens it. */
+export interface DashboardCard {
+  id: "local" | "online";
+  title: string;
+  /** role is what this dashboard holds (shared/lib/twoDashboards, the
+   * terminal's words as a sentence). */
+  role: string;
+  button: string;
+  href: string;
+  /** "external" opens a new tab; "portal" is a path inside this portal
+   * (the router's own, under /portal). */
+  opens: "external" | "portal";
+  /** note sits under the button. */
+  note?: string;
+}
+
+/** PORTAL_HOME is the personal online dashboard's home in this portal. */
+export const PORTAL_HOME = "/home";
+
+/** httpsOnly keeps a server-built address a button may open: https only,
+ * no credentials. */
+function httpsOnly(raw: string | undefined): string | null {
+  if (!raw) return null;
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== "https:" || u.username || u.password) return null;
+    return u.toString();
+  } catch {
+    return null;
+  }
+}
+
+/** connectedDashboards is the approved page's two cards: the local dashboard
+ * on the machine just connected (everything, in full, kept there) and the
+ * online one (the personal or team dashboard's own address when the server
+ * sent a usable one, else this portal's home). null before approval or
+ * when nothing was connected. */
+export function connectedDashboards(v: Pick<ConnectRequestView, "status" | "target" | "open_url">): DashboardCard[] | null {
+  if (connectPageState(v) !== "connected" || !v.target) return null;
+  const local: DashboardCard = {
+    id: "local",
+    title: "Local dashboard",
+    role: asSentence(DASHBOARD_ROLES.local),
+    button: "Open the local dashboard",
+    href: LOCAL_DASHBOARD_URL,
+    opens: "external",
+    note: "On the computer you just connected.",
+  };
+  const kind = v.target.kind;
+  // The dashboard's own address when the server sent a usable one (the
+  // personal dashboard's, or the team's); else this portal's home.
+  const onlineUrl = httpsOnly(v.open_url);
+  const online: DashboardCard = {
+    id: "online",
+    title: kind === "team" ? `${onlineDashboardLabel(kind)}: ${v.target.display_name || v.target.slug}` : onlineDashboardLabel(kind),
+    role: asSentence(onlineRole(kind)),
+    button: kind === "team" ? "Open the team dashboard" : "Open your online dashboard",
+    href: onlineUrl ?? PORTAL_HOME,
+    opens: onlineUrl ? "external" : "portal",
+  };
+  return [local, online];
+}
+
+/** ChoicePosition is where a dashboard's name sits: a label of its own (the
+ * chooser row) or mid-sentence ("... is connected to your personal
+ * dashboard."). */
+export type ChoicePosition = "label" | "inline";
+
+/** PERSONAL_CHOICE_NAME is the personal dashboard's name per position (a
+ * team's name is its own display name in either). */
+const PERSONAL_CHOICE_NAME: Readonly<Record<ChoicePosition, string>> = {
+  label: "Your personal dashboard",
+  inline: "your personal dashboard",
+};
+
+/** choiceLabel names a dashboard: as a label by default, or mid-sentence. */
+export function choiceLabel(c: { kind: "personal" | "team"; display_name: string }, at: ChoicePosition = "label"): string {
+  return c.kind === "personal" ? PERSONAL_CHOICE_NAME[at] : c.display_name;
 }
 
 // ---------------------------------------------------------------------------

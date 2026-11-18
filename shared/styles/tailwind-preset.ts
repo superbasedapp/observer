@@ -55,7 +55,7 @@ const preset: Partial<Config> = {
         warn: { DEFAULT: tokenColor("--warn"), soft: tokenColor("--warn-soft") },
         danger: { DEFAULT: tokenColor("--danger"), soft: tokenColor("--danger-soft"), on: tokenColor("--on-danger") },
         info: { DEFAULT: tokenColor("--info"), soft: tokenColor("--info-soft") },
-        // The current SuperBased mark's Blueprint (bg-brand-blueprint etc.).
+        // The current superbased mark's Blueprint (bg-brand-blueprint etc.).
         brand: {
           blueprint: tokenColor("--brand-blueprint"),
           "blueprint-ink": tokenColor("--brand-blueprint-ink"),

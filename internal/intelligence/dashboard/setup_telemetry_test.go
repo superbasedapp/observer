@@ -184,3 +184,13 @@ func TestTelemetryReceiverKeysLiveInTheLinkedSection(t *testing.T) {
 		}
 	}
 }
+
+// TestTelemetryRefusalLinkIsTheTableRow: the receiver refusal's deep link
+// fields come from the one settingslink table and agree with its older
+// settings_link field.
+func TestTelemetryRefusalLinkIsTheTableRow(t *testing.T) {
+	f := otelExportFields()
+	if f.Settings != telemetryReceiverSettingsLink || f.SettingsLabel != "Settings > OTel export" {
+		t.Fatalf("otel export fields = %+v, want %s", f, telemetryReceiverSettingsLink)
+	}
+}

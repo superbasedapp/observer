@@ -10,6 +10,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/dashapi"
 	"github.com/marmutapp/superbased-observer/internal/dataauthority"
 	"github.com/marmutapp/superbased-observer/internal/orgintel"
+	"github.com/marmutapp/superbased-observer/internal/settingslink"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
@@ -89,18 +90,54 @@ func orgIntelSubmissionView(row store.OrgIntelSubmission, withBytes bool) dashap
 	return v
 }
 
+// orgIntelActionsView maps the session's action plan onto the wire view,
+// with the way forward for a refusal: the local place the developer changes
+// and/or the team-dashboard place only the organization's admins change
+// (orgintel.ActionReasonFix, paths from internal/settingslink).
+//
+// kind is the online dashboard kind (readConnectKind): on a personal
+// dashboard the sentence and the link speak to its only admin, the person.
+func orgIntelActionsView(s orgIntelSession, kind string) dashapi.OrgIntelActionsView {
+	v := dashapi.OrgIntelActionsView{
+		Preview: s.plan.Preview, Enrich: s.plan.Enrich, NeedsPreview: s.plan.NeedsPreview,
+		Reason: s.plan.Reason, ReasonText: orgintel.ActionReasonTextFor(s.plan.Reason, kind == "personal"),
+	}
+	fix := orgintel.ActionReasonFix(s.plan.Reason)
+	if l, ok := settingslink.For(fix.Place); ok {
+		v.Fields = l.Fields()
+	}
+	if l, ok := settingslink.OrgFor(orgDashboardAddress(s.snap.Enrolment), fix.OrgPlace); ok {
+		v.OrgFields = l.Fields()
+		v.OrgDashboardKind = kind
+	}
+	return v
+}
+
+// orgDashboardAddress is where the organization's own dashboard is: the
+// online address `observer connect` recorded, else the org server address.
+func orgDashboardAddress(e *store.Enrolment) string {
+	if e == nil {
+		return ""
+	}
+	if settingslink.OrgDashboardBase(e.OnlineURL) != "" {
+		return e.OnlineURL
+	}
+	return e.OrgServerURL
+}
+
 // orgIntelSessionState is `observer intel results` and GET /api/intel/session.
-func orgIntelSessionState(ctx context.Context, b orgBundle, sessionID string) (dashapi.OrgIntelSessionView, error) {
+func orgIntelSessionState(ctx context.Context, b orgBundle, sessionID, configPath string) (dashapi.OrgIntelSessionView, error) {
 	s, err := resolveOrgIntelSession(ctx, b, sessionID)
 	if err != nil {
 		return dashapi.OrgIntelSessionView{}, err
 	}
+	kind := ""
+	if s.snap.Enrolment != nil {
+		kind = readConnectKind(configPath, s.snap.Enrolment.OrgID)
+	}
 	v := dashapi.OrgIntelSessionView{
 		SessionID: sessionID, Authority: string(s.authority), OrgName: s.orgName(), Class: s.snap.Status.Class,
-		Actions: dashapi.OrgIntelActionsView{
-			Preview: s.plan.Preview, Enrich: s.plan.Enrich, NeedsPreview: s.plan.NeedsPreview,
-			Reason: s.plan.Reason, ReasonText: orgintel.ActionReasonText(s.plan.Reason),
-		},
+		DashboardKind: kind, Actions: orgIntelActionsView(s, kind),
 	}
 	if s.snap.Enrolment != nil {
 		rows, rerr := b.store.OrgIntelSubmissions(ctx, s.snap.Enrolment.OrgID, sessionID, orgIntelLedgerLimit)
@@ -243,7 +280,7 @@ func (d *orgIntelDashboard) withBundle(r *http.Request, fn func(b orgBundle) err
 // Session serves GET /api/intel/session/{id}.
 func (d *orgIntelDashboard) Session(r *http.Request, sessionID string) (v dashapi.OrgIntelSessionView, err error) {
 	err = d.withBundle(r, func(b orgBundle) error {
-		v, err = orgIntelSessionState(r.Context(), b, sessionID)
+		v, err = orgIntelSessionState(r.Context(), b, sessionID, d.configPath)
 		return err
 	})
 	return v, asOrgIntelDashboardErr(err)

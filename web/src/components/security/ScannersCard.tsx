@@ -393,7 +393,7 @@ function ScannerDBAccept({ db, onChanged }: { db: ScannerDBStatus; onChanged: ()
 /**
  * OSDBAccept is the OS release databases' one accept (ruling Q1 (b)): one
  * accept covers every release the scanned images use, each fetched on
- * demand from SuperBased's signed mirror only; each distribution's largest
+ * demand from superbased's signed mirror only; each distribution's largest
  * release is stated before the click. Then the installed releases with
  * their epoch, source, size and labels.
  */

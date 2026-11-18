@@ -17,6 +17,8 @@ import { GUARD_RULE_OPTIONS, useModelOptions, useToolOptions } from "@/lib/usePi
 import { useComponentCatalog } from "@/lib/useComponents";
 import { useApi } from "@/lib/useApi";
 import { apiReason, fetchJSON, localConfirmHeaders } from "@/lib/api";
+import { errorNote, type ErrorNote } from "@/lib/needsSetting";
+import { ApiErrorNotice } from "@/components/NeedsSettingNotice";
 import { NAV_ITEMS, navIcon } from "@/lib/nav";
 import { NODE_TAB_ROUTES } from "@/lib/pageTabRoutes";
 import { useGovernance } from "@/lib/governance";
@@ -624,7 +626,7 @@ function RequestDialog({
   const [optIn, setOptIn] = useState(false);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ErrorNote | null>(null);
   const fromEvent = Boolean(initial.context?.event_id);
   // The cost display mode; the gate remounts the app when it changes.
   const dollars = dollarsShown();
@@ -702,7 +704,7 @@ function RequestDialog({
         body: JSON.stringify(body),
       })
         .then(setPreview)
-        .catch((e) => setError(apiReason(e)));
+        .catch((e) => setError(errorNote(e)));
     }, 250);
     return () => clearTimeout(t);
   }, [body, message]);
@@ -720,7 +722,7 @@ function RequestDialog({
       else if (res.request?.duplicate) onSent(`You already have this request open (#${res.request.id}); nothing new was sent.`);
       else onSent(`Request #${res.request?.id ?? ""} sent. You will see the answer here.`);
     } catch (e) {
-      setError(apiReason(e));
+      setError(errorNote(e));
     } finally {
       setBusy(false);
     }
@@ -914,7 +916,7 @@ function RequestDialog({
             ))}
           </ul>
         )}
-        {error && <div className="text-[11.5px] text-danger">{error}</div>}
+        <ApiErrorNotice note={error} plainClassName="text-[11.5px] text-danger" />
         <details className="rounded-2 border border-line-2 bg-bg-1" open={Boolean(preview)}>
           <summary className="cursor-pointer px-2.5 py-1.5 text-[11.5px] font-medium text-fg-2">Exactly what will be sent</summary>
           <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-all px-2.5 pb-2 font-mono text-[11px] text-fg-1">

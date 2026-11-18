@@ -53,7 +53,28 @@ type State struct {
 	// later snooze replaces the earlier time. The dashboard owns the closed
 	// set of keys and the return interval.
 	Snoozed map[string]time.Time `json:"snoozed,omitempty"`
+	// Receipt is the first-prompt receipt milestone (the live ribbon's
+	// first milestone): armed once, fired once. Additive; a state written
+	// before it existed reads as never armed.
+	Receipt *Receipt `json:"receipt,omitempty"`
 }
+
+// Receipt is the once-per-install "Your first captured prompt" milestone.
+// ArmedAt is when the dashboard first asked for it (the first ribbon read):
+// only a session that STARTED after it may fire it. FiredAt, SessionID and
+// Body are set once, when it fires; Body is the caller's own JSON summary
+// (counts and labels only, never content or paths), kept so the receipt
+// shows the numbers it fired with. Whether the owner has seen it is a
+// dismissal (Dismissed), not a field here.
+type Receipt struct {
+	ArmedAt   time.Time       `json:"armed_at"`
+	FiredAt   *time.Time      `json:"fired_at,omitempty"`
+	SessionID string          `json:"session_id,omitempty"`
+	Body      json.RawMessage `json:"body,omitempty"`
+}
+
+// maxReceiptBody bounds a fired receipt's summary.
+const maxReceiptBody = 4 << 10
 
 // DismissedKeys returns the dismissed notice keys, sorted.
 func (s State) DismissedKeys() []string {
@@ -159,6 +180,47 @@ func (s *Store) Dismiss(key string, now time.Time) (State, error) {
 	st.Dismissed[key] = now.UTC()
 	if err := s.write(st); err != nil {
 		return st, fmt.Errorf("firstrunstate.Dismiss: %w", err)
+	}
+	return st, nil
+}
+
+// ArmReceipt arms the first-prompt receipt at now, once: an already-armed
+// (or fired) receipt is left as it is.
+func (s *Store) ArmReceipt(now time.Time) (State, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st := s.read()
+	if s.path == "" || st.Receipt != nil {
+		return st, nil
+	}
+	st.Receipt = &Receipt{ArmedAt: now.UTC()}
+	if err := s.write(st); err != nil {
+		return st, fmt.Errorf("firstrunstate.ArmReceipt: %w", err)
+	}
+	return st, nil
+}
+
+// FireReceipt records the receipt as fired for sessionID with its summary
+// body, once: an unarmed or already-fired receipt is left as it is, and an
+// oversized body is refused.
+func (s *Store) FireReceipt(sessionID string, body []byte, now time.Time) (State, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st := s.read()
+	if s.path == "" || st.Receipt == nil || st.Receipt.FiredAt != nil || sessionID == "" {
+		return st, nil
+	}
+	if len(body) > maxReceiptBody || !json.Valid(body) {
+		return st, fmt.Errorf("firstrunstate.FireReceipt: body is not a JSON object under %d bytes", maxReceiptBody)
+	}
+	at := now.UTC()
+	r := *st.Receipt
+	r.FiredAt = &at
+	r.SessionID = sessionID
+	r.Body = append(json.RawMessage(nil), body...)
+	st.Receipt = &r
+	if err := s.write(st); err != nil {
+		return st, fmt.Errorf("firstrunstate.FireReceipt: %w", err)
 	}
 	return st, nil
 }

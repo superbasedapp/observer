@@ -146,9 +146,9 @@ export type CoverageChip = { key: string; label: string; tone: Tone; title: stri
 function probeChip(key: string, name: string, p: FirstRunProbe | undefined, optional: string): CoverageChip | null {
   if (!p || p.no_hooks || p.unprobed) return null;
   if (p.registered) {
-    return { key, label: p.via_plugin ? `${name} on (plugin)` : `${name} on`, tone: "success", title: p.detail || `${name} point at SuperBased.` };
+    return { key, label: p.via_plugin ? `${name} on (plugin)` : `${name} on`, tone: "success", title: p.detail || `${name} point at superbased.` };
   }
-  if (p.partial) return { key, label: `${name} partly on`, tone: "warn", title: p.detail || `Some ${name.toLowerCase()} point at SuperBased.` };
+  if (p.partial) return { key, label: `${name} partly on`, tone: "warn", title: p.detail || `Some ${name.toLowerCase()} point at superbased.` };
   return { key, label: `${name} off`, tone: "neutral", title: p.detail ? `${optional} ${p.detail}` : optional };
 }
 
@@ -172,7 +172,7 @@ export function coverageChips(r: CoverageRow): CoverageChip[] {
   }
   const chips = [
     probeChip("hooks", "Hooks", r.hooks, "Hooks add live events and guardrails."),
-    probeChip("mcp", "MCP", r.mcp, "Optional. Lets the tool ask SuperBased about your project."),
+    probeChip("mcp", "MCP", r.mcp, "Optional. Lets the tool ask superbased about your project."),
     r.proxy
       ? r.proxy.registered
         ? { key: "proxy", label: "Proxy routed", tone: "success" as Tone, title: r.proxy.detail || "Requests go through the local proxy." }
@@ -246,7 +246,7 @@ const NEXT_RULES: ReadonlyArray<{ name: string; when: (r: CoverageRow) => boolea
   {
     name: "watcher not running",
     when: (r) => r.history?.state === "not_running",
-    step: () => ({ kind: "note", detail: "Start SuperBased with observer start to capture this tool." }),
+    step: () => ({ kind: "note", detail: "Start superbased with observer start to capture this tool." }),
   },
   {
     name: "hooks not registered",

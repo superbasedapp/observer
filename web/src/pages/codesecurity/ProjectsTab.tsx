@@ -1,5 +1,6 @@
-import { useMemo, useState } from "react";
-import { Callout, Input, Toggle } from "@/components/primitives";
+import { useMemo, useState, type MouseEvent } from "react";
+import { useNavigate } from "react-router-dom";
+import { Button, Callout, Input, Toggle } from "@/components/primitives";
 import { useApi, type ApiState } from "@/lib/useApi";
 import type { SecurityStatus } from "@/lib/codeSecurity";
 import type { CoverageResponse } from "@/lib/codeSecurityApi";
@@ -29,6 +30,14 @@ export function ProjectsTab({
 }) {
   const [query, setQuery] = useState("");
   const [showIdle, setShowIdle] = useState(false);
+  const navigate = useNavigate();
+  // The Scanner setup callout's way forward: the Scanners tab, where each
+  // scanner is installed and turned on.
+  const openScanners = (e: MouseEvent<HTMLButtonElement | HTMLAnchorElement>) => {
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    navigate("/code-security?tab=scanners");
+  };
   // The ecosystems column reads the coverage; a failed read only leaves the
   // column at "none scanned", never the table.
   const coverage = useApi<CoverageResponse>("/api/security/coverage");
@@ -60,7 +69,15 @@ export function ProjectsTab({
         {hiddenLine && !showIdle && <span className="text-[12px] text-fg-3">{hiddenLine}</span>}
       </div>
       {notices.length > 0 && (
-        <Callout tone="info" title="Scanner setup">
+        <Callout
+          tone="info"
+          title="Scanner setup"
+          action={
+            <Button size="sm" variant="secondary" href="/code-security?tab=scanners" onClick={openScanners}>
+              Open Scanners
+            </Button>
+          }
+        >
           <ul className="space-y-0.5">
             {notices.map((n) => (
               <li key={`${n.driver}|${n.reason}`}>{setupNoticeLine(n)}</li>

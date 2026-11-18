@@ -42,7 +42,7 @@ export const PREFLIGHT_FACT_ROWS: ReadonlyArray<FactRow> = [
       : null,
   (_tool, p) =>
     p.install_unverified
-      ? "SuperBased can't confirm it's installed. The launch will tell you if it isn't."
+      ? "superbased can't confirm it's installed. The launch will tell you if it isn't."
       : null,
 ];
 

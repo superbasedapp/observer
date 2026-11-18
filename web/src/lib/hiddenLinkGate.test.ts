@@ -44,6 +44,11 @@ const ALLOWED: Record<string, { why: string; caller?: string }> = {
   "lib/help.ts": { why: "help prose naming an address, not a link; HelpDrawer drops hidden entries" },
   "lib/codeSecurityApi.ts": { why: "findingsHref addresses Code security itself; its callers are that page" },
   "pages/codesecurity/OverviewTab.tsx": { why: "a tab link inside Code security to Code security" },
+  "pages/codesecurity/ProjectsTab.tsx": { why: "a tab link inside Code security to Code security" },
+  "lib/settingsPlaces.ts": {
+    why: "pure place table; every render site uses NeedsSettingLink or NeedsSettingNotice, which gate",
+    caller: "components/NeedsSettingNotice.tsx",
+  },
   "lib/you.ts": { why: "pure consent-row owners", caller: "pages/You.tsx" },
   "lib/adminMessages.ts": { why: "pure attachment links; attachmentView takes the gate", caller: "pages/Messages.tsx" },
   "lib/codeSecurity.ts": { why: "pure approve address", caller: "pages/codesecurity/FindingDrawer.tsx" },

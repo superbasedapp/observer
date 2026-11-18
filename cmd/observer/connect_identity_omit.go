@@ -17,5 +17,5 @@ import (
 func connectIdentityState(string) frontdoor.Identity { return frontdoor.IdentityUnknown }
 
 func runConnectIdentity(*cobra.Command, []string) error {
-	return errors.New("observer connect --identity-only: SuperBased sign-in is not in this build; connecting to a team server by its address still works (observer connect <server>)")
+	return errors.New("observer connect --identity-only: superbased sign-in is not in this build; connecting to a team server by its address still works (observer connect <server>)")
 }

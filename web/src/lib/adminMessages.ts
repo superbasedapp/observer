@@ -486,7 +486,7 @@ export function readReceiptNote(readReceipts: boolean): string | null {
 
 /** The send error codes POST /api/messages answers with. */
 const SEND_ERRORS: Record<string, string> = {
-  not_enrolled: "Messages go to an organization, and this machine is not enrolled.",
+  not_enrolled: "Messages go to your organization, and this machine is not connected to one. Connect it in Settings > Account.",
   not_supported: "Your organization's server does not support messages yet.",
   threads_disabled: "Your organization does not let you start conversations.",
   topic_not_allowed: "Your organization does not take messages on this topic.",

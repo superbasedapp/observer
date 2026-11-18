@@ -6,6 +6,17 @@ import type { AuthConfig } from "../api";
 import { loadConsent } from "../consent";
 import { AuthShell } from "../components/AuthShell";
 import { routerPath, safeReturnTo } from "../lib/connectModel";
+import {
+  AUTO_START_SECONDS,
+  COUNTDOWN_ACTIONS,
+  SIGN_IN_COPY,
+  autoStarts,
+  countdownText,
+  otherVariant,
+  signInErrorNotice,
+  startUrl,
+  type SignInVariant,
+} from "../lib/signInModel";
 import { Pill } from "@shared/primitives/Pill";
 import { Skeleton } from "@shared/primitives/Skeleton";
 import { InlineLoading } from "@shared/primitives/Spinner";
@@ -18,8 +29,8 @@ import { Input } from "@shared/primitives/Input";
 // auth surface (or, on a 404 degrade, the cached hint from a prior sign-in).
 //
 // The union members keep the internal broker name (WorkOS) because they mirror
-// the server's own `auth_mode` wire value; NOTHING here is user-visible. Every
-// string an individual developer reads is vendor-neutral by policy.
+// the server's own `auth_mode` wire value. The copy names the provider only
+// where its own page is next (signInModel.PROVIDER_NAME, operator 2026-11-18).
 type SignInMode = "loading" | "workos" | "dev" | "workos-disabled";
 
 /** hintMode is the 404-degrade fallback for servers that predate the
@@ -67,18 +78,45 @@ function Notice({
   );
 }
 
+// COUNTDOWN_RING: the countdown ring's geometry (a 40px SVG, r 17).
+const COUNTDOWN_RING = { size: 40, r: 17 } as const;
+
+/** CountdownRing is the visible countdown: the seconds left in a ring that
+ * empties as they run out. Decorative (aria-hidden): the status line
+ * announces the countdown once, not every second. The ring's step is a CSS
+ * transition, which reduced motion turns off (motion-safe). */
+function CountdownRing({ left, total }: { left: number; total: number }) {
+  const { size, r } = COUNTDOWN_RING;
+  const circumference = 2 * Math.PI * r;
+  const offset = circumference * (1 - Math.max(0, left) / total);
+  return (
+    <span aria-hidden="true" className="relative inline-flex shrink-0 items-center justify-center text-accent">
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="-rotate-90">
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" strokeWidth="3" className="stroke-line-2" />
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={r}
+          fill="none"
+          strokeWidth="3"
+          stroke="currentColor"
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={offset}
+          className="motion-safe:transition-[stroke-dashoffset] motion-safe:duration-1000 motion-safe:ease-linear"
+        />
+      </svg>
+      <span className="absolute font-mono text-[13px] font-semibold tabular-nums text-fg-0">{Math.max(0, left)}</span>
+    </span>
+  );
+}
+
 // The sign-in actions are the shared primary Button, at the card's full
 // width and a taller hit area.
 const SIGN_IN_BUTTON = "h-10 w-full";
 
-/** SIGN_IN_TEXT is the page's copy (Getting started v2). index.html carries
- * the same lines for a browser with JavaScript off. */
-export const SIGN_IN_TEXT = {
-  title: "Sign in to SuperBased",
-  lead: "An account gives you one dashboard across your machines, teams, and AI session titles (opt-in).",
-  newHere: "New here? The same button creates your account.",
-  sendsNothing: "Signing in alone sends nothing from your machine.",
-} as const;
+// The page's copy per variant is lib/signInModel.ts SIGN_IN_COPY (index.html
+// carries the sign-in lines for a browser with JavaScript off).
 
 /** returnToHere reads the ?return_to= a guarded page sent the visitor with
  * (connectModel.safeReturnTo: a /portal/ path only). */
@@ -86,7 +124,16 @@ function returnToHere(): string | null {
   return safeReturnTo(new URLSearchParams(window.location.search).get("return_to"));
 }
 
-export function SignIn() {
+/** SignIn is the console's signed-out entry. variant "sign-in" is "/";
+ * "sign-up" is "/sign-up" (create an account), which leaves for the
+ * provider's sign-up screen by itself once browser sign-in is known to be on
+ * (signInModel.autoStarts). Both offer the other as a visible action. */
+export function SignIn({ variant = "sign-in" }: { variant?: SignInVariant }) {
+  const text = SIGN_IN_COPY[variant];
+  // A sign-in the server sent back here because it could not finish
+  // (signInModel.signInErrorNotice, L-142).
+  const returned = signInErrorNotice(window.location.search);
+  const other = otherVariant(variant);
   const navigate = useNavigate();
   const [mode, setMode] = useState<SignInMode>("loading");
   const [subject, setSubject] = useState("");
@@ -96,6 +143,10 @@ export function SignIn() {
   // The single-sign-on button's own busy state: the redirect is a full
   // navigation, so the button shows its spinner until the page unloads.
   const [redirecting, setRedirecting] = useState(false);
+  // The create-an-account entry's countdown (signInModel.autoStarts): the
+  // seconds left, or null when none is running (never started, or the
+  // visitor chose to stay).
+  const [countdown, setCountdown] = useState<number | null>(null);
 
   // A page restored from the back/forward cache comes back with the spinner
   // still on; clear it so the button is usable again.
@@ -124,12 +175,40 @@ export function SignIn() {
     };
   }, []);
 
-  // Starts the hosted single-sign-on redirect. The path is the server's
-  // contract and keeps the broker name; the label the developer reads does not.
-  function onSingleSignOnClick() {
+  // Starts the hosted sign-in (or sign-up) redirect. The path is the
+  // server's contract and keeps the broker name; the label the developer
+  // reads does not.
+  function startHosted(v: SignInVariant) {
     setRedirecting(true);
-    const back = returnToHere();
-    window.location.assign("/portal/auth/workos/start" + (back ? "?return_to=" + encodeURIComponent(back) : ""));
+    window.location.assign(startUrl(v, returnToHere()));
+  }
+
+  // The create-an-account entry leaves by itself after a countdown that
+  // says where it is going (signInModel.autoStarts), with replace so Back
+  // from the provider returns to the page before this one (never to a page
+  // that leaves again).
+  useEffect(() => {
+    if (mode === "workos" && autoStarts(variant)) {
+      setCountdown(AUTO_START_SECONDS);
+    }
+  }, [mode, variant]);
+
+  useEffect(() => {
+    if (countdown === null) return;
+    if (countdown <= 0) {
+      setRedirecting(true);
+      window.location.replace(startUrl(variant, returnToHere()));
+      return;
+    }
+    const tick = window.setTimeout(() => setCountdown((c) => (c === null ? null : c - 1)), 1000);
+    return () => window.clearTimeout(tick);
+  }, [countdown, variant]);
+
+  // Continue now: the same replace the countdown ends with.
+  function continueNow() {
+    setCountdown(null);
+    setRedirecting(true);
+    window.location.replace(startUrl(variant, returnToHere()));
   }
 
   async function onSubmit(e: FormEvent) {
@@ -164,9 +243,9 @@ export function SignIn() {
 
   return (
     <AuthShell
-      title={SIGN_IN_TEXT.title}
+      title={text.title}
       step="portal"
-      intro={<p>{SIGN_IN_TEXT.lead}</p>}
+      intro={<p>{text.lead}</p>}
     >
       <div className="flex flex-col gap-3">
         {mode === "loading" && (
@@ -199,8 +278,42 @@ export function SignIn() {
           </>
         )}
 
-        {mode === "workos" && (
+        {mode === "workos" && countdown !== null && (
           <>
+            <div
+              role="status"
+              className="flex flex-col gap-2 rounded-2 border border-line-2 bg-bg-2 px-3 py-3"
+            >
+              {/* Announced once: the line below changes every second, so it
+                  is hidden from assistive technology and this one is read. */}
+              <span className="sr-only">{countdownText(AUTO_START_SECONDS)}</span>
+              <div className="flex items-center gap-3" aria-hidden="true">
+                <CountdownRing left={countdown} total={AUTO_START_SECONDS} />
+                <p className="text-[13px] font-semibold leading-snug text-fg-0">{countdownText(countdown)}</p>
+              </div>
+              <p className="text-[12px] leading-relaxed text-fg-2">{text.provider}</p>
+            </div>
+            <Button variant="primary" className={SIGN_IN_BUTTON} loading={redirecting} onClick={continueNow}>
+              {redirecting ? text.busy : COUNTDOWN_ACTIONS.now}
+            </Button>
+            <Button
+              variant="secondary"
+              className={SIGN_IN_BUTTON}
+              disabled={redirecting}
+              onClick={() => setCountdown(null)}
+            >
+              {COUNTDOWN_ACTIONS.stay}
+            </Button>
+          </>
+        )}
+
+        {mode === "workos" && countdown === null && (
+          <>
+            {returned && (
+              <Notice tone="warn" title={returned.title}>
+                {returned.body}
+              </Notice>
+            )}
             {pending && (
               <Notice tone="warn" title="Sign-in is not yet available.">
                 {pending}
@@ -210,14 +323,23 @@ export function SignIn() {
               variant="primary"
               className={SIGN_IN_BUTTON}
               loading={redirecting}
-              onClick={onSingleSignOnClick}
+              onClick={() => startHosted(variant)}
             >
-              {redirecting ? "Opening sign-in" : "Continue with your SuperBased account"}
+              {redirecting ? text.busy : text.primary}
             </Button>
+            <div className="flex flex-col items-center gap-1.5 pt-1">
+              <span className="text-[11.5px] text-fg-3">{text.otherPrompt}</span>
+              <Button
+                variant="secondary"
+                className={SIGN_IN_BUTTON}
+                disabled={redirecting}
+                onClick={() => startHosted(other)}
+              >
+                {text.otherAction}
+              </Button>
+            </div>
             <p className="text-center text-[11.5px] leading-relaxed text-fg-3">
-              {SIGN_IN_TEXT.newHere}
-              <br />
-              {SIGN_IN_TEXT.sendsNothing}
+              {text.provider} {text.sendsNothing}
             </p>
           </>
         )}

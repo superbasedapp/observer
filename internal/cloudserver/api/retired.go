@@ -53,7 +53,7 @@ const movedToOrgPlaneCode = "moved_to_org_plane"
 
 // movedToOrgPlaneMessage is the upgrade guidance a v1.38 node or an old
 // console page shows the user (cloudclient prints the whole body).
-const movedToOrgPlaneMessage = "This part of Superbased Cloud moved to your personal organization. " +
+const movedToOrgPlaneMessage = "This part of superbased Cloud moved to your personal organization. " +
 	"Update Observer to 1.39 or later and run \"observer connect\"; " +
 	"your results moved to your personal organization."
 

@@ -759,7 +759,7 @@ func newCloudStatusCmd() *cobra.Command {
 			}
 			w := cmd.OutOrStdout()
 
-			fmt.Fprintln(w, "SuperBased cloud (Signed-in Free) - status")
+			fmt.Fprintln(w, "superbased cloud (Signed-in Free) - status")
 			if resolved == "" {
 				fmt.Fprintf(w, "  base URL:            (unset - pass --base-url, set %s, or set [cloud].base_url in config.toml)\n", cloudBaseURLEnv)
 			} else {
@@ -998,8 +998,8 @@ func newCloudLoginCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "login",
-		Short: "Sign in to SuperBased in your browser.",
-		Long: "Signs in to SuperBased in your browser and keeps a sign-in for this machine.\n" +
+		Short: "Sign in to superbased in your browser.",
+		Long: "Signs in to superbased in your browser and keeps a sign-in for this machine.\n" +
 			"`observer connect` does this and also connects the machine in one step.\n" +
 			"For local testing, pass --dev-token (in memory only, never stored).",
 		// Getting started v2: hidden from help (`observer connect` is the

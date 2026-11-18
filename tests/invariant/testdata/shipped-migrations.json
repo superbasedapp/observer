@@ -5,8 +5,8 @@
       "name": "archive",
       "dir": "internal/archivestore/migrations",
       "head": 3,
-      "ref": "v1.38.0",
-      "commit": "15c4c88b071dbaabba55731c24774e06937ad194",
+      "ref": "v1.39.0",
+      "commit": "dce23d60e45025e59d5d621fecb99c25124114d8",
       "steps": [
         {
           "file": "001_archive_codeintel.sql",
@@ -25,9 +25,9 @@
     {
       "name": "cloud",
       "dir": "internal/cloudserver/db/migrations",
-      "head": 134,
-      "ref": "ca7cb7d013",
-      "commit": "ca7cb7d01359039d66064be4294b29f13989f9dd",
+      "head": 150,
+      "ref": "v1.39.0",
+      "commit": "dce23d60e45025e59d5d621fecb99c25124114d8",
       "steps": [
         {
           "file": "0001_roles.sql",
@@ -408,6 +408,38 @@
         {
           "file": "0134_personal_migrations.sql",
           "blob": "31f94297a370e4e0c6d003a919740ffd9b1207c8"
+        },
+        {
+          "file": "0135_paddle_binding_refusals.sql",
+          "blob": "7c983f2d1c92111eefcff18a2634882f0c64d006"
+        },
+        {
+          "file": "0136_paddle_pending_terminals.sql",
+          "blob": "9957653d32217be66270d2e36ecfabe3038ce77d"
+        },
+        {
+          "file": "0137_paddle_trial_uses_and_seat_quantity.sql",
+          "blob": "66b7120cfa5b541afef4a9949885742de996d909"
+        },
+        {
+          "file": "0138_paddle_trial_uses_backfill.sql",
+          "blob": "07097bef6e41a55323d70a1f0a190f25b0a94436"
+        },
+        {
+          "file": "0140_org_deletion_fixes.sql",
+          "blob": "7983ea582ed539aa666112523a2150f4b6f1b227"
+        },
+        {
+          "file": "0141_account_deletion_followups_rls.sql",
+          "blob": "261f7f9e5996fdcb8d70096bf016638888c2af1c"
+        },
+        {
+          "file": "0145_device_approvals_recovery_failures.sql",
+          "blob": "dca3f789fbcc69344afd7e64367e61521cdf21ab"
+        },
+        {
+          "file": "0150_connect_requests.sql",
+          "blob": "63c303f398dd7c51e3a0d49976e31342c702dd4d"
         }
       ]
     },
@@ -415,8 +447,8 @@
       "name": "edge-wal",
       "dir": "internal/edge/wal/migrations",
       "head": 1,
-      "ref": "v1.38.0",
-      "commit": "15c4c88b071dbaabba55731c24774e06937ad194",
+      "ref": "v1.39.0",
+      "commit": "dce23d60e45025e59d5d621fecb99c25124114d8",
       "steps": [
         {
           "file": "001_edge_wal.sql",
@@ -427,9 +459,9 @@
     {
       "name": "node",
       "dir": "internal/db/migrations",
-      "head": 248,
-      "ref": "v1.38.0",
-      "commit": "15c4c88b071dbaabba55731c24774e06937ad194",
+      "head": 255,
+      "ref": "v1.39.0",
+      "commit": "dce23d60e45025e59d5d621fecb99c25124114d8",
       "steps": [
         {
           "file": "001_initial.sql",
@@ -1310,15 +1342,35 @@
         {
           "file": "248_plan_usage_daily.sql",
           "blob": "5aa3a9ad65e415e70183b65a456f8d0422783f38"
+        },
+        {
+          "file": "250_session_authority_org_key.sql",
+          "blob": "ba7574e8ecead6b16c92a864f380fabdd6b2077a"
+        },
+        {
+          "file": "251_local_session_holds.sql",
+          "blob": "94243aad92fcc3aefdeb6cb9d142838ccee95976"
+        },
+        {
+          "file": "253_guard_event_project.sql",
+          "blob": "3f232a2aff369d9afab1b25d9186ca166b25ff9f"
+        },
+        {
+          "file": "254_cloud_sync_last_token_budget.sql",
+          "blob": "248b2793fa20683323e370379dda83200cde04b5"
+        },
+        {
+          "file": "255_org_enrolment_connection.sql",
+          "blob": "9e6949da2632b3bda0d530cad249d5bf2cbd4c3e"
         }
       ]
     },
     {
       "name": "org-pg",
       "dir": "internal/orgserver/db/pgmigrations",
-      "head": 477,
-      "ref": "ca7cb7d013",
-      "commit": "ca7cb7d01359039d66064be4294b29f13989f9dd",
+      "head": 479,
+      "ref": "v1.39.0",
+      "commit": "dce23d60e45025e59d5d621fecb99c25124114d8",
       "steps": [
         {
           "file": "0001_baseline.sql",
@@ -2243,15 +2295,23 @@
         {
           "file": "0477_otel_direct_capture_backfill.sql",
           "blob": "4081cc98529c7cf2ec6cc116eb9bfd7d751c76a0"
+        },
+        {
+          "file": "0478_attach_grant_uses.sql",
+          "blob": "ec87df58db623e9e99c9c3bf69df1e1d0c700df0"
+        },
+        {
+          "file": "0479_tenancy_policies.sql",
+          "blob": "0fb594da951727f9cdb6f2e0938332a03bf4e63b"
         }
       ]
     },
     {
       "name": "org-sqlite",
       "dir": "internal/orgserver/db/migrations",
-      "head": 312,
-      "ref": "v1.38.0",
-      "commit": "15c4c88b071dbaabba55731c24774e06937ad194",
+      "head": 316,
+      "ref": "v1.39.0",
+      "commit": "dce23d60e45025e59d5d621fecb99c25124114d8",
       "steps": [
         {
           "file": "001_initial.sql",
@@ -3384,6 +3444,22 @@
         {
           "file": "312_member_node_keys.sql",
           "blob": "7393cfdc6b7c88fc272991045c81f407c9cf92b9"
+        },
+        {
+          "file": "313_auth_pending_txns.sql",
+          "blob": "ae4c9af2f34be73dfe150811920ceb84a2ad95f1"
+        },
+        {
+          "file": "314_sandbox_egress_refusal_days.sql",
+          "blob": "6fa11a86e94494c77dc399dc3d115dcef7bc22cf"
+        },
+        {
+          "file": "315_otel_direct.sql",
+          "blob": "45d40e0bb243d1047fcd4b87bfdbf85acc07d208"
+        },
+        {
+          "file": "316_attach_grant_uses.sql",
+          "blob": "1cb801f5eb275fd72ba723839f818f27ba2b0955"
         }
       ]
     }

@@ -36,7 +36,7 @@ func newIntelResultsCmd() *cobra.Command {
 				return err
 			}
 			defer b.cleanup()
-			v, err := orgIntelSessionState(cmd.Context(), b, args[0])
+			v, err := orgIntelSessionState(cmd.Context(), b, args[0], configPath)
 			if err != nil {
 				return err
 			}

@@ -47,9 +47,13 @@ const (
 	// portalTxnCookieDev is the plain-http dev fallback (the __Host- prefix
 	// requires Secure, which a browser refuses over http).
 	portalTxnCookieDev = "sbci_txn"
-	// portalTxnCookieMaxAge bounds the transaction cookie to the same 10 minutes
-	// the auth_transactions row lives.
-	portalTxnCookieMaxAge = 600
+	// portalTxnCookieMaxAge bounds the transaction cookie to the same 30
+	// minutes the auth_transactions row lives (store.DefaultAuthTransactionTTL).
+	portalTxnCookieMaxAge = 1800
+
+	// portalSignInErrorParam carries a recoverable callback failure to the
+	// console sign-in page (callbackRefuse), which explains it.
+	portalSignInErrorParam = "signin_error"
 
 	// defaultPortalReturnTo is where a completed sign-in lands when the caller
 	// asked for nothing specific.
@@ -327,6 +331,9 @@ func (s *Server) optionalPortalPrincipal(r *http.Request) (portalPrincipal, bool
 // rest), sets the Lax transaction cookie carrying the RAW state secret, and
 // redirects to WorkOS.
 //
+// ?screen_hint=sign-up (login only) opens AuthKit on its sign-up screen: the
+// console's "Create an account" (parseScreenHint).
+//
 // ?purpose=step_up&action=deletion|export|security additionally requires a live
 // portal session and binds that session + account into the transaction, so the
 // callback can prove the person who re-authenticated is the person already
@@ -359,6 +366,15 @@ func (s *Server) handleWorkOSStart(w http.ResponseWriter, r *http.Request) {
 	// says so mints a portal session with an authentication time (the
 	// issuer's auth_time): the browser can drop reauth=1, but then the session
 	// it gets has none, and the issuer asks again.
+	// The sign-up choice (hosted sign-in fix, lane A): a closed enum, valid
+	// on a login only. A step-up re-authenticates someone already signed
+	// in, so asking it for the sign-up screen is refused rather than ignored.
+	screenHint, ok := parseScreenHint(q)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "invalid_screen_hint",
+			"screen_hint must be sign-up or sign-in when present")
+		return
+	}
 	forceReauth := false
 	switch purpose := q.Get("purpose"); purpose {
 	case "", store.AuthPurposeLogin:
@@ -373,6 +389,11 @@ func (s *Server) handleWorkOSStart(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	case store.AuthPurposeStepUp:
+		if screenHint != "" {
+			writeErr(w, http.StatusBadRequest, "invalid_screen_hint",
+				"a step-up start cannot ask for the sign-up screen")
+			return
+		}
 		forceReauth = true
 		action := q.Get("action")
 		switch action {
@@ -429,17 +450,58 @@ func (s *Server) handleWorkOSStart(w http.ResponseWriter, r *http.Request) {
 	if forceReauth && in.Purpose == store.AuthPurposeLogin {
 		action += "_reauth"
 	}
+	if screenHint == workOSScreenSignUp {
+		action += "_signup"
+	}
 	s.audit(r.Context(), in.AccountID, action)
 
 	s.setTxnCookie(w, rawState)
-	authorizeURL := s.workOSAuthorizeURLFor(in.RedirectURI, pkceChallenge(verifier), rawState, rawNonce, forceReauth)
+	authorizeURL := s.workOSAuthorizeURLFor(in.RedirectURI, pkceChallenge(verifier), rawState, rawNonce, forceReauth, screenHint)
 	http.Redirect(w, r, authorizeURL, http.StatusFound)
+}
+
+// screenHintParam is the start route's query parameter for the screen AuthKit
+// opens on. It keeps WorkOS's own name so the console's link reads the same
+// as the authorize request it becomes.
+const screenHintParam = "screen_hint"
+
+// workOSScreenSignUp is the authorize request's screen_hint for AuthKit's
+// sign-up screen. WorkOS documents screen_hint (sign-up | sign-in) as valid
+// only with provider=authkit, which workOSAuthorizeURLFor always sends.
+const workOSScreenSignUp = "sign-up"
+
+// screenHints is the closed set of screen_hint values the start route
+// accepts, each mapped to what the authorize request carries. "sign-in" is
+// AuthKit's default screen, so it is accepted and sends nothing: the
+// authorize request carries screen_hint only for a sign-up.
+var screenHints = map[string]string{
+	"sign-in":          "",
+	workOSScreenSignUp: workOSScreenSignUp,
+}
+
+// parseScreenHint reads the start route's screen_hint: absent is "" (the
+// default screen); exactly one value from screenHints maps through it;
+// anything else (an unknown, empty or repeated value) is refused, never
+// guessed at.
+func parseScreenHint(q url.Values) (string, bool) {
+	vs, present := q[screenHintParam]
+	if !present {
+		return "", true
+	}
+	if len(vs) != 1 {
+		return "", false
+	}
+	hint, ok := screenHints[vs[0]]
+	return hint, ok
 }
 
 // workOSAuthorizeURLFor builds the AuthKit authorization URL. It mirrors the
 // node-side builder in internal/cloudclient (same parameter set) but is
 // implemented here because the server must not import the client package (the
-// cloud egress pin).
+// cloud egress pin). One deliberate difference: screenHint (the console's
+// "Create an account") adds screen_hint, which the node-side builder never
+// sends, because the CLI's own sign-in is never a sign-up entry point (a
+// person creates the account in the browser console).
 //
 // forceReauth adds the two OIDC freshness parameters WorkOS's authorize
 // endpoint accepts (both SDK-documented): `prompt=login` and `max_age=0`. They
@@ -449,7 +511,7 @@ func (s *Server) handleWorkOSStart(w http.ResponseWriter, r *http.Request) {
 // redirect the user never sees. A login start sets them only when the
 // platform OIDC issuer asked for a fresh sign-in (reauth=1, handleWorkOSStart):
 // forcing a fresh provider auth on every ordinary sign-in would be hostile.
-func (s *Server) workOSAuthorizeURLFor(redirectURI, challenge, state, nonce string, forceReauth bool) string {
+func (s *Server) workOSAuthorizeURLFor(redirectURI, challenge, state, nonce string, forceReauth bool, screenHint string) string {
 	u, err := url.Parse(s.workOSAuthorizeURL)
 	if err != nil {
 		// The URL comes from configuration validated at startup; fall back to the
@@ -468,6 +530,9 @@ func (s *Server) workOSAuthorizeURLFor(redirectURI, challenge, state, nonce stri
 	if forceReauth {
 		q.Set("prompt", "login")
 		q.Set("max_age", "0")
+	}
+	if screenHint != "" {
+		q.Set(screenHintParam, screenHint)
 	}
 	u.RawQuery = q.Encode()
 	return u.String()
@@ -541,6 +606,39 @@ type workOSUser struct {
 	email   providerEmail
 }
 
+// callbackRecoverable are the callback refusals a person fixes by signing in
+// again: the transaction this browser started is gone (expired, never set,
+// already used, or another tab's), or they cancelled at the provider. A
+// sign-up whose verification took longer than the transaction hit these with
+// the account already created (L-142).
+var callbackRecoverable = map[string]bool{
+	"transaction_missing": true,
+	"state_mismatch":      true,
+	"transaction_invalid": true,
+	"code_rejected":       true,
+	"provider_error":      true,
+}
+
+// callbackRefuse answers a refused callback. A browser navigation (Accept
+// names text/html) refused for a recoverable reason is sent to the console
+// sign-in page, which explains it and offers the sign-in again, never a raw
+// JSON error page; everything else, and every non-browser caller, gets the
+// structured error as before. Nothing changes about WHAT is refused: the
+// redirect starts no sign-in and carries only the fixed code.
+func callbackRefuse(w http.ResponseWriter, r *http.Request, status int, code, msg string) {
+	if callbackRecoverable[code] && acceptsHTML(r) {
+		http.Redirect(w, r, defaultPortalReturnTo+"?"+portalSignInErrorParam+"="+code, http.StatusSeeOther)
+		return
+	}
+	writeErr(w, status, code, msg)
+}
+
+// acceptsHTML reports whether the request is a browser navigation: its
+// Accept header names text/html.
+func acceptsHTML(r *http.Request) bool {
+	return strings.Contains(r.Header.Get("Accept"), "text/html")
+}
+
 // handleWorkOSCallback completes the round-trip. Order matters and every step is
 // fail-closed:
 //
@@ -574,7 +672,7 @@ func (s *Server) handleWorkOSCallback(w http.ResponseWriter, r *http.Request) {
 
 	c, err := r.Cookie(s.portalTxnCookieName())
 	if err != nil || c.Value == "" {
-		writeErr(w, http.StatusBadRequest, "transaction_missing",
+		callbackRefuse(w, r, http.StatusBadRequest, "transaction_missing",
 			"this sign-in did not start on this browser (no transaction cookie)")
 		return
 	}
@@ -583,7 +681,7 @@ func (s *Server) handleWorkOSCallback(w http.ResponseWriter, r *http.Request) {
 	state := q.Get("state")
 	if state == "" || subtle.ConstantTimeCompare([]byte(state), []byte(c.Value)) != 1 {
 		s.audit(ctx, "", "portal_workos_state_mismatch")
-		writeErr(w, http.StatusBadRequest, "state_mismatch",
+		callbackRefuse(w, r, http.StatusBadRequest, "state_mismatch",
 			"the sign-in state did not match this browser's transaction")
 		return
 	}
@@ -600,7 +698,7 @@ func (s *Server) handleWorkOSCallback(w http.ResponseWriter, r *http.Request) {
 			s.log.Warn("cloudserver/api: consume auth transaction after provider error", "err", err)
 		}
 		s.audit(ctx, "", "portal_workos_provider_error")
-		writeErr(w, http.StatusBadRequest, "provider_error", "the identity provider refused the sign-in")
+		callbackRefuse(w, r, http.StatusBadRequest, "provider_error", "the identity provider refused the sign-in")
 		return
 	}
 	code := q.Get("code")
@@ -612,7 +710,7 @@ func (s *Server) handleWorkOSCallback(w http.ResponseWriter, r *http.Request) {
 	txn, err := s.store.ConsumeAuthTransaction(ctx, secretHash(state), s.now())
 	if errors.Is(err, store.ErrNotFound) {
 		s.audit(ctx, "", "portal_workos_transaction_replay")
-		writeErr(w, http.StatusBadRequest, "transaction_invalid",
+		callbackRefuse(w, r, http.StatusBadRequest, "transaction_invalid",
 			"this sign-in link has expired or was already used")
 		return
 	}
@@ -652,7 +750,7 @@ func (s *Server) handleWorkOSCallback(w http.ResponseWriter, r *http.Request) {
 			"workos_status", tokErr.Status, "workos_error", tokErr.Code,
 			"workos_error_description", tokErr.Description)
 		s.audit(ctx, txn.AccountID, "portal_workos_code_rejected")
-		writeErr(w, http.StatusBadRequest, "code_rejected",
+		callbackRefuse(w, r, http.StatusBadRequest, "code_rejected",
 			"the authorization code was rejected (it may have expired or already been used)")
 		return
 	}

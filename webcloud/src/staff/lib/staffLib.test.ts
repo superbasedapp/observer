@@ -57,7 +57,7 @@ test("request options decode the challenge and keep the relying party", () => {
 
 test("creation options decode the user handle and the excluded credentials", () => {
   const o = toCreationOptions({
-    rp: { id: "staff.superbased.app", name: "SuperBased staff console" },
+    rp: { id: "staff.superbased.app", name: "superbased staff console" },
     user: { id: "BAU", name: "Ada", displayName: "Ada" },
     challenge: "AQID",
     pubKeyCredParams: [{ type: "public-key", alg: -7 }],

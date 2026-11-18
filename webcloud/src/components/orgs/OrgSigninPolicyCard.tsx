@@ -10,7 +10,7 @@ import { CardSkeleton, ErrorPanel } from "../LoadState";
 
 // OrgSigninPolicyCard - an owner's or admin's "Require a second factor"
 // switch for a team (C2; internal/cloudserver/api/portalmfa.go). When on,
-// the team's SuperBased sign-in lets a member in only after a passkey; the
+// the team's superbased sign-in lets a member in only after a passkey; the
 // server enforces it at the sign-in itself. Changing it needs a passkey
 // sign-in in this session, so turning it on cannot lock the changer out.
 
@@ -46,7 +46,7 @@ export function OrgSigninPolicyCard({ orgId }: { orgId: string }) {
     <Card
       title="Sign-in security"
       icon={ShieldCheck}
-      sub="Members sign in to this team with their SuperBased account."
+      sub="Members sign in to this team with their superbased account."
     >
       <div className="flex flex-col gap-3">
         <Toggle

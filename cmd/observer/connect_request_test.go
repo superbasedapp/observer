@@ -132,10 +132,62 @@ func TestConnectRequestTeamWithCodeAttachesNonInteractively(t *testing.T) {
 	if len(f.recorded) != 1 || f.recorded[0].ConsentReceiptID != "rcpt-1" || f.recorded[0].ShareLevel != "full" {
 		t.Fatalf("consent record = %+v", f.recorded)
 	}
-	for _, line := range []string{"Connected: laptop -> Acme", "Local dashboard http://127.0.0.1:8081", "Online dashboard https://cloud.superbased.app", "Undo any time: observer disconnect"} {
-		if !strings.Contains(out, line) {
-			t.Fatalf("output lacks %q:\n%s", line, out)
-		}
+	// A team: the team dashboard's row says what the team receives.
+	lines := "\nConnected: laptop -> Acme\n" +
+		"Local dashboard   http://127.0.0.1:8081\n" +
+		"  everything Observer records on this computer, in full; it stays here\n" +
+		"Team dashboard    https://cloud.superbased.app\n" +
+		"  full detail (prompts, responses, file paths); the team's admins can read it\n" +
+		"Undo any time: observer disconnect\n"
+	if !strings.Contains(out, lines) {
+		t.Fatalf("output lacks the connected lines\n%s\nin:\n%s", lines, out)
+	}
+}
+
+// TestPrintConnectedLinesPerKind pins each dashboard's role line: the
+// personal dashboard gets a summary, a team full detail its admins can read,
+// and a build without the local dashboard prints no local row.
+func TestPrintConnectedLinesPerKind(t *testing.T) {
+	local := func(string) string { return "http://127.0.0.1:8081" }
+	for _, tc := range []struct {
+		name, kind, target string
+		dashboard          func(string) string
+		want               string
+	}{
+		{
+			name: "personal", kind: "personal", target: "your personal dashboard", dashboard: local,
+			want: "\nConnected: laptop -> your personal dashboard\n" +
+				"Local dashboard   http://127.0.0.1:8081\n" +
+				"  everything Observer records on this computer, in full; it stays here\n" +
+				"Online dashboard  https://cloud.superbased.app\n" +
+				"  a summary from each machine you connect\n" +
+				"Undo any time: observer disconnect\n",
+		},
+		{
+			name: "team", kind: "team", target: "Acme", dashboard: local,
+			want: "\nConnected: laptop -> Acme\n" +
+				"Local dashboard   http://127.0.0.1:8081\n" +
+				"  everything Observer records on this computer, in full; it stays here\n" +
+				"Team dashboard    https://cloud.superbased.app\n" +
+				"  full detail (prompts, responses, file paths); the team's admins can read it\n" +
+				"Undo any time: observer disconnect\n",
+		},
+		{
+			name: "no local dashboard in this build", kind: "personal", target: "your personal dashboard",
+			dashboard: func(string) string { return "" },
+			want: "\nConnected: laptop -> your personal dashboard\n" +
+				"Online dashboard  https://cloud.superbased.app\n" +
+				"  a summary from each machine you connect\n" +
+				"Undo any time: observer disconnect\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var b strings.Builder
+			printConnectedLines(&b, connectDeps{dashboardURL: tc.dashboard}, connectFlags{}, "laptop", tc.target, tc.kind, "https://cloud.superbased.app")
+			if b.String() != tc.want {
+				t.Fatalf("got:\n%s\nwant:\n%s", b.String(), tc.want)
+			}
+		})
 	}
 }
 
@@ -244,7 +296,7 @@ func TestConnectRequestLockedMachineIsRefused(t *testing.T) {
 	// the company destination wins and SuperBased is never asked.
 	_, _, _ = h.execWith(t, h.withRequest(f), "acme")
 	if len(f.started) != 0 {
-		t.Fatal("a company-configured machine asked SuperBased for a connect request")
+		t.Fatal("a company-configured machine asked superbased for a connect request")
 	}
 }
 
@@ -285,6 +337,9 @@ func TestConnectRequestResolvesTargetFromOrgList(t *testing.T) {
 	}
 	if !strings.Contains(out, "Connected: laptop -> your personal dashboard") {
 		t.Fatalf("out = %s", out)
+	}
+	if !strings.Contains(out, "Online dashboard  https://cloud.superbased.app\n  a summary from each machine you connect\n") {
+		t.Fatalf("the personal dashboard's role line is missing:\n%s", out)
 	}
 }
 

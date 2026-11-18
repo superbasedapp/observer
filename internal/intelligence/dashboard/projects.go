@@ -11,6 +11,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/dashapi"
 	"github.com/marmutapp/superbased-observer/internal/loc"
 	"github.com/marmutapp/superbased-observer/internal/projectroi"
+	"github.com/marmutapp/superbased-observer/internal/settingslink"
 	"github.com/marmutapp/superbased-observer/internal/store"
 	"github.com/marmutapp/superbased-observer/internal/taskreport"
 )
@@ -214,6 +215,9 @@ type apiProjectPromptGradeAvailable struct {
 	Judge  bool   `json:"judge"`
 	Cloud  bool   `json:"cloud"`
 	Reason string `json:"reason,omitempty"`
+	// Where the person turns the judge tier on, when it is the one off
+	// (settings, settings_label); omitted otherwise.
+	settingslink.Fields
 }
 
 type apiProjectPromptRow struct {
@@ -446,7 +450,8 @@ func (s *Server) handleProjectCommitScan(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if s.opts.CommitRescan == nil {
-		http.Error(w, "commit scanning is not running in this process ([projects].commit_scan is off)", http.StatusServiceUnavailable)
+		writeNeedsSetting(w, http.StatusServiceUnavailable, "commit scanning is not running in this process ([projects].commit_scan is off)",
+			msgCommitScanOff, settingslink.IntelligenceSettings)
 		return
 	}
 
@@ -671,6 +676,7 @@ func (s *Server) handleProjectPrompts(w http.ResponseWriter, r *http.Request) {
 
 	judgeAvailable := s.opts.JudgeGrade != nil
 	judgeReason := s.opts.JudgeGradeReason
+	judgeFix := s.judgeGradeFix()
 	cloudAvailable, cloudReason := false, "cloud grading is not available"
 	if s.opts.CloudGradeAvailability != nil {
 		cloudAvailable, cloudReason = s.opts.CloudGradeAvailability()
@@ -733,6 +739,9 @@ func (s *Server) handleProjectPrompts(w http.ResponseWriter, r *http.Request) {
 			avail.Reason = judgeReason
 		case !cloudAvailable:
 			avail.Reason = cloudReason
+		}
+		if !judgeAvailable {
+			avail.Fields = judgeFix
 		}
 		row.GradeAvailable = avail
 
@@ -993,7 +1002,11 @@ func (s *Server) handleProjectGradeJudge(ctx context.Context, w http.ResponseWri
 		if reason == "" {
 			reason = "the judge tier is not configured"
 		}
-		writeJSON(w, map[string]any{"status": "not_available", "reason": reason})
+		fix := s.judgeGradeFix()
+		writeJSON(w, map[string]any{
+			"status": "not_available", "reason": reason,
+			"settings": fix.Settings, "settings_label": fix.SettingsLabel,
+		})
 		return
 	}
 	in, _, err := st.LoadPromptChainInput(ctx, projectID, actionID)
@@ -1020,4 +1033,13 @@ func (s *Server) handleProjectGradeJudge(ctx context.Context, w http.ResponseWri
 			Extra: nonNilStrings(result.Extra), Confidence: result.Confidence, GradedAt: dashapi.FmtProjectTime(gradedAt), Model: model,
 		},
 	})
+}
+
+// judgeGradeFix is the deep link to where the judge tier is turned on
+// (Options.JudgeGradePlace), or empty fields when no setting changes it.
+func (s *Server) judgeGradeFix() settingslink.Fields {
+	if l, ok := settingslink.For(s.opts.JudgeGradePlace); ok {
+		return l.Fields()
+	}
+	return settingslink.Fields{}
 }

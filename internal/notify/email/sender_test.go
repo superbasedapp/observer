@@ -145,7 +145,7 @@ func TestSMTPSenderDeliversMultipart(t *testing.T) {
 	if len(srv.rcpts) != 2 || srv.rcpts[0] != "a@example.com" || srv.rcpts[1] != "b@example.com" {
 		t.Errorf("recipients = %v", srv.rcpts)
 	}
-	for _, want := range []string{"Subject: [Observer] Alert:", "multipart/alternative", "error_rate", "Sent by SuperBased Observer v1.19.0"} {
+	for _, want := range []string{"Subject: [Observer] Alert:", "multipart/alternative", "error_rate", "Sent by superbased Observer v1.19.0"} {
 		if !strings.Contains(srv.body, want) {
 			t.Errorf("DATA body missing %q\n%s", want, srv.body)
 		}

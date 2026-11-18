@@ -4744,7 +4744,7 @@ var registry = map[string]Capability{
 			// command"). WSL2 works because uname -s reports Linux there.
 			WindowsNote:     "macOS/Linux only per vendor (muse-launcher.sh detect_platform dies on any uname -s other than Darwin/Linux); runs under WSL2 because uname -s = Linux there",
 			InstallNote:     "no Windows install channel - install inside WSL2 and run the observer daemon there",
-			UserInstallHint: "Muse runs on macOS and Linux only. On Windows, install it inside WSL and run SuperBased there.",
+			UserInstallHint: "Muse runs on macOS and Linux only. On Windows, install it inside WSL and run superbased there.",
 		},
 		// Model picker (B5). Grounded live 2026-08-08: `muse --help` lists
 		// `--model <MODEL>` — "Model id for non-echo providers" — under

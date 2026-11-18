@@ -285,7 +285,7 @@ func updateStatusAutoApply(ctx context.Context, cfg config.Config) (bool, string
 // writeUpdateStatus renders the report as aligned text.
 func writeUpdateStatus(w io.Writer, rep updateStatusReport) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "SuperBased update status\t")
+	fmt.Fprintln(tw, "superbased update status\t")
 	fmt.Fprintf(tw, "  installed version\t%s\n", rep.InstalledVersion)
 	fmt.Fprintf(tw, "  channel\t%s\n", orText(rep.Channel, "(unassigned - the org assigns one)"))
 	fmt.Fprintf(tw, "  state\t%s\n", stateText(rep))

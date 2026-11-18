@@ -1931,7 +1931,7 @@ func discoverExtensionIDs(home string, winHomes []string) []browserhost.Extensio
 // is still written with the placeholder).
 func promptBrowserExtensionID(out io.Writer, r *bufio.Reader, found []browserhost.ExtensionCandidate) (string, error) {
 	if len(found) > 0 {
-		fmt.Fprintln(out, "browser: the SuperBased extension is loaded in:")
+		fmt.Fprintln(out, "browser: the superbased extension is loaded in:")
 		opts := make([]string, 0, len(found)+2)
 		for _, c := range found {
 			opts = append(opts, fmt.Sprintf("%s (%s)  %s", c.Browser, c.Profile, c.ID))

@@ -168,7 +168,7 @@ test("team cap: under, at and barred, and unknown lets the server decide", () =>
 
   const uninvited = teamCapView({ used: 0, limit: 3, remaining: 3, invite_only: true, create_allowed: false, account_ref: "acct-1" });
   assert.equal(uninvited.canCreate, false);
-  assert.match(uninvited.note ?? "", /by invitation while SuperBased is in early access\. Your personal dashboard works as usual\./);
+  assert.match(uninvited.note ?? "", /by invitation while superbased is in early access\. Your personal dashboard works as usual\./);
   assert.match(uninvited.note ?? "", /quote your account reference: acct-1\.$/);
   assert.match(CREATE_ERROR_TEXT.team_create_invite_only ?? "", /by invitation/);
 
@@ -187,5 +187,5 @@ test("the team notice says full detail is sent and admins can read it", () => {
 });
 
 test("an operator grant names its plan source", () => {
-  assert.equal(PLAN_SOURCE_TEXT.org_grant, "Granted by SuperBased");
+  assert.equal(PLAN_SOURCE_TEXT.org_grant, "Granted by superbased");
 });

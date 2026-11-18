@@ -105,7 +105,7 @@ const toastCases: Array<{ name: string; r: Parameters<typeof guiLaunchedToast>[0
 ];
 for (const c of toastCases) {
   test(`guiLaunchedToast: ${c.name}`, () => {
-    assert.equal(guiLaunchedToast(c.r).includes("routed through the SuperBased proxy"), c.routed);
+    assert.equal(guiLaunchedToast(c.r).includes("routed through the superbased proxy"), c.routed);
   });
 }
 
@@ -125,6 +125,6 @@ test("the copy never carries engineering jargon", () => {
 test("guiNotGroundedReason names the app and the consequence", () => {
   assert.equal(
     guiNotGroundedReason({ label: "Kiro" }),
-    "SuperBased doesn't know where Kiro is installed yet, so it can't launch it from here.",
+    "superbased doesn't know where Kiro is installed yet, so it can't launch it from here.",
   );
 });

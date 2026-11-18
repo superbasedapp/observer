@@ -28,8 +28,8 @@ export function TeamRows({ teams }: { teams: PortalOrg[] }) {
           </div>
           <Pill variant="info">Full detail</Pill>
           {t.status !== "active" && <OrgStatusPill org={t} />}
-          {t.dashboard_url && (
-            <Button variant="secondary" size="sm" iconRight={ExternalLink} href={t.dashboard_url} target="_blank" rel="noopener">
+          {t.open_url && (
+            <Button variant="secondary" size="sm" iconRight={ExternalLink} href={t.open_url} target="_blank" rel="noopener">
               Open
             </Button>
           )}

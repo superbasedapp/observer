@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { NeedsSettingLink } from "@/components/NeedsSettingNotice";
+import { placeLink } from "@/lib/settingsPlaces";
 import { Globe } from "lucide-react";
 import { Button, ChartShell, ConfirmButton, Input, Pill } from "@/components/primitives";
 import { useApi } from "@/lib/useApi";
@@ -112,7 +114,8 @@ export function GuardCloudCard({ onChanged }: { onChanged?: () => void }) {
             <Pill variant={s.cloud_enabled ? "success" : "neutral"}>{s.cloud_enabled ? "on" : "off"}</Pill>
             {!s.guard_active && (
               <span className="text-fg-3">
-                The guard is off, so the LLM judge and webhooks do not run even when on (Overview tab, Mode).
+                The guard is off, so the LLM judge and webhooks do not run even when on. Turn it on in the Mode card on the
+                Overview tab. <NeedsSettingLink link={placeLink("security_mode")} />
               </span>
             )}
             {s.cloud_enabled && (

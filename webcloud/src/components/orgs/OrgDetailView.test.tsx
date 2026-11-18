@@ -177,8 +177,8 @@ test("an operator grant reads as granted, with its end when it has one", () => {
   const open = html(
     <OrgDetailView detail={detail({ org: org(), can, plan: { name: "business", version: 1, label: "Business", source: "org_grant" } })} billing={null} onRename={rename} />,
   );
-  assert.match(open, /Granted by SuperBased/);
-  assert.doesNotMatch(open, /Granted by SuperBased, until/);
+  assert.match(open, /Granted by superbased/);
+  assert.doesNotMatch(open, /Granted by superbased, until/);
   const bounded = html(
     <OrgDetailView
       detail={detail({ org: org(), can, plan: { name: "team", version: 1, label: "Team", source: "org_grant", not_after: "2027-02-01T00:00:00Z" } })}
@@ -186,7 +186,7 @@ test("an operator grant reads as granted, with its end when it has one", () => {
       onRename={rename}
     />,
   );
-  assert.match(bounded, /Granted by SuperBased, until/);
+  assert.match(bounded, /Granted by superbased, until/);
 });
 
 test("billing: the billing portal button shows only when the server offers it, and past_due shows when it began", () => {

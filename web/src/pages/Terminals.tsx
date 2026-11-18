@@ -1,4 +1,6 @@
 import { Suspense, useEffect, useMemo, useState } from "react";
+import { placeLink } from "@/lib/settingsPlaces";
+import { NeedsSettingNotice } from "@/components/NeedsSettingNotice";
 import { SANDBOX_REFUSALS_CARD, SANDBOX_SETTINGS_CARD } from "@/lib/components.gen";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { LayoutGrid, SlidersHorizontal, Swords, type LucideIcon } from "lucide-react";
@@ -476,10 +478,10 @@ export function TerminalsPage() {
             </div>
           )}
           {p?.terminal_enabled === false && (
-            <div className="rounded-2 border border-warn/40 bg-warn/10 px-3 py-2 text-warn">
-              The terminal surface is disabled ([terminal].enabled = false). Fresh launch needs both it and
-              the master toggle below.
-            </div>
+            <NeedsSettingNotice
+              text="The terminal surface is off on this machine ([terminal].enabled = false). Fresh launch needs both it and the master toggle below. Turn it on in Settings > Session attach, under More settings."
+              link={placeLink("session_attach")}
+            />
           )}
 
           <label className="flex items-start gap-2">
@@ -660,7 +662,7 @@ export function TerminalsPage() {
               ))}
               {roots.length === 0 && (
                 <div className="text-[11px] text-fg-3">
-                  None - no project_root may be set. A fresh launch with no project root runs in the SuperBased
+                  None - no project_root may be set. A fresh launch with no project root runs in the superbased
                   daemon's own working directory (the directory <code className="text-fg-2">observer start</code> /{" "}
                   <code className="text-fg-2">observer dashboard</code> was launched from).
                 </div>

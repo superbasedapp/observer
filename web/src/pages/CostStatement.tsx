@@ -118,7 +118,7 @@ export function StatementView() {
               ) : (
                 "all projects · "
               )}
-              generated {fmtDateTime(r.generated_at)} · SuperBased
+              generated {fmtDateTime(r.generated_at)} · superbased
             </p>
           </header>
 

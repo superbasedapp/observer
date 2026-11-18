@@ -43,21 +43,8 @@ import (
 // is built here from the org's slug and Options.TenantDomain, and omitted when
 // no tenant domain is configured.
 
-// tenantInstallPath is the tenant dashboard's "Connect a machine" page (web2
-// /me/install), where the deep link from the console lands.
-const tenantInstallPath = "/me/install"
-
-// tenantMachinesPagePath is the tenant dashboard page where a member sees
-// their own enrolled machines (web2 /me/profile). The console links to it
-// for each active org instead of reading every tenant from the browser
-// (C2.front-door-4 B, wave 15: the cross-origin machine aggregation of
-// M6.0 A13 is dropped, so no tenant needs CORS for the portal origin;
-// docs/security.md PORTALORG-8).
-const tenantMachinesPagePath = "/me/profile"
-
-// tenantInvitePath is the team dashboard's invite page (web2
-// /people-access, its invites tab), where "Invite people" lands.
-const tenantInvitePath = "/people-access?tab=invites"
+// The tenant dashboard pages the console links to, and the one function that
+// composes those links, live in tenantlink.go.
 
 // createTeamTenancy is the tenancy of a team org created from the console:
 // managed (an enterprise team's nodes ship full content by grant; CLAUDE.md
@@ -102,9 +89,14 @@ type portalOrgJSON struct {
 	// MachinesPageURL is the tenant page listing the caller's own machines
 	// in this org, for an active org with a host (C2.front-door-4 B).
 	MachinesPageURL string `json:"machines_page_url,omitempty"`
-	// DashboardURL opens the org's dashboard, for an active org with a host
-	// (Getting started v2: the account home's Open button; a personal
-	// dashboard's address is opened from buttons only, never shown).
+	// OpenURL opens the org's dashboard, for an active org with a host
+	// (every "Open your dashboard" button; a personal dashboard's address is
+	// opened from buttons only, never shown). Built by tenantLink.
+	OpenURL string `json:"open_url,omitempty"`
+	// DashboardURL is OpenURL under its first name, kept for one release so
+	// a console bundle older than open_url keeps working (additive wire).
+	//
+	// Deprecated: read open_url.
 	DashboardURL string `json:"dashboard_url,omitempty"`
 	// InviteURL is the team dashboard's invite page, for an active team
 	// with a host (the account home's "Invite people").
@@ -181,10 +173,11 @@ func (s *Server) orgJSON(o store.MyOrg) portalOrgJSON {
 		CreatedAt: rfc3339(o.CreatedAt), Host: s.tenantHost(o.Slug),
 	}
 	if v.Host != "" && o.Status == platformcontract.StateActive {
-		v.MachinesPageURL = "https://" + v.Host + tenantMachinesPagePath
-		v.DashboardURL = "https://" + v.Host + "/"
+		v.MachinesPageURL = s.tenantLink(o.Slug, tenantPageMachines)
+		v.OpenURL = s.tenantLink(o.Slug, tenantPageDashboard)
+		v.DashboardURL = v.OpenURL
 		if o.Kind == store.OrgTeam {
-			v.InviteURL = "https://" + v.Host + tenantInvitePath
+			v.InviteURL = s.tenantLink(o.Slug, tenantPageInvites)
 		}
 	}
 	return v
@@ -527,8 +520,8 @@ func (s *Server) writeOrgDetail(w http.ResponseWriter, r *http.Request, accountI
 	if o.Status == platformcontract.StateProvisioning {
 		view.Org.Provisioning = prov
 	}
-	if host := s.tenantHost(o.Slug); host != "" && o.Status == platformcontract.StateActive {
-		view.LaunchURL = "https://" + host + tenantInstallPath
+	if o.Status == platformcontract.StateActive {
+		view.LaunchURL = s.tenantLink(o.Slug, tenantPageInstall)
 	}
 	if view.Can.ViewBilling {
 		var createdOnHost time.Time

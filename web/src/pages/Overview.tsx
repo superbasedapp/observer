@@ -27,6 +27,7 @@ import {
 } from "@/components/primitives";
 import { HelpInd, TitleWithHelp } from "@/components/HelpInd";
 import { GetStarted } from "@/components/GetStarted";
+import { WelcomeBand } from "@/components/firstrun/WelcomeBand";
 import { ComponentsSetupCard } from "@/components/ComponentsSetupCard";
 import { MilestonesCard } from "@/components/MilestonesCard";
 import { CommunityCard } from "@/components/CommunityCard";
@@ -503,6 +504,11 @@ export function OverviewPage() {
         helpId="tab.overview"
         right={<CustomizeOverview layout={layout} onChange={updateLayout} />}
       />
+      {/* The welcome band (local dashboard first-run design, section 8):
+          door B reveals this machine's AI coding history and settles into
+          "at a glance"; door A leads with Start a coding agent. Hidden
+          during the ?connecting=1 hand-off and once "Not now" is pressed. */}
+      <WelcomeBand />
       {/* Get started (Getting started v2): sign in and connect this
           machine (recommended, never required), turn capture on for the
           tools found here, use them. Put away, it returns as a one-line

@@ -171,7 +171,7 @@ func newRootCmd() *cobra.Command { return newRootCmdWith(defaultUsageDeps()) }
 func newRootCmdWith(deps usageDeps) *cobra.Command {
 	root := &cobra.Command{
 		Use:          invocationName(),
-		Short:        "SuperBased - unify AI coding tool activity",
+		Short:        "superbased - unify AI coding tool activity",
 		Long:         "Captures, normalizes, and analyzes tool call activity from AI coding assistants.\nSee README.md for a feature tour.",
 		Version:      version,
 		SilenceUsage: true,

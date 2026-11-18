@@ -116,7 +116,7 @@ export const CODE_SECURITY_SETTINGS: readonly CodeSecuritySetting[] = [
     values: ["auto", "feed", "upstream", "import"],
     defaultValue: "auto",
     unit: "",
-    help: "Where the dependency scanners' OSV databases come from on this node, after the one-time accept. Auto takes SuperBased's signed mirror on superbased.app and falls back to the OSV project's bucket when the mirror is unavailable; feed takes the mirror only; upstream takes the bucket only; import uses only what `observer security scan db import` installed and fetches nothing. A managed node always uses its organization's mirror.",
+    help: "Where the dependency scanners' OSV databases come from on this node, after the one-time accept. Auto takes superbased's signed mirror on superbased.app and falls back to the OSV project's bucket when the mirror is unavailable; feed takes the mirror only; upstream takes the bucket only; import uses only what `observer security scan db import` installed and fetches nothing. A managed node always uses its organization's mirror.",
     optionLabels: { auto: "Signed mirror, then OSV bucket", feed: "Signed mirror only", upstream: "OSV bucket only", import: "Imported only" },
   },
   {
@@ -127,7 +127,7 @@ export const CODE_SECURITY_SETTINGS: readonly CodeSecuritySetting[] = [
     values: [true, false],
     defaultValue: true,
     unit: "",
-    help: "With the source on auto, downloads from the OSV project's bucket (osv-vulnerabilities.storage.googleapis.com) when SuperBased's signed mirror is not published, cannot be verified or cannot be reached. Off: the databases already on disk stay in use until the mirror answers.",
+    help: "With the source on auto, downloads from the OSV project's bucket (osv-vulnerabilities.storage.googleapis.com) when superbased's signed mirror is not published, cannot be verified or cannot be reached. Off: the databases already on disk stay in use until the mirror answers.",
   },
   {
     key: "security.secrets.write_check",

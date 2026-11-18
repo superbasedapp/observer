@@ -190,7 +190,7 @@ func TestClassifyNamesTheUpgradeCommand(t *testing.T) {
 		},
 		{
 			"/home/dev/.vscode/extensions/superbased.superbased-observer-1.36.0/bin/observer", nil,
-			"VS Code extension copy", "update the SuperBased Observer extension in VS Code",
+			"VS Code extension copy", "update the superbased Observer extension in VS Code",
 		},
 		{"/home/dev/bin/observer", nil, "downloaded copy", ""},
 	}

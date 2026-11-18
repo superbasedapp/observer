@@ -148,7 +148,7 @@ func TestConnectStatusOnly(t *testing.T) {
 	h.enr, h.id = enrolledIn("https://acme.example", "Acme", true), frontdoor.IdentitySignedIn
 	h.pol = lockedTo("https://acme.example")
 	out, _ = h.exec(t, "--status")
-	if want := "Acme (managed, locked) as dev@acme.example · signed in to SuperBased"; strings.TrimSpace(out) != want {
+	if want := "Acme (managed, locked) as dev@acme.example · signed in to superbased"; strings.TrimSpace(out) != want {
 		t.Fatalf("status = %q, want %q", out, want)
 	}
 	if h.run.enrolled || h.run.identity != nil {

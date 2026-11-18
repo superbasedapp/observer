@@ -44,8 +44,8 @@ func (s *Server) deviceOrg(r *http.Request, accountID string, o store.MyOrg) clo
 		Status:  cloudcontract.DeviceOrgStatus(o.Status),
 		Tenancy: string(o.Tenancy),
 	}
-	if host := s.tenantHost(o.Slug); host != "" && o.Status == platformcontract.StateActive {
-		d.ServerURL = "https://" + host
+	if o.Status == platformcontract.StateActive {
+		d.ServerURL = s.tenantLink(o.Slug, tenantPageOrigin)
 	}
 	if o.Status == platformcontract.StateProvisioning {
 		prov, _, _ := s.provisioning(r, accountID, o)

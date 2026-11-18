@@ -56,7 +56,7 @@ export function AccountSection({
 
   return (
     <div className="space-y-5">
-      <ChartShell title="Account" icon={icon} sub="Your SuperBased account and where this machine is connected. Everything works on this machine without one.">
+      <ChartShell title="Account" icon={icon} sub="Your superbased account and where this machine is connected. Everything works on this machine without one.">
         {account ? (
           <AccountCard
             account={account}
@@ -134,7 +134,7 @@ function AccountCard({
         <span className={VAL}>
           {account.signedIn ? (
             <span className="flex flex-wrap items-center gap-2">
-              <span>{account.email || "Your SuperBased account"}</span>
+              <span>{account.email || "Your superbased account"}</span>
               {signOutAvailable && !account.connected && <SignOut onChanged={onChanged} />}
             </span>
           ) : (

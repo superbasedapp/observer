@@ -7,6 +7,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/components"
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/settingslink"
 )
 
 // BaseAll is the base of an unconfigured or distro-less selection in an
@@ -372,7 +373,7 @@ func (s Snapshot) RefusalLine(id string) string {
 		}
 		return fmt.Sprintf("%s is blocked on this machine (%s). %s explains why.", title, why, components.SettingsHint())
 	default:
-		return fmt.Sprintf("%s is installed but inactive on this machine. Turn it on %s.", title, components.WhereToChange("`observer components add "+id+"`"))
+		return fmt.Sprintf("%s is installed but inactive on this machine. Turn it on %s.", title, components.WhereToChange("`"+settingslink.ComponentCommand(id)+"`"))
 	}
 }
 

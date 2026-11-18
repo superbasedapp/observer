@@ -2,6 +2,7 @@ import { useNavigate } from "react-router-dom";
 import clsx from "clsx";
 import { CircleCheck, CircleX, ExternalLink, GitPullRequestArrow, Monitor, Upload } from "lucide-react";
 import { ChartState } from "@/components/ChartState";
+import { GatedLink } from "@/components/GatedLink";
 import { Button, Icon, IdLink, Pill, Tooltip } from "@/components/primitives";
 import { VocabPill } from "@shared/lib/vocabPill";
 import { describeTruncation, TruncationBanner } from "@/components/projectdetail/TruncationBanner";
@@ -94,7 +95,7 @@ export function SessionCommitsCard({ sessionId }: { sessionId: string }) {
               {!data.project_id
                 ? "This session belongs to no project, so no commits can be linked to it."
                 : !captureOk
-                  ? `Commit capture not available for this project: ${COMMIT_CAPTURE[data.commit_capture!]?.tip ?? data.commit_capture} Commits cannot be linked until it is.`
+                  ? <CaptureOff state={data.commit_capture!} projectId={data.project_id} />
                   : `No commits reached from this session's prompts within the ${data.link_window_days}-day link window.`}
             </p>
           ) : (
@@ -245,5 +246,22 @@ function DeliveryLine({ d }: { d: SessionDeliveryRow }) {
       {facets && <span>{facets}</span>}
       {detail && <span>{detail}</span>}
     </div>
+  );
+}
+
+// CaptureOff is why no commit can be linked while capture is not live for
+// the project, with what to do (COMMIT_CAPTURE's todo) and a link to the
+// project, where Rescan and the full reason live. Not a setting: git, the
+// folder or the repository, so the way forward is the project page.
+function CaptureOff({ state, projectId }: { state: string; projectId: string | number }) {
+  const c = COMMIT_CAPTURE[state as keyof typeof COMMIT_CAPTURE];
+  return (
+    <>
+      Commit capture is not working for this project: {c?.tip ?? state}{" "}
+      {c?.todo || "Commits cannot be linked until it is."}{" "}
+      <GatedLink to={`/projects?project=${encodeURIComponent(String(projectId))}`} className="font-medium text-accent hover:text-accent-strong">
+        Open the project
+      </GatedLink>
+    </>
   );
 }

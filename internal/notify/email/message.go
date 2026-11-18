@@ -67,9 +67,9 @@ type ComposeParams struct {
 // footer is the shared sign-off line appended to every composed email.
 func footer(version string) string {
 	if strings.TrimSpace(version) == "" {
-		return "Sent by SuperBased Observer"
+		return "Sent by superbased Observer"
 	}
-	return "Sent by SuperBased Observer " + version
+	return "Sent by superbased Observer " + version
 }
 
 // Compose renders a Message (plaintext + HTML) from an alert payload. It is

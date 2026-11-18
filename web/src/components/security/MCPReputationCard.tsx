@@ -5,7 +5,9 @@ import { keepSelected } from "@/lib/pickerOptions";
 import { useMCPPackageOptions } from "@/lib/usePickerSources";
 import { TitleWithHelp } from "@/components/HelpInd";
 import { useApi } from "@/lib/useApi";
-import { apiReason, fetchJSON, localConfirmHeaders } from "@/lib/api";
+import { fetchJSON, localConfirmHeaders } from "@/lib/api";
+import { errorNote, type ErrorNote } from "@/lib/needsSetting";
+import { ApiErrorNotice } from "@/components/NeedsSettingNotice";
 import {
   optInLine,
   validPackageName,
@@ -25,7 +27,7 @@ export function MCPReputationCard() {
   // D-571: the packages the configured MCP servers run are offered first.
   const packages = useMCPPackageOptions();
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState<ErrorNote | null>(null);
   const [res, setRes] = useState<MCPReputationResult | null>(null);
 
   const st = status.data;
@@ -35,7 +37,7 @@ export function MCPReputationCard() {
     e.preventDefault();
     if (!validPackageName(pkg)) return;
     setBusy(true);
-    setError("");
+    setError(null);
     setRes(null);
     try {
       setRes(
@@ -46,7 +48,7 @@ export function MCPReputationCard() {
         }),
       );
     } catch (err) {
-      setError(apiReason(err));
+      setError(errorNote(err));
     } finally {
       setBusy(false);
     }
@@ -92,7 +94,7 @@ export function MCPReputationCard() {
           Look up
         </Button>
       </form>
-      {error && <div className="mt-2 text-[11.5px] text-danger">{error}</div>}
+      <ApiErrorNotice note={error} className="mt-2" plainClassName="mt-2 text-[11.5px] text-danger" />
       {res && (
         <div className="mt-3 space-y-1.5 rounded-2 border border-line-2 bg-bg-3 p-3 text-[11.5px]" aria-live="polite">
           {res.young && res.warning && (

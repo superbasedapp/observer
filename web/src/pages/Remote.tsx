@@ -1309,7 +1309,7 @@ function TailscaleCard({
                   official install script
                 </a>{" "}
                 with <code>sudo</code> - enter your password when prompted. The command is fixed
-                (<code>curl -fsSL https://tailscale.com/install.sh | sh</code>); SuperBased never runs a
+                (<code>curl -fsSL https://tailscale.com/install.sh | sh</code>); superbased never runs a
                 command you didn't start.
               </p>
               <button
@@ -1345,8 +1345,8 @@ function TailscaleCard({
             …or download it yourself →
           </a>
           <p className="text-[11px] text-fg-3">
-            On WSL2 the tailnet may be owned by a Windows-side Tailscale, but SuperBased needs the Linux binary
-            the daemon itself lives beside - so installing here (in Linux) is still what SuperBased needs.
+            On WSL2 the tailnet may be owned by a Windows-side Tailscale, but superbased needs the Linux binary
+            the daemon itself lives beside - so installing here (in Linux) is still what superbased needs.
           </p>
         </div>
       </ChartShell>
@@ -1505,7 +1505,7 @@ function TailscaleCard({
         {!serveActive && hasBackend && (
           <div className="space-y-2">
             <p className="text-[11px] text-fg-3">
-              <strong className="text-fg-2">Step:</strong> expose SuperBased over tailnet HTTPS. This runs{" "}
+              <strong className="text-fg-2">Step:</strong> expose superbased over tailnet HTTPS. This runs{" "}
               <code>tailscale serve</code> for you - no terminal needed if the daemon has permission.
             </p>
             <button
@@ -1557,7 +1557,7 @@ function TailscaleCard({
             {serveResult?.enable_url && (
               <div className="space-y-1.5 rounded-2 border border-warn/40 bg-warn/10 px-3 py-2">
                 <p className="text-[11px] text-warn">
-                  One-time step SuperBased can't do for you - enable Serve in your Tailscale account:{" "}
+                  One-time step superbased can't do for you - enable Serve in your Tailscale account:{" "}
                   <a
                     href={serveResult.enable_url}
                     target="_blank"

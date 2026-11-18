@@ -271,11 +271,11 @@ var selfApprovalVerbs = []selfApprovalVerb{
 	// denied; `observer security lookup` and `lookup status` only print.
 	// `security scan remote accept` is the 13.4 spelling, denied before any
 	// verb carries it.
-	{path: []string{"security", "lookup", "mode"}, grant: true, desc: "chooses the package lookup mode (download the databases, or the SuperBased lookup), recording its consent"},
-	{path: []string{"security", "lookup", "kinds"}, grant: true, desc: "chooses which package kinds the SuperBased lookup covers"},
-	{path: []string{"security", "lookup", "private"}, grant: true, desc: "chooses whether the SuperBased lookup sends private and internal package names, recording its consent"},
+	{path: []string{"security", "lookup", "mode"}, grant: true, desc: "chooses the package lookup mode (download the databases, or the superbased lookup), recording its consent"},
+	{path: []string{"security", "lookup", "kinds"}, grant: true, desc: "chooses which package kinds the superbased lookup covers"},
+	{path: []string{"security", "lookup", "private"}, grant: true, desc: "chooses whether the superbased lookup sends private and internal package names, recording its consent"},
 	{path: []string{"security", "lookup", "withdraw"}, grant: true, desc: "withdraws a package lookup consent"},
-	{path: []string{"security", "scan", "remote", "accept"}, grant: true, desc: "accepts the SuperBased package lookup"},
+	{path: []string{"security", "scan", "remote", "accept"}, grant: true, desc: "accepts the superbased package lookup"},
 	// Lane OS-2 T (plan 6.7): choosing the image driver writes
 	// [security.scan.image] driver, the developer's call like db_source (its
 	// config-set and PUT forms fall under the config set row's [security]
@@ -754,7 +754,7 @@ var guardGrantRoutes = []guardGrantRoute{
 	// records or withdraws their consents. The 13.4 spelling of the remote
 	// accept route is reserved beside it.
 	{path: "/api/security/lookup", desc: "the package lookup posture route"},
-	{path: "/api/security/scanners/remote", desc: "the SuperBased package lookup accept route"},
+	{path: "/api/security/scanners/remote", desc: "the superbased package lookup accept route"},
 	// The build artifact folders (M3L-2 item 4, ruling 2026-11-05): the
 	// Scanners card's per-folder opt-in; its PUT turns a folder on or off.
 	{path: "/api/security/artifacts", desc: "the build artifact folder opt-in route"},
@@ -915,6 +915,9 @@ var guardGrantRoutes = []guardGrantRoute{
 	// forms of the same [terminal.launch] keys are a self-approval of the
 	// launches R-168 asks about.
 	{path: "/api/terminal/policy", desc: "the terminal launch policy editor"},
+	// The local dashboard's first-launch consent (launchpad, door A) writes
+	// the same three [terminal.launch] keys in one save.
+	{path: "/api/terminal/first-launch", desc: "the first-launch consent, which allows a tool, fresh launches and a project folder"},
 	{path: "/api/config/section/terminal.launch", dotted: true, desc: "the [terminal.launch] settings section"},
 	{path: "/api/config/section/terminal", body: terminalLaunchSectionBody, desc: "the [terminal] settings section's launch policy"},
 	// Dashboard CLI parity follow-up (plan docs/plans/dashboard-cli-parity-
@@ -1784,8 +1787,8 @@ var consentRecordPatterns = []pathPattern{
 	{"**/security/trivy-db-consent.json", "the Trivy database accept record"},
 	// Lane RM-2 (plan section 13.10): the SuperBased package lookup's two
 	// records, the lookup itself and the private-names choice.
-	{"**/security/osv-remote-consent.json", "the SuperBased package lookup consent record"},
-	{"**/security/osv-remote-private-consent.json", "the SuperBased package lookup's private-names consent record"},
+	{"**/security/osv-remote-consent.json", "the superbased package lookup consent record"},
+	{"**/security/osv-remote-private-consent.json", "the superbased package lookup's private-names consent record"},
 	{"**/security/online-disclosure.json", "the online package checks' disclosure record"},
 	// Lane SEC-G2: the developer's one-time size consent to the guided
 	// Opengrep install (about 47 MB downloaded on their word).

@@ -2,7 +2,7 @@
 // connect flow it shares with the top bar and Settings > Account (Getting
 // started v2). No JSX, no fetch: pinned by getStarted.test.ts.
 //
-// The panel has three steps: (1) sign in to SuperBased and connect this
+// The panel has three steps: (1) sign in to superbased and connect this
 // machine (recommended, never required), (2) turn capture on for the AI
 // tools found here, (3) use them as usual. Signing in and connecting is ONE
 // action: the daemon runs `observer connect --json --no-browser`
@@ -17,6 +17,8 @@
 // GET /api/firstrun "snoozed"), so another browser agrees.
 
 import type { FirstRunTool } from "./firstRun.ts";
+import { connectedChipLabel, dashboardRolesLine, onlineKindOf } from "./connectHandoff.ts";
+import { onlineRole } from "../../../shared/lib/twoDashboards.ts";
 
 // ---- the connect flow (GET /api/connect/progress) -------------------------
 
@@ -178,7 +180,7 @@ export type AccountEnrolmentInput = {
 /** Account is what every account surface shows, in the five words. */
 export type Account = {
   signedIn: boolean;
-  /** This build can read the SuperBased sign-in at all. */
+  /** This build can read the superbased sign-in at all. */
   identityKnown: boolean;
   connected: boolean;
   locked: boolean;
@@ -329,7 +331,7 @@ export type SignInStep =
 export function signInStep(a: Account, skipped: boolean): SignInStep {
   if (a.locked) return { kind: "unavailable", reason: "Your company's settings choose where this machine sends data." };
   if (skipped) return { kind: "skipped" };
-  if (!a.identityKnown) return { kind: "unavailable", reason: "This install cannot sign in to SuperBased." };
+  if (!a.identityKnown) return { kind: "unavailable", reason: "This install cannot sign in to superbased." };
   return a.signedIn ? { kind: "connect" } : { kind: "sign_in" };
 }
 
@@ -417,7 +419,16 @@ export type TopBarAccountView =
   | { kind: "sign_in"; label: string; tooltip: string }
   | { kind: "connect"; label: string; tooltip: string }
   | { kind: "connecting"; label: string; tooltip: string }
-  | { kind: "connected"; label: string; tooltip: string; managed: boolean; onlineUrl: string | null };
+  | {
+      kind: "connected";
+      label: string;
+      /** Where this machine is connected, and what each dashboard holds. */
+      tooltip: string;
+      managed: boolean;
+      onlineUrl: string | null;
+      /** The Open online button's tooltip: what the online dashboard holds. */
+      onlineTooltip: string;
+    };
 
 type TopBarInput = {
   account: Account | null;
@@ -426,14 +437,19 @@ type TopBarInput = {
   progress: ConnectProgress | null | undefined;
   /** An organization manages this machine (enrolment tenancy). */
   managed: boolean;
+  /** The installer's terminal is connecting this machine (?connecting=1,
+   * lib/connectHandoff.ts): the terminal owns that flow, so nothing here
+   * offers to start a second one. */
+  handoffWaiting?: boolean;
 };
 
 type TopBarRule = { name: string; when: (i: TopBarInput) => boolean; view: (i: TopBarInput) => TopBarAccountView };
 
 /**
  * TOP_BAR_RULES decides the top bar's account control, at every width: a
- * connected machine names where (and opens it online); a flow in flight
- * says it is waiting; otherwise Sign in (or Connect, once signed in). A
+ * connected machine names where (and opens it online); a flow in flight,
+ * here or in the installer's terminal, says it is waiting; otherwise Sign in
+ * (or Connect, once signed in). A
  * remote view and a build that cannot sign in show nothing to start.
  */
 export const TOP_BAR_RULES: readonly TopBarRule[] = [
@@ -443,12 +459,22 @@ export const TOP_BAR_RULES: readonly TopBarRule[] = [
     when: (i) => !!i.account?.connected,
     view: (i) => {
       const a = i.account!;
-      const where = i.managed ? `Managed by ${a.displayName}` : a.displayName;
+      // A managed machine reads as a team (lib/connectHandoff onlineKindOf).
+      const facts = { ...a, kind: i.managed ? ("team" as const) : a.kind };
+      const where = i.managed ? `Managed by ${a.displayName}` : connectedChipLabel(facts);
       const who = a.email ? ` as ${a.email}` : "";
+      const roles = dashboardRolesLine(facts);
       const tooltip = i.managed
-        ? `This machine is connected to ${a.displayName}${who}, which manages it. Details in Settings > Account.`
-        : `This machine is connected to ${a.displayName}${who}. Details in Settings > Account.`;
-      return { kind: "connected", label: where, tooltip, managed: i.managed, onlineUrl: a.onlineUrl };
+        ? `This machine is connected to ${a.displayName}${who}, which manages it. ${roles} Details in Settings > Account.`
+        : `This machine is connected to ${a.displayName}${who}. ${roles} Details in Settings > Account.`;
+      return {
+        kind: "connected",
+        label: where,
+        tooltip,
+        managed: i.managed,
+        onlineUrl: a.onlineUrl,
+        onlineTooltip: `Open the online dashboard in a new tab: ${onlineRole(onlineKindOf(facts))}.`,
+      };
     },
   },
   {
@@ -460,6 +486,15 @@ export const TOP_BAR_RULES: readonly TopBarRule[] = [
       tooltip: i.progress?.user_code
         ? `Approve this machine in your browser. Code ${i.progress.user_code}.`
         : "Approve this machine in your browser.",
+    }),
+  },
+  {
+    name: "terminal_connecting",
+    when: (i) => !!i.handoffWaiting,
+    view: () => ({
+      kind: "connecting",
+      label: "Waiting for approval",
+      tooltip: "Approve this machine in the browser tab that just opened, or enter the code shown in your terminal.",
     }),
   },
   { name: "cannot_start_here", when: (i) => !i.available || !!i.account?.locked || !i.account?.identityKnown, view: () => ({ kind: "hidden" }) },

@@ -84,7 +84,7 @@ func osSizeWords() string {
 var OSConsentText = "Observer's image scanner matches the operating system packages inside your container images " +
 	"against a local copy of the OSV vulnerability database of each distribution release. Accepting lets " +
 	"Observer download, when a scanned image needs it, the database of each distribution release your " +
-	"scanned images use, from SuperBased's signed mirror on " + FeedHost + " only: there is no other source, " +
+	"scanned images use, from superbased's signed mirror on " + FeedHost + " only: there is no other source, " +
 	"and a release the mirror cannot serve shows as not scanned. One accept covers every release; a release " +
 	"your images start to use later downloads without asking again. Each release's database is: " + osSizeWords() +
 	". After a release is downloaded Observer checks it every 6 hours and fetches only what changed. The " +

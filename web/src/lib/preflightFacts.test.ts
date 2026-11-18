@@ -37,7 +37,7 @@ const cases: Array<{ name: string; over: Partial<ToolPreflight>; want: string[] 
   {
     name: "unverified packaged app",
     over: { install_unverified: true },
-    want: ["SuperBased can't confirm it's installed. The launch will tell you if it isn't."],
+    want: ["superbased can't confirm it's installed. The launch will tell you if it isn't."],
   },
 ];
 cases.push(

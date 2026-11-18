@@ -21,6 +21,9 @@ import {
   type WiringOutcome,
 } from "@/lib/getStarted";
 import { useAccount, useConnectFlow, type ConnectFlow } from "@/lib/useConnectFlow";
+import { useConnectHandoff } from "@/lib/useConnectHandoff";
+import { showTwoDashboardsNote } from "@/lib/connectHandoff";
+import { HandoffCard, TwoDashboardsNote, useTwoDashboardsNote } from "@/components/ConnectHandoff";
 
 // GetStarted is the one "Get started" panel at the top of Overview (Getting
 // started v2). It replaced three things: the first-run dialog that opened by
@@ -28,7 +31,7 @@ import { useAccount, useConnectFlow, type ConnectFlow } from "@/lib/useConnectFl
 // Connected tools and the command palette), the zero-session onboarding card
 // and the Connect card. Three steps:
 //
-//   1. Sign in to SuperBased (recommended, never required): one button that
+//   1. Sign in to superbased (recommended, never required): one button that
 //      signs in AND connects this machine through the daemon's connect flow
 //      (lib/useConnectFlow.ts); "Continue without an account" skips it.
 //   2. Your AI tools: what was found here, how each is captured, and one
@@ -39,8 +42,12 @@ import { useAccount, useConnectFlow, type ConnectFlow } from "@/lib/useConnectFl
 //
 // "Hide" puts it away; it comes back as a one-line strip a week later
 // (kept on the daemon). Once this machine is connected the panel is a
-// one-line strip naming where, with Open online dashboard. lib/getStarted.ts
-// holds every decision; this file only renders them.
+// one-line strip naming where, with Open online dashboard, and a "Two
+// dashboards" note (once per browser) saying what each dashboard holds.
+// While the installer's terminal connects this machine (?connecting=1,
+// lib/connectHandoff.ts) one hand-off card stands in for all of it.
+// lib/getStarted.ts and lib/connectHandoff.ts hold every decision; this file
+// only renders them.
 
 /** The "Continue without an account" choice, kept in this browser only. */
 const LOCAL_ONLY_KEY = "sb_get_started_local_only";
@@ -65,6 +72,8 @@ function writeLocalOnly(on: boolean): void {
 export function GetStarted({ sessions }: { sessions: number | null }) {
   const flow = useConnectFlow();
   const { account } = useAccount(flow);
+  const handoff = useConnectHandoff(account);
+  const note = useTwoDashboardsNote();
   // The brief first-run read carries the snooze time (the same read the
   // shell takes, so the shared cache serves both).
   const brief = useApi<FirstRunResponse>(FIRST_RUN_PATH, { brief: "1" });
@@ -94,10 +103,22 @@ export function GetStarted({ sessions }: { sessions: number | null }) {
     writeLocalOnly(on);
   }, []);
 
+  // The installer's terminal is connecting this machine (?connecting=1):
+  // its card stands in for the panel and the strips, so the page offers no
+  // second way to connect while the terminal waits. A failed status read
+  // (the daemon restarting after the connect) only waits longer.
+  if (handoff.phase === "waiting" || handoff.phase === "expired") {
+    return <HandoffCard phase={handoff.phase} handoff={handoff.handoff} />;
+  }
   if (!account) return null;
   switch (mode) {
     case "connected":
-      return <ConnectedStrip account={account} />;
+      return (
+        <div className="space-y-2">
+          <ConnectedStrip account={account} />
+          {showTwoDashboardsNote(account, note.dismissed) && <TwoDashboardsNote account={account} onDismiss={note.dismiss} />}
+        </div>
+      );
     case "strip":
       return <ReturnStrip account={account} flow={flow} onHide={hide} />;
     case "panel":
@@ -279,14 +300,14 @@ function SignInStep({
   const step = signInStep(account, localOnly && !flow.active);
   if (step.kind === "unavailable") {
     return (
-      <StepFrame n={1} title="Sign in to SuperBased">
+      <StepFrame n={1} title="Sign in to superbased">
         <p className={STEP_TEXT}>{step.reason} You can keep using everything here on this machine.</p>
       </StepFrame>
     );
   }
   if (step.kind === "skipped") {
     return (
-      <StepFrame n={1} title="Sign in to SuperBased" done>
+      <StepFrame n={1} title="Sign in to superbased" done>
         <p className={STEP_TEXT}>Skipped. Everything here keeps working on this machine.</p>
         <div>
           <Button size="sm" variant="ghost" onClick={() => onContinueLocal(false)}>
@@ -300,7 +321,7 @@ function SignInStep({
   return (
     <StepFrame
       n={1}
-      title={connectOnly ? "Connect this machine" : "Sign in to SuperBased"}
+      title={connectOnly ? "Connect this machine" : "Sign in to superbased"}
       badge={
         <Pill variant="accent" case="none">
           Recommended
@@ -403,7 +424,7 @@ function ToolsStep() {
             onConfirm={() => void turnOnAll()}
             loading={busy}
             confirmLabel={`Turn on for ${n}?`}
-            armedNote="Adds SuperBased's hooks and proxy route to each tool's own settings. Undo any tool in Settings > Connected tools."
+            armedNote="Adds superbased's hooks and proxy route to each tool's own settings. Undo any tool in Settings > Connected tools."
           >
             {`Turn on for all ${n}`}
           </ConfirmButton>

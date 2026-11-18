@@ -27,7 +27,7 @@ func TestComposeTextAndHTML(t *testing.T) {
 		t.Fatalf("to = %v", m.To)
 	}
 	// Text body carries the heading, every field, and the version footer.
-	for _, want := range []string{"The team budget crossed 80%.", "Scope: team · payments", "Current spend: $80.00 of $100.00", "Sent by SuperBased Observer v1.19.0"} {
+	for _, want := range []string{"The team budget crossed 80%.", "Scope: team · payments", "Current spend: $80.00 of $100.00", "Sent by superbased Observer v1.19.0"} {
 		if !strings.Contains(m.Text, want) {
 			t.Errorf("text missing %q\n%s", want, m.Text)
 		}
@@ -78,7 +78,7 @@ func TestComposeNoSectionsUnchanged(t *testing.T) {
 
 func TestComposeFooterVersionless(t *testing.T) {
 	m := Compose(ComposeParams{Subject: "s", Fields: []Field{{Label: "a", Value: "b"}}})
-	if !strings.Contains(m.Text, "Sent by SuperBased Observer") {
+	if !strings.Contains(m.Text, "Sent by superbased Observer") {
 		t.Fatalf("missing footer:\n%s", m.Text)
 	}
 	if strings.Contains(m.Text, "Observer  ") { // no trailing double-space where a version would go

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Install SuperBased Observer and connect this machine, in one step, on Windows.
+  Install superbased Observer and connect this machine, in one step, on Windows.
 
 .DESCRIPTION
   irm https://superbased.app/connect.ps1 | iex                          # personal dashboard
@@ -197,7 +197,7 @@ function Invoke-Connect {
       } finally { $ProgressPreference = $prev }
     }
 
-    Say "Getting the SuperBased Observer installer."
+    Say "Getting the superbased Observer installer."
     [void](& $get "SHA256SUMS" $false)
     [void](& $get "install.ps1" $false)
     $sums = Join-Path $work "SHA256SUMS"

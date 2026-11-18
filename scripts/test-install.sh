@@ -24,8 +24,8 @@
 # systemd unit (stood in for by OBSERVER_INSTALL_TEST_SYSTEMD; the stub logs
 # the `observer service upgrade` the installer hands the restart to), and
 # the macOS 13 floor (a sw_vers fixture via OBSERVER_INSTALL_TEST_SW_VERS),
-# and --connect (Getting started v2): connect before the service starts, the
-# hooks-only wiring when there is no service, the edition and team checks,
+# and --connect: the service (or a background start) first, the local dashboard shown before connect, the
+# role lines, the edition and team checks,
 # and scripts/connect.sh verifying install.sh through the signed SHA256SUMS.
 #
 # Usage: scripts/test-install.sh
@@ -110,6 +110,7 @@ run() {
   if [[ -n "${FAKE_UNINSTALL_FAIL:-}" ]]; then extra+=("FAKE_UNINSTALL_FAIL=$FAKE_UNINSTALL_FAIL"); fi
   if [[ -n "${OBSERVER_INSTALL_TEST_SYSTEMD:-}" ]]; then extra+=("OBSERVER_INSTALL_TEST_SYSTEMD=$OBSERVER_INSTALL_TEST_SYSTEMD"); fi
   if [[ -n "${OBSERVER_INSTALL_TEST_SW_VERS:-}" ]]; then extra+=("OBSERVER_INSTALL_TEST_SW_VERS=$OBSERVER_INSTALL_TEST_SW_VERS"); fi
+  if [[ -n "${OBSERVER_INSTALL_TEST_NO_OPEN:-}" ]]; then extra+=("OBSERVER_INSTALL_TEST_NO_OPEN=$OBSERVER_INSTALL_TEST_NO_OPEN"); fi
   if [[ -n "${SBO_CONNECT_TEAM:-}" ]]; then extra+=("SBO_CONNECT_TEAM=$SBO_CONNECT_TEAM"); fi
   # A fixture /proc with no daemon (U4): a test never reads this host's
   # real processes.
@@ -436,32 +437,66 @@ for v in 13.0 15.1; do
   else bad "macOS $v floor (rc=$rc)"; cat "$T/out"; fi
 done
 
-# 24. --connect <team> (Getting started v2): the default edition is
-# developer, `observer connect <team>` runs before the service is installed
-# (so the daemon starts connected), and the two dashboard lines close it.
+# 24. --connect <team>: the default edition is developer, the service is
+# installed first, the local dashboard is shown BEFORE `observer connect
+# <team>` runs, and the role lines close it.
 line_of() { grep -n -- "$1" "$2" | head -n 1 | cut -d: -f1; }
+# dash_line: where the local dashboard was shown. It is opened where a
+# browser can open, otherwise the installer prints how to reach it (a headless
+# CI runner takes that branch); both show the dashboard before connect.
+dash_line() {
+  dl_open=$(line_of '^Opening the local dashboard: http://127.0.0.1:8081$' "$1")
+  dl_print=$(line_of '^Open http://127.0.0.1:8081 in a browser on this machine,$' "$1")
+  if [[ -n "$dl_open" && ( -z "$dl_print" || "$dl_open" -lt "$dl_print" ) ]]; then echo "$dl_open"; else echo "$dl_print"; fi
+}
 OBSERVER_INSTALL_TEST_SYSTEMD=1 OBSERVER_INSTALL_TEST_NO_OPEN=1 run "$T/h24" --from-dir "$T/rel" --prefix "$T/p24" --connect acme
 log="$T/h24/observer-calls.log"
 c=$(line_of '^connect acme --wire-clients=false$' "$log"); si=$(line_of '^service install --now$' "$log")
-if [[ $rc -eq 0 ]] && has "developer edition" && [[ -n "$c" && -n "$si" && "$c" -lt "$si" ]] \
-  && grep -qx 'components add integration.service --yes' "$log" && has "Local dashboard http://127.0.0.1:8081" \
-  && has "Online dashboard https://cloud.superbased.app" && has "Undo any time: observer disconnect"; then
-  ok "--connect acme: developer edition, connect before the service, dashboard lines"
+od=$(dash_line "$T/out"); cm=$(line_of '^Connecting this machine\.' "$T/out")
+if [[ $rc -eq 0 ]] && has "developer edition" && [[ -n "$c" && -n "$si" && "$si" -lt "$c" && -n "$od" && -n "$cm" && "$od" -lt "$cm" ]] \
+  && grep -qx 'components add integration.service --yes' "$log" && ! grep -q '^start ' "$log" \
+  && has "Local dashboard   http://127.0.0.1:8081" && has "everything Observer records on this computer, in full; it stays here" \
+  && has "Team dashboard    https://cloud.superbased.app" && has "full detail (prompts, responses, file paths); the team's admins can read it" && has "Undo any time: observer disconnect"   && has "Restarting Observer so it starts sending to team acme." && sr=$(line_of '^service restart$' "$log") && [[ -n "$sr" && "$sr" -gt "$c" ]]; then
+  ok "--connect acme: service first, dashboard shown before connect, role lines, restart after connect"
 else bad "--connect acme (rc=$rc)"; cat "$T/out"; cat "$log" 2>/dev/null; fi
 
-# 25. --connect with no service manager: hooks are wired the way `observer
-# start` wires them (init without MCP or proxy routes), and the person is
-# told to start Observer. The team comes from SBO_CONNECT_TEAM.
+# 25. --connect with no service manager: Observer is started in the
+# background (--no-open: the installer opens the page), which registers the
+# hooks itself, so no separate init runs. The dashboard is shown before
+# connect. The team comes from SBO_CONNECT_TEAM.
 if [[ "$OS" == linux && ! -d /run/systemd/system ]]; then
-  SBO_CONNECT_TEAM=acme run "$T/h25" --from-dir "$T/rel" --prefix "$T/p25" --connect
+  OBSERVER_INSTALL_TEST_NO_OPEN=1 SBO_CONNECT_TEAM=acme run "$T/h25" --from-dir "$T/rel" --prefix "$T/p25" --connect
   log="$T/h25/observer-calls.log"
-  if [[ $rc -eq 0 ]] && grep -qx 'connect acme --wire-clients=false' "$log" && grep -qx 'init --skip-mcp --skip-proxy-route' "$log" \
-    && ! grep -q '^service install' "$log" && has "Start Observer: observer start"; then
-    ok "--connect without systemd: hooks-only wiring, team from SBO_CONNECT_TEAM"
+  for _ in 1 2 3 4 5 6 7 8 9 10; do [[ "$(grep -cx 'start --no-open' "$log" 2>/dev/null)" -ge 2 ]] && break; sleep 0.3; done
+  od=$(dash_line "$T/out"); cm=$(line_of '^Connecting this machine\.' "$T/out")
+  if [[ $rc -eq 0 ]] && grep -qx 'connect acme --wire-clients=false' "$log" && grep -qx 'start --no-open' "$log" \
+    && ! grep -q '^init ' "$log" && ! grep -q '^service install' "$log" && [[ -n "$od" && -n "$cm" && "$od" -lt "$cm" ]] \
+    && has "Observer is running in the background until you sign out or restart." && has "To keep it running: observer service install --now"     && has "Restarting Observer so it starts sending to team acme." && [[ "$(grep -cx 'start --no-open' "$log")" -eq 2 ]]; then
+    ok "--connect without systemd: background start, dashboard before connect, restart after connect, team from SBO_CONNECT_TEAM"
   else bad "--connect without systemd (rc=$rc)"; cat "$T/out"; cat "$log" 2>/dev/null; fi
 else
   skp "--connect without systemd: this host runs systemd"
 fi
+
+# 25b. A failed `observer connect` is never followed by a restart. A stub
+# whose `connect` exits 1 stands in (FAKE_CONNECT_FAIL via the stub's log
+# is not available, so a second fixture archive is built).
+rm -rf "$T/rf"; mkdir -p "$T/rf"; cp -R "$T/rel/." "$T/rf/"
+mkdir -p "$T/rfstage"; stub developer "$T/rfstage"
+# awk, not `sed -i` with a newline in the replacement: BSD sed's -i takes a
+# suffix and GNU sed refuses an unescaped newline, so neither ran it.
+awk '/^esac$/ { print "  connect) exit 1 ;;" } { print }' "$T/rfstage/observer" > "$T/rfstage/observer.new" \
+  && mv "$T/rfstage/observer.new" "$T/rfstage/observer" && chmod +x "$T/rfstage/observer"
+grep -q '^  connect) exit 1 ;;$' "$T/rfstage/observer" || bad "--connect failed connect: the failing stub was not built"
+tar -C "$T/rfstage" -czf "$T/rf/observer-$VER-developer-$OS-$ARCH.tar.gz" observer superbased
+(cd "$T/rf" && for f in observer-*; do case "$f" in *.sig) continue;; esac; printf '%s  %s
+' "$(sha256 "$f")" "$f"; done > SHA256SUMS)
+(cd "$REPO_ROOT" && "${VS[@]}" sign -key "$KEY" -allow-unpinned-key "$T"/rf/observer-*.tar.gz >/dev/null 2>&1)
+OBSERVER_INSTALL_TEST_SYSTEMD=1 OBSERVER_INSTALL_TEST_NO_OPEN=1 run "$T/h25b" --from-dir "$T/rf" --prefix "$T/p25b" --connect acme
+log="$T/h25b/observer-calls.log"
+if [[ $rc -eq 0 ]] && grep -qx 'connect acme --wire-clients=false' "$log" && ! grep -q '^service restart' "$log"   && ! has "Restarting Observer" && has "This machine is not connected yet"; then
+  ok "--connect: a failed connect is not followed by a restart"
+else bad "--connect failed connect (rc=$rc)"; cat "$T/out"; cat "$log" 2>/dev/null; fi
 
 # 26. --connect refuses an edition without sign-in, a bad team name and
 # --uninstall, before anything is installed.

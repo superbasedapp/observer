@@ -61,6 +61,12 @@ func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	windowMin := intArg(r, "window_minutes", 15, 1, 240)
+	// view=ribbon is the live ribbon's lighter read (live_ribbon.go): its
+	// own response shape; the default and ids_only shapes are unchanged.
+	if r.URL.Query().Get("view") == "ribbon" {
+		s.handleLiveRibbon(w, r, windowMin)
+		return
+	}
 	now := time.Now().UTC()
 	since := now.Add(-time.Duration(windowMin) * time.Minute).Format(time.RFC3339Nano)
 	// The global Model filter, session grain: an active session counts

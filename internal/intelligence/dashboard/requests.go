@@ -13,6 +13,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/budgetwarnfile"
 	"github.com/marmutapp/superbased-observer/internal/orgclient"
 	"github.com/marmutapp/superbased-observer/internal/orgcontract"
+	"github.com/marmutapp/superbased-observer/internal/settingslink"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
@@ -143,7 +144,7 @@ type requestPreview struct {
 func (s *Server) prepareRequest(w http.ResponseWriter, r *http.Request) (orgcontract.AccessRequestCreate, []accessgrant.Problem, bool) {
 	svc := s.opts.Requests
 	if svc == nil {
-		writeJSONStatus(w, http.StatusConflict, map[string]string{"error": "not_enrolled", "message": "requests go to an organization; this node is not enrolled"})
+		writeNeedsSetting(w, http.StatusConflict, "not_enrolled", msgRequestsNotEnrolled, settingslink.Account)
 		return orgcontract.AccessRequestCreate{}, nil, false
 	}
 	var body requestBody
@@ -153,7 +154,7 @@ func (s *Server) prepareRequest(w http.ResponseWriter, r *http.Request) (orgcont
 	}
 	prepared, err := svc.PrepareAccessRequest(r.Context(), body.Request, body.OptInExcerpt)
 	if errors.Is(err, orgclient.ErrNotEnrolled) {
-		writeJSONStatus(w, http.StatusConflict, map[string]string{"error": "not_enrolled", "message": "requests go to an organization; this node is not enrolled"})
+		writeNeedsSetting(w, http.StatusConflict, "not_enrolled", msgRequestsNotEnrolled, settingslink.Account)
 		return orgcontract.AccessRequestCreate{}, nil, false
 	}
 	if err != nil {

@@ -202,8 +202,8 @@ export function MilestonesCard({ sessions }: { sessions: number | null }) {
     saved
       ? saved.share
       : visible === "sessions100"
-        ? "100 AI coding sessions tracked with SuperBased - superbased.app"
-        : "One full week of AI coding sessions tracked with SuperBased - superbased.app";
+        ? "100 AI coding sessions tracked with superbased - superbased.app"
+        : "One full week of AI coding sessions tracked with superbased - superbased.app";
   const dismiss = () => {
     retire(visible);
     setVisible(null);

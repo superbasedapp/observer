@@ -236,7 +236,7 @@ export function osReleaseNotes(r: ScannerOSRelease): string[] {
 
 /** The image drivers' names on the card. */
 const IMAGE_DRIVER_NAMES: Readonly<Record<string, string>> = {
-  scalibr: "OSV-SCALIBR (SuperBased's signed OS databases)",
+  scalibr: "OSV-SCALIBR (superbased's signed OS databases)",
   trivy: "Trivy (its own vulnerability database)",
 };
 

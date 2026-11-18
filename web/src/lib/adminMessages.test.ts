@@ -277,7 +277,7 @@ test("readReceiptNote shows only when read receipts are on", () => {
 });
 
 test("sendErrorText maps every refusal code to a plain sentence", () => {
-  assert.match(sendErrorText(409, '{"error":"not_enrolled","message":"x"}'), /not enrolled/);
+  assert.match(sendErrorText(409, '{"error":"not_enrolled","message":"x"}'), /not connected to one\. Connect it in Settings > Account\./);
   assert.match(sendErrorText(403, '{"error":"threads_disabled"}'), /start conversations/);
   assert.match(sendErrorText(403, '{"error":"topic_not_allowed"}'), /this topic/);
   assert.match(sendErrorText(429, '{"error":"outbox_full"}'), /Too many/);

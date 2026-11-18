@@ -39,6 +39,10 @@ type SpendTurn struct {
 	// table's rate at At; 0 when neither exists (Priced false).
 	CostUSD float64
 	Priced  bool
+	// Source is the capture path whose row survived dedup ("proxy" |
+	// "jsonl"), from cost.TurnRow.Source. Additive: lets a surface tell a
+	// proxy-recorded cost from a transcript- or table-priced estimate.
+	Source string
 }
 
 // spendScope is the dashboard's global tool / project / model filter as the
@@ -93,7 +97,7 @@ func LoadSpendTurns(ctx context.Context, db *sql.DB, engine turnRowLister, since
 		}
 		t := SpendTurn{
 			SessionID: r.SessionID, Model: r.Model, Tool: r.Tool, ProjectPath: r.ProjectPath, At: r.At,
-			Bundle: r.Tokens, Recorded: r.RecordedUSD, Priced: r.Priced,
+			Bundle: r.Tokens, Recorded: r.RecordedUSD, Priced: r.Priced, Source: r.Source,
 		}
 		if r.Priced {
 			t.CostUSD = r.CostUSD

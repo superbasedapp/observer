@@ -89,10 +89,19 @@ func checkName(name string) error {
 // substitute it and never touch the real OS keychain.
 var keychainProbe = KeychainUsable
 
+// keychainChosen is KeychainChosen for Open and OpenReport's WARN decision (a
+// package var so tests reach the Linux default from a test binary).
+var keychainChosen = KeychainChosen
+
 // KeychainUsable probes the OS keychain with a full set/get/delete cycle of
 // a throwaway record under service. It is the only reliable cross-platform
-// availability test.
+// availability test. Where the OS keyring is not chosen for service
+// (KeychainChosen, Linux by default) it is false without touching the
+// keyring, so no prompt opens.
 func KeychainUsable(service, probe string) bool {
+	if !KeychainChosen(service) {
+		return false
+	}
 	if err := keyring.Set(Namespace(service), probe, "1"); err != nil {
 		return false
 	}
@@ -119,6 +128,10 @@ func Open(service, fallbackDir string, logger *slog.Logger) Store {
 		logger.Warn("credentials: OS keychain unavailable and this platform build's file "+
 			"fallback has no verified protection; failing closed", "service", service)
 		return FailClosed()
+	}
+	if !keychainChosen(service) {
+		// The file store is this machine's choice, not a fallback: no WARN.
+		return NewFileStore(service, fallbackDir)
 	}
 	if _, err := os.Stat(sentinel); err != nil {
 		logger.Warn("credentials: OS keychain unavailable, falling back to hardened 0600 file store",

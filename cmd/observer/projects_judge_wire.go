@@ -17,6 +17,10 @@ import (
 // projects_judge_wire_stub.go for that side. It no longer depends on obs
 // (phase PB moved the judge client out of obs_wire.go, D-408 / D-424).
 
+// judgeClientInBuild is true: the judge tier exists and its settings turn
+// it on.
+const judgeClientInBuild = true
+
 // projectsJudgeGradeSeam returns a closure that grades one prompt's
 // alignment.Input through the configured judge, or nil with the honest
 // reason alignmentJudgeFor gave (disabled config / no model configured)

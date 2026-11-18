@@ -666,3 +666,58 @@ func (h *workosHarness) exchangeRaw(t *testing.T, brokerToken string) *http.Resp
 	}
 	return resp
 }
+
+// --- hosted sign-in fix: the sign-up start ---------------------------------
+
+// TestSignUpStartOpensAuthKitSignUpScreen pins the console's "Create an
+// account" start (lane A): screen_hint=sign-up reaches AuthKit as
+// screen_hint=sign-up beside provider=authkit, a sign-in or absent hint sends
+// no screen_hint, an unknown or repeated value is a 400 before any
+// transaction is minted, and a step-up refuses a sign-up hint.
+func TestSignUpStartOpensAuthKitSignUpScreen(t *testing.T) {
+	h := newWorkOSHarness(t, true)
+	cases := []struct {
+		name     string
+		query    string
+		status   int
+		wantHint string
+	}{
+		{"no hint", "", http.StatusFound, ""},
+		{"sign-in hint", "?screen_hint=sign-in", http.StatusFound, ""},
+		{"sign-up hint", "?screen_hint=sign-up", http.StatusFound, "sign-up"},
+		{"sign-up with a return path", "?screen_hint=sign-up&return_to=%2Fportal%2Forgs%2Fnew", http.StatusFound, "sign-up"},
+		{"unknown hint", "?screen_hint=register", http.StatusBadRequest, ""},
+		{"repeated hint", "?screen_hint=sign-up&screen_hint=sign-in", http.StatusBadRequest, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hc := newBrowser(t)
+			_, resp := h.startFlow(t, hc, tc.query)
+			if resp.StatusCode != tc.status {
+				t.Fatalf("start%s status=%d, want %d body=%s", tc.query, resp.StatusCode, tc.status, readAll(resp))
+			}
+			if tc.status != http.StatusFound {
+				if cookieNamed(resp, devTxnCookieName) != nil {
+					t.Fatal("a refused start minted a transaction")
+				}
+				return
+			}
+			q := authorizeQuery(t, resp)
+			_, has := q["screen_hint"]
+			if q.Get("screen_hint") != tc.wantHint || has != (tc.wantHint != "") {
+				t.Fatalf("screen_hint=%q present=%v, want %q", q.Get("screen_hint"), has, tc.wantHint)
+			}
+			if q.Get("provider") != "authkit" {
+				t.Fatalf("provider=%q, want authkit", q.Get("provider"))
+			}
+		})
+	}
+
+	t.Run("step-up refuses a sign-up hint", func(t *testing.T) {
+		hc, _, _ := h.signIn(t, "signup-sam")
+		_, resp := h.startFlow(t, hc, "?purpose=step_up&action=deletion&screen_hint=sign-up")
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("step-up with screen_hint status=%d, want 400", resp.StatusCode)
+		}
+	})
+}

@@ -217,7 +217,7 @@ func TestConnectDiscoveryRow9CreatesThePersonalOrg(t *testing.T) {
 		t.Fatalf("enroll argv = %v", h.run.enrollArgs)
 	}
 	for _, want := range []string{
-		"No dashboards are listed for your SuperBased sign-in.",
+		"No dashboards are listed for your superbased sign-in.",
 		"Is your company's team server missing? Enter its address: observer connect <url>",
 		"Create your personal dashboard",
 		"Created your personal dashboard.",

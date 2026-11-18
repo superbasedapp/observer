@@ -79,7 +79,7 @@ func ceremonyOf(t *testing.T, out map[string]any) (cer, challenge, rpID string, 
 	challenge, _ = opts["challenge"].(string)
 	if rp, ok := opts["rp"].(map[string]any); ok {
 		rpID, _ = rp["id"].(string)
-		if rp["name"] != "SuperBased" {
+		if rp["name"] != "superbased" {
 			t.Errorf("rp name = %v", rp["name"])
 		}
 	} else {

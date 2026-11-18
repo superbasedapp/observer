@@ -22,6 +22,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/remotecfg"
+	"github.com/marmutapp/superbased-observer/internal/settingslink"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
@@ -104,7 +105,7 @@ func (s *Server) handleRemoteSetRevokeStandingOnTakeover(w http.ResponseWriter, 
 		return
 	}
 	if !cfg.Remote.Enabled {
-		http.Error(w, `{"error":"remote access is off - arm remote access first"}`, http.StatusBadRequest)
+		writeNeedsSetting(w, http.StatusBadRequest, "remote access is off - arm remote access first", msgRemoteOff, settingslink.RemoteAccess)
 		return
 	}
 	cfg.Remote.RevokeStandingOnTakeover = next
@@ -158,7 +159,7 @@ func (s *Server) handleRemoteSetAllowRemoteTakeover(w http.ResponseWriter, r *ht
 		return
 	}
 	if !cfg.Remote.Enabled {
-		http.Error(w, `{"error":"remote access is off - arm remote access first"}`, http.StatusBadRequest)
+		writeNeedsSetting(w, http.StatusBadRequest, "remote access is off - arm remote access first", msgRemoteOff, settingslink.RemoteAccess)
 		return
 	}
 	cfg.Remote.AllowRemoteTerminalTakeover = next

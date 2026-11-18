@@ -134,7 +134,8 @@ export function pushCadenceLine(
   fmtTime: (iso: string) => string,
 ): string {
   const secs = ov.push_interval_seconds ?? 0;
-  if (!ov.pushing_enabled) return "The push loop is off: [org_client] enabled = false in config.toml.";
+  if (!ov.pushing_enabled)
+    return "Sending is off on this machine ([org_client] enabled = false in config.toml). Connecting this machine again here turns it back on; or set enabled = true and restart the daemon.";
   if (!ov.push_loop_running) return "The push loop is not running in this daemon yet; restart it, or use Push now.";
   if (secs <= 0) return "The push loop is running.";
   const every = `Pushes at least every ${secs} s, sooner when new activity arrives.`;

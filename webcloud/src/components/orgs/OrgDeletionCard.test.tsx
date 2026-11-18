@@ -278,7 +278,7 @@ test("the status panel words every state", () => {
     for (const w of wants) assert.match(out, w, `${over.state ?? "cooling_off"}: ${w}`);
   }
   const staff = html(<OrgDeletionStatusPanel org={org()} deletion={status({ origin: "staff" })} onCancel={noop} />);
-  assert.match(staff, /SuperBased support/);
+  assert.match(staff, /superbased support/);
   const acct = html(<OrgDeletionStatusPanel org={org()} deletion={status({ origin: "account_deletion" })} onCancel={noop} />);
   assert.match(acct, /deletion of the owner&#x27;s account/);
 });

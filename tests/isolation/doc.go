@@ -152,10 +152,21 @@
 //     the pooled route gate's refusal on every host until they move.
 //   - The hostile-org load case.
 //
+// # The hosted sign-in journey (not an isolation group)
+//
+// TestHostedSignInJourney (hosted_signin_journey_test.go) lives here because
+// this package holds the pooled org server harness: it walks a new person
+// from the website's "Get started" through the real console (cloudtestpg,
+// a fake AuthKit, the platform issuer) to a personal and a team dashboard on
+// the pooled server, plus a degraded account rail and a self-hosted org's
+// rail set, and checks the /auth/rails views web2's sign-in page is tested on
+// (web2/src/lib/testdata/hosted-signin/auth-rails.json). Without
+// SBCI_TEST_PG_DSN its console uses this package's DSN.
+//
 // The tests that boot the pooled server (TestRouteWalker*,
 // TestPooledServerBootsOnTheHostLogin, TestTokenCrossings,
 // TestAgentPolicyRailStaysInTheHostOrg, TestNodeRail3RoutesStayInTheHostOrg,
-// TestSupportSignInPooledTwoOrgs, TestCountOracle,
+// TestSupportSignInPooledTwoOrgs, TestHostedSignInJourney, TestCountOracle,
 // TestSecurityRoutesRefuseAnotherOrgsSession, the pooled collector and
 // worker tests)
 // and the leak row (TestCachesAndGlobalState) are not

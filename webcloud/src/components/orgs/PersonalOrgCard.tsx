@@ -5,7 +5,7 @@ import { Card } from "@shared/primitives/Card";
 import { Icon } from "@shared/primitives/Icon";
 import { Pill } from "@shared/primitives/Pill";
 import type { PortalOrg } from "../../api";
-import { PERSONAL_ORG_FACTS, dashboardUrl, personalCardView } from "../../lib/personalModel";
+import { PERSONAL_ORG_FACTS, personalCardView } from "../../lib/personalModel";
 
 // PersonalOrgCard - the account home's personal dashboard (Getting started
 // v2; D-IND-8: an individual is an org of one). The dashboard is created at
@@ -19,9 +19,10 @@ export interface PersonalOrgCardProps {
   org?: PortalOrg;
 }
 
-/** personalOpenUrl is the personal dashboard's Open button target. */
+/** personalOpenUrl is the personal dashboard's Open button target: the
+ * server-built open_url, or none (the console never derives it). */
 export function personalOpenUrl(org: PortalOrg): string | null {
-  return org.dashboard_url ?? dashboardUrl(org);
+  return org.open_url ?? null;
 }
 
 export function PersonalOrgCard({ org }: PersonalOrgCardProps) {
