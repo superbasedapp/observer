@@ -1126,12 +1126,19 @@ func (r *sandboxRuntime) sources() []dashapi.SandboxSourceAvail {
 // in the sandbox tool table either.
 func (r *sandboxRuntime) tools() map[string]dashapi.SandboxToolAvail {
 	out := map[string]dashapi.SandboxToolAvail{}
+	// A listed hosted row: each tool also says whether its model key could
+	// reach the agent there (the launch's own rule, said before Start).
+	hk, hc, hosted := hostedKeyNodeOf(r.drivers)
 	for _, c := range integration.Capabilities() {
 		if !integration.TerminalLaunchable(c) {
 			continue
 		}
 		if len(c.Sandbox.StateRW) > 0 {
-			out[c.Tool] = dashapi.SandboxToolAvail{Available: true}
+			e := dashapi.SandboxToolAvail{Available: true}
+			if hosted {
+				e.HostedKey = hostedKeyNoticeFor(hk, hc, c.Tool)
+			}
+			out[c.Tool] = e
 			continue
 		}
 		reason := c.Sandbox.Note
@@ -1429,6 +1436,10 @@ func (r *sandboxRuntime) Attach(ctx context.Context, created termsvc.CreateResul
 		return termsvc.AttachResult{}, err
 	}
 	r.unattached.Delete(created.Run.ID)
+	// A clone-local or clone-remote copy's commits come back when the run
+	// ends (lane RETURNS, terminal_sandbox_localreturn.go); recorded now,
+	// before the box starts.
+	r.noteLocalReturn(created.Run)
 	outcome := secretMaskOutcome(mask)
 	r.logSecretMask(created.Run.ID, outcome)
 	return termsvc.AttachResult{WrapArgv: wrapArgv, SecretMask: outcome}, nil

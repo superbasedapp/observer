@@ -231,6 +231,10 @@ type FreshLaunchSpec struct {
 	// WorkspaceRemote is the remote URL for a "clone-remote"
 	// WorkspaceSource. Ignored otherwise.
 	WorkspaceRemote string
+	// WorkspaceCloneWhere is the launch's choice of where a hosted row
+	// clones a "clone-remote" URL (auto, box or home; decision SBXD-5),
+	// re-validated by the hosted driver; "" takes the config.
+	WorkspaceCloneWhere string
 	// WorkspaceBranch is an optional branch to check out after clone/
 	// worktree. Ignored for "live".
 	WorkspaceBranch string

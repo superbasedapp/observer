@@ -30,10 +30,12 @@ func TestOrgBudgetVerdictText(t *testing.T) {
 			wantAdvice: "requests are not blocked",
 		},
 		{
-			name:       "team hard cap",
+			// A hard cap whose verdict only FLAGS was taken by a guard that is
+			// not enforcing (observe mode): never "blocking" (2026-11-18).
+			name:       "team hard cap, guard not enforcing",
 			origin:     BudgetOrigin{Window: "daily", Unit: "usd", Scope: "team:t1", Enforcement: "hard"},
-			wantReason: "organization daily budget (your team, blocking) reached:",
-			wantAdvice: "blocks further proxied requests",
+			wantReason: "organization daily budget (your team, warning only on this machine) reached:",
+			wantAdvice: "requests are not blocked",
 		},
 		{
 			name:       "org report cap",
@@ -60,6 +62,21 @@ func TestOrgBudgetVerdictText(t *testing.T) {
 				t.Fatal("labelling must never change the decision or the rule")
 			}
 		})
+	}
+}
+
+// TestOrgBudgetVerdictTextHardDeny: a hard cap the guard DENIES reads as
+// blocking, and so does a hook-stop reason rendered with no decision.
+func TestOrgBudgetVerdictTextHardDeny(t *testing.T) {
+	o := BudgetOrigin{Window: "daily", Unit: "usd", Scope: "team:t1", Enforcement: "hard"}
+	for _, d := range []policy.Decision{policy.DecisionDeny, policy.DecisionAllow} {
+		got := OrgBudgetVerdictText(policy.Verdict{RuleID: "B-602", Decision: d, Reason: "x: daily spend $1.26 exceeds the $0.75 budget"}, o)
+		if !strings.HasPrefix(got.Reason, "organization daily budget (your team, blocking) reached:") {
+			t.Errorf("decision %v: reason = %q", d, got.Reason)
+		}
+		if !strings.Contains(got.Advice, "blocks further proxied requests") {
+			t.Errorf("decision %v: advice = %q", d, got.Advice)
+		}
 	}
 }
 

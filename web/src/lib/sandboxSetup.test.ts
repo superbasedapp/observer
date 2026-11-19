@@ -111,6 +111,13 @@ test("label: auto reads Turn on", () => {
   assert.equal(stepButtonLabel(step({ class: "auto", channel: "component_select" })), "Turn on");
 });
 
+test("label: an auto step's own action wins over Turn on", () => {
+  const s = step({ class: "auto", channel: "config_key", action: "Put the API key in the box" });
+  assert.equal(stepButtonLabel(s), "Put the API key in the box");
+  // A guide step never takes it: it only copies its command.
+  assert.equal(stepButtonLabel(step({ class: "guide", action: "Put the API key in the box" })), null);
+});
+
 test("label: terminal reads Install in terminal", () => {
   assert.equal(stepButtonLabel(step({ class: "terminal" })), "Install in terminal");
 });
@@ -661,4 +668,20 @@ test("consent folder: the picker shows for an unsettled consent step and for a R
   assert.equal(consentNeedsFolder(consent, true, [{ action: "undo", label: "Undo" }]), false);
   assert.equal(consentNeedsFolder(consent, true, []), false);
   assert.equal(consentNeedsFolder(step({ channel: "oci_pull" }), false, []), false);
+});
+
+// undoArmedNote (audit sandbox-terminal-gaps-2026-11-18, H12): a step whose
+// one setting other hosted rows read names them before Undo runs; every
+// other step keeps the plain note.
+test("undoArmedNote: one row per shape", async () => {
+  const { undoArmedNote, UNDO_ARMED_NOTE } = await import("./sandboxSetup.ts");
+  const cases: Array<[{ undo_also?: string }, string]> = [
+    [{}, UNDO_ARMED_NOTE],
+    [{ undo_also: "  " }, UNDO_ARMED_NOTE],
+    [
+      { undo_also: "Undo changes this back for E2B too: they use the same setting." },
+      `${UNDO_ARMED_NOTE} Undo changes this back for E2B too: they use the same setting.`,
+    ],
+  ];
+  for (const [step, want] of cases) assert.equal(undoArmedNote(step), want);
 });

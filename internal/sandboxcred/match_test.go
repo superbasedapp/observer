@@ -151,8 +151,18 @@ func TestProviderTable(t *testing.T) {
 			t.Fatalf("auth form %q", p.Auth)
 		}
 	}
-	if ProviderForTool(true, []string{"anthropic"}) != "anthropic" || ProviderForTool(false, []string{"anthropic"}) != "" || ProviderForTool(true, []string{"anthropic", "openai"}) != "" {
-		t.Fatal("ProviderForTool")
+	hosts := map[string]bool{}
+	for _, p := range Providers() {
+		if hosts[p.Host] {
+			t.Fatalf("two providers share the host %s: the destination would not decide the provider", p.Host)
+		}
+		hosts[p.Host] = true
+		if got, ok := ProviderForHost(strings.ToUpper(p.Host) + "."); !ok || got.ID != p.ID {
+			t.Fatalf("ProviderForHost(%s) = %v %v", p.Host, got.ID, ok)
+		}
+	}
+	if _, ok := ProviderForHost("api.anthropic.com.evil.example"); ok {
+		t.Fatal("a look-alike host names a provider")
 	}
 	if AuthBearer.Value("k") != "Bearer k" || AuthBearer.Header() != "Authorization" || AuthXAPIKey.Header() != "X-Api-Key" {
 		t.Fatal("auth rendering")

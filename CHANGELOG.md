@@ -4,6 +4,61 @@ All notable changes to SuperBased Observer are documented here.
 
 ## [Unreleased]
 
+## [1.41.0] - 2026-11-19
+
+Stable release on the `stable` channel (npm dist-tags `latest` and `stable`, PyPI, the VS Code
+Marketplace and Open VSX). Everything below is new since 1.40.0. Sandboxed terminals close
+their gaps: hosted boxes take plain folders and remote clones, say what they will do before
+Start, and bring their changes home. An org budget now says honestly what a machine does about
+it, with a one-click way to make it enforce. Like 1.37.x to 1.40.0 it needs macOS 13 Ventura or
+later: a Mac on macOS 12 stays on v1.36.0.
+
+Price snapshot: 2026-09-17 (aws us-east-1, azure eastus2, gcp us-central1)
+
+### Highlights
+
+- **Hosted sandboxes take any folder and any public repository.**
+  - A folder that is not a git repository is uploaded as it is, without being changed.
+  - A remote URL can be cloned in the box or on this machine (`[terminal.sandbox.hosted].clone_where`),
+    with the clone consent asked inside the New Terminal dialog.
+  - A changed consent is offered again in the dialog, naming what changed.
+- **The New Terminal dialog says what a hosted run will do before Start:** the upload, the tool
+  install, the folder, the network tier, guard's hooks in the box, and where each model key is
+  kept (key custody resolved per launch).
+- **Changes come home.**
+  - A Changes panel on the Terminals page lists what sandboxed runs returned. A hosted diff can be
+    opened as a branch.
+  - Returned copies can be removed by age or all at once. The count of copies that are safe to
+    remove uses the same rule as the removal itself.
+- **Org budgets tell the truth on the machine.**
+  - The node banner says what this machine does about a hard org cap, instead of claiming requests
+    are blocked when they are not.
+  - The org Budgets page offers a real fix for a budget a developer's machine does not apply: one
+    click publishes the enforcement pins it needs.
+
+### Changed
+
+- **Guard's hooks go into a hosted box** (`[terminal.sandbox.hosted].guard_hooks = auto | on | off`),
+  and the dialog says per launch when they do not apply.
+- **The hosted internet tier denies the cloud metadata address and private ranges.**
+- **The sandbox module can be turned on from the Sandbox isolation card,** and a settings link lands
+  on the setting it names, highlighted.
+- **`observer sandbox credentials add` cleans a pasted key** (bracketed-paste markers and stray
+  control characters) and names the one rule a bad key breaks. `credentials list` says plainly when
+  keys are in owner-only files because no OS keychain was found.
+
+### Fixed
+
+- **A hosted run that ends says which side ended it:** the agent's own exit, the box's helper hanging
+  up, or the provider's side. The run's relay log keeps the helper's own end record.
+- **Warning boxes no longer squeeze their text** to one word per line in narrow dialogs.
+- **The New Terminal dialog** gives the real reason a workspace source is unavailable, checks a clone
+  URL before Start, and no longer shows "Unexpected end of JSON input" after agreeing to a consent.
+- **The sandbox settings editor re-reads its configuration after a setup step,** and a save conflict
+  reads in plain words with a reload button.
+- **An org machine's unidentified spend is attributed** when it is the only machine, and budget
+  coverage reports who can fix an unenforced cap.
+
 ## [1.40.0] - 2026-11-18
 
 Stable release on the `stable` channel (npm dist-tags `latest` and `stable`, PyPI, the VS Code

@@ -447,3 +447,76 @@ test("the Isolation section wraps long tokens", async () => {
   const html = await renderAll(setupDialog(liveDraft, setupRows));
   assert.match(html, /class="mb-1 \[overflow-wrap:anywhere\]" data-testid="isolation-picker"/);
 });
+
+// The hosted model key line (docs/audits/hosted-sandbox-key-custody-2026-11-18.md):
+// when the row a launch resolves to runs on the provider's machines and the
+// daemon says this tool's model key cannot reach the agent there, the
+// dialog says so under the picker, in plain words with the place to choose,
+// before Start.
+const hostedKeyProbe: SandboxAvailability = {
+  available: true,
+  default_on: true,
+  backend: "daytona",
+  tools: {
+    "claude-code": {
+      available: true,
+      hosted_key: {
+        code: "nothing_serves_home_key",
+        message: "The agent's model key is set to stay on this machine, but nothing here can add it to the agent's requests, so a hosted sandbox cannot start. Choose how the agent gets its model key.",
+        technical: "key custody home_relay needs a key the proxy adds itself",
+      },
+    },
+  },
+  sources: [{ id: "live", available: true }],
+  backends: [
+    { id: "daytona", label: "Daytona", class: "container", location: "remote", maturity: "preview", available: true, beta: false, capture_by_tier: {}, component: "terminals.sandbox.daytona" },
+  ],
+};
+
+test("a hosted row that cannot give the tool its model key says so before Start", async () => {
+  const html = await renderAll(dialog({ ...sandboxDraft, workspaceSource: "live" }, hostedKeyProbe));
+  assert.match(html, /data-testid="new-terminal-hosted-key"/);
+  assert.match(html, /nothing here can add it to the agent(&#x27;|')s requests/);
+  assert.match(html, /href="\/terminals\?tab=settings#sandbox-backends"/);
+  assert.match(html, /aria-label="Technical details for this refusal"/);
+  // The internal names stay in the technical detail, never in the sentence.
+  const sentence = html.slice(html.indexOf('data-testid="new-terminal-hosted-key"'));
+  assert.doesNotMatch(sentence.slice(0, sentence.indexOf("aria-label")), /home_relay/);
+});
+
+test("without the line the dialog shows no key notice", async () => {
+  const probeNoLine: SandboxAvailability = { ...hostedKeyProbe, tools: { "claude-code": { available: true } } };
+  const html = await renderAll(dialog({ ...sandboxDraft, workspaceSource: "live" }, probeNoLine));
+  assert.doesNotMatch(html, /new-terminal-hosted-key/);
+});
+
+// Lane UX (items H4, H5, H10): on a hosted row the dialog names the upload
+// for what it is, says the box's own network, and blocks a tool the row
+// cannot get into its box, all before Start and from the row's own facts.
+const hostedUXProbe: SandboxAvailability = {
+  available: true,
+  default_on: true,
+  backend: "daytona",
+  tools: { "claude-code": { available: true } },
+  sources: [{ id: "live", available: true }],
+  backends: [
+    {
+      id: "daytona", label: "Daytona", class: "container", location: "remote", maturity: "preview", available: true, beta: false, capture_by_tier: {}, component: "terminals.sandbox.daytona",
+      workspace_sources: ["live"], source_deliveries: { live: "sync" },
+      tool_notices: { "claude-code": { code: "image_lacks_installer", message: "Daytona's default image has no npm, which every way Observer knows to install Claude Code needs, and no template is set.", technical: "tool_unavailable_in_image: the default image lacks npm" } },
+      network_notes: ["On the internet setting the box reaches the network through Daytona's own network, not through Observer."],
+    },
+  ],
+};
+
+test("a hosted row says the upload, its network and a tool it cannot install, before Start", async () => {
+  const html = await renderAll(dialog({ ...sandboxDraft, workspaceSource: "live" }, hostedUXProbe));
+  assert.match(html, /Upload a copy of the project \(changes come back as a diff\)/);
+  assert.doesNotMatch(html, />Live project directory</);
+  assert.match(html, /data-testid="new-terminal-hosted-network"/);
+  assert.match(html, /through Daytona(&#x27;|')s own network/);
+  assert.match(html, /data-testid="new-terminal-hosted-tool"/);
+  assert.match(html, /default image has no npm/);
+  const sentence = html.slice(html.indexOf('data-testid="new-terminal-hosted-tool"'));
+  assert.doesNotMatch(sentence.slice(0, sentence.indexOf("aria-label")), /tool_unavailable/);
+});

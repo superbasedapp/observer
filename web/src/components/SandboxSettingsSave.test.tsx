@@ -14,7 +14,8 @@ import {
   sandboxConfigEqual,
   type TerminalSandboxConfig,
 } from "@/components/SandboxSettingsCard";
-import { applyLoaded, canStartSave, editDraft, emptySave, isDirty, runSave } from "@/lib/configSave";
+import { ApiError } from "@/lib/api";
+import { CONFIG_CONFLICT_MSG, applyLoaded, canStartSave, editDraft, emptySave, isDirty, runSave, saveErrorView } from "@/lib/configSave";
 
 const saved: TerminalSandboxConfig = {
   enabled: true,
@@ -109,4 +110,27 @@ test("a click that cannot start a save says why", () => {
 test("the master switch help says the save binds on the next launch, not after a restart", () => {
   assert.doesNotMatch(SANDBOX_MASTER_SWITCH_HELP, /after restart/);
   assert.match(SANDBOX_MASTER_SWITCH_HELP, /next launch/);
+});
+
+// D5 (live run 2026-11-19): a setup step's Undo on the same page rewrote
+// config.toml. The setup panel now tells the card (onSettled), the card
+// re-reads, and the fresh read (a new etag) replaces the stale draft, so the
+// next Save starts from the file's own etag instead of a 409.
+test("a re-read after a setup Undo replaces the stale values and etag", () => {
+  let s = applyLoaded(emptySave<TerminalSandboxConfig>(), { block: saved, etag: "etag-1" }, sandboxConfigEqual);
+  const undone: TerminalSandboxConfig = { ...saved, enabled: false, backends: [] };
+  s = applyLoaded(s, { block: undone, etag: "etag-2" }, sandboxConfigEqual);
+  assert.equal(s.etag, "etag-2");
+  assert.deepEqual(s.draft, undone);
+  assert.equal(isDirty(s, sandboxConfigEqual), false);
+});
+
+test("a 409 Save reads in plain words and offers the reload", () => {
+  const conflict = saveErrorView(new ApiError(409, "/api/terminal/sandbox/config", '{"error":"config_changed","etag":"etag-2"}'));
+  assert.equal(conflict.conflict, true);
+  assert.equal(conflict.message, CONFIG_CONFLICT_MSG);
+  assert.ok(!conflict.message.includes("api 409"));
+  assert.ok(!conflict.message.includes("{"));
+  const other = saveErrorView(new Error("network down"));
+  assert.deepEqual(other, { message: "network down", conflict: false });
 });

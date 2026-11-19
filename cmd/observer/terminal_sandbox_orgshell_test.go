@@ -47,7 +47,7 @@ func orgShellTestDriver(t *testing.T, cfg config.TerminalSandboxConfig, clientCa
 		*mintCalls++
 		return nil, errors.New("no org server in tests")
 	}
-	d.homeRelayOK = true
+	d.homeRelayOK, d.homeKey.OrgRoute = true, true
 	return d
 }
 

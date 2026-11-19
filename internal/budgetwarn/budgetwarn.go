@@ -32,6 +32,102 @@ type Window struct {
 	// "model:<id>"); empty is the whole caller. A per-tool / per-model org
 	// cap is warned at its own rungs, with its own memory (Sol A5-04).
 	Subject string
+
+	// What THIS machine can do about the cap (budget-enforcement honesty,
+	// 2026-11-18). The org's Enforcement says what the admin asked for; these
+	// say what the node will actually do, so no surface claims "blocked" on a
+	// machine that cannot block (EffectOf).
+	//
+	// GuardMode is the node guard's live mode: off / observe / enforce. Only
+	// enforce can refuse a request; "" reads as off.
+	GuardMode string
+	// OrgAuthoritative is true when the org's cap is authoritative here: a
+	// managed node whose grant holds enforce.budget, with the org budget
+	// applied ([guard.budget].from_org). Only then does the hook path stop
+	// the next prompt or tool call; otherwise only proxied requests stop.
+	OrgAuthoritative bool
+	// DeniesOnLocal is true when the cross-machine baseline in Spent may
+	// warn but may not deny (orgcontract.BudgetBaselineAppliedFlagOnly on a
+	// blocking cap): the guard then compares LocalSpent, this machine's own
+	// spend, to the cap. False means the guard compares Spent.
+	DeniesOnLocal bool
+	LocalSpent    float64
+}
+
+// The closed effect vocabulary: what an exhausted cap does on THIS machine.
+const (
+	// EffectNone: a report or soft cap; it never blocks by design.
+	EffectNone = "none"
+	// EffectBlocks: proxied requests, and the next prompt or tool call in
+	// tools with a pre-send hook, are refused.
+	EffectBlocks = "blocks"
+	// EffectBlocksProxied: only proxied requests are refused (the org cap is
+	// not authoritative here, or a per-model cap the hook path cannot judge).
+	EffectBlocksProxied = "blocks_proxied"
+	// EffectObserve: a hard cap on a machine whose guard is in observe mode.
+	EffectObserve = "warn_observe"
+	// EffectGuardOff: a hard cap on a machine whose guard is off.
+	EffectGuardOff = "warn_guard_off"
+)
+
+// EffectInput is what EffectOf decides on.
+type EffectInput struct {
+	Enforcement      string
+	GuardMode        string
+	OrgAuthoritative bool
+	Subject          string
+}
+
+// effectRules is the ordered table EffectOf walks top-down (CLAUDE.md #5).
+// The order is load-bearing: a cap that is not hard never blocks whatever the
+// machine is; a guard that is not enforcing never blocks whatever the grant
+// says; only then does the reach of the block depend on the grant.
+var effectRules = []struct {
+	name   string
+	when   func(EffectInput) bool
+	effect string
+}{
+	{"not a hard cap", func(in EffectInput) bool { return in.Enforcement != "hard" }, EffectNone},
+	{"guard in observe mode", func(in EffectInput) bool { return in.GuardMode == "observe" }, EffectObserve},
+	{"guard not enforcing", func(in EffectInput) bool { return in.GuardMode != "enforce" }, EffectGuardOff},
+	// A per-model cap is never published to the hook path (a hook names its
+	// tool, not the model the next turn will use; budgetadmission_wire.go).
+	{"per-model cap", func(in EffectInput) bool { return strings.HasPrefix(in.Subject, "model:") }, EffectBlocksProxied},
+	{"org cap authoritative", func(in EffectInput) bool { return in.OrgAuthoritative }, EffectBlocks},
+	{"org cap lowering only", func(EffectInput) bool { return true }, EffectBlocksProxied},
+}
+
+// EffectOf resolves what an exhausted cap does on this machine.
+func EffectOf(in EffectInput) string {
+	for _, r := range effectRules {
+		if r.when(in) {
+			return r.effect
+		}
+	}
+	return EffectNone
+}
+
+// EffectBlocksRequests reports whether effect refuses requests at all.
+func EffectBlocksRequests(effect string) bool {
+	return effect == EffectBlocks || effect == EffectBlocksProxied
+}
+
+// machineFacts is the effect of w on this machine and whether its CURRENT
+// reading is refused: the guard's own comparison (LocalSpent when the
+// baseline only warns, else Spent) at or past 100% of the cap.
+func machineFacts(w Window) (effect string, blocked, deniesOnLocal bool) {
+	effect = EffectOf(EffectInput{
+		Enforcement: w.Enforcement, GuardMode: w.GuardMode,
+		OrgAuthoritative: w.OrgAuthoritative, Subject: w.Subject,
+	})
+	if !EffectBlocksRequests(effect) {
+		return effect, false, false
+	}
+	deny := w.Spent
+	if w.DeniesOnLocal {
+		deny = w.LocalSpent
+	}
+	return effect, reachesRung(w.Unit, deny, w.Cap, 1), w.DeniesOnLocal
 }
 
 // Notice is one crossing of one rung.
@@ -54,6 +150,12 @@ type Notice struct {
 	Level string `json:"level"`
 	// Message is the one-line, developer-facing text every surface shows.
 	Message string `json:"message"`
+	// Effect is what the cap does on THIS machine (EffectOf), Blocked
+	// whether the current reading is refused here, DeniesOnLocal whether
+	// the refusal compares this machine's own spend only (see Window).
+	Effect        string `json:"effect,omitempty"`
+	Blocked       bool   `json:"blocked,omitempty"`
+	DeniesOnLocal bool   `json:"denies_on_local_spend,omitempty"`
 }
 
 // WindowStatus is one window's current reading.
@@ -78,6 +180,10 @@ type WindowStatus struct {
 	// raised, reads its current rung here, so no surface calls a window under
 	// its cap exceeded or blocked.
 	Crossed float64 `json:"crossed"`
+	// Effect / Blocked / DeniesOnLocal: see Notice.
+	Effect        string `json:"effect,omitempty"`
+	Blocked       bool   `json:"blocked,omitempty"`
+	DeniesOnLocal bool   `json:"denies_on_local_spend,omitempty"`
 }
 
 // State is the node-wide memory of which rung each window already announced
@@ -130,10 +236,12 @@ func Evaluate(windows []Window, prev State, now time.Time) (Status, State) {
 			ratio = 0
 		}
 		crossed := highestRung(ladder(w.Thresholds), w.Unit, w.Spent, w.Cap)
+		effect, blocked, onLocal := machineFacts(w)
 		ws := WindowStatus{
 			Window: w.Window, Unit: w.Unit, Subject: w.Subject, Period: period, Timezone: zoneName(w.Timezone),
 			Cap: w.Cap, Spent: w.Spent, Ratio: ratio, Scope: w.Scope, Enforcement: w.Enforcement,
 			Level: levelOf(crossed), Crossed: crossed,
+			Effect: effect, Blocked: blocked, DeniesOnLocal: onLocal,
 		}
 		had, seen := prev.Notified[key]
 		if seen && crossed < had.Threshold && had.Notice.Cap != w.Cap {
@@ -182,6 +290,9 @@ func Evaluate(windows []Window, prev State, now time.Time) (Status, State) {
 			// developer cost display) gets the same sentence.
 			active.Ratio, active.Spent = ratio, w.Spent
 			active.Cap, active.Scope, active.Enforcement = w.Cap, w.Scope, w.Enforcement
+			// What this machine does is read NOW too: a guard mode pinned
+			// to enforce since the rung was announced changes the sentence.
+			active.Effect, active.Blocked, active.DeniesOnLocal = effect, blocked, onLocal
 			active.Message = RenderMessage(active, DisplayUSD)
 			st.Active = append(st.Active, active)
 		}
@@ -319,6 +430,7 @@ func noticeFor(w Window, period string, rung, ratio float64, now time.Time) Noti
 		Spent: w.Spent, Cap: w.Cap, Scope: w.Scope, Enforcement: w.Enforcement,
 		CrossedAt: now.UTC(), Level: levelOf(rung),
 	}
+	n.Effect, n.Blocked, n.DeniesOnLocal = machineFacts(w)
 	n.Message = RenderMessage(n, DisplayUSD)
 	return n
 }
@@ -350,6 +462,11 @@ func hidesAmount(unit, display string) bool {
 // A token-denominated cap reads the same in both modes ("960,000 tokens of
 // 1,200,000 tokens"). A dollar amount is never converted into tokens: that
 // would fabricate a number.
+//
+// The label in brackets and the last sentence say what THIS machine does
+// (n.Effect, n.Blocked), never only what the org asked for: a hard cap on a
+// machine in observe mode reads "warning only on this machine" and says
+// why (budget-enforcement honesty, 2026-11-18).
 func RenderMessage(n Notice, display string) string {
 	var b strings.Builder
 	b.WriteString("Org ")
@@ -362,7 +479,7 @@ func RenderMessage(n Notice, display string) string {
 	b.WriteString(" (")
 	b.WriteString(ScopeLabel(n.Scope))
 	b.WriteString(", ")
-	b.WriteString(EnforcementLabel(n.Enforcement))
+	b.WriteString(EffectiveLabel(n.Enforcement, noticeEffect(n)))
 	b.WriteString("): ")
 	b.WriteString(strconv.Itoa(int(math.Round(n.Ratio * 100))))
 	if hidesAmount(n.Unit, display) {
@@ -374,16 +491,77 @@ func RenderMessage(n Notice, display string) string {
 		b.WriteString(Amount(n.Unit, n.Cap))
 		b.WriteString(". ")
 	}
-	rung := n.Threshold
-	switch {
-	case n.Enforcement == "hard" && rung >= 1:
-		b.WriteString("Further proxied requests, and the next prompt or tool call in tools with a pre-send hook, are blocked until the period resets or an admin raises the cap.")
-	case n.Enforcement == "hard":
-		b.WriteString("Requests will be blocked at 100%.")
-	default:
-		b.WriteString("Requests are not blocked.")
-	}
+	b.WriteString(tailSentence(n))
 	return b.String()
+}
+
+// noticeEffect is n's effect, resolved from the org mode alone when the
+// notice carries none (a guard-less machine: nothing here can block).
+func noticeEffect(n Notice) string {
+	if n.Effect != "" {
+		return n.Effect
+	}
+	return EffectOf(EffectInput{Enforcement: n.Enforcement, Subject: n.Subject})
+}
+
+// tailRules is the last sentence of a notice, an ordered table walked
+// top-down (CLAUDE.md #5): the first row whose predicate holds speaks. Every
+// row that says "blocked" requires the machine to really refuse the reading
+// (n.Blocked), so a sentence can never promise a block the guard will not
+// make.
+var tailRules = []struct {
+	name string
+	when func(n Notice, effect string, atCap bool) bool
+	text string
+}{
+	{"not a hard cap", func(_ Notice, e string, _ bool) bool { return e == EffectNone }, "Requests are not blocked."},
+	{
+		"observe mode, at the cap", func(_ Notice, e string, at bool) bool { return e == EffectObserve && at },
+		"This machine is in observe mode, so requests are not blocked.",
+	},
+	{
+		"observe mode, below the cap", func(_ Notice, e string, _ bool) bool { return e == EffectObserve },
+		"This machine is in observe mode, so requests will not be blocked at 100%.",
+	},
+	{
+		"guard off, at the cap", func(_ Notice, e string, at bool) bool { return e == EffectGuardOff && at },
+		"The guard is off on this machine, so requests are not blocked.",
+	},
+	{
+		"guard off, below the cap", func(_ Notice, e string, _ bool) bool { return e == EffectGuardOff },
+		"The guard is off on this machine, so requests will not be blocked at 100%.",
+	},
+	{
+		"blocked: proxy and pre-send hooks", func(n Notice, e string, _ bool) bool { return e == EffectBlocks && n.Blocked },
+		"Further proxied requests, and the next prompt or tool call in tools with a pre-send hook, are blocked until the period resets or an admin raises the cap.",
+	},
+	{
+		"blocked: proxy only", func(n Notice, e string, _ bool) bool { return e == EffectBlocksProxied && n.Blocked },
+		"Further proxied requests are blocked until the period resets or an admin raises the cap. Tools that do not go through the proxy are not blocked.",
+	},
+	{
+		"over only with other machines' spend", func(n Notice, _ string, at bool) bool { return at && n.DeniesOnLocal },
+		"Requests are not blocked yet: this machine blocks when its own spend reaches the cap, and spend from your other machines only warns.",
+	},
+	{
+		"below the cap, own spend decides", func(n Notice, _ string, _ bool) bool { return n.DeniesOnLocal },
+		"Requests will be blocked when this machine's own spend reaches the cap.",
+	},
+	{
+		"below the cap, proxy only", func(_ Notice, e string, _ bool) bool { return e == EffectBlocksProxied },
+		"Proxied requests will be blocked at 100%.",
+	},
+	{"below the cap", func(Notice, string, bool) bool { return true }, "Requests will be blocked at 100%."},
+}
+
+func tailSentence(n Notice) string {
+	effect, atCap := noticeEffect(n), n.Threshold >= 1
+	for _, r := range tailRules {
+		if r.when(n, effect, atCap) {
+			return r.text
+		}
+	}
+	return ""
 }
 
 // StatusLabel renders the short statusline form of one window at a warn rung
@@ -392,18 +570,25 @@ func RenderMessage(n Notice, display string) string {
 //	usd:    "budget 168% of $0.75/day"
 //	tokens: "budget 168%" (a dollar cap), "budget 80% of 1,200,000 tokens/day" (a token cap)
 //
-// with " (blocked)" when a hard cap is exhausted.
-func StatusLabel(window, unit string, capV, ratio float64, enforcement string, crossed float64, display string) string {
-	label := "budget " + strconv.Itoa(int(math.Round(ratio*100))) + "%"
-	if !hidesAmount(unit, display) {
+// with " (blocked)" when this machine refuses the reading (w.Blocked), and "
+// (not blocked)" for a hard cap at or past 100% that this machine does not
+// block (observe mode, guard off, or only other machines' spend is over). A
+// window with no Effect (a file from a daemon that predates it) says neither:
+// the reader cannot tell.
+func StatusLabel(w WindowStatus, display string) string {
+	label := "budget " + strconv.Itoa(int(math.Round(w.Ratio*100))) + "%"
+	if !hidesAmount(w.Unit, display) {
 		per := "/day"
-		if window == "monthly" {
+		if w.Window == "monthly" {
 			per = "/mo"
 		}
-		label += " of " + Amount(unit, capV) + per
+		label += " of " + Amount(w.Unit, w.Cap) + per
 	}
-	if enforcement == "hard" && crossed >= 1 {
+	switch {
+	case w.Blocked:
 		label += " (blocked)"
+	case w.Enforcement == "hard" && w.Crossed >= 1 && w.Effect != "":
+		label += " (not blocked)"
 	}
 	return label
 }
@@ -464,7 +649,18 @@ func ScopeLabel(scope string) string {
 	}
 }
 
-// EnforcementLabel renders the org enforcement mode.
+// EffectiveLabel renders the bracketed mode a developer reads: the org's
+// mode (EnforcementLabel), except that a hard cap this machine cannot block
+// reads "warning only on this machine".
+func EffectiveLabel(enforcement, effect string) string {
+	if enforcement == "hard" && !EffectBlocksRequests(effect) {
+		return "warning only on this machine"
+	}
+	return EnforcementLabel(enforcement)
+}
+
+// EnforcementLabel renders the org's AUTHORED enforcement mode. A surface
+// describing what happens on this machine uses EffectiveLabel instead.
 func EnforcementLabel(mode string) string {
 	switch mode {
 	case "hard":

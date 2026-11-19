@@ -87,6 +87,9 @@ export type SandboxSetupStep = {
   class: SandboxSetupClass | string;
   channel: SandboxSetupChannel | string;
   display?: string;
+  /** The button's label when the class's own would not say what the step
+   *  does ("Put the API key in the box"); absent otherwise. */
+  action?: string;
   /** display is a command line to paste into a terminal, not a sentence. */
   display_is_command?: boolean;
   /** A credential step's field names (the provider's own variable names), never a value. */
@@ -101,6 +104,8 @@ export type SandboxSetupStep = {
   can_undo: boolean;
   /** What keeps an undo Observer would otherwise offer (live_runs, live_runs_unknown, kill_switch, elevation_off); the reason holds the sentence. */
   undo_refused?: string;
+  /** What an offered Undo changes beyond this row (one setting every hosted row reads), shown before it runs. */
+  undo_also?: string;
   record?: SandboxSetupRecord;
   consent?: SandboxSetupConsent;
 };

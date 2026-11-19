@@ -395,3 +395,41 @@ func TestMuxHelloCarriesEnvAndGateway(t *testing.T) {
 		t.Fatalf("an unoffered proxy: %v", err)
 	}
 }
+
+// TestDeadlineConnTimeoutsNameTheirDirection (live run 2026-11-19, D7): a
+// relay drop said only "relaymux: deadline exceeded", so nobody could tell
+// whether the peer went silent or stopped reading. Both still match
+// ErrTimeout.
+func TestDeadlineConnTimeoutsNameTheirDirection(t *testing.T) {
+	a, _ := net.Pipe()
+	c := NewDeadlineConn(a, a, a.Close)
+	defer c.Close()
+	_ = c.SetReadDeadline(time.Now().Add(20 * time.Millisecond))
+	_, rerr := c.Read(make([]byte, 1))
+	if !errors.Is(rerr, ErrTimeout) || !strings.Contains(rerr.Error(), "read deadline") {
+		t.Fatalf("read: %v", rerr)
+	}
+	_ = c.SetWriteDeadline(time.Now().Add(20 * time.Millisecond))
+	_, werr := c.Write([]byte("nobody reads"))
+	if !errors.Is(werr, ErrTimeout) || !strings.Contains(werr.Error(), "write deadline") {
+		t.Fatalf("write: %v", werr)
+	}
+	var ne interface{ Timeout() bool }
+	if !errors.As(rerr, &ne) || !ne.Timeout() {
+		t.Fatal("a read timeout is not a net.Error timeout")
+	}
+}
+
+// TestSessionEndSaysHowLongThePeerWasQuiet: a session that ends on a read
+// timeout says, in its error, how long ago the peer's last frame came, and
+// SinceLastFrame reports it (D7).
+func TestSessionEndSaysHowLongThePeerWasQuiet(t *testing.T) {
+	s := &session{opts: Options{Now: time.Now}}
+	s.lastRecv.Store(time.Now().Add(-61 * time.Second).UnixNano())
+	if d := s.sinceLastFrame(); d < 60*time.Second || d > 63*time.Second {
+		t.Fatalf("since last frame %s", d)
+	}
+	if (&session{opts: Options{Now: time.Now}}).sinceLastFrame() != 0 {
+		t.Fatal("a session with no frame yet reports a quiet time")
+	}
+}

@@ -1558,6 +1558,18 @@ type SandboxSpec struct {
 	// of them, only with the user's consent for the tool. Nil means no
 	// grounded sign-in file (seeding is refused for the tool).
 	SignIn *SandboxSignIn
+	// SavedKeys, when set, names the file in which the tool saves provider
+	// API keys itself and where each key sits (sandboxkeysources.go,
+	// decision SBXD-4 (b)): under in-box custody, and only for a tool the
+	// person opted in, those keys are a third source after the environment
+	// and the stored keys. Nil means none is grounded (never read).
+	SavedKeys *SandboxSavedKeys
+	// LoginSeed, when set, names the tool's login file and its access token
+	// fields (decision SBXD-4 (c)): under in-box custody, and only for a
+	// tool the person opted in, the box gets that file narrowed to the
+	// short-lived access token (never the refresh token). Nil means none is
+	// grounded (never seeded).
+	LoginSeed *SandboxLoginSeed
 	// ProviderEnv lists the environment-variable NAMES (never values) of
 	// the tool's own provider settings that a sandboxed run may receive
 	// from the launching environment: its credential variables (every

@@ -680,6 +680,10 @@ func (s *Server) handleGuardBudget(w http.ResponseWriter, r *http.Request) {
 		"weekly_usd":  cfg.Guard.Budget.WeeklyUSD,
 		"monthly_usd": cfg.Guard.Budget.MonthlyUSD,
 		"hard":        cfg.Guard.Budget.Hard,
+		// The guard's mode: hard only blocks in enforce mode, so a surface
+		// reading "hard" alone would claim a block an observe-mode machine
+		// never makes (budget-enforcement honesty, 2026-11-18).
+		"guard_mode": guardBudgetMode(cfg.Guard.Enabled, cfg.Guard.Mode),
 		// The token-denominated caps, one for one with the dollar caps above.
 		"session_tokens":     cfg.Guard.Budget.SessionTokens,
 		"daily_tokens":       cfg.Guard.Budget.DailyTokens,
@@ -718,6 +722,15 @@ func (s *Server) handleGuardBudget(w http.ResponseWriter, r *http.Request) {
 			"util_weekly_deny": cfg.Guard.Budget.Window.UtilWeeklyDeny,
 		},
 	})
+}
+
+// guardBudgetMode is the guard mode a budget card reports: "off" when the
+// guard is disabled, else the configured mode.
+func guardBudgetMode(enabled bool, mode string) string {
+	if !enabled || mode == "" {
+		return "off"
+	}
+	return mode
 }
 
 // guardBudgetObservations measures the Budget guardrails card on the substrate

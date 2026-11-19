@@ -186,6 +186,9 @@ export const TERMINALS_REMOTE_SYSTEMS_HASH = "#remote-systems";
 /** The sandbox card's Backends list (the enabled backends), which the New
  *  Terminal Isolation picker links to for a backend that is not enabled. */
 export const TERMINALS_SANDBOX_BACKENDS_HASH = "#sandbox-backends";
+/** The Hosted sandboxes panel (each provider's template), which the New
+ *  Terminal dialog's hosted tool notice links to. */
+export const TERMINALS_HOSTED_SANDBOXES_HASH = "#hosted-sandboxes";
 
 /** Every in-page anchor on the Terminals Settings tab. The hash minus its
  *  "#" is the card's element id, which the page scrolls to. */
@@ -194,6 +197,7 @@ export const TERMINALS_SETTINGS_ANCHORS: readonly string[] = [
   TERMINALS_FOLDERS_HASH,
   TERMINALS_REMOTE_SYSTEMS_HASH,
   TERMINALS_SANDBOX_BACKENDS_HASH,
+  TERMINALS_HOSTED_SANDBOXES_HASH,
 ];
 
 /**

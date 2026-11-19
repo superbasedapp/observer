@@ -103,3 +103,20 @@ export async function runSave<C, R extends ConfigSaved<C>>(
   const reply = await put(sent, s.etag);
   return { state: applySaved(s, sent, s.etag, reply), reply };
 }
+
+/** SaveErrorView is how a failed config Save is shown. */
+export type SaveErrorView = { message: string; conflict: boolean };
+
+/** CONFIG_CONFLICT_MSG is the plain words of a 409 on a config Save: the
+ *  file changed since the editor read it (D5: a setup step's Undo on the same
+ *  page rewrote it, and the Save showed the raw `api 409 {json}`). */
+export const CONFIG_CONFLICT_MSG =
+  "The configuration changed since this page read it (another change, such as a setup step or its Undo, saved it first), so nothing was saved. Reload to see the current values, then make your change again.";
+
+/** saveErrorView turns a Save's error into plain words: a 409 is a conflict
+ *  the person resolves with a reload; anything else keeps its message. */
+export function saveErrorView(e: unknown): SaveErrorView {
+  const status = typeof e === "object" && e !== null && "status" in e ? (e as { status: unknown }).status : undefined;
+  if (status === 409) return { message: CONFIG_CONFLICT_MSG, conflict: true };
+  return { message: e instanceof Error ? e.message : String(e), conflict: false };
+}

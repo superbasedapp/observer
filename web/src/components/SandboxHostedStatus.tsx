@@ -17,6 +17,7 @@ import { Button, ComboChip, ConfirmButton, ErrorState, InlineLoading } from "@/c
 import { fetchJSON } from "@/lib/api";
 import { dollarsShown, fmtUSD } from "@/lib/format";
 import { hostedConnectReady, hostedFieldIsSecret } from "@/lib/sandboxParity";
+import { repositoryChoices } from "@/lib/hostedClone";
 import { useApi } from "@/lib/useApi";
 import { useProjectRootOptions } from "@/lib/usePickerSources";
 
@@ -30,7 +31,8 @@ type HostedProvider = {
   credential: string;
   credential_env: string[];
   consent?: { at: string };
-  screen?: { lines: ConsentLine[]; excluded: Exclusion[] | null; uploaded?: string[] | null; uploaded_more?: number };
+  /** screen.clone_where is where a clone agreement's clone runs (box, home; SBXD-5). */
+  screen?: { lines: ConsentLine[]; excluded: Exclusion[] | null; uploaded?: string[] | null; uploaded_more?: number; clone_where?: string };
   screen_error?: string;
   consent_verdict?: string;
   unverified: string[] | null;
@@ -160,9 +162,16 @@ export function credentialText(p: { id: string; credential: string; credential_e
 }
 
 /** consentWording is the agree button's confirm label and armed note (FX3-A10):
- * a clone-remote agreement uploads nothing from this machine, so it never
- * says it does. */
-export function consentWording(providerName: string, repository: string): { confirmLabel: string; armedNote: string } {
+ * a box-side clone agreement uploads nothing from this machine, so it never
+ * says it does; a clone this machine makes (cloneWhere "home", decision
+ * SBXD-5) uploads that clone's tracked files, and says so. */
+export function consentWording(providerName: string, repository: string, cloneWhere = ""): { confirmLabel: string; armedNote: string } {
+  if (repository && cloneWhere === "home") {
+    return {
+      confirmLabel: "Agree to clone here and upload?",
+      armedNote: `Launches on ${providerName} clone ${repository} on this machine with your git login and upload its tracked files to ${providerName}'s machines (never its history or a git credential). Any change to these facts asks again.`,
+    };
+  }
   if (repository) {
     return {
       confirmLabel: "Agree and allow the box to clone?",
@@ -219,6 +228,9 @@ export function SandboxHostedStatusView({ data, selected, workspace, onWorkspace
             A clone-remote launch needs its own agreement: the box clones the repository itself and nothing leaves this machine. Agreeing replaces the project's agreement for that provider.
           </span>
         </div>
+      )}
+      {onRepository && repositoryChoices(cloneRepos).mode === "text" && (
+        <TypedRepositoryField repository={repository} onRepository={onRepository} />
       )}
       {err && <p className="text-[11px] text-bad">{err}</p>}
       {providers.map((p) => {
@@ -322,7 +334,7 @@ export function SandboxHostedStatusView({ data, selected, workspace, onWorkspace
                       requireConfirm
                       disabled={busy !== ""}
                       onConfirm={() => post("/api/terminal/sandbox/hosted/consent", repository ? { provider: p.id, workspace, repository } : { provider: p.id, workspace }, "consent-" + p.id)}
-                      {...consentWording(p.name, repository)}
+                      {...consentWording(p.name, repository, p.screen.clone_where)}
                     >
                       {p.consent_verdict && p.consent_verdict !== "consent_required" ? `Agree again (${p.consent_verdict.replace(/_/g, " ")})` : "Agree"}
                     </ConfirmButton>
@@ -376,6 +388,50 @@ export function SandboxHostedStatusView({ data, selected, workspace, onWorkspace
           </ul>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * TypedRepositoryField is the clone consent's repository when the
+ * organization publishes no list (lane CLONE2): a typed URL, shown on the
+ * consent screen only once Review is pressed (each screen may ask the
+ * repository whether anyone can read it, so it is never asked per key).
+ */
+export function TypedRepositoryField({ repository, onRepository }: { repository: string; onRepository: (v: string) => void }) {
+  const [draft, setDraft] = useState(repository);
+  const typed = draft.trim();
+  return (
+    <div className="space-y-1">
+      <label htmlFor="sandbox-hosted-repository-typed" className="block font-medium text-fg-1">
+        Repository to clone in the box
+      </label>
+      <form
+        className="flex flex-wrap items-center gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          onRepository(typed);
+        }}
+      >
+        <input
+          id="sandbox-hosted-repository-typed"
+          type="text"
+          className={HOSTED_KEY_FIELD_CLASS + " min-w-0 flex-1"}
+          value={draft}
+          placeholder="the repository's address (empty: upload the project)"
+          autoComplete="off"
+          spellCheck={false}
+          onChange={(e) => setDraft(e.target.value)}
+        />
+        <Button type="submit" size="sm" variant="soft" disabled={typed === repository}>
+          {typed ? "Review" : "Upload the project instead"}
+        </Button>
+      </form>
+      <span className="block text-[11px] text-fg-3">
+        A clone of a remote URL needs its own agreement. Depending on Where a remote URL is cloned above, the box clones it
+        itself, or this machine clones it with your git login and uploads its tracked files; the screen below says which.
+        Agreeing replaces the project&apos;s agreement for that provider.
+      </span>
     </div>
   );
 }

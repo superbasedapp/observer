@@ -9,6 +9,7 @@ import { markRemoteAuthLost } from "@/lib/authLoss";
 import { getRemoteCSRF, isRemoteView, setRemoteCSRF } from "@/lib/remote";
 import { bodyText, parseErrorBody } from "@/lib/needsSetting";
 import { errorMachineSuffix } from "@/lib/remoteIdentity";
+import { parseJSONBody } from "@/lib/jsonBody";
 import type {
   InstanceInfo,
   InstanceTestResult,
@@ -212,7 +213,9 @@ export async function fetchJSON<T>(
     const body = await res.text().catch(() => "");
     throw new ApiError(res.status, url, body);
   }
-  return res.json() as Promise<T>;
+  // A write answered 204, or 200 with no body (the hosted consent route),
+  // is a success with nothing to read, never "Unexpected end of JSON input".
+  return parseJSONBody<T>(res.status, await res.text());
 }
 
 // ---------- session classification (tags / favorites / notes) ----------

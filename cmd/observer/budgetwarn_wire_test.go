@@ -162,8 +162,12 @@ func TestBudgetStatuslineLabel(t *testing.T) {
 		{budgetwarnfile.Window{Window: "daily", Unit: "usd", Cap: 0.75, Ratio: 1.68, Crossed: 1, Enforcement: "soft"}, "tokens", "budget 168%"},
 		{budgetwarnfile.Window{Window: "monthly", Unit: "tokens", Cap: 1e6, Ratio: 0.96, Crossed: 0.9, Enforcement: "soft"}, "usd", "budget 96% of 1,000,000 tokens/mo"},
 		{budgetwarnfile.Window{Window: "monthly", Unit: "tokens", Cap: 1e6, Ratio: 0.96, Crossed: 0.9, Enforcement: "soft"}, "tokens", "budget 96% of 1,000,000 tokens/mo"},
-		{budgetwarnfile.Window{Window: "daily", Unit: "usd", Cap: 5, Ratio: 1.1, Crossed: 1, Enforcement: "hard"}, "usd", "budget 110% of $5.00/day (blocked)"},
-		{budgetwarnfile.Window{Window: "daily", Unit: "usd", Cap: 5, Ratio: 1.1, Crossed: 1, Enforcement: "hard"}, "tokens", "budget 110% (blocked)"},
+		{budgetwarnfile.Window{Window: "daily", Unit: "usd", Cap: 5, Ratio: 1.1, Crossed: 1, Enforcement: "hard", Effect: "blocks", Blocked: true}, "usd", "budget 110% of $5.00/day (blocked)"},
+		{budgetwarnfile.Window{Window: "daily", Unit: "usd", Cap: 5, Ratio: 1.1, Crossed: 1, Enforcement: "hard", Effect: "blocks", Blocked: true}, "tokens", "budget 110% (blocked)"},
+		// A hard cap this machine does not block (observe mode) never reads
+		// "(blocked)"; a file from an older daemon (no effect) says neither.
+		{budgetwarnfile.Window{Window: "daily", Unit: "usd", Cap: 5, Ratio: 1.1, Crossed: 1, Enforcement: "hard", Effect: "warn_observe"}, "usd", "budget 110% of $5.00/day (not blocked)"},
+		{budgetwarnfile.Window{Window: "daily", Unit: "usd", Cap: 5, Ratio: 1.1, Crossed: 1, Enforcement: "hard"}, "usd", "budget 110% of $5.00/day"},
 		{budgetwarnfile.Window{Window: "daily", Unit: "usd", Cap: 5, Ratio: 0.1, Crossed: 0, Enforcement: "soft"}, "usd", ""},
 		{budgetwarnfile.Window{Window: "daily", Unit: "usd", Cap: 5, Ratio: 0.1, Crossed: 0, Enforcement: "soft"}, "tokens", ""},
 	}

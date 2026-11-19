@@ -99,6 +99,9 @@ type Server struct {
 	// comps caches the live component snapshot the route guard consults
 	// (components_manage.go).
 	comps componentCache
+	// sandboxProbe is the one in-flight sandbox probe GET
+	// /api/terminal/sandbox waits on under its deadline (sandbox.go).
+	sandboxProbe sandboxProbeFlights
 
 	// secScan is the Code security page's "Scan now" job
 	// (security_scan_now.go).

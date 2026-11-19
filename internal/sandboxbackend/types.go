@@ -3,7 +3,7 @@ package sandboxbackend
 import "github.com/marmutapp/superbased-observer/internal/sandboxvocab"
 
 // RegistryVersion moves with every enum or row-shape change.
-const RegistryVersion = 11
+const RegistryVersion = 12
 
 // Maturity says whether a row may be offered at all.
 type Maturity string
@@ -396,7 +396,27 @@ const (
 	// DiscloseOrgSharedGateway: several developers' boxes share one gateway
 	// and one kernel on the organization's machines.
 	DiscloseOrgSharedGateway Disclosure = "org_shared_gateway"
+	// DiscloseNoHookGating: no hook runs in the box unless the project
+	// itself commits one (the box's agent home is fresh, so this machine's
+	// hook registration is not there), so guard does not check or block the
+	// agent's actions in the box (every hosted row; lane UX, item H9). Since
+	// lane HOOKS (SBXD-6) Observer seeds its own hooks into the box for a
+	// covered tool while [terminal.sandbox.hosted].guard_hooks resolves on,
+	// so this one is PerLaunch: the probe serves it per tool, only where
+	// gating does not apply.
+	DiscloseNoHookGating Disclosure = "no_hook_gating"
 )
+
+// perLaunchDisclosures are the disclosures whose truth depends on the
+// launch (the tool, a setting, the machine's guard mode), not on the row
+// alone: a surface says them per launch, never row-wide.
+var perLaunchDisclosures = map[Disclosure]bool{
+	DiscloseNoHookGating: true,
+}
+
+// PerLaunch reports whether d is said per launch (the New Terminal
+// dialog's per-tool line) instead of with the row.
+func (d Disclosure) PerLaunch() bool { return perLaunchDisclosures[d] }
 
 // Capability is one backend row. Zero values mean "not grounded".
 type Capability struct {

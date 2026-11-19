@@ -849,6 +849,10 @@ type terminalLaunchRequest struct {
 	WorkspaceSource string `json:"workspace_source"`
 	WorkspaceRemote string `json:"workspace_remote"`
 	WorkspaceBranch string `json:"workspace_branch"`
+	// WorkspaceCloneWhere is where a hosted row clones a clone-remote URL
+	// for this launch (auto, box or home; decision SBXD-5), re-validated
+	// by the hosted driver. Ignored when Sandbox is false.
+	WorkspaceCloneWhere string `json:"workspace_clone_where,omitempty"`
 	// Backend is the isolation row the New Terminal picker chose for this
 	// launch (sandbox plan v2 section 9, rulings P-062 and P-067): absent,
 	// "" or "auto" lets selection pick exactly as before (it never takes a
@@ -1029,10 +1033,25 @@ func (s *Server) startFreshTerminal(w http.ResponseWriter, r *http.Request, body
 		TaskPrompt:      taskPrompt,
 	}
 	spec.MaskWorkspaceSecrets = body.Sandbox && body.maskWorkspaceSecrets
+	// SBXD-5: where a hosted row clones a clone-remote URL.
+	spec.WorkspaceCloneWhere = body.WorkspaceCloneWhere
 	res, err := s.createFreshLaunch(spec)
 	if err != nil {
 		var consent *termcore.SignInConsentError
+		var step *dashapi.SandboxStepRefusal
+		var hostedConsent *dashapi.SandboxConsentRefusal
 		switch {
+		case errors.As(err, &hostedConsent):
+			// A hosted launch whose consent is missing or changed (say the
+			// upload scope): 409 with the row and the verdict, so the dialog
+			// shows the consent again for the person to agree to.
+			writeSandboxConsentRefusal(w, hostedConsent)
+		case errors.As(err, &step):
+			// A refusal made before anything started whose fix is a choice
+			// in Terminals > Settings (the hosted model key's custody):
+			// the plain sentence and the place, the detail kept for a
+			// "Technical details" tooltip.
+			writeSandboxStepRefusal(w, step)
 		case errors.As(err, &consent):
 			// The inline sign-in step's question (lane BOXSIGNIN).
 			w.Header().Set("Content-Type", "application/json")
@@ -1216,6 +1235,9 @@ var sandboxVerdictStatus = map[string]int{
 	"tool_unmapped":        http.StatusNotImplemented,
 	"disabled_by_config":   http.StatusForbidden,
 	VerdictNotInBuild:      http.StatusNotImplemented,
+	// A choice the person makes (how a hosted run's model key reaches the
+	// agent), not a capability this daemon lacks.
+	"custody_unsatisfiable": http.StatusConflict,
 }
 
 // statusForSandboxVerdict resolves sandboxVerdictStatus with a fail-closed

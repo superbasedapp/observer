@@ -63,6 +63,9 @@ export type ErrorNote = {
   settings: SettingsLink | null;
   /** The team-dashboard place, when only the organization's admins can. */
   org?: OrgSettingsLink | null;
+  /** The detail behind the sentence (config keys, commands), shown only
+   *  under a "Technical details" caption; absent when the body has none. */
+  technical?: string | null;
 };
 
 type Body = Record<string, unknown>;
@@ -204,7 +207,8 @@ export function errorNote(e: unknown, fallback?: (e: unknown) => string | null |
   const org = orgSettingsLinkOfBody(body);
   if (settings || org) {
     const text = bodyText(body) || fallback?.(e) || errorText(e);
-    return { text, settings, org };
+    const technical = str(body?.technical) || null;
+    return technical ? { text, settings, org, technical } : { text, settings, org };
   }
   return { text: fallback?.(e) || errorText(e), settings: null };
 }

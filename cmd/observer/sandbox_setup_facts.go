@@ -15,6 +15,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/dashapi"
 	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/sandboxbackend"
+	"github.com/marmutapp/superbased-observer/internal/sandboxkey"
 	"github.com/marmutapp/superbased-observer/internal/sandboxremote"
 	"github.com/marmutapp/superbased-observer/internal/sandboxselect"
 	"github.com/marmutapp/superbased-observer/internal/sandboxsetup"
@@ -63,6 +64,11 @@ type sandboxSetupHost struct {
 	// hosted row (provider id = row id) without opening the keychain.
 	hostedCredential func(provider string) bool
 	hostedConsent    func(provider string) bool
+	// hostedConsentChange is the consent verdict of a recorded consent
+	// whose launch-independent facts no longer match cfg (a changed
+	// custody, region, endpoint, box binary or cap: the probe's own
+	// comparison), "" when it matches or none is recorded. Nil reads "".
+	hostedConsentChange func(cfg config.Config, provider string) string
 	// hostedAccount answers (present, known): known false leaves the step
 	// unknown.
 	hostedAccount func(provider string) (bool, bool)
@@ -121,12 +127,16 @@ func productionSandboxSetupHost(configPath string, ledger *toolInstallLedger) sa
 		contentPresent:   sandboxSetupContentPresent,
 		hostedCredential: sandboxSetupHostedCredential,
 		hostedConsent:    sandboxSetupHostedConsent,
-		hostedAccount:    sandboxSetupHostedAccount,
-		liveRuns:         sandboxSetupLiveRunsFor(configPath),
-		engineSocket:     sandboxSetupEngineSocket,
-		dockerAccess:     sandboxSetupDockerAccess,
-		statFile:         sandboxSetupStatFile,
-		fileDigest:       sandboxSetupFileSHA256,
+		// The consent step reopens when a fact it bound changed (the
+		// custody step's remedy changes one), so the new facts are
+		// disclosed before the next upload.
+		hostedConsentChange: sandboxSetupHostedConsentChange,
+		hostedAccount:       sandboxSetupHostedAccount,
+		liveRuns:            sandboxSetupLiveRunsFor(configPath),
+		engineSocket:        sandboxSetupEngineSocket,
+		dockerAccess:        sandboxSetupDockerAccess,
+		statFile:            sandboxSetupStatFile,
+		fileDigest:          sandboxSetupFileSHA256,
 		records: func(ctx context.Context) ([]store.ToolInstallRow, error) {
 			return ledger.SandboxRecords(ctx)
 		},
@@ -200,6 +210,70 @@ func sandboxSetupHostedConsent(provider string) bool {
 		return false
 	}
 	return hostedLoadConsent(obs, provider) != nil
+}
+
+// sandboxSetupHostedConsentChange judges provider's recorded consent
+// against cfg's launch-independent facts, exactly as the hosted probe does
+// (hostedStaticConsentVerdict): "" when it matches or none is recorded,
+// else the verdict naming what changed.
+func sandboxSetupHostedConsentChange(cfg config.Config, provider string) string {
+	v, ok := sandboxremote.VendorFor(provider)
+	if !ok {
+		return ""
+	}
+	obs, err := hostedObserverDir()
+	if err != nil {
+		return ""
+	}
+	rec := hostedLoadConsent(obs, provider)
+	if rec == nil {
+		return ""
+	}
+	static, ok := (&hostedDriver{cfg: cfg.Terminal.Sandbox.Hosted, vendor: v}).consentFactsStatic()
+	if !ok {
+		return ""
+	}
+	if verdict := hostedStaticConsentVerdict(*rec, static, v, cfg.Terminal.Sandbox.Hosted); verdict != sandboxremote.ConsentOK {
+		return verdict
+	}
+	return ""
+}
+
+// consentChangeWords are the plain words for what a recorded consent no
+// longer matches, by the consent verdict (the closed sandboxremote
+// spellings); a verdict absent here reads "your settings".
+var consentChangeWords = map[string]string{
+	sandboxremote.ConsentChangedPrefix + "provider":      "the provider",
+	sandboxremote.ConsentChangedPrefix + "endpoint":      "the provider's address",
+	sandboxremote.ConsentChangedPrefix + "region":        "the region",
+	sandboxremote.ConsentChangedPrefix + "custody":       "how the agent gets its model key",
+	sandboxremote.ConsentChangedPrefix + "box_binary":    "the observer copied into the box",
+	sandboxremote.ConsentChangedPrefix + "memory_images": "the memory image setting",
+	sandboxremote.ConsentChangedPrefix + "cap":           "the box time limits",
+	// SBXD-7: the private-range deny of the internet tier.
+	sandboxremote.ConsentChangedPrefix + "private_ranges": "whether the box may reach private network addresses",
+	// Decisions SBXD-3 and SBXD-4: bound only while a key can be put in
+	// the box.
+	sandboxremote.ConsentChangedPrefix + "in_box_keys": "the keys stored on this machine that can be put in the box",
+	sandboxremote.ConsentChangedPrefix + "tool_keys":   "which agents' own saved keys can be put in the box",
+	sandboxremote.ConsentChangedPrefix + "login_seed":  "which agents' logins are copied into the box",
+}
+
+// consentChangeReason is the consent step's sentence for a recorded
+// consent that no longer matches.
+func consentChangeReason(verdict string) string {
+	const again = " Read what leaves this machine and agree again."
+	switch verdict {
+	case sandboxremote.ConsentStaleVersion:
+		return "Your consent was recorded by an older version of Observer." + again
+	case sandboxremote.ConsentTampered:
+		return "Your recorded consent does not match its own check." + again
+	}
+	what, ok := consentChangeWords[verdict]
+	if !ok {
+		what = "your settings"
+	}
+	return "Your consent no longer matches: " + what + " changed since you agreed." + again
 }
 
 // sandboxSetupHostedAccount: an account is known to exist once a credential
@@ -407,9 +481,19 @@ var sandboxPathKeys = map[string]func(config.Config) string{
 }
 
 // sandboxConfigKeyFacts are the disclosed config keys a KindConfig
-// prerequisite names, read from the local config.
-var sandboxConfigKeyFacts = map[string]func(config.Config) bool{
-	"terminal.sandbox.oci.allow_rootful": func(c config.Config) bool { return c.Terminal.Sandbox.OCI.AllowRootful },
+// prerequisite names, read from the local config: whether the step is done
+// and, when it is not, the plain sentence that says why ("" for the
+// generic "<key> is off").
+var sandboxConfigKeyFacts = map[string]func(config.Config) (bool, string){
+	"terminal.sandbox.oci.allow_rootful": func(c config.Config) (bool, string) { return c.Terminal.Sandbox.OCI.AllowRootful, "" },
+	// The hosted model key's custody: done when the configured custody can
+	// reach the agent on this node (the one table, sandboxkey.HomeKey;
+	// the list of stored provider ids is a file Observer wrote, read
+	// without opening a key).
+	"terminal.sandbox.hosted.key_custody": func(c config.Config) (bool, string) {
+		v := sandboxkey.HomeKey(hostedHomeKeyFacts(c))
+		return v.OK, v.Message
+	},
 }
 
 // sandboxArgKeys are the config keys a command step's last argument may
@@ -463,10 +547,14 @@ var factRules = []factRule{
 	{"config_key", func(p sandboxsetup.Prereq) bool {
 		return p.Kind == sandboxsetup.KindConfig && sandboxConfigKeyFacts[p.Detect.ConfigKey] != nil
 	}, func(fc factCtx, p sandboxsetup.Prereq) (sandboxsetup.Fact, bool) {
-		if sandboxConfigKeyFacts[p.Detect.ConfigKey](fc.cfg) {
+		done, why := sandboxConfigKeyFacts[p.Detect.ConfigKey](fc.cfg)
+		if done {
 			return sandboxsetup.Fact{Present: true}, true
 		}
-		return sandboxsetup.Fact{Reason: p.Detect.ConfigKey + " is off."}, true
+		if why == "" {
+			why = p.Detect.ConfigKey + " is off."
+		}
+		return sandboxsetup.Fact{Reason: why}, true
 	}},
 	{"credential", func(p sandboxsetup.Prereq) bool { return p.Kind == sandboxsetup.KindCredential }, func(fc factCtx, _ sandboxsetup.Prereq) (sandboxsetup.Fact, bool) {
 		if fc.h.hostedCredential(fc.row.ID) {
@@ -476,6 +564,11 @@ var factRules = []factRule{
 	}},
 	{"consent", func(p sandboxsetup.Prereq) bool { return p.Kind == sandboxsetup.KindConsent }, func(fc factCtx, _ sandboxsetup.Prereq) (sandboxsetup.Fact, bool) {
 		if fc.h.hostedConsent(fc.row.ID) {
+			if fc.h.hostedConsentChange != nil {
+				if change := fc.h.hostedConsentChange(fc.cfg, fc.row.ID); change != "" {
+					return sandboxsetup.Fact{Reason: consentChangeReason(change)}, true
+				}
+			}
 			return sandboxsetup.Fact{Present: true}, true
 		}
 		return sandboxsetup.Fact{Reason: "No consent is recorded for this provider."}, true

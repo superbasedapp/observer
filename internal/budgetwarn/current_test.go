@@ -60,7 +60,10 @@ func TestEvaluateRaisedCapFollowsCurrentReading(t *testing.T) {
 func TestEvaluateNeverExceededBelowCap(t *testing.T) {
 	base := time.Date(2026, 10, 6, 1, 0, 0, 0, time.UTC)
 	w := func(capV, spent float64, mode string) Window {
-		return Window{Window: "daily", Unit: "usd", Cap: capV, Spent: spent, Scope: "member:m", Enforcement: mode, Thresholds: []float64{0.75, 0.9, 1}}
+		return Window{
+			Window: "daily", Unit: "usd", Cap: capV, Spent: spent, Scope: "member:m", Enforcement: mode, Thresholds: []float64{0.75, 0.9, 1},
+			GuardMode: "enforce", OrgAuthoritative: true,
+		}
 	}
 	seq := []Window{
 		w(0.30, 0.40, "hard"), // 133%: exceeded, blocking

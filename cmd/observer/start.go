@@ -687,6 +687,14 @@ func newStartCmd() *cobra.Command {
 					// Per-tool / per-model caps are warned too (Sol A5-04),
 					// measured through the guard's own accounting lookup.
 					budgetWire.warn.SetSubjectSpend(processBudgetSubjectSpend(dbPath))
+					// What THIS machine can do about a hard cap, resolved
+					// live like the budget handle's own grant: the guard's
+					// mode, and whether the org cap is authoritative here.
+					// Every warning sentence says what the node will
+					// actually do, never only what the org asked for.
+					budgetWire.warn.SetMachine(processBudgetMachine(dbPath,
+						cfgForLock.Guard.Budget.FromOrg,
+						func() bool { return ngov.Effective(context.Background()).GrantsBudgetEnforcement() }))
 					// The hook path's budget stop (T-519): the managed
 					// decision the process controller takes, published for
 					// every hook-capable tool's next prompt or tool call.

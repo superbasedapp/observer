@@ -30,6 +30,11 @@ type driverVerdicts struct {
 	Driver   string
 	Backends []string
 	Missing  []verdictMissing
+	// MissingPrefix are rows whose Verdict is a prefix the probe completes
+	// with a field name (the hosted consent's consent_changed_<field>, one
+	// verdict per bound fact that changed): each matches every verdict that
+	// starts with it and is longer. Walked after Missing.
+	MissingPrefix []verdictMissing
 	// Ladder is the order in which the driver's probe checks the rows'
 	// prerequisites (nil: not known). A probe that stops at one rung has
 	// passed every rung before it, so those steps read done after a check.
@@ -196,9 +201,18 @@ var verdictMap = []driverVerdicts{
 		Backends: []string{sandboxbackend.BackendE2B, sandboxbackend.BackendModal, sandboxbackend.BackendVercelSandbox, sandboxbackend.BackendDockerSandboxes, sandboxbackend.BackendInstaBox, sandboxbackend.BackendDaytona},
 		Missing: []verdictMissing{
 			{"credential_missing", "hosted-key", ""},
+			{"custody_unsatisfiable", "hosted-custody", ""},
 			{"consent_required", "hosted-consent", ""},
 			{"consent_stale_version", "hosted-consent", ""},
 			{"consent_tampered", "hosted-consent", ""},
+		},
+		// A recorded consent whose bound fact changed (the custody, the
+		// region, the box binary, ...): the consent step reopens and names
+		// the changed fact (cmd/observer consentChangeReason). Before this
+		// row the verdict named no step (audit
+		// sandbox-terminal-gaps-2026-11-18, H11).
+		MissingPrefix: []verdictMissing{
+			{"consent_changed_", "hosted-consent", ""},
 		},
 	},
 	{
@@ -224,6 +238,11 @@ func missingFromVerdict(backend, verdict, reason string) string {
 		}
 		for _, m := range d.Missing {
 			if m.Verdict == verdict && (m.ReasonHas == "" || strings.Contains(reason, m.ReasonHas)) {
+				return m.Prereq
+			}
+		}
+		for _, m := range d.MissingPrefix {
+			if len(verdict) > len(m.Verdict) && strings.HasPrefix(verdict, m.Verdict) && (m.ReasonHas == "" || strings.Contains(reason, m.ReasonHas)) {
 				return m.Prereq
 			}
 		}

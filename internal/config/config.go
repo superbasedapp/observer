@@ -2346,6 +2346,14 @@ type TerminalSandboxConfig struct {
 	// (full repo copies, not small). 0 (the default) keeps them forever —
 	// B7 needs workspaces to persist past run exit.
 	WorkspaceRetentionDays int `toml:"workspace_retention_days"`
+	// ReturnedCopyRetentionDays (decision SBXD-2) is how many days a
+	// sandboxed run's managed copy is kept once its work came home: past
+	// it, the daemon removes the copy only when the removal table would
+	// remove it on a click (its commits came back, nothing in it is
+	// uncommitted, the run is not live, the copy could be compared), one
+	// capped batch per pass. Default 30; 0 never removes a copy
+	// automatically; at most 3650. workspace_retention_days is unchanged.
+	ReturnedCopyRetentionDays int `toml:"returned_copy_retention_days"`
 	// MaskPaths lists extra paths to `--tmpfs`-mask inside the sandbox, on
 	// top of the auto-detected foreign-OS mount roots (e.g. /mnt/c on
 	// WSL). Empty by default.
@@ -2631,11 +2639,33 @@ type TerminalSandboxHostedConfig struct {
 	// it (selection rule S13). Default 30, 5 to 1440, at most
 	// MaxRunMinutes (so a short max_run_minutes needs it lowered too).
 	MinSessionMinutes int `toml:"min_session_minutes"`
-	// KeyCustody is where the model credential sits: home_relay (the
-	// default; only the org gateway key or a routing key-pool key can stay
-	// home today), in_box_api_key, in_box_oauth_seed, or provider_injected
-	// (no hosted row offers it yet).
+	// KeyCustody is where the model credential sits: auto (the default,
+	// decision SBXD-1: per launch and per tool, the key stays on this
+	// machine when credential injection or the org AI gateway adds it for
+	// that tool, otherwise the tool's API key is put in the box; disclosed
+	// on the consent screen and in the New Terminal dialog), home_relay
+	// (the key always stays on this machine; a tool nothing here serves is
+	// refused), in_box_api_key, in_box_oauth_seed (not built), or
+	// provider_injected (no hosted row offers it yet).
 	KeyCustody string `toml:"key_custody"`
+	// KeyCustodyByTool sets the custody per tool (tool id -> auto,
+	// home_relay or in_box_api_key), taking precedence over KeyCustody for
+	// that tool's hosted launches. Default empty.
+	KeyCustodyByTool map[string]string `toml:"key_custody_by_tool"`
+	// ToolKeys opts a tool in (tool id -> true) to a third in-box key
+	// source (decision SBXD-4 (b)): under in-box custody, the keys the tool
+	// saved in its own key file (a grounded registry row; OpenCode's
+	// auth.json), read only when the run starts, after the daemon's
+	// environment and the stored keys. Default empty (off); disclosed on the
+	// consent screen by tool.
+	ToolKeys map[string]bool `toml:"tool_keys"`
+	// LoginSeed opts a tool in (tool id -> true) to copying its login into
+	// the box under in-box custody (decision SBXD-4 (c)): only the
+	// short-lived access token, never the refresh token, and only while it
+	// has not expired (a grounded registry row; Claude Code's
+	// .credentials.json). Default empty (off); disclosed on the consent
+	// screen by tool.
+	LoginSeed map[string]bool `toml:"login_seed"`
 	// MemoryImages is avoid (the default: a provider pause image is switched
 	// off where the vendor allows, disclosed and deleted at teardown) or
 	// refuse (a row whose provider could take one is dropped).
@@ -2656,6 +2686,63 @@ type TerminalSandboxHostedConfig struct {
 	// before the box is deleted, and swept after
 	// [terminal.sandbox].workspace_retention_days. Default false.
 	DBExport bool `toml:"db_export"`
+	// DiffAgainst (the smaller item "diff against the box's baseline" of
+	// the sandbox decisions) is what an upload run's saved diff is taken
+	// against: "baseline" (the default; also what "" means) diffs against
+	// the observer-baseline commit the upload made in the box, so commits
+	// the agent made are in the diff and a run from a clean, committed
+	// folder opens as a branch; "head" keeps the earlier capture (the box's
+	// HEAD, so the agent's own commits are left out and such a diff is
+	// offered as a file only). A row whose in-box guest keeps its own
+	// baseline (the organization's row) always uses the guest's capture.
+	DiffAgainst string `toml:"diff_against"`
+	// AllowPrivateRanges (decision SBXD-7): false (the default) has a hosted
+	// row's internet-tier create ask the vendor to refuse the cloud metadata
+	// address, link-local and private ranges (169.254.0.0/16, 10.0.0.0/8,
+	// 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, fc00::/7, fe80::/10), on
+	// every vendor whose API takes deny rules; true asks for no deny, for a
+	// box that must reach a private network. A vendor that takes no deny rule
+	// is unaffected either way (disclosed). A provider table's own
+	// allow_private_ranges overrides it for that vendor. An organization may
+	// only pin it to false.
+	AllowPrivateRanges bool `toml:"allow_private_ranges"`
+	// GuardHooks is whether a hosted box gets guard's hook registration for
+	// the agent tool (lane HOOKS, decision SBXD-6): auto (the default; ""
+	// reads as auto) seeds it whenever guard enforcement is in force on this
+	// machine, on always, off never. Seeding writes the tool's user-scope
+	// settings file in the BOX home only, for a tool whose hook mechanism a
+	// box can be seeded for (internal/hook.BoxHooksCover); the in-box hooks
+	// ride the run's relay home, where guard decides, and a dropped relay
+	// blocks a gate hook.
+	GuardHooks string `toml:"guard_hooks"`
+	// CloneWhere is where a hosted row's "Clone a remote URL" source
+	// clones (decision SBXD-5): auto (the default) clones a repository
+	// that answers an anonymous listing in the box and any other on this
+	// machine; box always clones in the box (public repositories only,
+	// the internet tier only); home always clones on this machine with
+	// its own git login and uploads the clone's tracked files (any tier,
+	// private repositories included, no credential leaves). Only auto
+	// lets the New Terminal dialog choose per launch. A row whose box
+	// clone is its organization's own always clones in the box.
+	CloneWhere string `toml:"clone_where"`
+	// UploadNonGit (decision SBXD-8, audit item H8) uploads a folder that is
+	// not a git repository: its files are listed with git's own ignore
+	// machinery through a temporary git directory outside the folder (the
+	// folder is never written, never `git init`ed), honouring its
+	// .gitignore files, Observer's default ignore set (dependency, build
+	// and virtual-environment folders, version-control folders, .env files,
+	// operating-system clutter) and UploadIgnore, then the upload's usual
+	// credential-shaped exclusions and caps; the consent screen lists the
+	// files and the changes come back as a diff file only. Default true;
+	// false refuses such a folder before Start, as before. A folder inside
+	// a repository, the home folder and / stay refused either way. An org
+	// may only keep it off.
+	UploadNonGit bool `toml:"upload_non_git"`
+	// UploadIgnore are extra ignore patterns (gitignore syntax) for that
+	// listing, written after the default set, so a negated pattern
+	// ("!dist/") takes a default back out. At most 200, each at most 256
+	// characters on one line. An org may only add patterns.
+	UploadIgnore []string `toml:"upload_ignore"`
 	// E2B, Modal and Vercel are the per-provider tables.
 	E2B    TerminalSandboxHostedProviderConfig `toml:"e2b"`
 	Modal  TerminalSandboxHostedProviderConfig `toml:"modal"`
@@ -2706,6 +2793,45 @@ type TerminalSandboxHostedProviderConfig struct {
 	// organization's published box_binary = "image" sets it; FX3 item 2,
 	// live finding F-L3P4-6).
 	BoxBinaryInImage bool `toml:"-" json:"-"`
+	// AllowPrivateRanges overrides [terminal.sandbox.hosted]
+	// .allow_private_ranges for this vendor (nil follows it). Only a vendor
+	// whose API takes deny rules accepts it (HostedPrivateRangeDenyProviders);
+	// an organization pin of the shared key clears it.
+	AllowPrivateRanges *bool `toml:"allow_private_ranges"`
+}
+
+// HostedPrivateRangeDenyProviders are the provider tables whose vendor's
+// create request can deny address ranges (internal/sandboxremote's
+// DenyRanges rows; config stays a leaf, so this mirror is pinned equal to
+// that table by a test in cmd/observer).
+var HostedPrivateRangeDenyProviders = []string{"docker", "e2b", "vercel"}
+
+// ProviderTable returns the provider table named name (e2b, modal, vercel,
+// docker, instabox, daytona), or nil for any other name.
+func (c *TerminalSandboxHostedConfig) ProviderTable(name string) *TerminalSandboxHostedProviderConfig {
+	if get, ok := hostedProviderTables[name]; ok {
+		return get(c)
+	}
+	return nil
+}
+
+// hostedProviderTables maps a provider table name to its field.
+var hostedProviderTables = map[string]func(*TerminalSandboxHostedConfig) *TerminalSandboxHostedProviderConfig{
+	"e2b":      func(c *TerminalSandboxHostedConfig) *TerminalSandboxHostedProviderConfig { return &c.E2B },
+	"modal":    func(c *TerminalSandboxHostedConfig) *TerminalSandboxHostedProviderConfig { return &c.Modal },
+	"vercel":   func(c *TerminalSandboxHostedConfig) *TerminalSandboxHostedProviderConfig { return &c.Vercel },
+	"docker":   func(c *TerminalSandboxHostedConfig) *TerminalSandboxHostedProviderConfig { return &c.Docker },
+	"instabox": func(c *TerminalSandboxHostedConfig) *TerminalSandboxHostedProviderConfig { return &c.InstaBox },
+	"daytona":  func(c *TerminalSandboxHostedConfig) *TerminalSandboxHostedProviderConfig { return &c.Daytona },
+}
+
+// PrivateRangesAllowed is the effective allow_private_ranges for one
+// provider table: its own override when set, else the shared value.
+func (c TerminalSandboxHostedConfig) PrivateRangesAllowed(p TerminalSandboxHostedProviderConfig) bool {
+	if p.AllowPrivateRanges != nil {
+		return *p.AllowPrivateRanges
+	}
+	return c.AllowPrivateRanges
 }
 
 // TerminalSandboxSeatbeltConfig is the [terminal.sandbox.seatbelt] block.
@@ -5781,9 +5907,18 @@ func Default() Config {
 				// steps until the person turns the key on (P-250).
 				Setup: TerminalSandboxSetupConfig{AllowElevated: false},
 				Hosted: TerminalSandboxHostedConfig{
-					MinSessionMinutes: 30, KeyCustody: "home_relay", MemoryImages: "avoid",
+					MinSessionMinutes: 30, KeyCustody: "auto", MemoryImages: "avoid",
 					CheckpointMinutes: 5, MaxRunMinutes: 60, DailyBoxMinutes: 240,
+					DiffAgainst: HostedDiffAgainstBaseline,
+					GuardHooks:  "auto",
+					// SBXD-5: the clone location is decided per launch.
+					CloneWhere: "auto",
+					// SBXD-8: a folder that is not a repository uploads.
+					UploadNonGit: true,
 				},
+
+				// SBXD-2: a returned, clean copy goes after 30 days.
+				ReturnedCopyRetentionDays: 30,
 			},
 			// [terminal.ssh] — default ON for VISIBILITY (2026-08-28 operator
 			// ruling); the surface still launches nothing without an
@@ -6946,6 +7081,10 @@ func SSHOptions(c TerminalSSHConfig) sshspec.Options {
 	}
 }
 
+// maxReturnedCopyRetentionDays bounds returned_copy_retention_days (ten
+// years, the bound an organization's pin of workspace_retention_days has).
+const maxReturnedCopyRetentionDays = 3650
+
 // validateTerminalSandbox checks semantic constraints on the [terminal.sandbox]
 // block (B9). Not gated on Enabled, so a typo'd backend/home_mode is caught at
 // load time even before an operator flips the master switch on. It is gated
@@ -6970,6 +7109,9 @@ func validateTerminalSandbox(c TerminalSandboxConfig) error {
 	}
 	if c.WorkspaceRetentionDays < 0 {
 		return errors.New("config: terminal.sandbox.workspace_retention_days must be >= 0")
+	}
+	if c.ReturnedCopyRetentionDays < 0 || c.ReturnedCopyRetentionDays > maxReturnedCopyRetentionDays {
+		return fmt.Errorf("config: terminal.sandbox.returned_copy_retention_days must be 0 (never remove a copy automatically) to %d", maxReturnedCopyRetentionDays)
 	}
 	if c.PrepTimeoutSeconds < 0 {
 		return errors.New("config: terminal.sandbox.prep_timeout_seconds must be >= 0")
@@ -7265,15 +7407,14 @@ func validateTerminalSandboxHosted(c TerminalSandboxHostedConfig) error {
 	if c.CheckpointMinutes < 1 || c.CheckpointMinutes > 60 {
 		return errors.New("config: terminal.sandbox.hosted.checkpoint_minutes must be 1 to 60")
 	}
-	switch c.KeyCustody {
-	case "home_relay", "in_box_api_key", "in_box_oauth_seed", "provider_injected":
-	default:
-		return fmt.Errorf("config: terminal.sandbox.hosted.key_custody %q not in {home_relay, in_box_api_key, in_box_oauth_seed, provider_injected}", c.KeyCustody)
+	if err := validateHostedKeySources(c); err != nil {
+		return err
 	}
-	switch c.MemoryImages {
-	case "avoid", "refuse":
-	default:
-		return fmt.Errorf("config: terminal.sandbox.hosted.memory_images %q not in {avoid, refuse}", c.MemoryImages)
+	if err := validateHostedEnums(c); err != nil {
+		return err
+	}
+	if err := validateHostedUploadIgnore(c.UploadIgnore); err != nil {
+		return err
 	}
 	for name, p := range map[string]TerminalSandboxHostedProviderConfig{"e2b": c.E2B, "modal": c.Modal, "vercel": c.Vercel, "docker": c.Docker, "instabox": c.InstaBox, "daytona": c.Daytona} {
 		if r := p.Region; r != "" && !hostedRegionRE.MatchString(r) {
@@ -7293,6 +7434,89 @@ func validateTerminalSandboxHosted(c TerminalSandboxHostedConfig) error {
 		}
 		if k := p.EndpointSPKISHA256; k != "" && !hostedSPKIRE.MatchString(k) {
 			return fmt.Errorf("config: terminal.sandbox.hosted.%s.endpoint_spki_sha256 must be 64 lowercase hex characters", name)
+		}
+		if p.AllowPrivateRanges != nil && !slices.Contains(HostedPrivateRangeDenyProviders, name) {
+			return fmt.Errorf("config: terminal.sandbox.hosted.%s.allow_private_ranges has no effect: this vendor's API takes no rule that would refuse private ranges, so its box can reach them whatever the setting says; remove the key", name)
+		}
+	}
+	return nil
+}
+
+// The values of [terminal.sandbox.hosted].diff_against ("" means baseline).
+const (
+	// HostedDiffAgainstBaseline diffs an upload run against the box's
+	// observer-baseline commit (the default).
+	HostedDiffAgainstBaseline = "baseline"
+	// HostedDiffAgainstHead diffs it against the box's HEAD (the earlier
+	// capture).
+	HostedDiffAgainstHead = "head"
+)
+
+// hostedEnumKeys are the closed-vocabulary keys of [terminal.sandbox.hosted],
+// one row each: the key, its value,
+// and the values it takes ("" where the empty value means the default).
+func hostedEnumKeys(c TerminalSandboxHostedConfig) []struct {
+	key, value string
+	allowed    []string
+} {
+	return []struct {
+		key, value string
+		allowed    []string
+	}{
+		{"key_custody", c.KeyCustody, []string{"auto", "home_relay", "in_box_api_key", "in_box_oauth_seed", "provider_injected"}},
+		{"memory_images", c.MemoryImages, []string{"avoid", "refuse"}},
+		{"diff_against", c.DiffAgainst, []string{"", HostedDiffAgainstBaseline, HostedDiffAgainstHead}},
+		{"guard_hooks", c.GuardHooks, []string{"", "auto", "on", "off"}},
+		// SBXD-5: the clone location (internal/workspace CloneWhere's
+		// vocabulary); an older file that names none gets the default, auto.
+		{"clone_where", c.CloneWhere, []string{"auto", "box", "home"}},
+	}
+}
+
+// validateHostedEnums walks hostedEnumKeys.
+func validateHostedEnums(c TerminalSandboxHostedConfig) error {
+	for _, k := range hostedEnumKeys(c) {
+		if !slices.Contains(k.allowed, k.value) {
+			named := make([]string, 0, len(k.allowed))
+			for _, a := range k.allowed {
+				if a != "" {
+					named = append(named, a)
+				}
+			}
+			return fmt.Errorf("config: terminal.sandbox.hosted.%s %q not in {%s}", k.key, k.value, strings.Join(named, ", "))
+		}
+	}
+	return nil
+}
+
+// hostedUploadIgnoreMax and hostedUploadIgnoreLen bound
+// [terminal.sandbox.hosted].upload_ignore.
+const (
+	hostedUploadIgnoreMax = 200
+	hostedUploadIgnoreLen = 256
+)
+
+// validateHostedUploadIgnore checks the extra ignore patterns of a hosted
+// upload of a folder that is not a repository (SBXD-8): each a non-empty,
+// one-line gitignore pattern that is not a comment and not a bare "!" or
+// "/" (which would mean nothing or the whole folder).
+func validateHostedUploadIgnore(list []string) error {
+	if len(list) > hostedUploadIgnoreMax {
+		return fmt.Errorf("config: terminal.sandbox.hosted.upload_ignore holds %d patterns; at most %d", len(list), hostedUploadIgnoreMax)
+	}
+	for _, p := range list {
+		t := strings.TrimSpace(p)
+		switch {
+		case t == "":
+			return errors.New("config: terminal.sandbox.hosted.upload_ignore holds an empty pattern")
+		case len(t) > hostedUploadIgnoreLen:
+			return fmt.Errorf("config: terminal.sandbox.hosted.upload_ignore pattern %.40q... is over %d characters", t, hostedUploadIgnoreLen)
+		case strings.ContainsFunc(t, func(r rune) bool { return r < 0x20 || r == 0x7f }):
+			return fmt.Errorf("config: terminal.sandbox.hosted.upload_ignore pattern %q holds a line break or control character", t)
+		case strings.HasPrefix(t, "#"):
+			return fmt.Errorf("config: terminal.sandbox.hosted.upload_ignore pattern %q is a comment; write \\# for a name that starts with #", t)
+		case t == "!" || t == "/" || t == "!/":
+			return fmt.Errorf("config: terminal.sandbox.hosted.upload_ignore pattern %q names nothing", t)
 		}
 	}
 	return nil

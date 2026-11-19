@@ -148,6 +148,23 @@ test("errorNote: a link wins over the surface's own status wording; without one 
   assert.equal(errorNote(plain, () => null).text, "no grounded install command for x");
 });
 
+test("errorNote keeps a refusal's technical detail apart from its sentence", () => {
+  const body = JSON.stringify({
+    error: "custody_unsatisfiable",
+    message: "This agent chooses its own model provider. Set it up or turn it on in Terminals > Settings > Sandbox isolation.",
+    technical: "tool_provider_not_served: key custody home_relay needs a key the proxy adds itself",
+    settings: "/terminals?tab=settings#sandbox-backends",
+    settings_label: "Terminals > Settings > Sandbox isolation",
+  });
+  const note = errorNote(new FakeApiError(409, "/api/terminal/launch", body));
+  assert.doesNotMatch(note.text, /home_relay|custody_unsatisfiable/);
+  assert.match(note.technical ?? "", /home_relay/);
+  assert.equal(note.settings?.href, "/terminals?tab=settings#sandbox-backends");
+  // A body with no detail carries none.
+  const plain = errorNote(new FakeApiError(409, "/api/x", JSON.stringify({ error: "e", message: "M.", settings: "/remote" })));
+  assert.equal(plain.technical, undefined);
+});
+
 test("errorText and stripApiPrefix never show fetchJSON's prefix", () => {
   assert.equal(stripApiPrefix("api 500 /api/x?y=1: boom"), "boom");
   assert.equal(errorText(new Error("api 503 /api/terminal/launch: launch unavailable")), "launch unavailable");

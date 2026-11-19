@@ -25,7 +25,29 @@ import {
 import { setupCandidates } from "@/lib/sandboxSetup";
 import type { SandboxSetupPlan, SandboxSetupSummary, SandboxSetupSummaryResponse } from "@/lib/sandboxSetupTypes";
 import { LAUNCH_SWITCHES_OFF, launchSwitchesOff } from "@/lib/launchSwitches";
-import { SHELL_TOOL, isolationPickerProps, sandboxLaunchFields, sandboxStartBlock, sshSystemDisabledReason } from "@/lib/newTerminalSandbox";
+import {
+  SHELL_TOOL,
+  chosenBackendRow,
+  hostedKeyBlock,
+  hostedHookLine,
+  hostedNetworkNotes,
+  hostedToolBlock,
+  hostedToolPlace,
+  hostedUploadNeedsRepo,
+  hostedWorkspaceBlock,
+  rowSourceOffered,
+  sandboxSourceNotes,
+  sandboxSourceOptions,
+  type HostedWorkspaceReply,
+  isolationPickerProps,
+  sandboxLaunchFields,
+  sandboxStartBlock,
+  sshSystemDisabledReason,
+} from "@/lib/newTerminalSandbox";
+import { placeLink } from "@/lib/settingsPlaces";
+import { cloneWhereLaunchValue, hostedConsentRefusalOf, isHostedConsentRefusal } from "@/lib/hostedClone";
+import { HostedCloneRemoteExtras } from "@/components/sandboxHosted/HostedCloneRemoteExtras";
+import { HostedUploadConsent } from "@/components/sandboxHosted/HostedUploadConsent";
 import { DashboardInstallRecord } from "@/components/DashboardInstallRecord";
 import type {
   GUILaunchable,
@@ -68,6 +90,7 @@ import {
 } from "@/lib/toolInstall";
 import { installPrereqRemedyFor } from "@/lib/installPrereq";
 import { RuntimeRemedy } from "@/components/RuntimeRemedy";
+import { HostedKeyLineControls } from "@/components/sandboxHosted/HostedKeyLineControls";
 import {
   guiLaunchDisabledReason,
   guiLaunchErrorMessage,
@@ -87,7 +110,7 @@ import {
   TERMINALS_REMOTE_SYSTEMS_HASH,
 } from "@/lib/nodePageTabs";
 import { pushToast } from "@/components/Toast";
-import { ApiErrorNotice } from "@/components/NeedsSettingNotice";
+import { ApiErrorNotice, NeedsSettingNotice } from "@/components/NeedsSettingNotice";
 import { errorNote, type ErrorNote } from "@/lib/needsSetting";
 import {
   AllowFolderStep,
@@ -146,18 +169,10 @@ const CUSTOM_ROOT = "\u0000custom";
 // can never be empty.
 const LOCAL_SYSTEM = "";
 
-// SANDBOX_SOURCE_LABELS maps the server's closed workspace-source vocabulary
-// (SandboxAvailability.sources[].id, mirrored 1:1 from internal/workspace's
-// Source constants) to the dialog's display labels — the ONE place that
-// vocabulary is spelled out for humans. Falls back to the raw id for any
-// future source the dialog hasn't been taught about yet, rather than hiding
-// it.
-const SANDBOX_SOURCE_LABELS: Record<string, string> = {
-  live: "Live project directory",
-  "clone-local": "Copy of the project (clone)",
-  "clone-remote": "Clone a remote URL",
-  worktree: "Worktree",
-};
+// The workspace-source labels live in lib/newTerminalSandbox
+// (SANDBOX_SOURCE_LABELS, read through sandboxSourceLabel), so a hosted row
+// relabels a source by how its box gets it (an uploaded copy, not the live
+// folder) and a test pins every label.
 
 // The sources whose launch takes a branch: a clone checks the name out as a
 // new branch, a worktree run names its own branch's last component with it
@@ -633,6 +648,13 @@ export function NewTerminalDialog({
   const [workspaceBranch, setWorkspaceBranch] = useState(
     initialDraft?.workspaceBranch ?? "",
   );
+  // A hosted row's clone of a remote URL (lane CLONE2, SBXD-5): where it is
+  // cloned when the launch chooses ("" takes the setting), and the inline
+  // consent a Start refused for its hosted consent waits on (a clone's, or
+  // an upload's whose scope changed: HostedUploadConsent).
+  const [cloneWherePick, setCloneWherePick] = useState("");
+  const [cloneConsentRefresh, setCloneConsentRefresh] = useState(0);
+  const [cloneConsentHeld, setCloneConsentHeld] = useState(false);
   // Remote-device launch gate: a paired device can only fresh-launch when the
   // owner has enabled [remote].allow_terminal. When it's off we say so up front
   // and disable Start, rather than letting the POST fail with a raw 403.
@@ -1227,12 +1249,83 @@ export function NewTerminalDialog({
   // does — the server re-validates regardless, this only prevents an
   // obviously-doomed submit.
   const selectedSourceAvail = sandboxProbe?.sources?.find((s) => s.id === workspaceSource);
+  // A hosted row whose model key cannot reach this tool's agent: said under
+  // the picker before Start, and Start is blocked with the same sentence
+  // (the daemon's own rule; docs/audits/hosted-sandbox-key-custody-2026-11-18.md).
+  // The row the picker resolves to: a hosted row takes only some workspace
+  // sources (the live tree uploaded, or its own deliveries).
+  const chosenRow = useMemo(
+    () => chosenBackendRow(sandboxProbe, sandboxOn, isolationPicker.value),
+    [sandboxProbe, sandboxOn, isolationPicker.value],
+  );
+  // Choosing a row that does not take the selected source moves the choice
+  // to the first source the row takes and this machine offers, so the
+  // dialog never sits on a source the launch would refuse.
+  useEffect(() => {
+    if (rowSourceOffered(chosenRow, workspaceSource)) return;
+    const next = chosenRow?.workspace_sources?.find((id) => sandboxProbe?.sources?.some((s) => s.id === id && s.available));
+    if (next) setWorkspaceSource(next);
+  }, [chosenRow, workspaceSource, sandboxProbe]);
+  // A held Start (its clone consent) is for one row, source and URL only.
+  const chosenRowID = chosenRow?.id;
+  useEffect(() => {
+    setCloneConsentHeld(false);
+  }, [chosenRowID, workspaceSource, workspaceRemote, effectiveRoot]);
+  const hostedKey = useMemo(
+    () => (sandboxCheckboxDisabled ? null : hostedKeyBlock(tool, sandboxProbe, sandboxOn, isolationPicker.value)),
+    [tool, sandboxProbe, sandboxOn, isolationPicker.value, sandboxCheckboxDisabled],
+  );
+  // A hosted row that cannot get this tool into its box (no template set,
+  // and no install way that can work there): the daemon's sentence before
+  // Start, and Start blocked (lane UX, item H4).
+  const hostedTool = useMemo(
+    () => (sandboxCheckboxDisabled ? null : hostedToolBlock(tool, sandboxProbe, sandboxOn, isolationPicker.value)),
+    [tool, sandboxProbe, sandboxOn, isolationPicker.value, sandboxCheckboxDisabled],
+  );
+  // The chosen hosted row's box network at the configured tier (lane UX,
+  // item H10): on the internet tier the provider's own network, with the
+  // cloud metadata address not known to be refused. Shown as served.
+  const networkNotes = useMemo(() => (sandboxCheckboxDisabled ? [] : hostedNetworkNotes(chosenRow)), [chosenRow, sandboxCheckboxDisabled]);
+  // Whether this machine's guard checks the agent's commands in the chosen
+  // hosted row's box for this tool, as served (lane HOOKS, SBXD-6).
+  const hookLine = useMemo(() => (sandboxCheckboxDisabled ? null : hostedHookLine(tool, chosenRow)), [tool, chosenRow, sandboxCheckboxDisabled]);
+  // A hosted row that uploads the chosen source takes only a git
+  // repository's own top folder: the daemon checks the chosen folder before
+  // Start with the launch's own rule (lane UX, item H8). Fail-silent like
+  // the trust chip: no route, a 404 or a failed read blocks nothing.
+  const uploadChecked = sandboxOn && !sandboxCheckboxDisabled && !trustRemote && !!effectiveRoot && hostedUploadNeedsRepo(chosenRow, workspaceSource);
+  const [workspaceReply, setWorkspaceReply] = useState<HostedWorkspaceReply | null>(null);
+  useEffect(() => {
+    if (!uploadChecked) {
+      setWorkspaceReply(null);
+      return;
+    }
+    let cancelled = false;
+    fetchJSON<HostedWorkspaceReply>("/api/terminal/sandbox/hosted/workspace", { dir: effectiveRoot })
+      .then((d) => {
+        if (!cancelled) setWorkspaceReply(d);
+      })
+      .catch(() => {
+        if (!cancelled) setWorkspaceReply(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [uploadChecked, effectiveRoot]);
+  const hostedWorkspace = useMemo(
+    () => (uploadChecked ? hostedWorkspaceBlock(chosenRow, workspaceSource, effectiveRoot, workspaceReply) : null),
+    [uploadChecked, chosenRow, workspaceSource, effectiveRoot, workspaceReply],
+  );
   const startBlock = sandboxStartBlock({
     sandboxOn,
     controlDisabled: sandboxCheckboxDisabled,
     source: workspaceSource,
     remote: workspaceRemote,
     sources: sandboxProbe?.sources,
+    hostedKey: hostedKey?.blocking ? hostedKey : null,
+    row: chosenRow,
+    hostedTool,
+    hostedWorkspace,
   });
   const sandboxRemoteURLMissing = startBlock.remoteURLMissing;
   const sandboxSourceUnavailable = startBlock.sourceUnavailable;
@@ -1476,6 +1569,7 @@ export function NewTerminalDialog({
             workspaceRemote,
             workspaceBranch,
             branchApplies: sandboxBranch !== null,
+            workspaceCloneWhere: workspaceSource === "clone-remote" ? cloneWhereLaunchValue(chosenRow?.clone_where, cloneWherePick) : undefined,
             signInSeed,
           });
       // Task mode posts the task's fields plus the agent choice to the
@@ -1544,6 +1638,23 @@ export function NewTerminalDialog({
     } catch (e) {
       if (isFreshLaunchDisabledError(e)) {
         setFreshOff(true);
+        setErr(null);
+        return;
+      }
+      // A hosted launch refused for its consent (lane CLONE2, and an upload
+      // whose scope changed since the agreement): the consent screen is shown
+      // inline (under the URL for a clone, under the workspace source for an
+      // upload) with what it sends now, and agreeing there starts the launch
+      // again (no trip to Settings). Read by the 409's code; the sentence
+      // match stays for a daemon that predates it.
+      if (
+        !sandboxManaged &&
+        chosenRow?.location === "remote" &&
+        (hostedConsentRefusalOf(e) !== null ||
+          isHostedConsentRefusal(e instanceof Error ? e.message : String(e)))
+      ) {
+        setCloneConsentHeld(true);
+        setCloneConsentRefresh((n) => n + 1);
         setErr(null);
         return;
       }
@@ -1646,6 +1757,8 @@ export function NewTerminalDialog({
                 : sandboxBlocksStart
                   ? sandboxRemoteURLMissing
                     ? "Enter a remote URL to clone into the sandbox, or choose a different workspace"
+                    : startBlock.remoteURLProblem
+                      ? startBlock.remoteURLProblem
                     : startBlock.blocks
                       ? "The selected workspace source isn't available - choose a different one"
                       : sandboxBranchProblem
@@ -2254,6 +2367,68 @@ export function NewTerminalDialog({
         </Suspense>
       )}
 
+      {/* The chosen hosted row cannot give this tool its model key: what is
+          missing and where to choose, before Start. */}
+      {!sandboxManaged && hostedKey && (
+        <div data-testid="new-terminal-hosted-key">
+          <NeedsSettingNotice
+            text={hostedKey.message}
+            technical={hostedKey.technical}
+            link={placeLink("terminal_sandbox")}
+            onNavigate={onClose}
+            className="mb-3"
+          />
+          <HostedKeyLineControls block={hostedKey} tool={tool} toolName={pickerItemFor.get(tool)?.name ?? toolMeta(tool).label} onChanged={() => setProbeNonce((n) => n + 1)} />
+        </div>
+      )}
+
+      {/* The chosen hosted row cannot get this tool into its box: what is
+          missing and what to do, before Start (no box is made). */}
+      {!sandboxManaged && hostedTool && (
+        <div data-testid="new-terminal-hosted-tool">
+          <NeedsSettingNotice
+            text={hostedTool.message}
+            technical={hostedTool.technical}
+            link={placeLink(hostedToolPlace(hostedTool))}
+            onNavigate={onClose}
+            className="mb-3"
+          />
+        </div>
+      )}
+
+      {/* The chosen folder cannot be uploaded to the hosted row (a refusal),
+          or it is not a git repository and is uploaded through Observer's
+          own listing (a note that blocks nothing, decision SBXD-8). */}
+      {!sandboxManaged && hostedWorkspace && (
+        <div data-testid="new-terminal-hosted-workspace" data-blocking={hostedWorkspace.blocking ? "true" : "false"}>
+          <NeedsSettingNotice
+            text={hostedWorkspace.message}
+            technical={hostedWorkspace.technical}
+            tone={hostedWorkspace.blocking ? "warn" : "info"}
+            className="mb-3"
+          />
+        </div>
+      )}
+
+      {/* Guard in the hosted box for this tool, as served (lane HOOKS). */}
+      {!sandboxManaged && sandboxOn && hookLine && (
+        <div data-testid="new-terminal-hosted-hooks">
+          <NeedsSettingNotice text={hookLine.message} technical={hookLine.technical} tone={hookLine.gated ? "info" : "warn"} className="mb-3" />
+        </div>
+      )}
+
+      {/* The hosted box's own network at the configured tier, as served. */}
+      {!sandboxManaged && sandboxOn && networkNotes.length > 0 && (
+        <div data-testid="new-terminal-hosted-network" className="mb-3 rounded-2 border border-line-2 bg-bg-2 p-2">
+          <p className="mb-1 text-[11px] font-medium text-fg-2">The box&apos;s network</p>
+          <ul className="list-disc pl-4 text-[10.5px] leading-relaxed text-fg-2">
+            {networkNotes.map((n) => (
+              <li key={n}>{n}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* The sandbox setup panel (sandbox installation lifecycle plan
           section 3.7), a compgen row of the same module, inline under the
           picker once the person asks. A setup step's terminal opens in the
@@ -2290,29 +2465,44 @@ export function NewTerminalDialog({
             onChange={(e) => setWorkspaceSource(e.target.value)}
             className="w-full rounded-2 border bg-bg-0 px-2 py-1.5 text-[12px] text-fg-1"
           >
-            {(sandboxProbe?.sources ?? []).map((s) => (
-              // Native <option> - title= stays (React tooltip can't render
-              // inside the browser-owned select popup), same convention as
-              // the project-root optgroups above.
-              <option
-                key={s.id}
-                value={s.id}
-                disabled={!s.available}
-                title={
-                  s.available
-                    ? SANDBOX_SOURCE_LABELS[s.id] ?? s.id
-                    : s.reason || "not available"
-                }
-              >
-                {SANDBOX_SOURCE_LABELS[s.id] ?? s.id}
-                {s.available ? "" : " (unavailable)"}
+            {/* A source the chosen row does not take now reads with the
+                row's own reason (sandboxSourceOptions); one it never takes
+                reads as not offered there. Native <option> - title= stays
+                (React tooltip can't render inside the browser-owned select
+                popup), same convention as the project-root optgroups above. */}
+            {sandboxSourceOptions(chosenRow, sandboxProbe?.sources).map((o) => (
+              <option key={o.id} value={o.id} disabled={o.disabled} title={o.title}>
+                {o.label}
               </option>
             ))}
           </select>
+          {sandboxSourceNotes(chosenRow, sandboxProbe?.sources).map((line) => (
+            <p key={line} className="mt-1 text-[10.5px] leading-relaxed text-fg-3" data-testid="new-terminal-sandbox-source-note">
+              {line}
+            </p>
+          ))}
           {sandboxSourceUnavailable && (
             <p className="mt-1 text-[10.5px] leading-relaxed text-warn">
-              {selectedSourceAvail?.reason || "This workspace source isn't available."}
+              {rowSourceOffered(chosenRow, workspaceSource)
+                ? selectedSourceAvail?.reason || "This workspace source isn't available."
+                : startBlock.message}
             </p>
+          )}
+          {cloneConsentHeld && workspaceSource !== "clone-remote" && chosenRow?.location === "remote" && (
+            <>
+              <HostedUploadConsent
+                row={chosenRow}
+                folder={effectiveRoot}
+                refreshKey={cloneConsentRefresh}
+                onAgreed={() => {
+                  setCloneConsentHeld(false);
+                  void submit();
+                }}
+              />
+              <p className="mt-1 text-[10.5px] leading-relaxed text-warn" data-testid="hosted-upload-consent-held">
+                Start is waiting for your agreement above; agreeing starts the terminal.
+              </p>
+            </>
           )}
           {workspaceSource === "clone-remote" && (
             <>
@@ -2332,8 +2522,35 @@ export function NewTerminalDialog({
               />
               {sandboxRemoteURLMissing && (
                 <p className="mt-1 text-[10.5px] leading-relaxed text-warn">
-                  Enter a remote URL - the daemon will run `git clone` with your
-                  ambient auth into a managed workspace.
+                  {chosenRow?.location === "remote"
+                    ? "Enter the address of the repository to clone."
+                    : "Enter a remote URL - the daemon will run `git clone` with your ambient auth into a managed workspace."}
+                </p>
+              )}
+              {startBlock.remoteURLProblem && (
+                <p className="mt-1 text-[10.5px] leading-relaxed text-warn" data-testid="new-terminal-sandbox-remote-invalid">
+                  {startBlock.remoteURLProblem}
+                </p>
+              )}
+              {chosenRow?.location === "remote" && (
+                <HostedCloneRemoteExtras
+                  row={chosenRow}
+                  url={workspaceRemote}
+                  folder={effectiveRoot}
+                  picked={cloneWherePick}
+                  onPick={setCloneWherePick}
+                  urlProblem={startBlock.remoteURLProblem}
+                  refreshKey={cloneConsentRefresh}
+                  onAgreed={() => {
+                    if (!cloneConsentHeld) return;
+                    setCloneConsentHeld(false);
+                    void submit();
+                  }}
+                />
+              )}
+              {cloneConsentHeld && (
+                <p className="mt-1 text-[10.5px] leading-relaxed text-warn" data-testid="hosted-clone-consent-held">
+                  Start is waiting for your agreement above; agreeing starts the terminal.
                 </p>
               )}
             </>

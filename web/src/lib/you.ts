@@ -393,14 +393,26 @@ export type OrgBudgetWindowLike = {
   enforcement: string;
   level: string;
   subject?: string;
+  /** What the cap does on THIS machine (internal/budgetwarn EffectOf);
+   *  absent from an older daemon. */
+  effect?: string;
 };
+
+/** hardRule names what a hard cap does on this machine: an org cap set to
+ *  block reads as a warning on a machine that cannot block (observe mode,
+ *  guard off), never as "blocks" (2026-11-18). */
+function hardRule(effect: string | undefined): string {
+  if (effect === undefined || effect === "blocks") return "blocks at the cap";
+  if (effect === "blocks_proxied") return "blocks proxied requests at the cap";
+  return "set to block, warns only on this machine";
+}
 
 /** orgBudgetLine reads one org budget window as a share of its cap. It never
  *  prints an amount: the amounts follow the organization's display choice and
  *  the share is true in either. */
 export function orgBudgetLine(w: OrgBudgetWindowLike): { label: string; value: string; tone: "neutral" | "warn" | "danger" } {
   const pct = Number.isFinite(w.ratio) ? `${Math.round(w.ratio * 100)}% of the cap` : "not measured";
-  const rule = w.enforcement === "hard" ? "blocks at the cap" : w.enforcement === "soft" ? "warns at the cap" : "report only";
+  const rule = w.enforcement === "hard" ? hardRule(w.effect) : w.enforcement === "soft" ? "warns at the cap" : "report only";
   const who = w.subject ? ` (${w.subject.replace(":", " ")})` : "";
   return {
     label: `${w.window || w.period}${who}`,
@@ -413,6 +425,9 @@ export type GuardBudgetLike = {
   session_usd: number;
   daily_usd: number;
   hard: boolean;
+  /** The guard's mode (off / observe / enforce); a hard cap blocks only in
+   *  enforce mode. Absent from an older daemon. */
+  guard_mode?: string;
   spend_today_usd: number;
   session_tokens?: number;
   daily_tokens?: number;
@@ -432,7 +447,8 @@ export function guardBudgetLines(
   fmtTok: (n: number) => string,
 ): { label: string; value: string }[] {
   const out: { label: string; value: string }[] = [];
-  const rule = g.hard ? "blocks at the cap" : "warns at the cap";
+  const enforcing = g.guard_mode === undefined || g.guard_mode === "enforce";
+  const rule = !g.hard ? "warns at the cap" : enforcing ? "blocks at the cap" : "set to block, warns only on this machine";
   if (dollars) {
     if (g.daily_usd > 0) out.push({ label: "Daily", value: `${fmtUSD(g.spend_today_usd)} of ${fmtUSD(g.daily_usd)}, ${rule}` });
     if (g.session_usd > 0) out.push({ label: "Per session", value: `${fmtUSD(g.session_usd)} cap, ${rule}` });

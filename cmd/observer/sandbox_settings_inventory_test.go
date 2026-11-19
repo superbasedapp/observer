@@ -85,6 +85,10 @@ var sandboxSettingsInventory = map[string]adminHome{
 	// F-020 A13). Its org home (a nodegov pin and a posture axis) is
 	// tracker F-002, left to a later lane.
 	"seccomp": {Owed: "F-002: a node.governance pin and a sandboxselect posture axis, a later lane"},
+
+	// Decision SBXD-2 (lane COPIES), pinnable like workspace_retention_days.
+	"returned_copy_retention_days": {Pin: "terminal.sandbox.returned_copy_retention_days"},
+
 	// The strace switch (lane ptrace, PT-96): it widens what a box may do
 	// (PTRACE_SEIZE), so an organization can never raise it, and it is set
 	// only from the dashboard on this machine.

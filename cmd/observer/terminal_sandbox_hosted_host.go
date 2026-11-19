@@ -225,6 +225,23 @@ type hostedRun struct {
 	// list; holding is not yet held, FX6-R4).
 	// Together they decide the helper's exit code (hostedEndCode).
 	agentExited, heldAtEnd bool
+	// uploadBase is where the box's work starts, measured when the files
+	// were sent (lane RETURNS): kept beside the saved diff so the
+	// Terminals page can open it as a branch only when that start is a
+	// commit (hostedDiffRecord).
+	uploadBase hostedDiffBase
+	// install is the install way chooseToolInstall picked for the agent
+	// tool's first start (nil: a template holds it, or no install is
+	// planned).
+	install *sandboxremote.InstallChoice
+	// cloneFailed: the core box-side clone did not leave a repository in the
+	// box (no git, the clone failed), so the teardown has nothing to bring
+	// back and says so instead of a failed diff (lane CLONE).
+	cloneFailed bool
+	// guardHooksErr: the plan asked for guard's hooks in the box and the
+	// seed failed (lane HOOKS, terminal_sandbox_hosted_guardhooks_linux.go),
+	// so runBox refuses before the agent starts.
+	guardHooksErr error
 }
 
 // rlog returns the run's kept relay log (nil when it cannot be opened).
@@ -248,6 +265,9 @@ func (r *hostedRun) fail(format string, a ...any) int {
 
 // drive runs the whole lifecycle and returns the run's exit status.
 func (r *hostedRun) drive(ctx context.Context) int {
+	// A clone this machine made for the run (SBXD-5) never outlives it,
+	// whatever the run's end; the upload removes it earlier.
+	defer r.removeHomeClone()
 	v, ok := sandboxremote.VendorFor(r.plan.Provider)
 	reg, regOK := hostedVendorRegs[r.plan.Provider]
 	if !ok || !regOK {
@@ -292,6 +312,9 @@ func (r *hostedRun) drive(ctx context.Context) int {
 		}
 		defer hostedCredTeardownHook(r.plan)
 	}
+	// The tool's own saved keys are read once per run and dropped at its
+	// end (decision SBXD-4 (b)).
+	defer hostedToolKeysCache.Delete(r.plan.RunID)
 	if err := r.create(ctx); err != nil {
 		return r.fail("%v", err)
 	}
@@ -338,6 +361,7 @@ func (r *hostedRun) create(ctx context.Context) error {
 	spec := sandboxremote.BoxSpec{
 		RunID: r.plan.RunID, Labels: map[string]string{sandboxremote.LabelKey: r.plan.RunID},
 		Template: r.plan.Template, TimeoutSeconds: minutes * 60, Tier: vocab.Tier(r.plan.Tier), Region: r.plan.Region,
+		DenyCIDRs: r.plan.DenyCIDRs,
 	}
 	info, err := r.client.Create(ctx, spec)
 	switch {
@@ -358,7 +382,8 @@ func (r *hostedRun) create(ctx context.Context) error {
 			if rule == "" {
 				rule = "the configured template is not one " + r.vendor.Name + " can start"
 			}
-			return fmt.Errorf("%s: %s refused the template %q: %s: %w", verdictHostedTool, r.vendor.Name, r.plan.Template, rule, err)
+			return hostedPlainFailure(fmt.Sprintf("%s could not start the template %q, so no box was made and nothing was charged. Name a template %s can start in Terminals > Settings > Hosted sandboxes.", r.vendor.Name, r.plan.Template, r.vendor.Name),
+				fmt.Sprintf("%s: %s: %v", verdictHostedTool, rule, err))
 		}
 		return fmt.Errorf("create the box: %w", err)
 	}
@@ -557,10 +582,12 @@ func (r *hostedRun) prepare(ctx context.Context) error {
 		}
 		r.notReady = false
 	}
-	if remoteClone {
-		// A box-side clone is the run's first exec (design 4.3, row F4a):
-		// before the binary, the setup and every other step, so no Observer
-		// code runs while the org's repository provider may be attached.
+	coreClone := remoteClone && hostedBoxCloneIsCore(r.vendor)
+	if remoteClone && !coreClone {
+		// A row's own clone argv is the run's first exec (design 4.3, row
+		// F4a): before the binary, the setup and every other step, so no
+		// Observer code runs while the org's repository provider may be
+		// attached.
 		if err := r.boxClone(ctx); err != nil {
 			return err
 		}
@@ -578,25 +605,37 @@ func (r *hostedRun) prepare(ctx context.Context) error {
 		return err
 	}
 	if remoteClone {
-		return r.prepareAfterClone(ctx, owner)
+		return r.prepareRemoteClone(ctx, owner, coreClone)
+	}
+	// How the agent tool gets into the box, decided now that the box is up
+	// and before anything is uploaded (lane UX, item H4).
+	if err := r.chooseToolInstall(ctx); err != nil {
+		return err
 	}
 	// The workspace as consented: the same scope, re-listed now.
-	cands, repo, err := hostedListWorkspace(ctx, r.plan.Root)
-	if err != nil {
-		return err
-	}
 	home, _ := os.UserHomeDir()
-	m, err := sandboxremote.PlanManifest(sandboxremote.ManifestInput{Root: r.plan.Root, Home: filepath.ToSlash(home), Repository: repo, Candidates: cands})
+	m, err := hostedPlanUpload(ctx, r.uploadRoot(), filepath.ToSlash(home), r.plan.UploadListing)
 	if err != nil {
 		return err
 	}
-	if m.ScopeKey != r.plan.ScopeKey {
+	if !r.uploadScopeOK(m) {
+		if m.NonRepository {
+			return errors.New("the folder's files changed since consent (a file was added or removed); launch again to review them")
+		}
 		return errors.New("the upload scope changed since consent; launch again")
 	}
+	// Where the box's work starts, read now, just before the files are read
+	// for the upload (lane RETURNS): the folder's commit and whether it was
+	// clean. It never fails the launch.
+	r.uploadBase = hostedMeasureUploadBase(ctx, r.uploadRoot(), len(m.Excluded))
+	// A folder that is not a repository has no commit to open a branch on:
+	// its diff comes back as a file only (SBXD-8).
+	r.uploadBase.NoRepository = m.NonRepository
+	r.homeCloneUploading(m)
 	var files []sandboxremote.UploadFile
 	var execs []string
 	for _, f := range m.Files {
-		local := filepath.Join(r.plan.Root, filepath.FromSlash(f.Path))
+		local := filepath.Join(r.uploadRoot(), filepath.FromSlash(f.Path))
 		fi, err := os.Lstat(local)
 		if err != nil || !fi.Mode().IsRegular() {
 			continue // removed or changed shape since the listing: never followed
@@ -613,6 +652,7 @@ func (r *hostedRun) prepare(ctx context.Context) error {
 			return fmt.Errorf("upload the workspace: %w", err)
 		}
 	}
+	r.homeCloneUploaded()
 	if err := r.uploadBoxBinary(ctx); err != nil {
 		return err
 	}
@@ -636,24 +676,111 @@ func (r *hostedRun) prepare(ctx context.Context) error {
 	}
 	// A fresh baseline repository of the uploaded tree (history never
 	// leaves the machine), so the box's staged diff is exactly its changes.
-	_ = r.execOK(ctx, "baseline repository", sandboxremote.ExecSpec{Cwd: ws, Argv: []string{
-		"sh", "-c",
-		`command -v git >/dev/null 2>&1 || exit 0; git init -q && git add -A && git -c user.email=observer@localhost -c user.name=observer commit -q --allow-empty -m observer-baseline`,
-	}})
-	if len(r.vendor.Deliveries) > 0 {
+	// A folder that is not a repository gets the listing's ignore set in the
+	// box's own exclude file (SBXD-8), so what the agent installs or builds
+	// there stays out of the diff as it stayed out of the upload.
+	_ = r.execOK(ctx, "baseline repository", sandboxremote.ExecSpec{Cwd: ws, Argv: hostedBaselineArgv(m.NonRepository, r.plan.UploadListing.Ignore)})
+	// The baseline commit's name, read now, before the agent runs, so the
+	// saved diff can be taken against it and hold the agent's own commits
+	// ([terminal.sandbox.hosted].diff_against, default baseline).
+	r.recordUploadBaseline(ctx, ws)
+	if hostedGuestKeepsBaseline(r.vendor) {
 		// A row that returns the box's commits as a bundle records the
 		// baseline the bundle starts from (design 4.6).
 		if err := r.execOK(ctx, "record the return baseline", sandboxremote.ExecSpec{Cwd: ws, Argv: []string{r.layout.Binary, "sandbox-guest", guestBaselineFlagCore}}); err != nil {
 			return err
 		}
 	}
-	if len(r.plan.ToolInstall) > 0 {
-		r.say("installing %s from its vendor (first start, internet tier)", r.plan.Tool)
-		if err := r.execOK(ctx, "install the agent tool", sandboxremote.ExecSpec{Argv: r.plan.ToolInstall, Cwd: r.layout.Home}); err != nil {
-			return fmt.Errorf("%s: %w", verdictHostedTool, err)
-		}
+	return r.installTool(ctx)
+}
+
+// hostedPlanInstallChoices are the plan's install ways: ToolInstalls, or
+// the one argv of a plan written before them (its argv[0] the only need).
+func hostedPlanInstallChoices(plan hostedPlanFile) []sandboxremote.InstallChoice {
+	if len(plan.ToolInstalls) > 0 {
+		return plan.ToolInstalls
+	}
+	if len(plan.ToolInstall) > 0 {
+		return []sandboxremote.InstallChoice{{Channel: "npm", Argv: plan.ToolInstall, Needs: []string{plan.ToolInstall[0]}}}
 	}
 	return nil
+}
+
+// prepareRemoteClone is prepare's box-side clone half, after the directories
+// and the architecture check: the core clone (with the agent tool's install
+// way chosen first), then what every clone run does after it, then the tool
+// install (item H4, lane CLONE).
+func (r *hostedRun) prepareRemoteClone(ctx context.Context, owner string, coreClone bool) error {
+	// Where the repository is cloned and why (SBXD-5).
+	r.sayCloneWhere()
+	if coreClone {
+		// How the agent tool gets into the box (item H4), checked before
+		// the clone as on an upload run, so a box that can run no install
+		// way costs no clone.
+		if err := r.chooseToolInstall(ctx); err != nil {
+			return err
+		}
+		// The core box-side clone (lane CLONE): into the workspace the
+		// setup just made the box user's, after the architecture check
+		// and before the binary, so a box with no git or a repository it
+		// cannot clone costs no upload.
+		if err := r.coreBoxClone(ctx); err != nil {
+			return err
+		}
+	}
+	if err := r.prepareAfterClone(ctx, owner); err != nil {
+		return err
+	}
+	// A vendor row's box holds no agent tool of its own unless a
+	// template does: install it at first start as an upload run does
+	// (nil install: a template holds it, or a row with its own clone).
+	return r.installTool(ctx)
+}
+
+// chooseToolInstall picks the install way of the agent tool the box can
+// run: one exec lists which of the programs the ways need are on the box's
+// PATH (sandboxremote.InstallProbeScript, the names as arguments), and the
+// first way whose programs are all there is kept for installTool. A box
+// with none of them refuses the run here, before the workspace is
+// uploaded, in plain words (the Daytona live run of 2026-11-18 failed only
+// after the upload, on an npm the image does not have).
+func (r *hostedRun) chooseToolInstall(ctx context.Context) error {
+	choices := hostedPlanInstallChoices(r.plan)
+	if len(choices) == 0 {
+		return nil
+	}
+	progs := sandboxremote.InstallProbePrograms(choices)
+	argv := append([]string{"sh", "-c", sandboxremote.InstallProbeScript, "sh"}, progs...)
+	out, code, err := hostedExecOutput(ctx, r.client, r.rec.VendorID, argv, r.boxEnv(), 4096)
+	if err != nil || code != 0 {
+		return hostedPlainFailure("Observer could not check how to install "+integration.DisplayName(r.plan.Tool)+" in the box, so nothing was uploaded.", fmt.Sprintf("%s: the install check exited %d: %v", verdictHostedTool, code, err))
+	}
+	pick, lacks, ok := sandboxremote.PickInstall(choices, sandboxremote.ParseInstallProbe(string(out), progs))
+	if !ok {
+		msg, tech := sandboxremote.BoxLacksRefusal(integration.DisplayName(r.plan.Tool), r.vendor, choices, lacks)
+		return hostedPlainFailure(msg+" Nothing was uploaded.", verdictHostedTool+": "+tech)
+	}
+	r.install = &pick
+	return nil
+}
+
+// installTool runs the install way chooseToolInstall picked.
+func (r *hostedRun) installTool(ctx context.Context) error {
+	if r.install == nil {
+		return nil
+	}
+	name := integration.DisplayName(r.plan.Tool)
+	r.say("installing %s from its vendor (first start)", name)
+	if err := r.execOK(ctx, "install the agent tool", sandboxremote.ExecSpec{Argv: r.install.Argv, Cwd: r.layout.Home}); err != nil {
+		return hostedPlainFailure("Installing "+name+" in the box failed, so the agent did not start. Name a template that holds "+name+" for "+r.vendor.Name+" in Terminals > Settings > Hosted sandboxes, or try again.", fmt.Sprintf("%s: %s install: %v", verdictHostedTool, r.install.Channel, err))
+	}
+	return nil
+}
+
+// hostedPlainFailure is a run's failure as the terminal prints it: the plain
+// sentence first, the internal detail after it, marked as such.
+func hostedPlainFailure(message, technical string) error {
+	return errors.New(message + " (technical details: " + technical + ")")
 }
 
 // checkArch refuses a box whose architecture the in-box binary does not
@@ -1060,7 +1187,10 @@ func (r *hostedRun) proxyPort() int {
 }
 
 // agentEnv is the agent's environment: the base, the sandbox marker, and
-// under in_box_api_key custody the provider keys the launch holds.
+// under in_box_api_key custody the provider keys the launch holds (the
+// daemon's environment first, then a key the person stored, for the
+// providers the tool can use, gap H3; then, for a tool opted in, a key it
+// saved in its own key file, decision SBXD-4 (b)).
 func (r *hostedRun) agentEnv() map[string]string {
 	env := r.boxEnv()
 	env[sandboxEnvMarker] = "1"
@@ -1073,6 +1203,10 @@ func (r *hostedRun) agentEnv() map[string]string {
 			env[k] = v
 		}
 	}
+	if f := hostedCredInBoxKeysHook; f != nil && len(r.plan.ForwardEnv) > 0 {
+		f(r.plan, env)
+	}
+	hostedInBoxToolKeys(r.plan, env)
 	if f := hostedCredEnvHook; f != nil {
 		f(r.plan, env)
 	}
@@ -1085,6 +1219,9 @@ func (r *hostedRun) runBox(ctx context.Context) (int, error) {
 		if err := r.prepare(ctx); err != nil {
 			return 1, err
 		}
+	}
+	if r.guardHooksErr != nil {
+		return 1, r.guardHooksErr // the box was to get guard's hooks and did not (lane HOOKS)
 	}
 	record, err := os.ReadFile(filepath.Join(r.h.SockDir, sandboxrelayd.BoxRecordName)) //nolint:gosec // G304: the host services' own per-run socket dir
 	if err != nil {
@@ -1459,7 +1596,11 @@ func (r *hostedRun) runGuestPTY(ctx context.Context, argv []string) (int, error)
 	}
 	full := append(append(head, "--"), argv...)
 	env := r.agentEnv()
-	p, err := r.client.Exec(ctx, r.rec.VendorID, sandboxremote.ExecSpec{Argv: full, Env: env, Cwd: r.layout.Workspace, Stdin: true})
+	// The helper's stderr and its mux log lines are kept in the run's relay
+	// log (D7): they carry its end record, which says which side ended the
+	// agent's stream.
+	pend := &hostedPTYEnd{log: r.rlog()}
+	p, err := r.client.Exec(ctx, r.rec.VendorID, sandboxremote.ExecSpec{Argv: full, Env: env, Cwd: r.layout.Workspace, Stdin: true, Stderr: pend})
 	if err != nil {
 		return 1, fmt.Errorf("start the agent: %w", err)
 	}
@@ -1470,6 +1611,7 @@ func (r *hostedRun) runGuestPTY(ctx context.Context, argv []string) (int, error)
 		Dial: func(context.Context, string) (io.ReadWriteCloser, error) {
 			return nil, errors.New("no connections on the PTY stream")
 		},
+		Log: func(l string) { pend.note("PTY helper: " + l) },
 	}
 	if keep {
 		observerDir, runID := r.plan.ObserverDir, r.plan.RunID
@@ -1508,6 +1650,7 @@ func (r *hostedRun) runGuestPTY(ctx context.Context, argv []string) (int, error)
 		hostedKill(ctx, p)
 		return 129, fmt.Errorf("stopped (%s)", reason)
 	}
+	r.attributePTYEnd(h, pend, code, werr)
 	if werr != nil {
 		// In-run reattach (lane LEFT-SBX): a keeping guest helper still
 		// holds the agent, so the terminal re-opens over a new exec with the
@@ -1668,6 +1811,10 @@ const hostedStageNoGit = 3
 // that cannot be saved is never dropped silently (live run 2, finding F-A):
 // the reason is said on the terminal and kept on the run record.
 func (r *hostedRun) saveStagedDiff(ctx context.Context) {
+	if r.cloneFailed {
+		r.say("nothing to bring back: the box never got the repository")
+		return
+	}
 	out, code, err := hostedExecOutputIn(ctx, r.client, r.rec.VendorID, sandboxremote.ExecSpec{
 		Cwd: r.layout.Workspace, Argv: []string{"sh", "-c", hostedStageScript}, Env: r.boxEnv(),
 	}, 64<<10)
@@ -1685,21 +1832,41 @@ func (r *hostedRun) saveStagedDiff(ctx context.Context) {
 	// In the workspace: the guest one-shot runs git in its working directory
 	// (live run 2026-10-23, finding F4: with no working directory it ran in
 	// HOME, failed, and no diff came home).
-	out, code, err = hostedExecOutputIn(ctx, r.client, r.rec.VendorID, sandboxremote.ExecSpec{
+	// On a core box-side clone run the diff is against the commit the box
+	// cloned (lane CLONE), and on an upload run against the baseline commit
+	// the upload made, so commits the agent made are in it too.
+	guest := sandboxremote.ExecSpec{
 		Argv: []string{r.layout.Binary, "sandbox-guest", sandbox.GuestStagedDiff, sandbox.StagedDiffAll}, Env: r.boxEnv(), Cwd: r.layout.Workspace,
-	}, hostedMaxDiff)
+	}
+	guestOK := func(c int) bool { return c == 0 || c == sandbox.StagedDiffTruncatedExit }
+	spec, isDiff, fromStart := r.stagedDiffSpec(guest, guestOK)
+	out, code, err = hostedExecOutputIn(ctx, r.client, r.rec.VendorID, spec, hostedMaxDiff)
+	if fromStart && (err != nil || !isDiff(code)) {
+		// The diff against the start did not come (the agent removed the
+		// box's repository or its baseline, or the diff is over the cap):
+		// the guest's capture against HEAD, as before, so nothing is lost;
+		// such a diff with commits of the agent's is offered as a file only.
+		why := "it exited " + strconv.Itoa(code)
+		if err != nil {
+			why = err.Error()
+		}
+		r.say("the diff against the box's starting commit was not read (%s); saving the diff against the box's last commit instead", sandboxremote.Redact(why, r.cred.Secrets()))
+		spec, isDiff, fromStart = guest, guestOK, false
+		out, code, err = hostedExecOutputIn(ctx, r.client, r.rec.VendorID, spec, hostedMaxDiff)
+	}
 	switch {
 	case err != nil:
 		r.diffNotSaved("reading the staged diff failed: %v", err)
 		return
-	case code != 0 && code != sandbox.StagedDiffTruncatedExit:
+	case !isDiff(code):
 		r.diffNotSaved("the staged diff exited %d: %s", code, hostedFirstLine(out))
 		return
 	case len(out) == 0:
 		r.say("the box left the workspace unchanged (no diff to save)")
 		return
 	}
-	dir := filepath.Join(hostedStateDir(r.plan.ObserverDir), "returns")
+	truncated := code == sandbox.StagedDiffTruncatedExit
+	dir := hostedReturnsDir(r.plan.ObserverDir)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		r.diffNotSaved("the returns directory: %v", err)
 		return
@@ -1709,7 +1876,72 @@ func (r *hostedRun) saveStagedDiff(ctx context.Context) {
 		r.diffNotSaved("writing %s: %v", p, err)
 		return
 	}
-	r.say("the box's changes are saved as a diff at %s (not applied; review, then `git apply` it in %s)", p, hostedDiffApplyWhere(r.plan))
+	// The facts that say whether the diff opens as a branch (lane RETURNS):
+	// a record that cannot be written leaves the diff offered as a file.
+	base := r.diffBase(ctx, truncated, fromStart)
+	_ = writeHostedDiffRecord(r.plan.ObserverDir, hostedDiffRecord{
+		V: hostedDiffRecordVersion, RunID: r.plan.RunID, Root: r.plan.Root, Provider: r.plan.Provider,
+		CloneURL: r.plan.CloneURL, SavedAt: r.now().UTC(), Base: base,
+	})
+	if truncated {
+		r.say("the box's diff was cut at its size limit (%d MiB), so it is not the whole change", sandbox.MaxStagedDiff>>20)
+	}
+	r.say("the box's changes are saved as a diff at %s (not applied). Open it as a branch, or review it, under Terminals > Settings, Changes from sandboxed runs; or `git apply` it yourself in %s", p, hostedDiffApplyWhereRun(r))
+}
+
+// hostedAgentCommitsScript counts the box's commits on top of a starting
+// point ($1, or the root when it is empty); exit 3 when the box has no git.
+const hostedAgentCommitsScript = `command -v git >/dev/null 2>&1 || exit 3; if [ -n "$1" ]; then git rev-list --count "$1..HEAD"; else git rev-list --count HEAD; fi`
+
+// diffBase is the saved diff's start: the upload's measurement, or for a
+// box-side clone the commit the plan says it cloned, with the commits the
+// agent made in the box counted there (the box's answer can only make a
+// diff less trusted, never more: a count above zero, or none, offers the
+// diff as a file only, unless fromStart says the diff was taken against
+// the box's starting commit and so holds those commits).
+func (r *hostedRun) diffBase(ctx context.Context, truncated, fromStart bool) hostedDiffBase {
+	b := r.uploadBase
+	// An upload run's commits are counted from its baseline commit when it
+	// was recorded, else from the root.
+	from := r.uploadBaseline()
+	if r.plan.Delivery == hostedDeliveryRemoteClone {
+		b = hostedDiffBase{RemoteClone: true, Commit: hostedDiffCloneCommit(r.plan)}
+		if _, c := r.cloneReturn(); c != "" {
+			// The commit the box cloned (lane CLONE's record).
+			b.Commit = c
+		}
+		from = b.Commit
+		if from == "" {
+			b.AgentCommits = -1
+			b.Truncated = truncated
+			return b
+		}
+		if fromStart {
+			// A vendor row's diff is taken against that commit
+			// (stagedDiffSpec), so the agent's own commits are in it and
+			// the start is exactly the cloned commit.
+			b.Truncated, b.AgentCommits, b.DiffFromStart = truncated, 0, true
+			return b
+		}
+	}
+	b.Truncated, b.AgentCommits, b.DiffFromStart = truncated, -1, fromStart
+	out, code, err := hostedExecOutputIn(ctx, r.client, r.rec.VendorID, sandboxremote.ExecSpec{
+		Cwd: r.layout.Workspace, Argv: []string{"sh", "-c", hostedAgentCommitsScript, "sh", from}, Env: r.boxEnv(),
+	}, 4096)
+	if err != nil || code != 0 {
+		return b
+	}
+	n, perr := strconv.Atoi(strings.TrimSpace(string(out)))
+	if perr != nil || n < 0 {
+		return b
+	}
+	if from == "" {
+		// The root is the baseline commit the upload made, so it is not the
+		// agent's.
+		n--
+	}
+	b.AgentCommits = max(n, 0)
+	return b
 }
 
 // hostedDiffApplyWhere is where a run's saved diff applies (F-P6-7): the
@@ -1878,6 +2110,8 @@ const hostedSeedStateScript = `[ -e "$1" ] || { umask 077; printf '%s' "$2" > "$
 // machine's state when it has them. A box that already has the file is
 // left as it is; a failed write is said, never fatal.
 func (r *hostedRun) seedToolState(ctx context.Context) {
+	r.seedBoxHooks(ctx) // guard's hooks in the box when the plan says so (lane HOOKS)
+	r.seedLoginAccessToken(ctx)
 	capab, ok := integration.For(r.plan.Tool)
 	if !ok || capab.Sandbox.ConfigHome == nil {
 		return

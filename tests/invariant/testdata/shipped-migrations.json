@@ -5,8 +5,8 @@
       "name": "archive",
       "dir": "internal/archivestore/migrations",
       "head": 3,
-      "ref": "v1.39.0",
-      "commit": "dce23d60e45025e59d5d621fecb99c25124114d8",
+      "ref": "v1.40.0",
+      "commit": "4b1c7046be7c854d2fa9b2b5e8482106617b7f66",
       "steps": [
         {
           "file": "001_archive_codeintel.sql",
@@ -26,8 +26,8 @@
       "name": "cloud",
       "dir": "internal/cloudserver/db/migrations",
       "head": 150,
-      "ref": "v1.39.0",
-      "commit": "dce23d60e45025e59d5d621fecb99c25124114d8",
+      "ref": "v1.40.0",
+      "commit": "4b1c7046be7c854d2fa9b2b5e8482106617b7f66",
       "steps": [
         {
           "file": "0001_roles.sql",
@@ -447,8 +447,8 @@
       "name": "edge-wal",
       "dir": "internal/edge/wal/migrations",
       "head": 1,
-      "ref": "v1.39.0",
-      "commit": "dce23d60e45025e59d5d621fecb99c25124114d8",
+      "ref": "v1.40.0",
+      "commit": "4b1c7046be7c854d2fa9b2b5e8482106617b7f66",
       "steps": [
         {
           "file": "001_edge_wal.sql",
@@ -460,8 +460,8 @@
       "name": "node",
       "dir": "internal/db/migrations",
       "head": 255,
-      "ref": "v1.39.0",
-      "commit": "dce23d60e45025e59d5d621fecb99c25124114d8",
+      "ref": "v1.40.0",
+      "commit": "4b1c7046be7c854d2fa9b2b5e8482106617b7f66",
       "steps": [
         {
           "file": "001_initial.sql",
@@ -1369,8 +1369,8 @@
       "name": "org-pg",
       "dir": "internal/orgserver/db/pgmigrations",
       "head": 479,
-      "ref": "v1.39.0",
-      "commit": "dce23d60e45025e59d5d621fecb99c25124114d8",
+      "ref": "v1.40.0",
+      "commit": "4b1c7046be7c854d2fa9b2b5e8482106617b7f66",
       "steps": [
         {
           "file": "0001_baseline.sql",
@@ -2310,8 +2310,8 @@
       "name": "org-sqlite",
       "dir": "internal/orgserver/db/migrations",
       "head": 316,
-      "ref": "v1.39.0",
-      "commit": "dce23d60e45025e59d5d621fecb99c25124114d8",
+      "ref": "v1.40.0",
+      "commit": "4b1c7046be7c854d2fa9b2b5e8482106617b7f66",
       "steps": [
         {
           "file": "001_initial.sql",

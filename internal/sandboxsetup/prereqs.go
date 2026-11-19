@@ -61,22 +61,24 @@ const (
 
 // Docs anchors.
 const (
-	docsBwrap       = "sandboxed-terminals.md#enabling-it"
-	docsOCI         = "sandboxed-terminals.md#which-engine-which-socket"
-	docsOCIImage    = "sandboxed-terminals.md#the-default-image-on-this-machine-pull-and-revoked-images"
-	docsRunsc       = "sandboxed-terminals.md#gvisor-oci-runsc-beta"
-	docsLandlock    = "sandboxed-terminals.md#landlock-only-process_lite-beta"
-	docsVM          = "sandboxed-terminals.md#microvm-sandboxes-cloud-hypervisor-beta"
-	docsVMProbe     = "sandboxed-terminals.md#the-probe"
-	docsVMImages    = "sandboxed-terminals.md#image-set-and-import"
-	docsMXC         = "sandboxed-terminals.md#native-windows-mxc-processcontainer-mxc-process-beta"
-	docsMXCFiles    = "sandboxed-terminals.md#the-mxc-files-as-a-signed-kind"
-	docsMac         = "sandboxed-terminals.md#macos-sandboxes-beta-seatbelt-and-apple-container"
-	docsHosted      = "sandboxed-terminals.md#hosted-sandboxes-beta-e2b-modal-and-vercel-sandbox"
-	docsOpenShell   = "sandbox-openshell.md#what-you-need"
-	docsOpenShellGw = "sandbox-openshell.md#managed-gateway-mode-the-default"
-	docsOrgShell    = "sandbox-openshell-org.md#turning-it-on"
-	docsComponents  = "sandboxed-terminals.md#the-isolation-engine-component-isolation"
+	docsBwrap    = "sandboxed-terminals.md#enabling-it"
+	docsOCI      = "sandboxed-terminals.md#which-engine-which-socket"
+	docsOCIImage = "sandboxed-terminals.md#the-default-image-on-this-machine-pull-and-revoked-images"
+	docsRunsc    = "sandboxed-terminals.md#gvisor-oci-runsc-beta"
+	docsLandlock = "sandboxed-terminals.md#landlock-only-process_lite-beta"
+	docsVM       = "sandboxed-terminals.md#microvm-sandboxes-cloud-hypervisor-beta"
+	docsVMProbe  = "sandboxed-terminals.md#the-probe"
+	docsVMImages = "sandboxed-terminals.md#image-set-and-import"
+	docsMXC      = "sandboxed-terminals.md#native-windows-mxc-processcontainer-mxc-process-beta"
+	docsMXCFiles = "sandboxed-terminals.md#the-mxc-files-as-a-signed-kind"
+	docsMac      = "sandboxed-terminals.md#macos-sandboxes-beta-seatbelt-and-apple-container"
+	docsHosted   = "sandboxed-terminals.md#hosted-sandboxes-beta-e2b-modal-and-vercel-sandbox"
+	// docsHostedCustody is where a hosted run's model key custody is told.
+	docsHostedCustody = "sandbox-credential-custody.md#the-four-custody-modes"
+	docsOpenShell     = "sandbox-openshell.md#what-you-need"
+	docsOpenShellGw   = "sandbox-openshell.md#managed-gateway-mode-the-default"
+	docsOrgShell      = "sandbox-openshell-org.md#turning-it-on"
+	docsComponents    = "sandboxed-terminals.md#the-isolation-engine-component-isolation"
 )
 
 // Host sets.
@@ -321,6 +323,31 @@ var prereqTable = []Prereq{
 			{Hosts: hostsLinux, Class: ClassAuto, Channel: ChHostedKey, Display: "Paste the provider's API key; it is kept in this machine's keychain and never logged.", Docs: docsHosted},
 		},
 		Shared: true,
+	},
+	{
+		// How the agent in the box gets its model key (audit
+		// hosted-sandbox-key-custody-2026-11-18). The default keeps the key on
+		// this machine, which works only when this machine adds it to the
+		// agent's requests (credential injection or the org AI gateway route);
+		// otherwise every hosted launch is refused, so the step reads missing.
+		// The remedy is the one in-place choice: put the key in the box. It
+		// changes the consent's facts, so the consent step after it reopens
+		// and the new custody is disclosed before the first upload.
+		ID: "hosted-custody", Kind: KindConfig, Label: "A way for the agent to get its model key",
+		Detect: Detect{ConfigKey: "terminal.sandbox.hosted.key_custody"},
+		Remedies: []Remedy{
+			{
+				Hosts: hostsLinux, Class: ClassAuto, Channel: ChConfig, Package: "terminal.sandbox.hosted.key_custody", Value: "in_box_api_key",
+				Action:     "Put the API key in the box",
+				Display:    "Put the model provider's API key in the box: the API key variables this machine holds are copied into the agent's environment there. Or keep the key on this machine by storing it for credential injection, or use your organization's AI gateway.",
+				Docs:       docsHostedCustody,
+				Disclosure: "The agent in the box can read the API key and use it directly, and you agree again before the next upload. This applies to every hosted provider; your organization's own sandboxes keep the key on this machine and stop being offered.",
+			},
+		},
+		Shared: true,
+		// One key ([terminal.sandbox.hosted].key_custody) for every hosted
+		// row: its undo changes it back for all of them.
+		NodeWide: true,
 	},
 	{
 		ID: "hosted-consent", Kind: KindConsent, Label: "Your consent for this provider",

@@ -521,6 +521,12 @@ const VerdictDisabledByConfig = dashapi.VerdictDisabledByConfig
 // VerdictNotInBuild re-exports dashapi.VerdictNotInBuild.
 const VerdictNotInBuild = dashapi.VerdictNotInBuild
 
+// VerdictProbeTimedOut re-exports dashapi.VerdictProbeTimedOut.
+const VerdictProbeTimedOut = dashapi.VerdictProbeTimedOut
+
+// VerdictProbeFailed re-exports dashapi.VerdictProbeFailed.
+const VerdictProbeFailed = dashapi.VerdictProbeFailed
+
 // VerdictRuntimeInitFailed re-exports dashapi.VerdictRuntimeInitFailed.
 const VerdictRuntimeInitFailed = dashapi.VerdictRuntimeInitFailed
 

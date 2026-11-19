@@ -95,8 +95,9 @@ func TestEvaluateTable(t *testing.T) {
 		wantText string
 		period   string
 	}{
-		{"hard at 100%", Window{Window: "daily", Unit: "usd", Cap: 1, Spent: 1.2, Enforcement: "hard", Thresholds: []float64{1}}, 1, "blocked until the period resets", "2026-10-31"},
-		{"hard at 90%", Window{Window: "daily", Unit: "usd", Cap: 1, Spent: 0.92, Enforcement: "hard", Thresholds: []float64{0.9, 1}}, 1, "blocked at 100%", "2026-10-31"},
+		{"hard at 100%", Window{Window: "daily", Unit: "usd", Cap: 1, Spent: 1.2, Enforcement: "hard", Thresholds: []float64{1}, GuardMode: "enforce", OrgAuthoritative: true}, 1, "blocked until the period resets", "2026-10-31"},
+		{"hard at 90%", Window{Window: "daily", Unit: "usd", Cap: 1, Spent: 0.92, Enforcement: "hard", Thresholds: []float64{0.9, 1}, GuardMode: "enforce", OrgAuthoritative: true}, 1, "blocked at 100%", "2026-10-31"},
+		{"hard at 100%, observe mode", Window{Window: "daily", Unit: "usd", Cap: 1, Spent: 1.2, Enforcement: "hard", Thresholds: []float64{1}, GuardMode: "observe", OrgAuthoritative: true}, 1, "observe mode, so requests are not blocked", "2026-10-31"},
 		{"tokens", Window{Window: "monthly", Unit: "tokens", Cap: 1_000_000, Spent: 960_000, Scope: "team:t", Enforcement: "soft", Thresholds: []float64{0.75, 0.9, 1}}, 1, "960,000 tokens of 1,000,000 tokens", "2026-10"},
 		{"empty ladder means 100% only", Window{Window: "daily", Unit: "usd", Cap: 1, Spent: 0.99, Enforcement: "soft"}, 0, "", "2026-10-31"},
 		{"zero cap is skipped", Window{Window: "daily", Unit: "usd", Cap: 0, Spent: 5}, 0, "", ""},
@@ -127,6 +128,18 @@ func TestLabels(t *testing.T) {
 	for _, c := range [][2]string{{"hard", "blocking"}, {"soft", "warning only"}, {"report", "report only"}} {
 		if got := EnforcementLabel(c[0]); got != c[1] {
 			t.Errorf("EnforcementLabel(%q) = %q want %q", c[0], got, c[1])
+		}
+	}
+	for _, c := range [][3]string{
+		{"hard", EffectBlocks, "blocking"},
+		{"hard", EffectBlocksProxied, "blocking"},
+		{"hard", EffectObserve, "warning only on this machine"},
+		{"hard", EffectGuardOff, "warning only on this machine"},
+		{"soft", EffectNone, "warning only"},
+		{"report", EffectNone, "report only"},
+	} {
+		if got := EffectiveLabel(c[0], c[1]); got != c[2] {
+			t.Errorf("EffectiveLabel(%q, %q) = %q want %q", c[0], c[1], got, c[2])
 		}
 	}
 	if Amount("tokens", 1234567) != "1,234,567 tokens" || Amount("usd", 0.5) != "$0.50" {

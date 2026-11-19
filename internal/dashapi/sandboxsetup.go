@@ -41,6 +41,10 @@ type SandboxSetupStep struct {
 	Command    string `json:"command,omitempty"`
 	Reason     string `json:"reason,omitempty"`
 	Disclosure string `json:"disclosure,omitempty"`
+	// Action is the step's button label when its class's own label would
+	// not say what it does ("Put the API key in the box"); omitted
+	// otherwise, and a surface then labels the button by class.
+	Action string `json:"action,omitempty"`
 	// After is what the person must do afterwards ("relogin", "reboot",
 	// "engine_restart", "daemon_restart").
 	After string `json:"after,omitempty"`
@@ -54,6 +58,10 @@ type SandboxSetupStep struct {
 	// Undo is offered or there is nothing to undo). The step's reason holds
 	// the sentence.
 	UndoRefused string `json:"undo_refused,omitempty"`
+	// UndoAlso is what an offered Undo changes beyond this row (a step whose
+	// one setting every hosted row reads), as a sentence the dashboard shows
+	// before the undo runs; absent otherwise.
+	UndoAlso string `json:"undo_also,omitempty"`
 	// Record is the step's latest install record (subject_kind sandbox).
 	Record *ToolInstallRecord `json:"record,omitempty"`
 	// Consent is what a pinned download shows before the click.

@@ -144,6 +144,12 @@ type Remedy struct {
 	After string
 	// Disclosure is shown before the step runs.
 	Disclosure string
+	// Value is what a ChConfig remedy writes to its key ("" writes "true",
+	// the value of the boolean keys).
+	Value string
+	// Action is the step's button label when its class's own label would
+	// not say what the step does ("" keeps the class's label).
+	Action string
 }
 
 // Detect is how a prerequisite is detected.
@@ -194,8 +200,16 @@ type Prereq struct {
 	// wins.
 	Remedies []Remedy
 	// Shared: more than one backend row lists it (one record per
-	// prerequisite id; never undone while another set-up row uses it).
+	// prerequisite id; never undone while another set-up row uses it, unless
+	// NodeWide).
 	Shared bool
+	// NodeWide: the step sets ONE value every row that lists it reads (a
+	// single config key, such as the hosted key custody), so its undo can
+	// only change it back for all of them at once. Another set-up row's use
+	// therefore does not keep it; Undo is offered and says which other rows
+	// it changes (Step.UndoAlso) before it runs (audit
+	// sandbox-terminal-gaps-2026-11-18, H12).
+	NodeWide bool
 }
 
 // Pin is one compiled download pin (pins.go, lane download).
@@ -358,6 +372,11 @@ type Step struct {
 	// the remedy's constant argv), server-side only; never from a request.
 	Package string
 	Argv    []string
+	// Value is the value a config_key step writes (Remedy.Value; "" is
+	// "true"), server-side only.
+	Value string
+	// Action is the remedy's button label ("" keeps the class's label).
+	Action string
 	// CanRun: a Run button (class auto, terminal or elevated, state
 	// missing, switches on, nothing blocked before it).
 	CanRun bool
@@ -366,6 +385,10 @@ type Step struct {
 	// UndoNote is why Undo is not offered, when a rule has a sentence for
 	// it ("" otherwise).
 	UndoNote string
+	// UndoAlso is what an offered undo of a NodeWide step changes beyond
+	// this row, as a sentence naming the other set-up rows ("" otherwise);
+	// a surface shows it before the undo runs.
+	UndoAlso string
 	// UndoRefused names the refusal (UndoRefusedLiveRuns and the rest) that
 	// keeps an undo Observer would otherwise offer ("" when Undo is offered
 	// or there is nothing to undo).

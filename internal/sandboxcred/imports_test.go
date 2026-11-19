@@ -14,6 +14,8 @@ func TestPackageImports_Bounded(t *testing.T) {
 	importpin.Check(t, importpin.Spec{
 		Forbidden:  []string{"database/sql", "net/http", "net", "os", "os/exec", "syscall", "github.com/fsnotify/fsnotify"},
 		StdlibOnly: true,
-		Reason:     "the credential injection rules are pure; the keystore, run files and proxy are injected",
+		// The pure model-key rules it re-exports (keyalias.go).
+		Allowed: []string{"github.com/marmutapp/superbased-observer/internal/sandboxkey"},
+		Reason:  "the credential injection rules are pure; the keystore, run files and proxy are injected",
 	})
 }

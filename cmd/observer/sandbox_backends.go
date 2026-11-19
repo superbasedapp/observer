@@ -391,6 +391,7 @@ func sandboxBackendListWith(cfg config.TerminalSandboxConfig, av sandbox.Availab
 			e.VersionPins = append([]string(nil), p.VersionPins...)
 		}
 		e.Disclosures = sandboxDisclosuresFor(row, vocab.GatewayMode(e.GatewayMode))
+		hostedFillProbeRow(&e, row, cfg, tier)
 		e.Enabled = slices.Contains(listed, id)
 		in := sandboxSelectInputWith(cfg, av, sources, id, tier, drivers)
 		res := sandboxselect.Select(in)

@@ -152,6 +152,14 @@ const (
 	CustodyHostBound        KeyCustody = "host_bound"
 )
 
+// CustodyAuto is a CONFIGURATION value of [terminal.sandbox.hosted]
+// .key_custody, never a run's custody (decision SBXD-1): per launch and per
+// tool it resolves to home_relay when this machine can add the key for that
+// tool, otherwise to in_box_api_key (internal/sandboxcred ResolveCustody,
+// the one owner). A run's evidence and plan record the resolved value, so
+// Valid stays the closed set of run custodies and does not accept it.
+const CustodyAuto KeyCustody = "auto"
+
 // Valid reports whether k is in the closed vocabulary.
 func (k KeyCustody) Valid() bool {
 	switch k {

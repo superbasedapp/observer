@@ -18,6 +18,11 @@ const (
 	DeliveryDiskImage    Delivery = "disk_image"
 	DeliverySync         Delivery = "sync"
 	DeliveryRemoteClone  Delivery = "remote_clone"
+	// DeliveryUploadSnapshot is a hosted box's live source: the box cannot
+	// share this machine's tree, so the tree's files are uploaded once, and
+	// the box's changes come back as a saved diff, never applied. Only a
+	// hosted vendor row offers it (internal/sandboxremote Vendor.Deliveries).
+	DeliveryUploadSnapshot Delivery = "upload_snapshot"
 )
 
 // deliveryRule is one mapping row: the source it applies to, the
@@ -30,13 +35,15 @@ type deliveryRule struct {
 }
 
 // deliveryRules is the section 6 table. A live workspace is the host's own
-// tree, so only a share keeps it live (a disk image or a copy would not); a
+// tree, so only a share keeps it live (a disk image or a copy would not),
+// and a hosted box, which can share nothing, takes the upload snapshot last
+// (no local backend offers it, so no local outcome moves); a
 // clone works with any delivery; a worktree is a live share of a linked
 // worktree (off by default, allow_worktree_source) and needs the host's own
 // mounts, because the read-only parts of the main repository's .git folder
 // are host-side binds a guest cannot be held to.
 var deliveryRules = []deliveryRule{
-	{SourceLive, []Delivery{DeliveryBindSamePath, DeliveryVirtiofs}, "the live source needs a shared tree (bind_same_path or virtiofs); this backend offers neither (source_unsupported)"},
+	{SourceLive, []Delivery{DeliveryBindSamePath, DeliveryVirtiofs, DeliveryUploadSnapshot}, "the live source needs a shared tree (bind_same_path or virtiofs); this backend offers neither (source_unsupported)"},
 	{SourceWorktree, []Delivery{DeliveryBindSamePath}, "the worktree source needs bind_same_path (the read-only parts of the main repository's .git folder are host-side binds)"},
 	{SourceCloneLocal, []Delivery{DeliveryBindSamePath, DeliveryVirtiofs, DeliveryDiskImage, DeliverySync, DeliveryNinep}, "this backend offers no delivery for a local clone"},
 	{SourceCloneRemote, []Delivery{DeliveryBindSamePath, DeliveryVirtiofs, DeliveryRemoteClone, DeliveryDiskImage, DeliverySync, DeliveryNinep}, "this backend offers no delivery for a remote clone"},

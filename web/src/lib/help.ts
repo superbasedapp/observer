@@ -2870,6 +2870,17 @@ export const HELP_REGISTRY: HelpEntry[] = [
     related: ["glossary.terminals_sandbox_setup_hosted", "glossary.terminals_sandbox_setup_hosted_consent"],
   },
   {
+    id: "glossary.terminals_sandbox_setup_hosted_custody",
+    category: "glossary",
+    title: "Sandbox setup: how the agent gets its model key",
+    oneLiner:
+      "A hosted box needs a way for the agent to reach its model provider: either this machine adds your key to the agent's requests, or the key is put in the box.",
+    detail:
+      "By default the model key stays on this machine. That works only when this machine can add it to the agent's requests: a key you stored for credential injection, or your organization's AI gateway. When neither is there, this step reads missing and offers one button, Put the API key in the box, which shows what it changes before it runs: the agent in the box can then read the key and use it directly. It is one setting for every hosted provider, so Undo changes it back for all of them and says which ones before it runs. Changing it reopens your consent, so you agree to the new way before the next upload.",
+    source: "docs/sandbox-credential-custody.md, section \"The four custody modes\"",
+    related: ["glossary.terminals_sandbox_setup_hosted", "glossary.terminals_sandbox_setup_hosted_key", "glossary.terminals_sandbox_setup_hosted_consent"],
+  },
+  {
     id: "glossary.terminals_sandbox_setup_hosted_consent",
     category: "glossary",
     title: "Sandbox setup: your consent for the provider",

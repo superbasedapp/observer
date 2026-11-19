@@ -36,7 +36,7 @@ func orgShellFX1Driver(t *testing.T, cfg config.TerminalSandboxConfig) *hostedDr
 	newClient := d.reg.newClient
 	d.reg = real
 	d.reg.newClient = newClient
-	d.homeRelayOK = true
+	d.homeRelayOK, d.homeKey.OrgRoute = true, true
 	if err := hostedWithState(d.r.observerDir, true, func() error {
 		return hostedWriteOwned(orgShellSignInPath(d.r.observerDir), orgShellSignIn{OrgURL: "https://org.example.com", ExpiresAt: time.Now().Add(time.Hour)})
 	}); err != nil {

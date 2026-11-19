@@ -185,6 +185,11 @@ type Vendor struct {
 	// NetworkNotes are what a live run saw the vendor's own network do that
 	// Observer does not carry and cannot stop (shown on the consent screen).
 	NetworkNotes []string
+	// DenyRanges is whether the create request can refuse the private ranges
+	// on the internet tier while leaving the rest open (decision SBXD-7;
+	// network.go PrivateRangeDeny decides, the wire client only renders).
+	// The zero value: it cannot, which the notes disclose.
+	DenyRanges DenyCapability
 	// MintedCredential (lane G4, the org-hosted row): the row has no stored
 	// or environment credential. Every call carries a short-lived token the
 	// org server mints for this member, node and run, through a
@@ -199,8 +204,12 @@ type Vendor struct {
 	UploadViaExec bool
 	// Deliveries are the workspace deliveries the row offers
 	// (internal/workspace Delivery values); the hosted prepare step resolves
-	// the run's source through workspace.DeliveryFor with them. Empty means
-	// sync only, what the three file-API vendors do.
+	// the run's source through workspace.DeliveryFor with them. The vendor
+	// rows offer upload_snapshot (the live source: the tree's files uploaded
+	// once) and remote_clone (the box clones a public repository itself, on
+	// the internet tier only); the org row offers sync (clone-local,
+	// uploaded) and remote_clone. Empty takes the live upload only (the
+	// earlier rule).
 	Deliveries []string
 	// OrgEndpoint: the API endpoint exists only as one the organization
 	// published (front_url), never a default or a local value.
@@ -235,6 +244,31 @@ type Vendor struct {
 	// UploadViaExec vendor (each upload part is one such exec); 0 keeps the
 	// core's quarter-MiB default.
 	OneShotStdinBytes int
+	// DefaultImageLacks are programs the vendor's default image (the one a
+	// box gets when no template is set) is known not to have, each with the
+	// live run or page that showed it (lane UX, item H4). A launch with no
+	// template uses it to refuse, before Start, an agent tool whose every
+	// install way needs one of them (PlanToolInstall). A program not listed
+	// is unknown, never assumed present: the host helper still checks the
+	// box before the upload (PickInstall).
+	DefaultImageLacks []ImageFact
+}
+
+// ImageFact is one grounded fact about a vendor's default image: a program
+// it does not have, and where that was seen (a dated live run or page).
+type ImageFact struct {
+	Program string
+	Source  string
+}
+
+// ImageLacks returns the programs the vendor's default image is known not to
+// have.
+func (v Vendor) ImageLacks() []string {
+	out := make([]string, 0, len(v.DefaultImageLacks))
+	for _, f := range v.DefaultImageLacks {
+		out = append(out, f.Program)
+	}
+	return out
 }
 
 // DefaultReadyWaitSeconds is the ready wait of a row that names none.
@@ -281,7 +315,16 @@ var vendors = map[string]Vendor{
 			// 169.254.169.254 inside the box on proxy_only and internet, so
 			// the claim is not taken as shown: claimed, and disclosed
 			// (NetworkNotes).
-			vocab.TierInternet: {Mechanism: "the default allow-all egress plus the relay for the model proxy", Source: vocab.SourceClaimed, Relay: true},
+			vocab.TierInternet: {Mechanism: "the default allow-all egress (with network.denyOut naming the private ranges unless they are allowed) plus the relay for the model proxy", Source: vocab.SourceClaimed, Relay: true},
+		},
+		// SBXD-7: NewSandboxV2.network.denyOut is "List of denied CIDR blocks
+		// or IP addresses for egress traffic" (SandboxNetworkConfig); an
+		// allowOut entry would take precedence, and the create sends none.
+		// The reference names IPv4 forms only (its deny-all example is
+		// 0.0.0.0/0), so only the IPv4 ranges are sent.
+		DenyRanges: DenyCapability{
+			How:    "network.denyOut on the create (NewSandboxV2), with allow_internet_access true and no allowOut",
+			Source: "e2b-dev/e2b spec/openapi.yml (SandboxNetworkConfig.denyOut, NewSandboxV2.network) at 08c4eeba6d08, read 2026-11-18; https://e2b.dev/docs/network/internet-access",
 		},
 		LifetimeCaps: []PlanCap{{"Hobby", 60}, {"Pro", 1440}},
 		MemoryImages: MemoryImagePolicy{AutoPauseExists: true, CanDisable: true, Note: "autoPause is false by default and the driver sends false"},
@@ -290,8 +333,11 @@ var vendors = map[string]Vendor{
 			Date: "2026-10-22", Source: "https://e2b.dev/pricing and https://docs.e2b.dev/faq/calculate-sandbox-price",
 		},
 		RelayStdin: true, GuestPTY: false, Reattach: true, BoxHome: "/home/user",
+		// The live tree uploaded once, or the box clones a public https
+		// repository itself (lane CLONE; no git credential is sent).
+		Deliveries: []string{"upload_snapshot", "remote_clone"},
 		Docs: []EndpointDoc{
-			{"create", "POST", "/v2/sandboxes", "https://docs.e2b.dev/api-reference/sandboxes; spec/openapi.yml (NewSandboxV2) at e2b-dev/E2B db8d80dad5be", ""},
+			{"create", "POST", "/v2/sandboxes (templateID, timeout, autoPause false, allow_internet_access, network.denyOut on the internet tier unless private ranges are allowed, metadata, envVars)", "https://docs.e2b.dev/api-reference/sandboxes; spec/openapi.yml (NewSandboxV2) at e2b-dev/E2B db8d80dad5be; SandboxNetworkConfig at 08c4eeba6d08", ""},
 			{"get", "GET", "/sandboxes/{sandboxID}", "spec/openapi.yml (SandboxDetail)", ""},
 			{"list", "GET", "/v2/sandboxes?metadata=", "spec/openapi.yml (ListedSandbox, X-Next-Token)", ""},
 			{"delete", "DELETE", "/sandboxes/{sandboxID}", "spec/openapi.yml", ""},
@@ -309,6 +355,9 @@ var vendors = map[string]Vendor{
 			"the Keepalive-Ping-Interval header name (behaviour documented, name SDK-only; the driver does not send it)",
 			"rate limits of the non-list endpoints and of envd",
 			"the refusal of link-local and metadata addresses the docs state (169.254.169.254 answered inside a box in the 2026-10-23 live run)",
+			"whether network.denyOut refuses 169.254.169.254 inside the box (an HTTP 401 there may be the box's own VM metadata service, which a network rule outside the VM would not see; inference, not checked)",
+			"whether denyOut takes IPv6 ranges and whether a box has IPv6 egress at all (only the IPv4 ranges are sent)",
+			"whether the box's DNS resolver sits in a denied range (the reference names 8.8.8.8 as the default nameserver for allowOut domains)",
 		},
 		NetworkNotes: []string{
 			"in the 2026-10-23 live run the metadata address 169.254.169.254 answered (HTTP 401) inside an E2B box on the proxy_only and internet tiers; that traffic goes through E2B's own network, which Observer does not carry and cannot stop (Observer's relay carries only the hook stream and the model proxy, and refuses link-local and metadata addresses for what it carries)",
@@ -339,6 +388,9 @@ var vendors = map[string]Vendor{
 			Date: "2026-10-22", Source: "https://modal.com/pricing",
 		},
 		RelayStdin: true, GuestPTY: true, Reattach: false, GuestReattach: false, BoxHome: "/root",
+		// The live tree uploaded once, or the box clones a public https
+		// repository itself (lane CLONE; no git credential is sent).
+		Deliveries: []string{"upload_snapshot", "remote_clone"},
 		Docs: []EndpointDoc{
 			{"client", "gRPC", "modal.client.ModalClient at api.modal.com:443 through github.com/modal-labs/modal-client/go v0.11.1 (Apache-2.0)", "https://modal.com/docs/guide/sandboxes; https://github.com/modal-labs/modal-client/tree/main/go", "the gRPC API itself is declared non-public; only the SDK is used"},
 			{"app", "SDK", "Apps.FromName(CreateIfMissing)", "modal-client/go app.go", ""},
@@ -352,6 +404,7 @@ var vendors = map[string]Vendor{
 			"the default region when none is set (recorded as provider chosen)",
 			"whether a sandbox keeps the guest helper's process after its exec stream ends (the guest PTY reattach, register REM-13)",
 			"refusal of the metadata endpoint and private ranges on the open tier",
+			"a deny rule for address ranges (SBXD-7): the Go SDK v0.11.1 Sandboxes.Create takes only allow lists (OutboundCIDRAllowlist, OutboundDomainAllowlist, \"non-nil enables allowlist mode\") and BlockNetwork, and https://modal.com/docs/guide/sandbox-networking (searched 2026-11-18) documents outbound_cidr_allowlist and block_network only, so the private ranges cannot be denied while the rest stays open",
 			"numeric rate limits",
 		},
 	},
@@ -371,7 +424,17 @@ var vendors = map[string]Vendor{
 			vocab.TierProxyOnly: blockAll("networkPolicy deny-all; the relay carries the hook stream and the model proxy", true),
 			// The firewall docs do not say whether metadata or private ranges
 			// are refused under allow-all: claimed.
-			vocab.TierInternet: {Mechanism: "networkPolicy allow-all plus the relay for the model proxy", Source: vocab.SourceClaimed, Relay: true},
+			vocab.TierInternet: {Mechanism: "networkPolicy allow-all (or, with the private ranges denied, a policy that allows every name and address and denies those subnets) plus the relay for the model proxy", Source: vocab.SourceClaimed, Relay: true},
+		},
+		// SBXD-7: the v3 create's networkPolicy takes an object of allowed
+		// domains and subnets, where "subnets.deny: CIDRs to deny traffic to.
+		// These take precedence over allowed domains and CIDRs" (the vendor's
+		// own SDK, which sends that object to POST /v3/sandboxes; its test
+		// pins {"allow": {"*": []}, "subnets": {"deny": ["10.0.0.0/8"]}}).
+		// Every example is IPv4, so only the IPv4 ranges are sent.
+		DenyRanges: DenyCapability{
+			How:    "networkPolicy {allow: [\"*\"], subnets: {allow: [\"0.0.0.0/0\"], deny: the ranges}} on the v3 create",
+			Source: "vercel/sandbox packages/vercel-sandbox/src/network-policy.ts (NetworkPolicy.subnets) and api-client/validators.ts (V2NetworkPolicyObjectValidator) at 19c6bc59b812, read 2026-11-18; https://vercel.com/docs/vercel-sandbox/concepts/firewall",
 		},
 		LifetimeCaps: []PlanCap{{"Hobby", 45}, {"Pro", 1440}, {"Enterprise", 1440}},
 		MemoryImages: MemoryImagePolicy{AutoPauseExists: false, Note: "no live pause; the filesystem snapshot on stop is switched off with persistent = false"},
@@ -380,8 +443,11 @@ var vendors = map[string]Vendor{
 			Date: "2026-10-22", Source: "https://vercel.com/docs/sandbox/pricing",
 		},
 		RelayStdin: true, GuestPTY: true, Reattach: false, GuestReattach: false, BoxHome: "/vercel/sandbox",
+		// The live tree uploaded once, or the box clones a public https
+		// repository itself (lane CLONE; no git credential is sent).
+		Deliveries: []string{"upload_snapshot", "remote_clone"},
 		Docs: []EndpointDoc{
-			{"create", "POST", "/v3/sandboxes?teamId= (projectId, name, image, timeout ms, persistent false, networkPolicy, region, tags in the body; no ports)", "https://vercel.com/docs/rest-api/sandboxes/create-a-named-sandbox-1; openapi.vercel.sh createSandboxesV3", "the shape of tags (sent as an object of strings, matching the list filter's key:value)"},
+			{"create", "POST", "/v3/sandboxes?teamId= (projectId, name, image, timeout ms, persistent false, networkPolicy (a mode, or the private-range deny object on the internet tier), region, tags in the body; no ports)", "https://vercel.com/docs/rest-api/sandboxes/create-a-named-sandbox-1; openapi.vercel.sh createSandboxesV3", "the shape of tags (sent as an object of strings, matching the list filter's key:value)"},
 			{"get", "GET", "/v2/sandboxes/{name}?teamId=&projectId= (never resume=true)", "https://vercel.com/docs/rest-api/sandboxes/get-a-named-sandbox", ""},
 			{"list", "GET", "/v2/sandboxes?teamId=&project=&tags=key:value&limit=&cursor=", "https://vercel.com/docs/rest-api/sandboxes/list-sandboxes", ""},
 			{"delete", "DELETE", "/v2/sandboxes/{name}?teamId=&projectId=&deleteOrphanSnapshots=true", "https://vercel.com/docs/rest-api/sandboxes/delete-a-sandbox", ""},
@@ -396,6 +462,9 @@ var vendors = map[string]Vendor{
 		Unverified: []string{
 			"the /interactive WebSocket PTY (SDK and CLI source only): not used; the guest helper owns the PTY instead",
 			"refusal of the metadata endpoint and private ranges under allow-all",
+			"the private-range policy object on the REST create itself (read from the vendor's SDK source, which sends it to POST /v3/sandboxes; the REST reference's update-network-policy page shows the older mode custom with deniedCIDRs instead)",
+			"whether a subnets.deny entry also refuses a name that resolves into a denied range, and whether IPv6 ranges are accepted (only the IPv4 ranges are sent)",
+			"whether the custom policy (allow \"*\" and subnet 0.0.0.0/0) carries every protocol allow-all does (DNS, git over ssh)",
 			"whether every 429 carries Retry-After",
 			"whether a sandbox keeps the guest helper's process after its command's log stream and stdin end (the guest PTY reattach, register REM-13)",
 		},
@@ -506,7 +575,22 @@ var vendors = map[string]Vendor{
 			// account whose default was denyAll plus a default-layer allow of
 			// "**": public names and addresses answered, while 169.254.169.254
 			// and 10.0.0.1 timed out (one account, one observation).
-			vocab.TierInternet: {Mechanism: "no inline policy, so the Docker account's default network policy applies (allow-all opens it), plus the relay for the model proxy", Source: vocab.SourceClaimed, Relay: true},
+			vocab.TierInternet: {Mechanism: "the Docker account's default network policy (allow-all opens it), with an inline policy that only denies the private ranges unless they are allowed, plus the relay for the model proxy", Source: vocab.SourceClaimed, Relay: true},
+		},
+		// SBXD-7: the inline NetworkPolicy (mode denyAll, the only mode an
+		// inline policy takes) carries denyNetworks, "exact network names or
+		// CIDRs denied by this document"; inline policies "restrict access
+		// alongside account policy, so they cannot grant access that your
+		// account denies" (the cookbook's "Control what a sandbox can
+		// reach"). Live 2026-11-11: an inline denyAll alone left the account's
+		// default allow of "**" in force (the box reached the internet), and
+		// deny rules won over it, IPv6 (::/0) included. So on the internet
+		// tier an inline denyAll with only the ranges' deny rules adds the
+		// deny and leaves the account's allows as they are.
+		DenyRanges: DenyCapability{
+			How:    "an inline network policy {mode: denyAll, denyNetworks: the ranges} at create (no allow rule, so the account's own allows still decide the rest)",
+			IPv6:   true,
+			Source: "https://docs.docker.com/reference/api/sandboxes/api.yaml (NetworkPolicy, CreateSandboxRequest.networkPolicies) as docker/docs content/reference/api/sandboxes/api.yaml at f8d4abc33303, read 2026-11-18; the 2026-11-11 live smoke (deny rules win over the default allow)",
 		},
 		// "Extensions can't move expiration beyond 24 hours from creation"
 		// (cloud usage page); the default is one hour, and the driver always
@@ -527,9 +611,12 @@ var vendors = map[string]Vendor{
 		// five-minute grant, was re-attached once by the client and echoed
 		// again; the default image runs as root (uid 0), so HOME is /root.
 		RelayStdin: true, GuestPTY: false, Reattach: true, BoxHome: "/root",
+		// The live tree uploaded once, or the box clones a public https
+		// repository itself (lane CLONE; no git credential is sent).
+		Deliveries: []string{"upload_snapshot", "remote_clone"},
 		Docs: []EndpointDoc{
 			{"exchange", "POST", "https://hub.docker.com/v2/auth/token (identifier and the account's access token) -> access_token", "https://docs.docker.com/ai/sandboxes-api/authentication/", "the management token's lifetime (re-exchanged on a 401)"},
-			{"create", "POST", "/v1/sandboxes (Idempotency-Key; displayName, imageRef, resources cpus and memoryMib, labels, startupExecution.rawImage.start, features.timeouts onTimeout delete, networkPolicies denyAll below internet)", "https://docs.docker.com/reference/api/sandboxes/api.yaml (createSandbox, CreateSandboxRequest)", "whether a raw image stays running without a start command (the driver sends sleep infinity; with it the box ran and answered 201 or a running read within 16 s live)"},
+			{"create", "POST", "/v1/sandboxes (Idempotency-Key; displayName, imageRef, resources cpus and memoryMib, labels, startupExecution.rawImage.start, features.timeouts onTimeout delete, networkPolicies denyAll below internet and a ranges-only denyAll on internet unless private ranges are allowed)", "https://docs.docker.com/reference/api/sandboxes/api.yaml (createSandbox, CreateSandboxRequest)", "whether a raw image stays running without a start command (the driver sends sleep infinity; with it the box ran and answered 201 or a running read within 16 s live)"},
 			{"get", "GET", "/v1/sandboxes/{sandbox}", "api.yaml (getSandbox, Sandbox, SandboxStatus)", ""},
 			{"list", "GET", "/v1/sandboxes (pageSize and a continuation token; no label filter, so the run label is matched in the client)", "api.yaml (listSandboxes); https://docs.docker.com/ai/sandboxes-api/concepts/", ""},
 			{"delete", "DELETE", "/v1/sandboxes/{sandbox}?force=true (If-Match: the etag; 202 while deleting, 204 when gone)", "api.yaml (deleteSandbox); concepts page", ""},
@@ -553,6 +640,7 @@ var vendors = map[string]Vendor{
 			"whether a raw image box stays running without a start command (the driver always sends sleep infinity as startupExecution.rawImage.start)",
 			"the management token's lifetime (re-exchanged once on a 401; a 6-minute run needed no second exchange)",
 			"the account's default network policy on the internet tier on other accounts, and whether the metadata endpoint and private ranges are refused or only unrouted there",
+			"whether an inline denyAll carrying only the ranges' deny rules leaves the internet open on an account whose default is allowAll mode with no allow rule (on the live smoke account the default was denyAll plus an allow of \"**\", and denyAll alone left the internet open)",
 			"the isolation class of a cloud box (a VM by its evidence: its own kernel, 6.12.114, and an /init on vsock as pid 1; Docker documents none)",
 			"file, upload and output retention caps, label key syntax and numeric rate limits",
 			"the FAQ names https://api.sandboxes-cloud.docker.com as the cloud endpoint while the API reference names https://connect.docker.com/sandboxes (the driver uses the API reference's, which answered live)",
@@ -602,6 +690,9 @@ var vendors = map[string]Vendor{
 		// WebSocket session, in raw mode (the client's start script): no
 		// non-PTY exec stream with a streaming stdin is documented.
 		RelayStdin: true, GuestPTY: true, Reattach: false, GuestReattach: false, BoxHome: "/data/home",
+		// The live tree uploaded once, or the box clones a public https
+		// repository itself (lane CLONE; no git credential is sent).
+		Deliveries: []string{"upload_snapshot", "remote_clone"},
 		// The create answers 202 with an operation; the client waits for it,
 		// and the core waits until the machine is ready (runtime.ready).
 		ReadyWaitSeconds: 180,
@@ -623,6 +714,7 @@ var vendors = map[string]Vendor{
 			"whether terminal traffic alone keeps a machine out of idle pause while the agent waits silently (activity leases exist and are not used)",
 			"what a run sees at the free plan's 480-minute max-run pause (the machine pauses with a cooldown; the run ends)",
 			"refusal of the metadata endpoint and private ranges (no network policy is documented)",
+			"a deny rule for address ranges (SBXD-7): the OpenAPI document's createMachine takes name, templateId, deleteAfterSeconds and metadata only, so the private ranges cannot be denied",
 			"what the ci, android and omarchy templates hold (agent-browser, the default, has sha256sum but no git, gzip, node or npm on the standard PATH, live 2026-11-11, so a first-start npm install there fails and the staged diff has no git)",
 		},
 		TemplateRule: "InstaBox's free plan creates only from the agent-browser (the default), android, omarchy and ci templates (403 template_not_allowed otherwise); a paid plan may name any template GET /v1/templates lists as creatable, as an id or id@version, in [terminal.sandbox.hosted.instabox].template",
@@ -698,6 +790,9 @@ var vendors = map[string]Vendor{
 		// daytonaio/sandbox:0.11.0 runs SSH sessions as daytona, uid 1001,
 		// HOME /home/daytona, with passwordless sudo).
 		BoxHome: "/home/daytona",
+		// The live tree uploaded once, or the box clones a public https
+		// repository itself (lane CLONE; no git credential is sent).
+		Deliveries: []string{"upload_snapshot", "remote_clone"},
 		// Create answers the Sandbox, possibly before it reaches started
 		// (states creating, pending_build, pulling_snapshot): the core waits.
 		// Live 2026-11-11: the default snapshot answered started in 1.3 s.
@@ -718,10 +813,19 @@ var vendors = map[string]Vendor{
 			"exec channels on the SSH gateway are not documented (they worked in the live smoke of 2026-11-11: exit statuses, stderr, stdin EOF, kill)",
 			"whether networkBlockAll is honoured on every tier (live 2026-11-11 on the operator's organization: DNS and an HTTPS fetch both failed from the box; the organization's tier was not recorded)",
 			"refusal of the metadata endpoint and private ranges on the internet tier",
+			"a deny rule for address ranges (SBXD-7): https://www.daytona.io/docs/en/network-limits (searched 2026-11-18) documents networkAllowList (up to 5 IPv4 CIDRs, an allow list) and networkBlockAll, mutually exclusive, and no deny list, so the private ranges cannot be denied while the rest stays open",
 			"the maximum sandbox lifespan per organization, region and class",
 			"the Tier 1 memory quota (the limits page lists 10 GiB in one table and 20 GiB in another)",
 			"an upload size limit on the toolbox",
 			"the create's answer to a repeated name or a missing snapshot",
+			"whether the default snapshot has bash, curl and tar (what a vendor install script needs); the host helper checks the box before the upload",
+		},
+		// Live 2026-11-18 on the operator's node: OpenCode's first-start
+		// install (npm install -g) exited 127 in a box made from the default
+		// snapshot, which has no npm (docs/audits/hosted-sandbox-key-custody-2026-11-18.md,
+		// "Live check").
+		DefaultImageLacks: []ImageFact{
+			{Program: "npm", Source: "live 2026-11-18: npm install exited 127 in a box made from Daytona's default snapshot (docs/audits/hosted-sandbox-key-custody-2026-11-18.md)"},
 		},
 		NetworkNotes: []string{
 			"on the internet tier the box's network is your Daytona organization's own tier policy: on Tier 1 and 2 only Daytona's essential services (package registries, git hosts, model providers) are reachable, on Tier 3 and 4 the full internet; that traffic goes through Daytona's network, which Observer does not carry and cannot stop",

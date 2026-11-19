@@ -28,7 +28,8 @@ import (
 // provider key (the CLI or the dashboard, never an agent: guard rule R-165
 // covers the verb and the route), stored in the OS keychain under service
 // sbo-sandbox-cred-v1. For a hosted run with custody home_relay the box
-// gets a per-run sentinel in its tool's key variable; the home side of the
+// gets a per-run sentinel in the key variable of each provider it binds (gap
+// H2: every provider its tool can use whose key is stored); the home side of the
 // run's relay stamps a per-run relay token on each relayed model request;
 // and the daemon's proxy swaps the sentinel for the key only when every row
 // of internal/sandboxcred's match table holds. The decisions are pure
@@ -43,9 +44,11 @@ import (
 // rows.
 
 func init() {
-	hostedCredReady = credReady
 	hostedCredConsentLine = credConsentLine
-	hostedCredNotReady = credNotReady
+	hostedCredInBoxStored = credInBoxStored
+	hostedCredFacts = func(full config.Config) (bool, bool, []string) {
+		return credSelected(full), credProxyBuilt, credStoredProviders(sandboxObserverDirFor(full))
+	}
 	sandboxSubcommands = append(sandboxSubcommands, newSandboxCredentialsCmd)
 	gatesSandboxRouteFuncs = append(gatesSandboxRouteFuncs, credDashboardRoutes)
 }
@@ -82,13 +85,19 @@ var credNow = func() time.Time { return time.Now().UTC() }
 var credHelperLive = sandboxrelayd.RunLive
 
 // credRunRecord is one run's injection record: hashes only, never the
-// sentinel, the token or the key.
+// sentinel, the token or the key. A run that binds one provider writes the
+// version 1 shape every run had before (Provider, SentinelHash), byte for
+// byte; a run that binds several (gap H2) writes version 2, whose Bindings
+// list each provider with its own sentinel's hash and leave Provider and
+// SentinelHash empty. A reader before version 2 refuses a version 2 record
+// (no injection, fail closed).
 type credRunRecord struct {
 	V            int              `json:"v"`
 	RunID        string           `json:"run_id"`
 	Provider     string           `json:"provider"`
 	Custody      vocab.KeyCustody `json:"custody"`
 	SentinelHash string           `json:"sentinel_hash"`
+	Bindings     []credBinding    `json:"bindings,omitempty"`
 	TokenHash    string           `json:"token_hash,omitempty"`
 	// Lane is how the run's requests reach the proxy ("" hosted, "local"
 	// for a local run's host helper; lane N3).
@@ -100,7 +109,61 @@ type credRunRecord struct {
 	Expires    time.Time `json:"expires"`
 }
 
-const credRecordVersion = 1
+// credBinding is one bound provider of a version 2 record.
+type credBinding struct {
+	Provider     string `json:"provider"`
+	SentinelHash string `json:"sentinel_hash"`
+}
+
+// The record versions: 1 binds one provider, 2 several.
+const (
+	credRecordVersion    = 1
+	credRecordVersionSet = 2
+)
+
+// bindings are the record's bound providers with their sentinel hashes.
+func (rec credRunRecord) bindings() []sandboxcred.Binding {
+	if rec.V == credRecordVersion {
+		return []sandboxcred.Binding{{Provider: rec.Provider, SentinelHash: rec.SentinelHash}}
+	}
+	out := make([]sandboxcred.Binding, 0, len(rec.Bindings))
+	for _, b := range rec.Bindings {
+		out = append(out, sandboxcred.Binding{Provider: b.Provider, SentinelHash: b.SentinelHash})
+	}
+	return out
+}
+
+// providers are the record's bound provider ids.
+func (rec credRunRecord) providers() []string {
+	var out []string
+	for _, b := range rec.bindings() {
+		out = append(out, b.Provider)
+	}
+	return out
+}
+
+// credRecordShapeOK checks a record's version against its shape: version 1
+// carries no Bindings, version 2 carries two or more, each a provider the
+// table knows, each once, and leaves the version 1 fields empty.
+func credRecordShapeOK(rec credRunRecord) bool {
+	switch rec.V {
+	case credRecordVersion:
+		return len(rec.Bindings) == 0
+	case credRecordVersionSet:
+		if rec.Provider != "" || rec.SentinelHash != "" || len(rec.Bindings) < 2 {
+			return false
+		}
+		seen := map[string]bool{}
+		for _, b := range rec.Bindings {
+			if _, ok := sandboxcred.ProviderFor(b.Provider); !ok || seen[b.Provider] || b.SentinelHash == "" {
+				return false
+			}
+			seen[b.Provider] = true
+		}
+		return true
+	}
+	return false
+}
 
 // credRunsDir is where the run records live.
 func credRunsDir(observerDir string) string {
@@ -136,7 +199,7 @@ func credReadRecord(observerDir, runID string) (credRunRecord, error) {
 		return credRunRecord{}, err
 	}
 	var rec credRunRecord
-	if err := json.Unmarshal(b, &rec); err != nil || rec.V != credRecordVersion || rec.RunID != runID {
+	if err := json.Unmarshal(b, &rec); err != nil || !credRecordShapeOK(rec) || rec.RunID != runID {
 		return credRunRecord{}, errors.New("record refused")
 	}
 	return rec, nil
@@ -155,11 +218,12 @@ func credReadOwned(p string) ([]byte, error) {
 	return os.ReadFile(p) //nolint:gosec // G304: a fixed name under the daemon's own observer dir, checked above
 }
 
-// credReady is newHostedDriver's homeRelayOK addition: the component is on,
-// the proxy that swaps the sentinel is in this build, and at least one
-// provider key is stored. The run's own provider is checked by the helper's
-// setup (credSetup), which refuses custody_unsatisfiable when its tool's
-// provider has no key.
+// credReady reports whether injection can serve home_relay node-wide: the
+// component is on, the proxy that swaps the sentinel is in this build, and
+// at least one provider key is stored. The hosted driver asks the same
+// question through sandboxcred.HomeKey over hostedCredFacts, and asks it
+// per tool at Create; the helper's setup (credSetup) still refuses
+// custody_unsatisfiable when none of its tool's providers has a key.
 func credReady(full config.Config) bool {
 	if !credSelected(full) || !credProxyBuilt {
 		return false
@@ -189,13 +253,24 @@ func credNotReady(full config.Config) string {
 }
 
 // credConsentLine is the consent screen's credential line while the
-// component is on: injection's own disclosure for home_relay (audit F8).
-// provider_injected is not offered, so its text is never shown yet.
+// component is on: injection's own disclosure for home_relay (audit F8),
+// naming each stored key a run can bind (gap H2). provider_injected is not
+// offered, so its text is never shown yet.
 func credConsentLine(ctx context.Context, custody, vendor, capture string) (string, bool) {
 	if custody != string(vocab.CustodyHomeRelay) || !credActive(ctx) {
 		return "", false
 	}
-	return sandboxcred.Disclosure(custody, vendor, capture), true
+	return sandboxcred.Disclosure(custody, vendor, capture, credStoredProviders(credObserverDir())...), true
+}
+
+// credInBoxStored are the providers whose stored key an in-box custody may
+// put in a box where the daemon's environment has none (gap H3): the stored
+// ones while the component is on, none otherwise.
+func credInBoxStored(ctx context.Context) []string {
+	if !credActive(ctx) {
+		return nil
+	}
+	return credStoredProviders(credObserverDir())
 }
 
 // credProvidersFile lists the providers that have a key (ids only, never a
@@ -301,30 +376,37 @@ func (i *credInjector) key(provider string) string {
 func (i *credInjector) decide(runID, token, host, xAPIKey, authorization, googKey string) (string, string, bool) {
 	rec, err := credReadRecord(i.observerDir, runID)
 	facts := sandboxcred.RunFacts{Found: err == nil}
-	var p sandboxcred.Provider
 	if err == nil {
 		_, rerr := sandboxrelayd.ReadRun(i.observerDir, runID)
 		// A hosted record must be home_relay; a local record's custody
 		// and its helper are judged by the match table's local rows.
 		facts.Live = rerr == nil && credNow().Before(rec.Expires) && (rec.Lane == sandboxcred.LaneLocal || rec.Custody == vocab.CustodyHomeRelay)
-		facts.Provider, facts.SentinelHash, facts.TokenHash = rec.Provider, rec.SentinelHash, rec.TokenHash
+		facts.Bindings, facts.TokenHash = rec.bindings(), rec.TokenHash
 		facts.Lane, facts.Custody = rec.Lane, string(rec.Custody)
 		if rec.Lane == sandboxcred.LaneLocal {
 			facts.HelperLive = credHelperLive(i.observerDir, runID)
 		}
-		p, _ = sandboxcred.ProviderFor(rec.Provider)
-	}
-	if p.ID != "" && strings.EqualFold(host, credProviderHost(p)) {
-		host = p.Host
+		// The test seam's upstream stands for a bound provider's host.
+		for _, b := range facts.Bindings {
+			if p, ok := sandboxcred.ProviderFor(b.Provider); ok && strings.EqualFold(host, credProviderHost(p)) {
+				host = p.Host
+				break
+			}
+		}
 	}
 	req := sandboxcred.Request{RunID: runID, Token: token, Host: host, XAPIKey: xAPIKey, Authorization: authorization, GoogKey: googKey}
-	key := ""
+	// Only the key of the one provider the request is judged against is
+	// read: its destination's, within the run's bound set.
+	key, provider := "", ""
 	if facts.Found && facts.Live {
-		key = i.key(rec.Provider)
+		provider = sandboxcred.SelectBinding(req, facts).Provider
+		if _, ok := sandboxcred.ProviderFor(provider); ok {
+			key = i.key(provider)
+		}
 		facts.KeyStored = key != ""
 	}
 	d := sandboxcred.Decide(req, facts)
-	if !d.Inject {
+	if !d.Inject || d.Provider != provider {
 		return "", "", false
 	}
 	return d.Auth.Header(), d.Auth.Value(key), true

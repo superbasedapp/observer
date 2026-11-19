@@ -17,6 +17,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/sandboxbackend"
 	"github.com/marmutapp/superbased-observer/internal/sandboxremote"
 	"github.com/marmutapp/superbased-observer/internal/sandboxremote/openshellorg"
+	vocab "github.com/marmutapp/superbased-observer/internal/sandboxvocab"
 	"github.com/marmutapp/superbased-observer/internal/store"
 )
 
@@ -133,8 +134,10 @@ func orgShellProbeFacts(o config.TerminalSandboxHostedOrgShellConfig, custody st
 // orgShellLocalProbe is the row's local probe rows R0 to R3 with R2b
 // (design 3.5), walked before the shared hosted ladder.
 func orgShellLocalProbe(d *hostedDriver) (string, string) {
-	f := orgShellProbeFacts(d.cfg.OpenShellOrg, d.cfg.KeyCustody, d.r.observerDir, d.now())
+	// auto resolves to home_relay on this row, which keeps every key home
+	// (decision SBXD-1); an explicit in-box value still meets R2.
 	row, _ := sandboxbackend.Get(d.vendor.ID)
+	f := orgShellProbeFacts(d.cfg.OpenShellOrg, string(hostedSelectionCustody(vocab.KeyCustody(d.cfg.KeyCustody), row)), d.r.observerDir, d.now())
 	f.Listed = d.listed()
 	f.PlatformOK = row.RunsOn(sandboxHostKind())
 	f.HomeRelayOK = d.homeRelayOK

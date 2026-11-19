@@ -34,6 +34,10 @@ const (
 	// Settings tab ([terminal.sandbox], including
 	// [terminal.sandbox.setup].allow_elevated).
 	TerminalSandbox Place = "terminal_sandbox"
+	// TerminalSandboxHosted is the Hosted sandboxes panel inside the Sandbox
+	// isolation card on the Terminals page's Settings tab
+	// ([terminal.sandbox.hosted], including each provider's template).
+	TerminalSandboxHosted Place = "terminal_sandbox_hosted"
 	// GuardNetwork is the Network features card on the Security page's MCP
 	// tab ([guard.cloud], including reputation lookups).
 	GuardNetwork Place = "guard_network"
@@ -85,6 +89,7 @@ var places = []row{
 	{ProcessCapture, "/settings?section=process", "Settings > Process capture"},
 	{GuardNetwork, "/security?tab=mcp", "Security > MCP > Network features"},
 	{TerminalSandbox, "/terminals?tab=settings#sandbox-backends", "Terminals > Settings > Sandbox isolation"},
+	{TerminalSandboxHosted, "/terminals?tab=settings#hosted-sandboxes", "Terminals > Settings > Hosted sandboxes"},
 	{TeamSummaries, "/settings?section=intel", "Settings > Team AI summaries"},
 	{TerminalRemoteSystems, "/terminals?tab=settings#remote-systems", "Terminals > Settings > Remote systems (SSH)"},
 	{ConnectedTools, "/settings?section=tools", "Settings > Connected tools"},
@@ -266,6 +271,10 @@ func (f Fields) WithCommand(cmd string) Fields {
 type Body struct {
 	Error   string `json:"error"`
 	Message string `json:"message"`
+	// Technical is the detail behind Message (config keys, enum values,
+	// commands) that a surface may show only under a "Technical details"
+	// caption; omitted when empty, so every other body is unchanged.
+	Technical string `json:"technical,omitempty"`
 	Fields
 }
 

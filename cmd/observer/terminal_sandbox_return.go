@@ -24,9 +24,9 @@ import (
 // the commits a box made in its copy come back into the source repository
 // as one new ref, refs/observer/sandbox/<run>, never into the working tree.
 // The pure planning is internal/workspace (return.go); this file is the
-// one place it is executed. It is called by the oci-runc host helper when
-// a clone-local run ends; the bwrap driver's copy runs are unchanged (their
-// managed workspaces stay as they were).
+// one place it is executed. It is called by the oci-runc and microVM host
+// helpers when a copy run ends, and by the daemon for a bwrap copy run once
+// its host helper is gone (terminal_sandbox_localreturn.go, lane RETURNS).
 
 // sandboxReturnScanInput is what the scan sees: the source repository, the
 // returned commit (already in the source's object store, checked), and the
@@ -484,6 +484,13 @@ func isWithinPath(p, root string) bool {
 // captured and capped, stderr tail kept for the error. A Hardened step (the
 // worktree source's) runs with hardenedGitEnv.
 func runReturnGit(ctx context.Context, step workspace.Step) ([]byte, error) {
+	return runReturnGitEnv(ctx, step, nil)
+}
+
+// runReturnGitEnv is runReturnGit with environment entries added after the
+// runner's own (a diff-branch step's GIT_INDEX_FILE and commit identity,
+// workspace.GitStep.Env); nil adds nothing.
+func runReturnGitEnv(ctx context.Context, step workspace.Step, extra []string) ([]byte, error) {
 	if len(step.Argv) == 0 || step.Argv[0] != "git" {
 		return nil, fmt.Errorf("not a git step")
 	}
@@ -510,6 +517,7 @@ func runReturnGit(ctx context.Context, step workspace.Step) ([]byte, error) {
 		env = append(env, "HOME="+home, "XDG_CONFIG_HOME="+home)
 		cmd.Env = env
 	}
+	cmd.Env = append(cmd.Env, extra...)
 	cmd.Stdin = nil
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &cappedWriter{w: &stdout, left: 256 << 20}

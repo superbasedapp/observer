@@ -33,7 +33,7 @@ import (
 // Before the box starts, the helper
 // mints the run's sentinel and relay token and writes the run's injection
 // record (custody host_bound, lane local, hashes only); the box env gets
-// the sentinel in place of the tool's key variable, only where the
+// a sentinel in place of each bound provider's key variable, only where the
 // launching env already carried one (never added, so a subscription login
 // is not moved onto key billing); the helper's model-proxy forward stamps the run
 // and its token on every request (the hosted path's two headers, a
@@ -53,36 +53,60 @@ func init() {
 // SIGKILL loses at once.
 const credLocalTTL = 7 * 24 * time.Hour
 
-// credLocalLane is one local run's lane in this helper.
+// credLocalLane is one local run's lane in this helper: the providers it
+// binds, their sentinels (only in the helper that opened the lane; a
+// re-opened lane has none, the box already holds them) and its token.
 type credLocalLane struct {
 	observerDir string
-	provider    string
-	sentinel    string
+	providers   []string
+	sentinels   []credSentinel
 	token       string
+}
+
+// sentinelMap is the lane's sentinels by provider.
+func (l *credLocalLane) sentinelMap() map[string]string {
+	out := make(map[string]string, len(l.sentinels))
+	for _, s := range l.sentinels {
+		out[s.provider] = s.sentinel
+	}
+	return out
 }
 
 // credLocalLanes holds this helper's lanes (run id -> *credLocalLane).
 var credLocalLanes sync.Map
 
-// credLocalBoxEnv sets up the run's lane and returns env with the run's
-// sentinel in place of the tool's key variable and every other credential
-// variable (sandboxcred.BoxEnv's table) dropped; env is returned unchanged
-// when the component is off or the run cannot be served (no relay run, no
-// proxy forward, model traffic not known to use the forward, a tool with
-// no one provider, no key variable in env, no stored key), so the run is
-// exactly as before.
+// credLocalBoxEnv sets up the run's lane and returns env with each bound
+// provider's sentinel in place of that provider's key variable and every
+// other credential variable (sandboxcred.BoxEnvSet's table) dropped; env is
+// returned unchanged when the component is off or the run cannot be served
+// (no relay run, no proxy forward, model traffic not known to use the
+// forward, a tool with no injectable provider, no bound provider:
+// sandboxcred.BindLocal), so the run is exactly as before.
 func credLocalBoxEnv(h sandbox.HostArgs, env []string) []string {
 	lane := credLocalOpen(h, env)
-	if lane == nil {
+	if lane == nil || len(lane.sentinels) == 0 {
 		return env
 	}
-	p, ok := sandboxcred.ProviderFor(lane.provider)
-	if !ok || lane.sentinel == "" || !credEnvHasKey(env, p.KeyEnv) {
-		return env
+	for _, s := range lane.sentinels {
+		p, ok := sandboxcred.ProviderFor(s.provider)
+		if !ok || s.sentinel == "" || !credEnvHasKey(env, p.KeyEnv) {
+			return env
+		}
 	}
-	// The key variable holds only the sentinel; every other variable the
-	// credential table classes is dropped (F-005), named on the record.
-	out, _ := sandboxcred.BoxEnv(lane.provider, lane.sentinel, env)
+	// Each bound key variable holds only its sentinel; every other variable
+	// the credential table classes is dropped (F-005), named on the record.
+	out, _ := sandboxcred.BoxEnvSet(lane.sentinelMap(), env)
+	return out
+}
+
+// credEnvNames are env's variable names that carry a value.
+func credEnvNames(env []string) []string {
+	var out []string
+	for _, kv := range env {
+		if name, v, ok := strings.Cut(kv, "="); ok && v != "" {
+			out = append(out, name)
+		}
+	}
 	return out
 }
 
@@ -129,41 +153,52 @@ func credLocalOpen(h sandbox.HostArgs, env []string) *credLocalLane {
 	if err != nil {
 		return nil
 	}
-	provider := credToolProvider(run.Tool)
-	p, ok := sandboxcred.ProviderFor(provider)
-	if provider == "" || !ok || !credEnvHasKey(env, p.KeyEnv) {
+	candidates := credToolProviders(run.Tool)
+	names := credEnvNames(env)
+	// A candidate whose key variable the launching env carries: only then
+	// is there something to replace (and a stored-key list worth reading).
+	var withKey []string
+	for _, id := range candidates {
+		if p, ok := sandboxcred.ProviderFor(id); ok && credEnvHasKey(env, p.KeyEnv) {
+			withKey = append(withKey, id)
+		}
+	}
+	if len(withKey) == 0 {
 		return nil
 	}
-	stored, perr := credKeyPresence(h.ObserverDir, provider)
+	ids, perr := credReadProviders(h.ObserverDir)
 	if perr != nil {
 		// Selected, a key variable to replace, but the list of stored
 		// keys cannot be read: no lane, said out loud (audit FU3-A4).
-		slog.Default().Warn("terminal_sandbox: credential injection is selected but the list of stored provider keys cannot be read; this run gets no injection and its box keeps the launching key variable",
-			"run", h.RelayRun, "provider", provider, "err", perr)
+		slog.Default().Warn("terminal_sandbox: credential injection is selected but the list of stored provider keys cannot be read; this run gets no injection and its box keeps the launching key variables",
+			"run", h.RelayRun, "providers", strings.Join(withKey, ","), "err", perr)
 		return nil
 	}
-	if !stored {
+	bound := sandboxcred.BindLocal(sandboxcred.LocalBindFacts{Candidates: candidates, Stored: ids, EnvNames: names})
+	if len(bound) == 0 {
 		return nil
 	}
-	sentinel, err := sandboxcred.MintSentinel(rand.Reader, provider)
-	if err != nil {
-		return nil
+	sentinels := make([]credSentinel, 0, len(bound))
+	for _, id := range bound {
+		s, err := sandboxcred.MintSentinel(rand.Reader, id)
+		if err != nil {
+			return nil
+		}
+		sentinels = append(sentinels, credSentinel{provider: id, sentinel: s})
 	}
 	token, err := sandboxcred.MintToken(rand.Reader)
 	if err != nil {
 		return nil
 	}
 	now := credNow()
-	_, dropped := sandboxcred.BoxEnv(provider, sentinel, env)
-	rec := credRunRecord{
-		V: credRecordVersion, RunID: h.RelayRun, Provider: provider, Custody: vocab.CustodyHostBound, Lane: sandboxcred.LaneLocal,
-		SentinelHash: sandboxcred.Hash(sentinel), TokenHash: sandboxcred.Hash(token),
-		DroppedEnv: dropped, CreatedAt: now, Expires: now.Add(credLocalTTL),
-	}
+	lane := &credLocalLane{observerDir: h.ObserverDir, providers: bound, sentinels: sentinels, token: token}
+	_, dropped := sandboxcred.BoxEnvSet(lane.sentinelMap(), env)
+	rec := credNewRecord(h.RelayRun, vocab.CustodyHostBound, sentinels)
+	rec.Lane, rec.TokenHash = sandboxcred.LaneLocal, sandboxcred.Hash(token)
+	rec.DroppedEnv, rec.CreatedAt, rec.Expires = dropped, now, now.Add(credLocalTTL)
 	if credWriteRecord(h.ObserverDir, rec) != nil {
 		return nil
 	}
-	lane := &credLocalLane{observerDir: h.ObserverDir, provider: provider, sentinel: sentinel, token: token}
 	credLocalLanes.Store(h.RelayRun, lane)
 	return lane
 }
@@ -201,8 +236,8 @@ var credLocalReopenRules = []credLocalReopenRule{
 		},
 	},
 	{
-		refuses: func(h sandbox.HostArgs, rec credRunRecord) bool {
-			_, err := credKeyPresence(h.ObserverDir, rec.Provider)
+		refuses: func(h sandbox.HostArgs, _ credRunRecord) bool {
+			_, err := credReadProviders(h.ObserverDir)
 			return err != nil
 		},
 		reason: func(credRunRecord) string {
@@ -210,11 +245,25 @@ var credLocalReopenRules = []credLocalReopenRule{
 		},
 	},
 	{
-		refuses: func(h sandbox.HostArgs, rec credRunRecord) bool { return !credKeyStored(h.ObserverDir, rec.Provider) },
+		refuses: func(h sandbox.HostArgs, rec credRunRecord) bool { return credLocalMissingKey(h.ObserverDir, rec) != "" },
 		reason: func(rec credRunRecord) string {
-			return "no " + rec.Provider + " key is stored for injection; add yours with `observer sandbox credentials add " + rec.Provider + "`"
+			if ps := rec.providers(); len(ps) == 1 {
+				return "no " + ps[0] + " key is stored for injection; add yours with `observer sandbox credentials add " + ps[0] + "`"
+			}
+			return "a key the run's lane binds (" + strings.Join(rec.providers(), ", ") + ") is no longer stored for injection; add it with `observer sandbox credentials add <provider>`"
 		},
 	},
+}
+
+// credLocalMissingKey is the first provider the record binds whose key is
+// no longer stored ("" when every one is).
+func credLocalMissingKey(observerDir string, rec credRunRecord) string {
+	for _, id := range rec.providers() {
+		if !credKeyStored(observerDir, id) {
+			return id
+		}
+	}
+	return ""
 }
 
 // credLocalReopen re-opens a re-adopted run's lane (F-004): the box still
@@ -253,7 +302,7 @@ func credLocalReopen(h sandbox.HostArgs) string {
 	}
 	// No sentinel in this helper: the box already holds it, and this
 	// helper builds no box env.
-	credLocalLanes.Store(h.RelayRun, &credLocalLane{observerDir: h.ObserverDir, provider: rec.Provider, token: token})
+	credLocalLanes.Store(h.RelayRun, &credLocalLane{observerDir: h.ObserverDir, providers: rec.providers(), token: token})
 	return ""
 }
 
@@ -261,7 +310,7 @@ func credLocalReopen(h sandbox.HostArgs) string {
 // readable injection record (audit FU3-A5). A record that exists but is
 // refused is always named. An absent record is named only when the run
 // could have had a lane (the component is selected now, the run's tool has
-// one provider and its model traffic goes through the forward): a run
+// an injectable provider and its model traffic goes through the forward): a run
 // launched with injection whose first helper ended normally has lost its
 // record, and the helper cannot tell that from a run launched without
 // injection, so the note says both. Any other run gets no note.
@@ -273,7 +322,7 @@ func credLocalReopenNoRecord(h sandbox.HostArgs, err error) string {
 		return ""
 	}
 	run, rerr := sandboxrelayd.ReadRun(h.ObserverDir, h.RelayRun)
-	if rerr != nil || credToolProvider(run.Tool) == "" {
+	if rerr != nil || len(credToolProviders(run.Tool)) == 0 {
 		return ""
 	}
 	return "this run has no injection record (it is removed when the run's first helper ends normally); if it was launched with credential injection it cannot be restored"

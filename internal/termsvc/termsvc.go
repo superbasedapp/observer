@@ -313,6 +313,10 @@ type PrepareRequest struct {
 	// WorkspaceRemote is the remote URL for a "clone-remote" source. Ignored
 	// otherwise.
 	WorkspaceRemote string
+	// WorkspaceCloneWhere is the launch's own choice of where a hosted
+	// row clones a "clone-remote" URL (auto, box or home; decision SBXD-5);
+	// "" takes [terminal.sandbox.hosted].clone_where. Ignored otherwise.
+	WorkspaceCloneWhere string
 	// WorkspaceBranch is an optional branch to check out after clone/worktree.
 	// Ignored for "live".
 	WorkspaceBranch string
@@ -708,6 +712,9 @@ type FreshRequest struct {
 	// WorkspaceRemote is the remote URL for a "clone-remote" WorkspaceSource.
 	// Ignored otherwise.
 	WorkspaceRemote string
+	// WorkspaceCloneWhere is the launch's choice of where a hosted row
+	// clones a "clone-remote" URL (decision SBXD-5); "" takes the config.
+	WorkspaceCloneWhere string
 	// WorkspaceBranch is an optional branch to check out after clone/worktree.
 	// Ignored for "live".
 	WorkspaceBranch string
@@ -953,6 +960,8 @@ func (s *Service) prepareSandbox(ctx context.Context, req FreshRequest, tool, va
 		SignInAsk:       req.SignInAsk,
 		// The per-launch workspace secret mask (bwrap only; others refuse).
 		MaskWorkspaceSecrets: req.MaskWorkspaceSecrets,
+		// SBXD-5: where a hosted row clones a clone-remote URL.
+		WorkspaceCloneWhere: req.WorkspaceCloneWhere,
 	})
 	if err != nil {
 		return PrepareResult{}, fmt.Errorf("%w: %w", ErrWorkspacePrepFailed, err)

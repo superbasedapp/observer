@@ -1,0 +1,276 @@
+{"model":"opus","hooks":{
+    "ConfigChange": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook claude-code config-change --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ],
+    "CwdChanged": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook claude-code cwd-changed --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ],
+    "InstructionsLoaded": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook claude-code instructions-loaded --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook claude-code notification --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ],
+    "PermissionDenied": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook claude-code permission-denied --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook claude-code permission-request --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook claude-code post-compact --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ],
+    "PostToolBatch": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook claude-code post-tool-batch --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook claude-code post-tool --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook claude-code post-tool-failure --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook claude-code pre-compact --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/opt/acme/audit",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook claude-code pre-tool --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook claude-code session-end --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook claude-code session-start --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ],
+    "Setup": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook claude-code setup --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook claude-code stop --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook claude-code stop-failure --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook claude-code subagent-start --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook claude-code subagent-stop --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ],
+    "TaskCompleted": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook claude-code task-completed --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ],
+    "TaskCreated": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook claude-code task-created --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ],
+    "UserPromptExpansion": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook claude-code user-prompt-expansion --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook claude-code user-prompt-submit --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ],
+    "WorktreeRemove": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook claude-code worktree-remove --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ]
+  },"zeta":1}

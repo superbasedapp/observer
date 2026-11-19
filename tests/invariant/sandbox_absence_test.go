@@ -272,7 +272,10 @@ func TestSandboxModuleWebRendersNothingWhenOff(t *testing.T) {
 		t.Fatal(walkErr)
 	}
 	moduleFile := func(rel string) bool {
-		return entry[rel] || strings.HasPrefix(rel, "components/Sandbox")
+		// components/sandboxHosted/ holds the Hosted sandboxes panel's own
+		// fields (the sandbox terminal decisions' settings), module files
+		// imported only by that panel or the module's dialog pieces.
+		return entry[rel] || strings.HasPrefix(rel, "components/Sandbox") || strings.HasPrefix(rel, "components/sandboxHosted/")
 	}
 	mods := make([]string, 0, len(importers))
 	for m := range importers {
@@ -293,8 +296,15 @@ func TestSandboxModuleWebRendersNothingWhenOff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !regexp.MustCompile(`moduleNotInstalled\([^)]*\)[^\n]*return null`).Match(card) {
-		t.Error("SandboxSettingsCard.tsx no longer returns null on 404 component_not_installed: an inactive module would render its Card")
+	// The card's shape table (web/src/lib/sandboxSettingsView.ts): a build
+	// without the module, or a hidden section, renders nothing; an installed
+	// but inactive module renders only the pointer card with its Turn it on
+	// button (decision SBXD-9), which sends none of the module's reads.
+	if !strings.Contains(string(card), `if (shape === "hidden") return null;`) {
+		t.Error("SandboxSettingsCard.tsx no longer returns null for the hidden shape: a build without the module would render its Card")
+	}
+	if !regexp.MustCompile(`shape === "module_off"[^\n]*\{\s*return \(\s*<SandboxModuleOffCard`).Match(card) {
+		t.Error("SandboxSettingsCard.tsx renders more than the pointer card while the module is off")
 	}
 	dialog, err := os.ReadFile(filepath.Join(src, "components", "NewTerminalDialog.tsx"))
 	if err != nil {

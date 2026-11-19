@@ -27,6 +27,7 @@ func TestPlaceTable(t *testing.T) {
 		{ProcessCapture, "/settings?section=process", "Settings > Process capture"},
 		{GuardNetwork, "/security?tab=mcp", "Security > MCP > Network features"},
 		{TerminalSandbox, "/terminals?tab=settings#sandbox-backends", "Terminals > Settings > Sandbox isolation"},
+		{TerminalSandboxHosted, "/terminals?tab=settings#hosted-sandboxes", "Terminals > Settings > Hosted sandboxes"},
 		{TeamSummaries, "/settings?section=intel", "Settings > Team AI summaries"},
 		{TerminalRemoteSystems, "/terminals?tab=settings#remote-systems", "Terminals > Settings > Remote systems (SSH)"},
 		{ConnectedTools, "/settings?section=tools", "Settings > Connected tools"},

@@ -28,6 +28,7 @@ export const PLACES = {
   process_capture: { href: "/settings?section=process", label: "Settings > Process capture" },
   guard_network: { href: "/security?tab=mcp", label: "Security > MCP > Network features" },
   terminal_sandbox: { href: "/terminals?tab=settings#sandbox-backends", label: "Terminals > Settings > Sandbox isolation" },
+  terminal_sandbox_hosted: { href: "/terminals?tab=settings#hosted-sandboxes", label: "Terminals > Settings > Hosted sandboxes" },
   team_summaries: { href: "/settings?section=intel", label: "Settings > Team AI summaries" },
   terminal_remote_systems: { href: "/terminals?tab=settings#remote-systems", label: "Terminals > Settings > Remote systems (SSH)" },
   connected_tools: { href: "/settings?section=tools", label: "Settings > Connected tools" },

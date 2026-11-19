@@ -234,6 +234,7 @@ func guiUnsupportedField(body terminalLaunchRequest) (string, bool) {
 		{"model", strings.TrimSpace(body.Model) != ""},
 		{"workspace_source", strings.TrimSpace(body.WorkspaceSource) != ""},
 		{"workspace_remote", strings.TrimSpace(body.WorkspaceRemote) != ""},
+		{"workspace_clone_where", strings.TrimSpace(body.WorkspaceCloneWhere) != ""},
 		{"workspace_branch", strings.TrimSpace(body.WorkspaceBranch) != ""},
 	}
 	for _, c := range checks {

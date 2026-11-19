@@ -394,7 +394,7 @@ func buildStep(s *planState, id string) Step {
 	}
 	if c.hasRemedy {
 		st.Display, st.Docs, st.After, st.Disclosure = c.remedy.Display, c.remedy.Docs, c.remedy.After, c.remedy.Disclosure
-		st.Package = c.remedy.Package
+		st.Package, st.Value, st.Action = c.remedy.Package, c.remedy.Value, c.remedy.Action
 	}
 	stepNotes(s.in, &st)
 	if p.Kind == KindComponent {
@@ -484,6 +484,7 @@ func gate(in PlanInput, p *Plan) {
 			st.UndoNote = note
 			st.Reason = joinSentences(st.Reason, note)
 		}
+		st.UndoAlso = undoAlso(in, *st)
 		if st.State == StateBlocked || st.State == StateNotAllowed {
 			blockedBefore = true
 		}
@@ -600,7 +601,7 @@ var undoRules = []undoRule{
 	// removed while that row uses it (plan section 4.9); the component and
 	// enable steps are this row's own.
 	{undoRuleSharedInUse, func(in PlanInput, st Step) (bool, bool) {
-		return false, st.Kind != KindComponent && st.Kind != KindEnable && len(in.InUseBy[st.Prereq]) > 0
+		return false, sharedKeptByOthers(in, st)
 	}, nil},
 	// Removing the default backend from an otherwise empty list changes
 	// nothing (the empty list falls back to it), so that undo is not offered.
@@ -632,6 +633,35 @@ var undoRules = []undoRule{
 		return true, ch == ChConfig || ch == ChContent
 	}, nil},
 	{"otherwise", func(PlanInput, Step) (bool, bool) { return false, true }, nil},
+}
+
+// sharedKeptByOthers reports whether another set-up row's use keeps st: a
+// shared prerequisite other than the row's own component and enable steps,
+// and not NodeWide (one value every row reads: its undo changes it for all
+// of them and says so, UndoAlso).
+func sharedKeptByOthers(in PlanInput, st Step) bool {
+	if st.Kind == KindComponent || st.Kind == KindEnable || len(in.InUseBy[st.Prereq]) == 0 {
+		return false
+	}
+	p, ok := Lookup(st.Prereq)
+	return !ok || !p.NodeWide
+}
+
+// SharedKeptByOthers is sharedKeptByOthers for the run layer, which reads
+// the rows in use again at undo time (never from the plan shown).
+func SharedKeptByOthers(in PlanInput, st Step) bool { return sharedKeptByOthers(in, st) }
+
+// undoAlso is the sentence an offered undo of a NodeWide step carries when
+// other set-up rows read the same value ("" otherwise).
+func undoAlso(in PlanInput, st Step) string {
+	others := in.InUseBy[st.Prereq]
+	if !st.CanUndo || len(others) == 0 {
+		return ""
+	}
+	if p, ok := Lookup(st.Prereq); !ok || !p.NodeWide {
+		return ""
+	}
+	return "Undo changes this back for " + strings.Join(rowLabels(others), ", ") + " too: they use the same setting."
 }
 
 // The undo rules that carry a sentence (undoNote).
@@ -697,6 +727,11 @@ func undoDecision(in PlanInput, st Step) (undo bool, rule, refused string) {
 // keptReason is the sentence a shared prerequisite's step carries when its
 // undo is refused, naming each other row by its registry label.
 func keptReason(rows []string) string {
+	return "Kept: also used by " + strings.Join(rowLabels(rows), ", ") + "."
+}
+
+// rowLabels names each row id by its registry label.
+func rowLabels(rows []string) []string {
 	labels := make([]string, 0, len(rows))
 	for _, id := range rows {
 		label := id
@@ -705,7 +740,7 @@ func keptReason(rows []string) string {
 		}
 		labels = append(labels, label)
 	}
-	return "Kept: also used by " + strings.Join(labels, ", ") + "."
+	return labels
 }
 
 // Fingerprint is the sha256 over each step's prereq, state, class, display

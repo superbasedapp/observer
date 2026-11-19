@@ -25,6 +25,7 @@ import (
 	"github.com/marmutapp/superbased-observer/internal/sandboxrelayd"
 	"github.com/marmutapp/superbased-observer/internal/sandboxremote"
 	"github.com/marmutapp/superbased-observer/internal/sandboxremote/relaymux"
+	"github.com/marmutapp/superbased-observer/internal/workspace"
 )
 
 // hostedSyncBuf is a goroutine-safe buffer for the terminal's output.
@@ -81,6 +82,9 @@ type hostedHarness struct {
 	// and diffOut, when diffCode is set, fail the staged diff.
 	stageCode, diffCode int
 	stageOut, diffOut   string
+	// agentCommits answers the count of the box's commits (lane RETURNS);
+	// "" answers as a box without the tool.
+	agentCommits string
 }
 
 func newHostedHarness(t *testing.T, vendor string) *hostedHarness {
@@ -199,6 +203,11 @@ func (hh *hostedHarness) exec(b *fakeBox, spec sandboxremote.ExecSpec) (sandboxr
 		return newFakeProcess("1000:1000\n", 0), nil
 	case len(spec.Argv) >= 3 && spec.Argv[0] == "sh" && spec.Argv[2] == hostedStageScript:
 		return newFakeProcess(hh.stageOut, hh.stageCode), nil
+	case len(spec.Argv) >= 3 && spec.Argv[0] == "sh" && spec.Argv[2] == hostedAgentCommitsScript:
+		if hh.agentCommits == "" {
+			return newFakeProcess("", 3), nil
+		}
+		return newFakeProcess(hh.agentCommits, 0), nil
 	case len(spec.Argv) >= 8 && spec.Argv[0] == "sh" && spec.Argv[2] == hostedAssembleScript:
 		return hh.assemble(b, spec.Argv[4], spec.Argv[5], spec.Argv[6], spec.Argv[7:]), nil
 	case len(spec.Argv) > 1 && slices.Equal(spec.Argv[1:], hostedBoxProbeArgs):
@@ -855,5 +864,49 @@ func TestHostedBinaryDigestMismatchRefuses(t *testing.T) {
 	v, _ := sandboxremote.VendorFor(sandboxremote.VendorE2B)
 	if _, ok := hh.client.boxes["box1"].files[v.Layout(hh.run.plan.Root).Binary]; ok {
 		t.Error("a binary that failed its digest was installed")
+	}
+}
+
+// TestHostedHostKeepsTheDiffBase (lane RETURNS): beside the saved diff the
+// helper keeps where the box's work started (the folder's commit and status
+// read at the upload) and how many commits the agent made in the box, which
+// decide whether the Terminals page opens the diff as a branch.
+func TestHostedHostKeepsTheDiffBase(t *testing.T) {
+	sha := strings.Repeat("c", 40)
+	for _, tc := range []struct {
+		name, commits string
+		want          int
+		exact         bool
+	}{
+		{"no commit of the agent's", "1\n", 0, true},
+		{"two commits of the agent's", "3\n", 2, false},
+		{"no answer", "", -1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			old := hostedMeasureUploadBase
+			hostedMeasureUploadBase = func(context.Context, string, int) hostedDiffBase {
+				return hostedDiffBase{Commit: sha, StatusKnown: true, StatusClean: true, AgentCommits: -1}
+			}
+			t.Cleanup(func() { hostedMeasureUploadBase = old })
+			hh := newHostedHarness(t, sandboxremote.VendorE2B)
+			hh.diff = "diff --git a/main.go b/main.go\n+// changed in the box\n"
+			hh.agentCommits = tc.commits
+			code := make(chan int, 1)
+			go func() { code <- hh.run.drive(context.Background()) }()
+			waitFor(t, func() bool { hh.mu.Lock(); defer hh.mu.Unlock(); return len(hh.ptys) > 0 })
+			if c := hostedEndRun(t, hh, code); c != 5 {
+				t.Errorf("exit %d", c)
+			}
+			rec, ok := readHostedDiffRecord(hh.run.plan.ObserverDir, "run-h1")
+			if !ok || rec.Root != hh.run.plan.Root || rec.Base.Commit != sha || rec.Base.AgentCommits != tc.want {
+				t.Fatalf("record %+v %v", rec, ok)
+			}
+			if v := workspace.DecideDiffBase(rec.Base.facts()); v.Exact != tc.exact {
+				t.Fatalf("verdict %+v", v)
+			}
+			if !strings.Contains(hh.out.String(), "Changes from sandboxed runs") {
+				t.Errorf("the terminal does not say where to open it: %q", hh.out.String())
+			}
+		})
 	}
 }

@@ -50,7 +50,7 @@ var driverConstants = map[string][]string{
 // cmdOnlyVerdicts are verdicts whose constant lives in cmd/observer (a main
 // package a test here cannot import); lane daemon pins each there.
 var cmdOnlyVerdicts = map[string]map[string]bool{
-	"sandboxremote": {"credential_missing": true},
+	"sandboxremote": {"credential_missing": true, "custody_unsatisfiable": true},
 }
 
 // TestVerdictStringsArePinned: every verdict string of the map is its
@@ -101,6 +101,39 @@ func TestVerdictMapRows(t *testing.T) {
 						t.Errorf("%s Detect.Verdicts %v lacks %q", m.Prereq, p.Detect.Verdicts, m.Verdict)
 					}
 				})
+			}
+		}
+	}
+}
+
+// TestVerdictMapPrefixRows is one test per prefix row: a completed verdict
+// names its prerequisite on every row the driver probes, the bare prefix
+// names none, and the prerequisite is in the row's Setup (audit
+// sandbox-terminal-gaps-2026-11-18, H11: consent_changed_<field> named no
+// step before).
+func TestVerdictMapPrefixRows(t *testing.T) {
+	cases := []struct{ backend, verdict, want string }{
+		{sandboxbackend.BackendDaytona, "consent_changed_custody", "hosted-consent"},
+		{sandboxbackend.BackendE2B, "consent_changed_region", "hosted-consent"},
+		{sandboxbackend.BackendModal, "consent_changed_box_binary", "hosted-consent"},
+		{sandboxbackend.BackendDaytona, "consent_changed_", ""},
+		{sandboxbackend.BackendBwrap, "consent_changed_custody", ""},
+	}
+	for _, c := range cases {
+		if got := missingFromVerdict(c.backend, c.verdict, ""); got != c.want {
+			t.Errorf("missingFromVerdict(%s, %s) = %q, want %q", c.backend, c.verdict, got, c.want)
+		}
+	}
+	for _, d := range verdictMap {
+		for _, m := range d.MissingPrefix {
+			for _, backend := range d.Backends {
+				row, ok := sandboxbackend.Get(backend)
+				if !ok || !stringIn(row.Setup, m.Prereq) {
+					t.Errorf("%s: prefix row %q names %q, not in its Setup", backend, m.Verdict, m.Prereq)
+				}
+				if got := missingFromVerdict(backend, m.Verdict+"x", ""); got != m.Prereq {
+					t.Errorf("%s: %qx = %q, want %q", backend, m.Verdict, got, m.Prereq)
+				}
 			}
 		}
 	}

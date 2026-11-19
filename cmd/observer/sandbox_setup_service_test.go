@@ -760,6 +760,7 @@ func TestSandboxSetupFactRules(t *testing.T) {
 		{"oci-allow-rootful", true, true},
 		{"hosted-key", true, true},
 		{"hosted-consent", false, true},
+		{"hosted-custody", true, true},   // the default custody (auto) reaches the agent
 		{"hosted-account", false, false}, // unknown unless a credential reads it
 		{"userns", false, false},         // no passive fact: the probe judges it
 	}

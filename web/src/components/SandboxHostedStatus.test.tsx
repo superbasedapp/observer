@@ -146,3 +146,24 @@ test("a clone-remote agreement never says it uploads (FX3-A10)", () => {
   assert.equal(upload.confirmLabel, "Agree and allow uploads?");
   assert.match(upload.armedNote, /will upload the files above/);
 });
+
+test("a clone made on this machine says it uploads the clone's files (lane CLONE2)", () => {
+  const home = consentWording("Daytona", "https://github.com/acme/private.git", "home");
+  assert.match(home.confirmLabel, /clone here and upload/);
+  assert.match(home.armedNote, /on this machine with your git login and upload its tracked files/);
+  assert.doesNotMatch(home.armedNote, /nothing is uploaded/);
+  assert.match(consentWording("Daytona", "https://github.com/acme/app.git", "box").armedNote, /nothing is uploaded from this machine/);
+});
+
+test("with no published repositories the clone consent takes a typed repository (lane CLONE2)", () => {
+  const html = view({ onRepository: () => {}, repository: "" });
+  assert.match(html, /Repository to clone in the box/);
+  assert.match(html, /placeholder="the repository&#x27;s address/);
+  assert.doesNotMatch(view(), /Repository to clone in the box/);
+  const listed = view({
+    onRepository: () => {},
+    data: { ...answer, providers: [{ ...answer.providers![0], clone_repositories: ["https://g/x.git"] }] },
+  });
+  assert.doesNotMatch(listed, /Repository to clone in the box/);
+  assert.match(listed, /Clone in the box instead/);
+});

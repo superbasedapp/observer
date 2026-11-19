@@ -5,7 +5,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
+
+	vocab "github.com/marmutapp/superbased-observer/internal/sandboxvocab"
 )
 
 // consent.go is the per-provider consent record (sandbox plan v2 sections
@@ -44,6 +47,24 @@ type ConsentFacts struct {
 	// MaxRunMinutes and DailyBoxMinutes are the spend caps.
 	MaxRunMinutes   int `json:"max_run_minutes"`
 	DailyBoxMinutes int `json:"daily_box_minutes"`
+	// PrivateRanges is the effective private-range deny of the tier
+	// (PrivateRangePosture.ConsentValue: "denied", "allowed", or "" where no
+	// setting changes it; decision SBXD-7). It joined the record without a
+	// ConsentVersion step: an empty value is left out of the digest and the
+	// JSON, so every record made before it still verifies, and a launch whose
+	// posture is now denied or allowed reopens consent as
+	// consent_changed_private_ranges.
+	PrivateRanges string `json:"private_ranges,omitempty"`
+	// InBoxKeys are the stored providers whose keys would enter the box
+	// (decision SBXD-3): bound only while the custody settings can put a
+	// key in the box (in_box_api_key, or auto), so a home_relay node's
+	// consent never reopens for a stored key. Sorted provider ids, "," joined.
+	InBoxKeys string `json:"in_box_keys,omitempty"`
+	// ToolKeys and LoginSeed are the tools opted in to the in-box sources of
+	// decision SBXD-4 (their own saved keys; their login access token),
+	// bound under the same condition. Sorted tool ids, "," joined.
+	ToolKeys  string `json:"tool_keys,omitempty"`
+	LoginSeed string `json:"login_seed,omitempty"`
 }
 
 // ConsentRecord is the stored agreement.
@@ -70,17 +91,27 @@ const (
 var consentFields = []struct {
 	name string
 	get  func(ConsentFacts) string
+	// omitEmpty: an empty value is left out of the digest (a field added
+	// after records were made).
+	omitEmpty bool
 }{
-	{"provider", func(f ConsentFacts) string { return f.Provider }},
-	{"endpoint", func(f ConsentFacts) string { return f.Endpoint }},
-	{"region", func(f ConsentFacts) string { return f.Region }},
-	{"custody", func(f ConsentFacts) string { return f.Custody }},
-	{"tier", func(f ConsentFacts) string { return f.Tier }},
-	{"capture", func(f ConsentFacts) string { return f.Capture }},
-	{"scope", func(f ConsentFacts) string { return f.ScopeKey }},
-	{"box_binary", func(f ConsentFacts) string { return f.BoxBinary }},
-	{"memory_images", func(f ConsentFacts) string { return f.MemoryImages }},
-	{"cap", func(f ConsentFacts) string { return fmt.Sprintf("%d/%d", f.MaxRunMinutes, f.DailyBoxMinutes) }},
+	{"provider", func(f ConsentFacts) string { return f.Provider }, false},
+	{"endpoint", func(f ConsentFacts) string { return f.Endpoint }, false},
+	{"region", func(f ConsentFacts) string { return f.Region }, false},
+	{"custody", func(f ConsentFacts) string { return f.Custody }, false},
+	{"tier", func(f ConsentFacts) string { return f.Tier }, false},
+	{"capture", func(f ConsentFacts) string { return f.Capture }, false},
+	{"scope", func(f ConsentFacts) string { return f.ScopeKey }, false},
+	{"box_binary", func(f ConsentFacts) string { return f.BoxBinary }, false},
+	{"memory_images", func(f ConsentFacts) string { return f.MemoryImages }, false},
+	{"cap", func(f ConsentFacts) string { return fmt.Sprintf("%d/%d", f.MaxRunMinutes, f.DailyBoxMinutes) }, false},
+	// Added after version 1 (decisions SBXD-7, SBXD-3 and SBXD-4): an empty value
+	// adds nothing to the digest, so every record made before them still
+	// checks, and a change from empty still reports the field.
+	{"private_ranges", func(f ConsentFacts) string { return f.PrivateRanges }, true},
+	{"in_box_keys", func(f ConsentFacts) string { return f.InBoxKeys }, true},
+	{"tool_keys", func(f ConsentFacts) string { return f.ToolKeys }, true},
+	{"login_seed", func(f ConsentFacts) string { return f.LoginSeed }, true},
 }
 
 // ConsentDigest hashes the facts in a fixed order.
@@ -88,6 +119,9 @@ func ConsentDigest(f ConsentFacts) string {
 	h := sha256.New()
 	fmt.Fprintf(h, "v%d", ConsentVersion)
 	for _, c := range consentFields {
+		if c.omitEmpty && c.get(f) == "" {
+			continue
+		}
 		fmt.Fprintf(h, "\x00%s=%s", c.name, c.get(f))
 	}
 	return hex.EncodeToString(h.Sum(nil))
@@ -148,6 +182,10 @@ type ConsentScreen struct {
 	Uploaded     []string     `json:"uploaded"`
 	UploadedMore int          `json:"uploaded_more"`
 	Facts        ConsentFacts `json:"facts"`
+	// CloneWhere is where a clone-remote agreement's clone runs ("box", or
+	// "home": this machine clones and uploads; decision SBXD-5), "" for an
+	// upload of a project.
+	CloneWhere string `json:"clone_where,omitempty"`
 }
 
 // ConsentFileList caps the file names the consent screen lists.
@@ -169,6 +207,28 @@ func RemoteCloneURL(scope string) (string, bool) {
 	return url, ok && url != ""
 }
 
+// homeClonePrefix opens the consent scope of a clone this machine makes and
+// uploads (decision SBXD-5, clone_where home).
+const homeClonePrefix = "home_clone:"
+
+// HomeCloneScopeKey is the consent scope of a clone of url made on this
+// machine with its own git login, whose tracked files are then uploaded
+// under the upload manifest's rules (decision SBXD-5): distinct from
+// RemoteCloneScopeKey of the same URL, so switching where the clone runs
+// asks again, and bound to the manifest rule version, so a rule change asks
+// again as it does for a project's upload. The URL is kept exactly as the
+// launch carries it.
+func HomeCloneScopeKey(url string) string {
+	return homeClonePrefix + "v" + strconv.Itoa(ManifestVersion) + ":" + url
+}
+
+// HomeCloneURL reads the clone URL out of a home-clone scope key (ok false
+// for any other scope, or one bound to another manifest rule version).
+func HomeCloneURL(scope string) (string, bool) {
+	rest, ok := strings.CutPrefix(scope, homeClonePrefix+"v"+strconv.Itoa(ManifestVersion)+":")
+	return rest, ok && rest != ""
+}
+
 // BuildConsentScreen renders the facts, the manifest, the vendor row and an
 // estimate into the screen's lines (the same lines on every surface).
 func BuildConsentScreen(v Vendor, f ConsentFacts, m Manifest, estimate Estimate) ConsentScreen {
@@ -182,8 +242,9 @@ func BuildConsentScreen(v Vendor, f ConsentFacts, m Manifest, estimate Estimate)
 		{"What is uploaded", m.Summary() + " from " + m.Root + " (git tracked and untracked-not-ignored files; never your home directory, never .git history)"},
 		{"In-box observer", f.BoxBinary},
 		{"Model credential", custodyLine(f.Custody)},
-		{"Network tier", f.Tier},
+		{"Network tier", tierLine(v, f.Tier)},
 		{"Capture", captureLine},
+		{HooksConsentLabel, HostedHookNote},
 		{"Memory images", memoryLine(v, f.MemoryImages)},
 		{"Spend cap", fmt.Sprintf("each box stops after at most %d minutes, sooner when less is left of this machine's own cap of %d box-minutes a day on %s", f.MaxRunMinutes, f.DailyBoxMinutes, v.Name)},
 		{"Estimated cost", costLine(v, estimate)},
@@ -192,15 +253,37 @@ func BuildConsentScreen(v Vendor, f ConsentFacts, m Manifest, estimate Estimate)
 		// SBX-GOV-2: the endpoint is shown, and what it may not do.
 		lines = append(lines, ConsentLine{"Endpoint", f.Endpoint + " was published by your organization: data only (it enables nothing by itself), and your credential is sent there only when you connected one for this endpoint"})
 	}
-	for _, n := range v.NetworkNotes {
+	// The tier's own network facts (H10, SBXD-7): on a tier whose meaning the
+	// vendor does not document, that the box's traffic is the vendor's and
+	// whether the metadata address and private ranges are denied by
+	// Observer's request, not deniable there, or allowed by the person's
+	// setting (the bound PrivateRanges fact); then what live runs saw.
+	for _, n := range TierNetworkNotes(v, vocab.Tier(f.Tier), f.PrivateRanges == PrivateRangesAllowedBySetting.ConsentValue()) {
 		lines = append(lines, ConsentLine{"Outside Observer's control", n})
+	}
+	if m.NonRepository {
+		// SBXD-8: a folder that is not a repository, and how its files
+		// were chosen (the listed files follow the lines).
+		setConsentLine(lines, "What is uploaded", m.Summary()+" from "+m.Root+" (this folder is not a git repository: every file except what its .gitignore files and Observer's default ignore list leave out, which are dependency, build and virtual-environment folders, version-control folders, .env files and operating-system clutter; never your home directory; the agent's changes come back as a diff file, with no branch to open)")
 	}
 	if url, ok := RemoteCloneURL(m.ScopeKey); ok {
 		// A box-side clone uploads nothing from this machine; the URL is
 		// shown in full, as the digest binds it.
 		setConsentLine(lines, "What is uploaded", "nothing from this machine: the box clones "+url+" itself (the clone never runs here)")
+		lines = append(lines, ConsentLine{"Repository access", cloneAccessLine(v)})
+	}
+	if url, ok := HomeCloneURL(m.ScopeKey); ok {
+		// A clone made here (SBXD-5): what leaves is the clone's tracked
+		// files, listed only once the clone exists, under the same rules.
+		setConsentLine(lines, "What is uploaded", HomeCloneUploadLine(url))
+		lines = append(lines, ConsentLine{"Repository access", HomeCloneAccessLine})
 	}
 	scr := ConsentScreen{Provider: v.ID, Lines: lines, Excluded: m.Excluded, Facts: f, Uploaded: []string{}}
+	if _, ok := RemoteCloneURL(m.ScopeKey); ok {
+		scr.CloneWhere = "box"
+	} else if _, ok := HomeCloneURL(m.ScopeKey); ok {
+		scr.CloneWhere = "home"
+	}
 	for i, file := range m.Files {
 		if i == ConsentFileList {
 			scr.UploadedMore = len(m.Files) - i
@@ -220,6 +303,29 @@ func setConsentLine(lines []ConsentLine, label, value string) {
 			return
 		}
 	}
+}
+
+// HomeCloneUploadLine is the consent screen's upload line for a clone of
+// url made on this machine (SBXD-5).
+func HomeCloneUploadLine(url string) string {
+	return "the files git tracks in " + url + ", cloned on this machine with your own git login just before the box starts (never the git history; credential-shaped files are left out and the upload caps apply); the run's terminal says how many files went and which were left out, and the temporary clone is removed after the upload"
+}
+
+// HomeCloneAccessLine is the consent screen's repository line for a clone
+// made on this machine (SBXD-5).
+const HomeCloneAccessLine = "your git login is used only on this machine, for the clone; no git credential is sent to the box, so a private repository works"
+
+// cloneAccessLine says what the box clones with (lane CLONE): a row whose
+// calls carry a token the organization mints (MintedCredential) may have the
+// organization's own read-only credential for that one repository attached
+// for the clone (g1-design 4.3); every other row's box gets no git
+// credential at all, so only a public repository clones. Neither ever sends
+// a git credential of this machine.
+func cloneAccessLine(v Vendor) string {
+	if v.MintedCredential {
+		return "no git credential of this machine is sent; your organization attaches its own read-only credential for that one repository during the clone when it registered one, and the box reaches the git host over its own network"
+	}
+	return "no git credential is sent to the box, so only a public repository clones; a private one fails before the agent starts and the box is deleted. The box reaches the git host over " + v.Name + "'s network, so it needs the internet tier"
 }
 
 // whereLine names whose machines run the box (live finding F-L3-7): a
@@ -246,10 +352,24 @@ func costLine(v Vendor, e Estimate) string {
 	return "no estimate: no list price is recorded for " + v.Name
 }
 
+// tierLine is the network tier line: the tier, and the vendor's own
+// mechanism for it when the row has one.
+func tierLine(v Vendor, tier string) string {
+	if m, ok := v.Tiers[vocab.Tier(tier)]; ok && m.Mechanism != "" {
+		return tier + ": " + m.Mechanism
+	}
+	return tier
+}
+
 func custodyLine(c string) string {
+	// A custody fact may carry per-tool values after the node's
+	// ("auto; droid=in_box_api_key"); the line describes the node's.
+	c, _, _ = strings.Cut(c, "; ")
 	switch c {
 	case "home_relay":
 		return "stays on this machine; the home proxy adds it on the way out"
+	case "auto":
+		return "for each agent, stays on this machine when the home proxy can add it, otherwise an API key is placed in the box environment, readable by the agent and by anyone with access to the box; the New Terminal dialog says which before each start"
 	case "in_box_api_key":
 		return "an API key is placed in the box environment, readable by the agent and by anyone with access to the box; revoke it with its provider after the run if in doubt"
 	case "in_box_oauth_seed":

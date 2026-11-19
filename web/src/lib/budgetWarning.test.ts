@@ -13,6 +13,7 @@ import {
   rememberIds,
   subjectLabel,
   TOASTED_CAP,
+  type BudgetEffect,
   type BudgetNotice,
   type BudgetStatus,
 } from "./budgetWarning.ts";
@@ -106,6 +107,30 @@ test("budgetWarningLabel / isBlocked table", () => {
     assert.equal(budgetWarningLabel({ enforcement, level, ratio }), label, `${enforcement}/${level}/${ratio}`);
     assert.equal(isBlocked({ enforcement, level, ratio }), blocked, `${enforcement}/${level}/${ratio}`);
     assert.doesNotMatch(label, /[\u2013\u2014]/);
+  }
+});
+
+test("budgetWarningLabel / isBlocked follow what THIS machine does (2026-11-18)", () => {
+  // A $0.01 hard org cap on a machine in observe mode said "requests
+  // blocked" while nothing was blocked. With the daemon's effect and blocked
+  // bits, the label says what the machine does; never "blocked" unless the
+  // daemon says this machine refuses the reading.
+  const rows: [BudgetEffect, boolean, BudgetNotice["level"], number, string, boolean][] = [
+    ["warn_observe", false, "exceeded", 42, "Budget exceeded (warning only on this machine)", false],
+    ["warn_guard_off", false, "exceeded", 1.5, "Budget exceeded (warning only on this machine)", false],
+    ["warn_observe", false, "warning", 0.8, "Approaching budget (warning only on this machine)", false],
+    ["blocks", true, "exceeded", 1.5, "Budget exceeded: requests blocked", true],
+    ["blocks_proxied", true, "exceeded", 1.5, "Budget exceeded: proxied requests blocked", true],
+    // Over only with other machines' spend (flag-only baseline): not yet.
+    ["blocks", false, "exceeded", 1.5, "Budget exceeded (not blocked yet)", false],
+    ["blocks", false, "warning", 0.9, "Approaching budget: blocks at 100%", false],
+    // A stale blocked bit under the cap is never "blocked".
+    ["blocks", true, "exceeded", 0.5, "Approaching budget: blocks at 100%", false],
+  ];
+  for (const [effect, blocked, level, ratio, label, isB] of rows) {
+    const n = { enforcement: "hard", level, ratio, effect, blocked };
+    assert.equal(budgetWarningLabel(n), label, `${effect}/${blocked}/${level}/${ratio}`);
+    assert.equal(isBlocked(n), isB, `${effect}/${blocked}/${level}/${ratio}`);
   }
 });
 

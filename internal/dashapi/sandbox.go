@@ -2,6 +2,10 @@ package dashapi
 
 import (
 	"context"
+	"errors"
+	"strings"
+
+	"github.com/marmutapp/superbased-observer/internal/settingslink"
 )
 
 // SandboxProber is the dashboard's self-owned seam onto the B9 sandboxed-
@@ -25,7 +29,7 @@ type SandboxProber interface {
 	ProbeSandbox(ctx context.Context) SandboxAvailability
 }
 
-// The two verdicts the DASHBOARD layer itself produces, as opposed to the
+// The verdicts the DASHBOARD layer itself produces, as opposed to the
 // platform/backend verdicts internal/sandbox owns (sandbox.Verdict*). They
 // live here because this package owns the wire shape and because the
 // distinction between them is a dashboard-copy distinction: one names a
@@ -49,6 +53,17 @@ const (
 	// capability gap of this daemon, so a sandboxed launch answers 501, and
 	// the picker shows the option disabled with the reason.
 	VerdictNotInBuild = "not_in_build"
+	// VerdictProbeTimedOut: the dashboard's read of the sandbox probe (GET
+	// /api/terminal/sandbox) did not answer within its deadline, so the
+	// route answers this instead of holding the page (lane L2). The probe
+	// keeps running in the background and the next read gets its answer.
+	// Only the read route produces it; the launch gate never sees it, and an
+	// unrecognised verdict is fail-closed there anyway.
+	VerdictProbeTimedOut = "probe_timed_out"
+	// VerdictProbeFailed: the probe stopped with an internal error (a panic
+	// the read route recovered), so the route answers this rather than
+	// failing the request (lane L2).
+	VerdictProbeFailed = "probe_failed"
 )
 
 // SandboxAvailability is the dashboard-owned wire shape of a sandbox probe
@@ -139,6 +154,24 @@ type SandboxOrgValue struct {
 	Value string `json:"value"`
 }
 
+// SandboxCloneWhere is a hosted row's clone location facts for the New
+// Terminal dialog (decision SBXD-5): the setting, whether a launch may
+// choose (only while the setting is auto), the places the row can clone
+// now before a URL is typed, and why the others cannot. Values are
+// internal/workspace CloneWhere's (auto, box, home).
+type SandboxCloneWhere struct {
+	// Setting is [terminal.sandbox.hosted].clone_where in force.
+	Setting string `json:"setting"`
+	// Fixed: the setting is box or home, so a launch cannot choose.
+	Fixed bool `json:"fixed"`
+	// Choices are the values a launch on this row can take now.
+	Choices []string `json:"choices"`
+	// Notes say, per value not in Choices, why (plain words).
+	Notes map[string]string `json:"notes,omitempty"`
+	// Rule is the setting's rule in plain words.
+	Rule string `json:"rule"`
+}
+
 // SandboxBackendAvail is one entry of SandboxAvailability.Backends.
 type SandboxBackendAvail struct {
 	ID       string `json:"id"`
@@ -186,6 +219,52 @@ type SandboxBackendAvail struct {
 	// (sandboxbackend.Capability.CanMaskWorkspaceSecrets; decision D32). The
 	// dashboard branches on this flag, never on the row's id.
 	MasksWorkspaceSecrets bool `json:"masks_workspace_secrets,omitempty"`
+	// WorkspaceSources are the workspace sources this row takes (a hosted
+	// row: the live tree uploaded, or the vendor's own deliveries); nil
+	// means every source this machine offers (Sources). A launch on the row
+	// with any other source is refused, so the dialog offers only these.
+	WorkspaceSources []string `json:"workspace_sources,omitempty"`
+	// SourceDeliveries maps each source in WorkspaceSources to how the tree
+	// reaches the box (internal/workspace Delivery values: "sync" is an
+	// upload of a copy of a git repository's files, whose changes come back
+	// as a diff; "remote_clone" is a clone made in the box), so the dialog
+	// labels and checks a source by its delivery, never by the row id
+	// (lane UX, items H5 and H8). Nil on a row that serves no
+	// WorkspaceSources.
+	SourceDeliveries map[string]string `json:"source_deliveries,omitempty"`
+	// ToolNotices are, per tool name, the refusal a launch of that tool on
+	// this row would meet before any box is made because the tool cannot
+	// reach the box (no template set and no install way that can work
+	// there; the launch's own rule, sandboxremote.PlanToolInstall, at the
+	// configured network tier). Only tools that would be refused are
+	// listed (lane UX, item H4).
+	ToolNotices map[string]SandboxKeyNotice `json:"tool_notices,omitempty"`
+	// HookNotices are, per sandbox-launchable tool, whether this machine's
+	// guard checks the agent's tool calls in this row's box on a launch now
+	// ([terminal.sandbox.hosted].guard_hooks, guard enforcement here, and
+	// whether the tool's hooks can be set up in a box; lane HOOKS,
+	// SBXD-6), with the sentence the New Terminal dialog shows. Where
+	// gating does not apply the sentence is the no_hook_gating
+	// disclosure's, which is then said here, per tool, and not with the
+	// row's Disclosures. Nil on a row that is not hosted.
+	HookNotices map[string]SandboxHookNotice `json:"hook_notices,omitempty"`
+	// NetworkNotes are what the person is told before Start about the box's
+	// own network at the configured tier: on a tier the provider does not
+	// document (a hosted internet tier), that its traffic is the
+	// provider's and the cloud metadata address is not known to be refused,
+	// then what live runs saw (sandboxremote.TierNetworkNotes, the same
+	// sentences the consent screen shows; lane UX, item H10).
+	NetworkNotes []string `json:"network_notes,omitempty"`
+	// WorkspaceSourceNotes says, in plain words and keyed by source, why a
+	// source the row delivers is not in WorkspaceSources now (a hosted
+	// box-side clone: the remote-clone switch off, a tier with no route to
+	// the git host, no git hosts listed); a source the row never takes has
+	// none.
+	WorkspaceSourceNotes map[string]string `json:"workspace_source_notes,omitempty"`
+	// CloneWhere is where the row's "Clone a remote URL" source may clone
+	// (decision SBXD-5), for a hosted row that can clone either in its box
+	// or on this machine; nil on every other row.
+	CloneWhere *SandboxCloneWhere `json:"clone_where,omitempty"`
 	// Hint is the driver's note about a known issue on this host that does
 	// not make the row unavailable (for example a container runtime known
 	// to fail, with the known-good one); empty when none.
@@ -235,6 +314,131 @@ type SandboxSourceAvail struct {
 type SandboxToolAvail struct {
 	Available bool   `json:"available"`
 	Reason    string `json:"reason,omitempty"`
+	// HostedKey says, when set, what a hosted sandbox launch of this tool
+	// meets on its model key under the configured key custody (the same
+	// rule the launch walks, sandboxcred.HomeKey): a blocking notice when
+	// the launch would be refused, an advisory one when it goes ahead with
+	// something the person should know first. Nil when there is nothing to
+	// say, or when no hosted row is listed.
+	HostedKey *SandboxKeyNotice `json:"hosted_key,omitempty"`
+}
+
+// SandboxKeyNotice is a line a person reads before Start about the model
+// key of a hosted launch: the closed code, the plain sentence, the
+// technical detail (config keys and commands, for a "Technical details"
+// tooltip only), and its Severity. A blocking notice is a refusal the
+// launch would meet; an advisory one does not block Start (which keys the
+// agent gets, or that it starts without one). An absent Severity (a daemon
+// before it) reads as blocking, as every notice was then.
+type SandboxKeyNotice struct {
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	Technical string `json:"technical,omitempty"`
+	Severity  string `json:"severity,omitempty"`
+	// Place is the settingslink place where the fix is made (the dialog
+	// links there); omitted when the daemon names none, and the dialog then
+	// links to its own default for the notice.
+	Place settingslink.Place `json:"place,omitempty"`
+	// Custody is the custody this launch resolved to (home_relay or
+	// in_box_api_key; decision SBXD-1), for the "Technical details" tooltip
+	// and the dialog's choice of controls. Absent from a daemon before it.
+	Custody string `json:"custody,omitempty"`
+	// KeepHome are the providers whose key, once stored on this machine,
+	// would keep the key here (the dialog's paste field). Set only while
+	// credential injection is selected.
+	KeepHome []SandboxKeyProvider `json:"keep_home,omitempty"`
+	// ToolKeys and LoginSeed are the tool's opt-in in-box key sources
+	// (decision SBXD-4), present when the tool's registry row grounds one
+	// and the launch puts the key in the box.
+	ToolKeys  *SandboxKeySource `json:"tool_keys,omitempty"`
+	LoginSeed *SandboxKeySource `json:"login_seed,omitempty"`
+}
+
+// SandboxKeyProvider names one provider for a person: its id and the key
+// label ("OpenAI API key").
+type SandboxKeyProvider struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+}
+
+// SandboxKeySource is one opt-in in-box key source of a tool: whether it is
+// on for the tool in the config.
+type SandboxKeySource struct {
+	On bool `json:"on"`
+}
+
+// SandboxHookNotice is one tool's entry of SandboxBackendAvail.HookNotices:
+// whether guard checks the agent's tool calls in the box, the closed reason
+// (sandboxremote GuardHooksReason*), the sentence shown before Start and the
+// internal detail for "Technical details".
+type SandboxHookNotice struct {
+	Gated     bool   `json:"gated"`
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	Technical string `json:"technical,omitempty"`
+}
+
+// The closed SandboxKeyNotice.Severity vocabulary ("" reads as blocking).
+const (
+	SandboxKeyBlocking = "blocking"
+	SandboxKeyAdvisory = "advisory"
+)
+
+// SandboxStepRefusal is a sandboxed launch refused before anything started
+// (no workspace prepared, no box made) whose fix is a choice the person
+// makes in Terminals > Settings, said in plain words: Message is the
+// sentence the dashboard shows, Technical the detail behind it (config
+// keys, commands), Code the closed refusal code. The dashboard answers it
+// as a needs-setting refusal; a CLI prints Error(), which carries both.
+type SandboxStepRefusal struct {
+	Code      string
+	Message   string
+	Technical string
+}
+
+// Error is the refusal for a terminal or a log: the code, the sentence and
+// the detail.
+func (e *SandboxStepRefusal) Error() string {
+	s := "terminal_sandbox: " + e.Code + ": " + e.Message
+	if e.Technical != "" {
+		s += " (" + e.Technical + ")"
+	}
+	return s
+}
+
+// SandboxRefusalText is the sentence a surface shows for err: the plain
+// Message of a SandboxStepRefusal anywhere in its chain (never its code
+// or technical detail, which Error() carries for a terminal or a log), else
+// err.Error().
+func SandboxRefusalText(err error) string {
+	var step *SandboxStepRefusal
+	if errors.As(err, &step) && strings.TrimSpace(step.Message) != "" {
+		return step.Message
+	}
+	return err.Error()
+}
+
+// SandboxConsentRefusalCode is the closed "error" code of a hosted launch
+// refused for its consent (the dashboard's 409 body).
+const SandboxConsentRefusalCode = "consent_required"
+
+// SandboxConsentRefusal is a hosted sandbox launch refused before anything
+// started because the person's agreement to what leaves this machine is
+// missing or no longer matches the launch (a changed upload scope, region,
+// custody...). Provider is the hosted row id; Verdict is the closed
+// sandboxremote consent verdict (consent_required, consent_changed_<field>,
+// consent_stale_version, consent_tampered). The dashboard answers it with a
+// 409 carrying both, so the New Terminal dialog shows the consent again
+// instead of the raw sentence; a CLI prints Error().
+type SandboxConsentRefusal struct {
+	Provider string
+	Verdict  string
+}
+
+// Error is the refusal for a terminal or a log, worded as before the type
+// existed (the verdict in brackets, where to agree).
+func (e *SandboxConsentRefusal) Error() string {
+	return "terminal_sandbox: " + SandboxConsentRefusalCode + " (" + e.Verdict + "): review what leaves this machine and agree in Terminals > Settings > Hosted sandboxes, or run `observer sandbox hosted consent " + e.Provider + "`"
 }
 
 // SandboxSeizeRow is what the strace switch ([terminal.sandbox]

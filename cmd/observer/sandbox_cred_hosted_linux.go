@@ -13,11 +13,12 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
-	"github.com/marmutapp/superbased-observer/internal/integration"
+	"github.com/marmutapp/superbased-observer/internal/keystore"
 	"github.com/marmutapp/superbased-observer/internal/sandboxcred"
 	vocab "github.com/marmutapp/superbased-observer/internal/sandboxvocab"
 )
@@ -34,6 +35,7 @@ func init() {
 	hostedCredSetupHook = credSetup
 	hostedCredTeardownHook = credTeardown
 	hostedCredEnvHook = credEnv
+	hostedCredInBoxKeysHook = credInBoxKeys
 	hostedCredStampHook = credStamp
 	hostedCredIsSentinelHook = sandboxcred.IsSentinel
 }
@@ -69,8 +71,13 @@ func credSetup(ctx context.Context, plan hostedPlanFile) error {
 	return nil
 }
 
+// credSetupHomeRelay binds the run's providers (sandboxcred.BindProviders
+// over the tool's injectable providers, from its capability row) and mints
+// one sentinel per bound provider, each for that provider's own key
+// variable (gap H2: a run used to bind exactly one provider, so only a
+// vendor-locked tool could use injection).
 func credSetupHomeRelay(plan hostedPlanFile) error {
-	provider := credToolProvider(plan.Tool)
+	candidates := credToolProviders(plan.Tool)
 	unsat := func(why string) error {
 		if credKeyPoolSet() {
 			why += " (the routing key pool does not serve home_relay: it only rotates keys a request already carries)"
@@ -78,47 +85,75 @@ func credSetupHomeRelay(plan hostedPlanFile) error {
 		return fmt.Errorf("%s: key custody home_relay: %s", verdictHostedCustody, why)
 	}
 	served := credOtherHomeRelay()
-	if provider == "" {
+	if len(candidates) == 0 {
 		if served {
 			return nil // the org gateway serves; no key variable injection knows
 		}
-		return unsat("the tool's model provider is not one credential injection serves")
+		return unsat("the tool's model requests do not reach a provider credential injection serves")
 	}
-	// Whoever serves the key at home, the box gets a sentinel in its tool's
-	// key variable, so the tool starts (F-L3P4-4): the injector swaps a
-	// stored key for it, or the org gateway route replaces it with the
-	// org's virtual key.
-	stored, perr := credKeyPresence(plan.ObserverDir, provider)
-	if served {
-		stored, perr = true, nil
+	ids, perr := credReadProviders(plan.ObserverDir)
+	if perr != nil && !served {
+		return unsat("the list of stored provider keys cannot be read (" + perr.Error() + "); remove it and add your keys again with `observer sandbox credentials add <provider>`")
 	}
-	if perr != nil {
-		return unsat("the list of stored provider keys cannot be read (" + perr.Error() + "); remove it and add your key again with `observer sandbox credentials add " + provider + "`")
+	// Whoever serves the key at home, the box gets a sentinel in each bound
+	// provider's key variable, so the tool starts (F-L3P4-4): the injector
+	// swaps a stored key for it, or the org gateway route replaces it with
+	// the org's virtual key.
+	bound := sandboxcred.BindProviders(sandboxcred.BindFacts{Candidates: candidates, Stored: ids, OrgRoute: served})
+	if len(bound) == 0 {
+		if served {
+			return nil // the org gateway serves; no stored key to bind
+		}
+		if len(candidates) == 1 {
+			return unsat("no " + candidates[0] + " key is stored for injection; add yours with `observer sandbox credentials add " + candidates[0] + "`")
+		}
+		return unsat("no key of the tool's providers (" + strings.Join(candidates, ", ") + ") is stored for injection; add yours with `observer sandbox credentials add <provider>`")
 	}
-	if !stored {
-		return unsat("no " + provider + " key is stored for injection; add yours with `observer sandbox credentials add " + provider + "` or in Terminals > Settings")
-	}
-	sentinel, err := sandboxcred.MintSentinel(rand.Reader, provider)
-	if err != nil {
-		return err
+	sentinels := make([]credSentinel, 0, len(bound))
+	for _, id := range bound {
+		s, err := sandboxcred.MintSentinel(rand.Reader, id)
+		if err != nil {
+			return err
+		}
+		sentinels = append(sentinels, credSentinel{provider: id, sentinel: s})
 	}
 	now := credNow()
-	rec := credRunRecord{
-		V: credRecordVersion, RunID: plan.RunID, Provider: provider, Custody: vocab.CustodyHomeRelay,
-		SentinelHash: sandboxcred.Hash(sentinel), CreatedAt: now,
-		Expires: now.Add(time.Duration(plan.TimeoutMinutes)*time.Minute + 10*time.Minute),
-	}
+	rec := credNewRecord(plan.RunID, vocab.CustodyHomeRelay, sentinels)
+	rec.CreatedAt, rec.Expires = now, now.Add(time.Duration(plan.TimeoutMinutes)*time.Minute+10*time.Minute)
 	if err := credWriteRecord(plan.ObserverDir, rec); err != nil {
 		return fmt.Errorf("the run's injection record: %w", err)
 	}
-	credStates.Store(plan.RunID, &credState{observerDir: plan.ObserverDir, provider: provider, sentinel: sentinel})
+	credStates.Store(plan.RunID, &credState{observerDir: plan.ObserverDir, sentinels: sentinels})
 	return nil
+}
+
+// credSentinel is one bound provider's sentinel, held in clear only in the
+// host helper that minted it.
+type credSentinel struct {
+	provider string
+	sentinel string
+}
+
+// credNewRecord is a run's record for its bound sentinels: version 1 for
+// one provider (the shape every run had before), version 2 for several.
+func credNewRecord(runID string, custody vocab.KeyCustody, sentinels []credSentinel) credRunRecord {
+	rec := credRunRecord{RunID: runID, Custody: custody}
+	if len(sentinels) == 1 {
+		rec.V, rec.Provider, rec.SentinelHash = credRecordVersion, sentinels[0].provider, sandboxcred.Hash(sentinels[0].sentinel)
+		return rec
+	}
+	rec.V = credRecordVersionSet
+	for _, s := range sentinels {
+		rec.Bindings = append(rec.Bindings, credBinding{Provider: s.provider, SentinelHash: sandboxcred.Hash(s.sentinel)})
+	}
+	return rec
 }
 
 // credTeardown removes the run's record (and, for provider_injected, the
 // broker rule) and verifies it is gone.
 func credTeardown(plan hostedPlanFile) {
 	credStates.Delete(plan.RunID)
+	credInBoxCache.Delete(plan.RunID)
 	if vocab.KeyCustody(plan.Custody) == vocab.CustodyProviderInjected {
 		credTeardownProviderInjected(plan)
 	}
@@ -129,16 +164,76 @@ func credTeardown(plan hostedPlanFile) {
 	}
 }
 
-// credEnv puts the run's sentinel in its tool's key variable.
+// credEnv puts each bound provider's sentinel in that provider's key
+// variable.
 func credEnv(plan hostedPlanFile, env map[string]string) {
 	v, ok := credStates.Load(plan.RunID)
 	if !ok {
 		return
 	}
-	st := v.(*credState)
-	if p, ok := sandboxcred.ProviderFor(st.provider); ok && st.sentinel != "" {
-		env[p.KeyEnv] = st.sentinel
+	for _, s := range v.(*credState).sentinels {
+		if p, ok := sandboxcred.ProviderFor(s.provider); ok && s.sentinel != "" {
+			env[p.KeyEnv] = s.sentinel
+		}
 	}
+}
+
+// credInBoxKeys fills, for an in_box_api_key run, each API-key variable the
+// daemon's environment left empty from the key the person stored, for the
+// providers the run's tool can use (gap H3). The stored keys are read once
+// per run (credInBoxCache) and only while the component is on; a provider
+// whose variable the environment already sets is left as it is.
+func credInBoxKeys(plan hostedPlanFile, env map[string]string) {
+	if vocab.KeyCustody(plan.Custody) != vocab.CustodyInBoxAPIKey {
+		return
+	}
+	for name, val := range credInBoxValues(plan) {
+		if env[name] == "" {
+			env[name] = val
+		}
+	}
+}
+
+// credInBoxCache holds each run's stored-key fill (run id -> map), so the
+// keystore is opened once per run, not on every agentEnv.
+var credInBoxCache sync.Map
+
+// credInBoxValues reads the run's stored keys into the variables they fill
+// (name -> key), for the providers the tool can use whose variables the
+// daemon's environment lacks.
+func credInBoxValues(plan hostedPlanFile) map[string]string {
+	if v, ok := credInBoxCache.Load(plan.RunID); ok {
+		return v.(map[string]string)
+	}
+	out := map[string]string{}
+	if credActive(context.Background()) && plan.ObserverDir != "" {
+		usable := sandboxcred.UsableProviders(hostedToolRoute(plan.Tool))
+		var keys keystore.Store
+		for _, id := range sandboxcred.Intersect(usable, credStoredProviders(plan.ObserverDir)) {
+			p, _ := sandboxcred.ProviderFor(id)
+			if credEnvHasAny(p.InBoxEnv) {
+				continue
+			}
+			if keys == nil {
+				keys = credKeysFn(plan.ObserverDir)
+			}
+			if k, err := keys.Get(sandboxcred.KeyName(id)); err == nil && k != "" {
+				out[p.KeyEnv] = k
+			}
+		}
+	}
+	v, _ := credInBoxCache.LoadOrStore(plan.RunID, out)
+	return v.(map[string]string)
+}
+
+// credEnvHasAny reports whether the daemon's environment sets any of names.
+func credEnvHasAny(names []string) bool {
+	for _, n := range names {
+		if v, ok := hostedLookupEnv(n); ok && v != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // credStamp stamps the run's relay token on a relayed model request; a
@@ -233,15 +328,15 @@ func credWriteRecord(observerDir string, rec credRunRecord) error {
 	return os.Rename(tmp.Name(), credRunPath(observerDir, rec.RunID))
 }
 
-// credState is the host helper's own per-run state: the sentinel it put in
-// the box and the relay token it stamps (never written anywhere in clear).
-// Each relayed connection has its own server, so concurrent first requests
-// reach credStamp together: mu makes the token's mint and its hash on the
-// run's record one step, so the two can never differ (audit F1).
+// credState is the host helper's own per-run state: the sentinels it put in
+// the box (one per bound provider) and the relay token it stamps (never
+// written anywhere in clear). Each relayed connection has its own server,
+// so concurrent first requests reach credStamp together: mu makes the
+// token's mint and its hash on the run's record one step, so the two can
+// never differ (audit F1).
 type credState struct {
 	observerDir string
-	provider    string
-	sentinel    string
+	sentinels   []credSentinel
 	// absent: this helper found no record for the run, so nothing is
 	// stamped and no config is read again for it (audit F6).
 	absent bool
@@ -253,10 +348,19 @@ type credState struct {
 // credStates holds the helper's runs (run id -> *credState).
 var credStates sync.Map
 
-// credToolProvider is the one provider a tool's model catalogue names.
+// credToolProviders are the providers credential injection may bind for a
+// tool, from its capability row (hostedToolRoute), never its name.
+func credToolProviders(tool string) []string {
+	return sandboxcred.InjectableProviders(hostedToolRoute(tool))
+}
+
+// credToolProvider is the tool's one injectable provider ("" when it has
+// none or several): the provider_injected broker rule names one.
 func credToolProvider(tool string) string {
-	spec, _ := integration.For(tool)
-	return sandboxcred.ProviderForTool(spec.Model.Catalog.Kind == integration.ModelCatalogVendor, spec.Model.Catalog.Providers)
+	if ps := credToolProviders(tool); len(ps) == 1 {
+		return ps[0]
+	}
+	return ""
 }
 
 // credKeyStored reports whether the user's key for provider is stored,

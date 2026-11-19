@@ -3,12 +3,14 @@
 package main
 
 import (
+	"context"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
 	"github.com/marmutapp/superbased-observer/internal/sandboxremote"
+	"github.com/marmutapp/superbased-observer/internal/sandboxvocab"
 	"github.com/marmutapp/superbased-observer/internal/termsvc"
 	"github.com/marmutapp/superbased-observer/internal/workspace"
 )
@@ -97,14 +99,14 @@ func TestSandboxCLIWorkspaceSource(t *testing.T) {
 func TestSandboxCLIOrgLaunchIsDelivered(t *testing.T) {
 	org, _ := sandboxremote.VendorFor(sandboxremote.VendorOpenShellOrg)
 	cfg := config.TerminalSandboxConfig{}
-	if _, err := hostedSourceDelivery(org, termsvc.PrepareRequest{WorkspaceSource: string(workspace.SourceLive)}, cfg); err == nil || !strings.Contains(err.Error(), "source_unsupported") {
+	if _, err := hostedSourceDelivery(context.Background(), org, termsvc.PrepareRequest{WorkspaceSource: string(workspace.SourceLive)}, sandboxvocab.TierInternet, cfg); err == nil || !strings.Contains(err.Error(), "source_unsupported") {
 		t.Fatalf("live on the org row: %v", err)
 	}
 	src, _, err := sandboxCLIWorkspaceSource("", sandboxCLIRowDeliveries(sandboxremote.VendorOpenShellOrg))
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := hostedSourceDelivery(org, termsvc.PrepareRequest{WorkspaceSource: string(src)}, cfg)
+	d, err := hostedSourceDelivery(context.Background(), org, termsvc.PrepareRequest{WorkspaceSource: string(src)}, sandboxvocab.TierInternet, cfg)
 	if err != nil || d.Delivery != workspace.DeliverySync {
 		t.Fatalf("the CLI's default on the org row: %+v %v", d, err)
 	}

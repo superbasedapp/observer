@@ -120,6 +120,7 @@ export function stepButtonLabel(step: SandboxSetupStep): string | null {
   if (step.consent && step.class === "auto") return downloadButtonLabel(step.consent);
   if (stepTakesInput(step)) return null;
   if (step.class === "guide") return stepCopyText(step) ? CLASS_BUTTON_LABELS.guide : null;
+  if (step.class === "auto" && step.action) return step.action;
   if (step.class === "auto" && CHANNEL_BUTTON_LABELS[step.channel]) return CHANNEL_BUTTON_LABELS[step.channel];
   const verb = KIND_TERMINAL_VERBS[step.kind];
   if (verb && step.class === "terminal") return verb;
@@ -385,6 +386,19 @@ export function recordView(rec: SandboxSetupRecord, stepDone = true): RecordView
 export type ManageAction = { action: "undo" | "update" | "repair"; label: string };
 
 const PRESENT_STATUSES = new Set(["installed", "installed_not_found", "install_interrupted", "uninstall_failed", "uninstall_interrupted"]);
+
+/** UNDO_ARMED_NOTE is the armed Undo's note for a step only this row uses. */
+export const UNDO_ARMED_NOTE = "Reverses only what this dashboard did for this step.";
+
+/**
+ * undoArmedNote is the armed Undo's note: a step whose one setting other
+ * hosted rows also read says, before it runs, which rows change with it
+ * (the server's undo_also); every other step keeps UNDO_ARMED_NOTE.
+ */
+export function undoArmedNote(step: Pick<SandboxSetupStep, "undo_also">): string {
+  const also = step.undo_also?.trim();
+  return also ? `${UNDO_ARMED_NOTE} ${also}` : UNDO_ARMED_NOTE;
+}
 
 /**
  * manageActions are the Manage buttons a step offers, in order:
@@ -708,6 +722,7 @@ export const SETUP_PREREQ_HELP: Record<string, string> = {
   "hosted-account": "glossary.terminals_sandbox_setup_hosted_account",
   "hosted-key": "glossary.terminals_sandbox_setup_hosted_key",
   "hosted-consent": "glossary.terminals_sandbox_setup_hosted_consent",
+  "hosted-custody": "glossary.terminals_sandbox_setup_hosted_custody",
 };
 
 /**
@@ -734,6 +749,7 @@ export const SETUP_DOCS_HELP: Record<string, string> = {
   "sandbox-openshell.md#managed-gateway-mode-the-default": "glossary.terminals_sandbox_setup_openshell_gateway",
   "sandbox-openshell-org.md#turning-it-on": "glossary.terminals_sandbox_setup_org_shell",
   "sandboxed-terminals.md#the-isolation-engine-component-isolation": "glossary.terminals_sandbox_setup_module",
+  "sandbox-credential-custody.md#the-four-custody-modes": "glossary.terminals_sandbox_setup_hosted_custody",
 };
 
 /** SETUP_OVERVIEW_HELP is the help entry about the checklist as a whole. */

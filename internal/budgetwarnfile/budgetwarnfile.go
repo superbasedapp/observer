@@ -54,6 +54,12 @@ type Notice struct {
 	CrossedAt   time.Time `json:"crossed_at"`
 	Level       string    `json:"level"`
 	Message     string    `json:"message"`
+	// Effect / Blocked / DeniesOnLocal say what the cap does on THIS
+	// machine (budgetwarn.EffectOf): a file from an older daemon has none,
+	// and a reader then must not claim a block it cannot see.
+	Effect        string `json:"effect,omitempty"`
+	Blocked       bool   `json:"blocked,omitempty"`
+	DeniesOnLocal bool   `json:"denies_on_local_spend,omitempty"`
 }
 
 // Window mirrors budgetwarn.WindowStatus on disk.
@@ -73,6 +79,10 @@ type Window struct {
 	Enforcement string  `json:"enforcement"`
 	Level       string  `json:"level"`
 	Crossed     float64 `json:"crossed"`
+	// Effect / Blocked / DeniesOnLocal: see Notice.
+	Effect        string `json:"effect,omitempty"`
+	Blocked       bool   `json:"blocked,omitempty"`
+	DeniesOnLocal bool   `json:"denies_on_local_spend,omitempty"`
 }
 
 // Notified mirrors one budgetwarn.State entry.

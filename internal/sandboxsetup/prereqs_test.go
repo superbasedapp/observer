@@ -63,6 +63,7 @@ var remedyCases = []struct {
 	{"mxc-files", KindContent, hWin, FamilyWindows, ClassAuto, ChContent, "sandbox.native_files", ""},
 	{"hosted-account", KindAccount, hLinux, FamilyDebian, ClassNever, ChNone, "", "account"},
 	{"hosted-key", KindCredential, hWSL2, FamilyDebian, ClassAuto, ChHostedKey, "", "API key"},
+	{"hosted-custody", KindConfig, hWSL2, FamilyDebian, ClassAuto, ChConfig, "terminal.sandbox.hosted.key_custody", "API key in the box"},
 	{"hosted-consent", KindConsent, hLinux, FamilyDebian, ClassAuto, ChConsent, "", "consent"},
 	{"orgshell-login", KindAccount, hLinux, FamilyDebian, ClassAuto, ChOrgShell, "", "Sign in"},
 }

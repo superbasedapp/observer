@@ -66,6 +66,18 @@ var releasedKeys = map[int]struct{ pinned, share, features []string }{
 		},
 		share: []string{"hook_activity"},
 	},
+	6: { // v1.39.0 (identical sets at this branch's base; generation 7 opened after it)
+		pinned: []string{
+			"security.assessments.max_network_tier", "security.assessments.pentest_pace_rps",
+			"security.assessments.pentest_request_budget", "security.assessments.probe_helper",
+			"security.assessments.relax_pentest_local", "security.assessments.relax_red_team_local",
+			"security.assessments.relaxation_max_minutes", "security.assessments.scoped_approval",
+			"security.assessments.time_box_action", "security.assessments.time_box_pentest_local_minutes",
+			"security.assessments.time_box_red_team_local_minutes", "security.assessments.time_box_threat_model_minutes",
+			"security.assessments.workspace_secret_mode", "terminal.sandbox.seccomp",
+		},
+		share: []string{"scope.denylist_remove", "scope.unrestricted"},
+	},
 }
 
 // TestKeyGenerationsCoverEveryKey fails when a pinned key, share key or

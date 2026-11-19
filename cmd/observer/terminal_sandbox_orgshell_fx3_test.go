@@ -46,7 +46,7 @@ func TestOrgShellCloneRemoteConsent(t *testing.T) {
 	req := termsvc.PrepareRequest{Tool: "claude-code", ProjectRoot: root, WorkspaceSource: string(workspace.SourceCloneRemote), WorkspaceRemote: url}
 
 	// A project consent is not the clone's.
-	scr, err := hostedConsentFor(context.Background(), cfg, d.r.observerDir, d.vendor, root, "")
+	scr, err := hostedConsentFor(context.Background(), cfg, d.r.observerDir, d.vendor, root, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func TestOrgShellCloneRemoteConsent(t *testing.T) {
 		t.Fatalf("a project consent let a clone-remote launch through: %v", err)
 	}
 
-	scr, err = hostedConsentFor(context.Background(), cfg, d.r.observerDir, d.vendor, root, url)
+	scr, err = hostedConsentFor(context.Background(), cfg, d.r.observerDir, d.vendor, root, url, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func TestOrgShellCloneRemoteConsent(t *testing.T) {
 		t.Fatalf("the recorded clone consent was not the launch's: %v", err)
 	}
 	// A URL the launch would refuse cannot be agreed to either.
-	if _, err := hostedConsentFor(context.Background(), cfg, d.r.observerDir, d.vendor, root, "https://elsewhere.example.org/x.git"); err == nil {
+	if _, err := hostedConsentFor(context.Background(), cfg, d.r.observerDir, d.vendor, root, "https://elsewhere.example.org/x.git", ""); err == nil {
 		t.Error("a consent was computed for a host the launch refuses")
 	}
 	// The dashboard's picker lists the organization's repositories.

@@ -26,11 +26,12 @@
 //
 // A box is created from an OCI image reference (the template, or
 // DefaultImage), the small size (2 vCPU, 4 GiB), the run label, a
-// sleep-infinity start command, a delete-on-timeout deadline and, below the
-// internet tier, an inline denyAll network policy; Create waits until the
-// box runs. A lost create answer is recovered by repeating the request
-// under the same Idempotency-Key (the errors page's documented recovery);
-// past the retries it reads create_unknown. The API has no label filter, so
+// sleep-infinity start command, a delete-on-timeout deadline and an inline
+// denyAll network policy (every name and address below the internet tier;
+// on it, only the private ranges, unless they are allowed: SBXD-7); Create
+// waits until the box runs. A lost create answer is recovered by repeating
+// the request under the same Idempotency-Key (the errors page's documented
+// recovery); past the retries it reads create_unknown. The API has no label filter, so
 // ListByLabel matches the run label in the client. Delete sends the box's
 // etag as If-Match with force.
 //

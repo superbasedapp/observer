@@ -334,6 +334,7 @@ export type ConfigKeyPath =
   "terminal.sandbox.vendor_forced_native" |
   "terminal.sandbox.workspaces_dir" |
   "terminal.sandbox.workspace_retention_days" |
+  "terminal.sandbox.returned_copy_retention_days" |
   "terminal.sandbox.mask_paths" |
   "terminal.sandbox.extra_ro_binds" |
   "terminal.sandbox.extra_rw_binds" |
@@ -372,31 +373,44 @@ export type ConfigKeyPath =
   "terminal.sandbox.landlock.min_abi" |
   "terminal.sandbox.hosted.min_session_minutes" |
   "terminal.sandbox.hosted.key_custody" |
+  "terminal.sandbox.hosted.key_custody_by_tool" |
+  "terminal.sandbox.hosted.tool_keys" |
+  "terminal.sandbox.hosted.login_seed" |
   "terminal.sandbox.hosted.memory_images" |
   "terminal.sandbox.hosted.checkpoint_minutes" |
   "terminal.sandbox.hosted.max_run_minutes" |
   "terminal.sandbox.hosted.daily_box_minutes" |
   "terminal.sandbox.hosted.db_export" |
+  "terminal.sandbox.hosted.diff_against" |
+  "terminal.sandbox.hosted.allow_private_ranges" |
+  "terminal.sandbox.hosted.guard_hooks" |
+  "terminal.sandbox.hosted.clone_where" |
+  "terminal.sandbox.hosted.upload_non_git" |
+  "terminal.sandbox.hosted.upload_ignore" |
   "terminal.sandbox.hosted.e2b.region" |
   "terminal.sandbox.hosted.e2b.template" |
   "terminal.sandbox.hosted.e2b.box_binary" |
   "terminal.sandbox.hosted.e2b.endpoint" |
   "terminal.sandbox.hosted.e2b.endpoint_spki_sha256" |
+  "terminal.sandbox.hosted.e2b.allow_private_ranges" |
   "terminal.sandbox.hosted.modal.region" |
   "terminal.sandbox.hosted.modal.template" |
   "terminal.sandbox.hosted.modal.box_binary" |
   "terminal.sandbox.hosted.modal.endpoint" |
   "terminal.sandbox.hosted.modal.endpoint_spki_sha256" |
+  "terminal.sandbox.hosted.modal.allow_private_ranges" |
   "terminal.sandbox.hosted.vercel.region" |
   "terminal.sandbox.hosted.vercel.template" |
   "terminal.sandbox.hosted.vercel.box_binary" |
   "terminal.sandbox.hosted.vercel.endpoint" |
   "terminal.sandbox.hosted.vercel.endpoint_spki_sha256" |
+  "terminal.sandbox.hosted.vercel.allow_private_ranges" |
   "terminal.sandbox.hosted.docker.region" |
   "terminal.sandbox.hosted.docker.template" |
   "terminal.sandbox.hosted.docker.box_binary" |
   "terminal.sandbox.hosted.docker.endpoint" |
   "terminal.sandbox.hosted.docker.endpoint_spki_sha256" |
+  "terminal.sandbox.hosted.docker.allow_private_ranges" |
   "terminal.sandbox.hosted.openshell-org.laptop_relay" |
   "terminal.sandbox.hosted.openshell-org.hold_on_end" |
   "terminal.sandbox.hosted.instabox.region" |
@@ -404,11 +418,13 @@ export type ConfigKeyPath =
   "terminal.sandbox.hosted.instabox.box_binary" |
   "terminal.sandbox.hosted.instabox.endpoint" |
   "terminal.sandbox.hosted.instabox.endpoint_spki_sha256" |
+  "terminal.sandbox.hosted.instabox.allow_private_ranges" |
   "terminal.sandbox.hosted.daytona.region" |
   "terminal.sandbox.hosted.daytona.template" |
   "terminal.sandbox.hosted.daytona.box_binary" |
   "terminal.sandbox.hosted.daytona.endpoint" |
   "terminal.sandbox.hosted.daytona.endpoint_spki_sha256" |
+  "terminal.sandbox.hosted.daytona.allow_private_ranges" |
   "terminal.sandbox.readopt.bound_minutes" |
   "terminal.sandbox.readopt.checkpoint_cap_mib" |
   "terminal.sandbox.wslc.path" |

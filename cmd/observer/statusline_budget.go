@@ -53,7 +53,10 @@ func budgetStatuslineLabel(statusPath, display string) string {
 	if display == "" {
 		display = file.Display
 	}
-	label := budgetwarn.StatusLabel(best.Window, best.Unit, best.Cap, best.Ratio, best.Enforcement, best.Crossed, display)
+	label := budgetwarn.StatusLabel(budgetwarn.WindowStatus{
+		Window: best.Window, Unit: best.Unit, Cap: best.Cap, Ratio: best.Ratio,
+		Enforcement: best.Enforcement, Crossed: best.Crossed, Effect: best.Effect, Blocked: best.Blocked,
+	}, display)
 	if best.Subject != "" {
 		// A per-tool / per-model cap (Sol A5-04): say which, so "(blocked)"
 		// is never read as the whole node being blocked.

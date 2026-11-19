@@ -48,6 +48,7 @@ import {
   consentLine,
   consentNeedsFolder,
   credentialErrorSentence,
+  undoArmedNote,
   credentialFields,
   credentialGuideNote,
   credentialRunFields,
@@ -216,6 +217,8 @@ export function SandboxSetupPanel(props: SandboxSetupPanelProps & SandboxSetupPa
           if (!OP_RUNNING.has(o.status)) {
             if (o.error) setErr(o.error);
             setPlanNonce((n) => n + 1);
+            // The op may have written config.toml: the caller re-reads (D5).
+            onSettled?.();
           }
         })
         .catch((e: unknown) => {
@@ -298,8 +301,13 @@ export function SandboxSetupPanel(props: SandboxSetupPanelProps & SandboxSetupPa
         setOp({ id: r.op_id, status: "installing", done_bytes: 0, total_bytes: step.consent?.bytes ?? 0, step: step.prereq });
       } else if (r.plan) {
         setPlan(r.plan);
+        // A step that finished in the request (an Undo, a config write) may
+        // have changed config.toml: the caller re-reads its own copy, so an
+        // editor on the same page never saves over it with stale values (D5).
+        onSettled?.();
       } else {
         setPlanNonce((n) => n + 1);
+        onSettled?.();
       }
       if (fields) setNote(CREDENTIAL_STORED_NOTE);
     } catch (e) {
@@ -555,7 +563,7 @@ function StepRow({
                 confirmLabel="Undo this step?"
                 disabled={!!busy}
                 loading={busy === `undo:${step.prereq}`}
-                armedNote="Reverses only what this dashboard did for this step."
+                armedNote={undoArmedNote(step)}
                 onConfirm={() => onRun("undo")}
               >
                 {a.label}

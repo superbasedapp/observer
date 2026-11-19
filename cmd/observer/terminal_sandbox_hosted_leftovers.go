@@ -162,7 +162,12 @@ func hostedApplyOrgQuota(scr *sandboxremote.ConsentScreen, v sandboxremote.Vendo
 // consent to that box-side clone instead of the root's upload, through the
 // launch's own delivery check and scope key, so the recorded consent is
 // exactly the one the launch asks for (FX3 item 3, F-L6P4-1).
-func hostedConsentFor(ctx context.Context, cfg config.TerminalSandboxConfig, observerDir string, v sandboxremote.Vendor, root, cloneURL string) (sandboxremote.ConsentScreen, error) {
+//
+// cloneWhere is the launch's own clone location ("" takes the config;
+// decision SBXD-5): the agreement is for the place the launch's own
+// decision picks (a box-side clone, or a clone made here and uploaded),
+// and the screen says which and why.
+func hostedConsentFor(ctx context.Context, cfg config.TerminalSandboxConfig, observerDir string, v sandboxremote.Vendor, root, cloneURL, cloneWhere string) (sandboxremote.ConsentScreen, error) {
 	pc := hostedVendorConfig(cfg.Hosted, v.ID)
 	region, endpoint, ok := hostedResolve(v, pc)
 	if !ok {
@@ -178,26 +183,33 @@ func hostedConsentFor(ctx context.Context, cfg config.TerminalSandboxConfig, obs
 	}
 	d := &hostedDriver{cfg: cfg.Hosted, vendor: v, r: &sandboxRuntime{cfg: cfg, observerDir: observerDir}}
 	var m sandboxremote.Manifest
+	var del hostedDelivery
 	if cloneURL != "" {
-		del, err := hostedSourceDelivery(v, termsvc.PrepareRequest{WorkspaceSource: string(workspace.SourceCloneRemote), WorkspaceRemote: cloneURL}, cfg)
+		del, err = hostedSourceDelivery(ctx, v, termsvc.PrepareRequest{WorkspaceSource: string(workspace.SourceCloneRemote), WorkspaceRemote: cloneURL, WorkspaceCloneWhere: cloneWhere, ProjectRoot: root}, tier, cfg)
 		if err != nil {
 			return sandboxremote.ConsentScreen{}, err
 		}
-		if del.Delivery != workspace.DeliveryRemoteClone {
-			return sandboxremote.ConsentScreen{}, fmt.Errorf("%s has no box-side clone", v.Name)
+		if del.Delivery != workspace.DeliveryRemoteClone && !del.HomeClone {
+			return sandboxremote.ConsentScreen{}, fmt.Errorf("%s has no clone of a remote URL", v.Name)
 		}
-		m = sandboxremote.Manifest{Root: root, ScopeKey: sandboxremote.RemoteCloneScopeKey(del.CloneURL)}
+		m = sandboxremote.Manifest{Root: root, ScopeKey: hostedCloneScope(del)}
 	} else if m, err = d.manifest(ctx, root); err != nil {
 		return sandboxremote.ConsentScreen{}, err
 	}
 	capture := hostedConsentCapture(v.ID, tier, vocab.KeyCustody(cfg.Hosted.KeyCustody))
 	f := sandboxremote.ConsentFacts{
-		Provider: v.ID, Endpoint: endpoint, Region: region, Custody: cfg.Hosted.KeyCustody,
+		Provider: v.ID, Endpoint: endpoint, Region: region, Custody: hostedConsentCustody(cfg.Hosted),
 		Tier: string(tier), Capture: capture, ScopeKey: m.ScopeKey, BoxBinary: hostedBoxBinaryLabel(pc),
 		MemoryImages: cfg.Hosted.MemoryImages, MaxRunMinutes: cfg.Hosted.MaxRunMinutes, DailyBoxMinutes: cfg.Hosted.DailyBoxMinutes,
+		PrivateRanges: hostedPrivateRangesFact(v, cfg.Hosted, tier),
 	}
+	f.InBoxKeys, f.ToolKeys, f.LoginSeed = hostedConsentKeyFactsNow(ctx, cfg.Hosted, hostedRowRefusesInBox(hostedRow(v.ID)))
 	scr := sandboxremote.BuildConsentScreen(v, f, m, v.EstimateCost(cfg.Hosted.MaxRunMinutes))
 	hostedApplyOrgQuota(&scr, v, hostedVendorDailyQuota(v.ID, cfg.Hosted))
+	hostedApplyHookConsent(&scr, cfg.Hosted)
+	if cloneURL != "" {
+		hostedApplyCloneWhere(&scr, v, del)
+	}
 	hostedApplyCredConsent(ctx, &scr, v.Name, capture)
 	return scr, nil
 }
@@ -295,8 +307,8 @@ func renderHostedRelayLogs(out io.Writer, logs []keptHostedRelayLog) {
 
 func newHostedConsentCmd() *cobra.Command {
 	var (
-		cfgPath, workspace, cloneURL string
-		yes, revoke                  bool
+		cfgPath, workspace, cloneURL, cloneWhere string
+		yes, revoke                              bool
 	)
 	cmd := &cobra.Command{
 		Use:   "consent <provider>",
@@ -324,7 +336,7 @@ func newHostedConsentCmd() *cobra.Command {
 			if abs, err := filepath.Abs(workspace); err == nil {
 				workspace = abs
 			}
-			scr, err := hostedConsentFor(cmd.Context(), cfg, obs, v, workspace, cloneURL)
+			scr, err := hostedConsentFor(cmd.Context(), cfg, obs, v, workspace, cloneURL, cloneWhere)
 			if err != nil {
 				return err
 			}
@@ -359,7 +371,8 @@ func newHostedConsentCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&cfgPath, "config", "", "config file")
 	cmd.Flags().StringVar(&workspace, "workspace", "", "the workspace root to upload (default: the current directory)")
-	cmd.Flags().StringVar(&cloneURL, "clone-url", "", "record the consent for a clone-remote launch of this repository URL (the box clones it; nothing is uploaded), exactly as the launch passes it")
+	cmd.Flags().StringVar(&cloneURL, "clone-url", "", "record the consent for a clone-remote launch of this repository URL, exactly as the launch passes it (the box clones it, or this machine clones it and uploads its tracked files, as --clone-where and [terminal.sandbox.hosted].clone_where decide)")
+	cmd.Flags().StringVar(&cloneWhere, "clone-where", "", "with --clone-url: where the launch clones (auto, box or home; default: [terminal.sandbox.hosted].clone_where)")
 	cmd.Flags().BoolVar(&yes, "yes", false, "agree without the prompt (after reading the screen)")
 	cmd.Flags().BoolVar(&revoke, "revoke", false, "remove the recorded agreement")
 	return cmd
@@ -840,9 +853,16 @@ func hostedGetHandler(w http.ResponseWriter, r *http.Request, load func(context.
 	}
 	workspace := strings.TrimSpace(r.URL.Query().Get("workspace"))
 	repository := strings.TrimSpace(r.URL.Query().Get("repository"))
+	// clone_where is the launch's own clone location (SBXD-5) and provider
+	// narrows the answer to one row (the New Terminal dialog's inline
+	// consent asks for the chosen row only).
+	cloneWhere := strings.TrimSpace(r.URL.Query().Get("clone_where"))
+	only := strings.TrimSpace(r.URL.Query().Get("provider"))
 	ids := make([]string, 0, len(hostedVendorRegs))
 	for id := range hostedVendorRegs {
-		ids = append(ids, id)
+		if only == "" || id == only {
+			ids = append(ids, id)
+		}
 	}
 	sort.Strings(ids)
 	var providers []hostedProviderView
@@ -853,8 +873,10 @@ func hostedGetHandler(w http.ResponseWriter, r *http.Request, load func(context.
 			pv.CloneRepositories = reg.cloneRepositories(cfg.Hosted)
 		}
 		if workspace != "" && filepath.IsAbs(workspace) {
-			if scr, err := hostedConsentFor(r.Context(), cfg, obs, v, workspace, repository); err != nil {
-				pv.ScreenError = err.Error()
+			if scr, err := hostedConsentFor(r.Context(), cfg, obs, v, workspace, repository, cloneWhere); err != nil {
+				// The dialog shows this as is: a refusal's plain sentence,
+				// never its code and technical detail.
+				pv.ScreenError = dashapi.SandboxRefusalText(err)
 			} else {
 				pv.Screen = &scr
 				pv.ConsentVerdict = sandboxremote.CheckConsent(pv.Consent, scr.Facts)
@@ -885,6 +907,9 @@ func hostedConsentHandler(w http.ResponseWriter, r *http.Request, load func(cont
 		// launch of that URL (FX3 item 3).
 		Repository string `json:"repository"`
 		Revoke     bool   `json:"revoke"`
+		// CloneWhere is the launch's own clone location for a Repository
+		// (auto, box or home; "" takes the config; SBXD-5).
+		CloneWhere string `json:"clone_where"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -911,9 +936,9 @@ func hostedConsentHandler(w http.ResponseWriter, r *http.Request, load func(cont
 		http.Error(w, "a loaded config and an absolute workspace are required", http.StatusBadRequest)
 		return
 	}
-	scr, err := hostedConsentFor(r.Context(), cfg, obs, v, body.Workspace, strings.TrimSpace(body.Repository))
+	scr, err := hostedConsentFor(r.Context(), cfg, obs, v, body.Workspace, strings.TrimSpace(body.Repository), strings.TrimSpace(body.CloneWhere))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, dashapi.SandboxRefusalText(err), http.StatusBadRequest)
 		return
 	}
 	if err := hostedSaveConsent(obs, sandboxremote.NewConsent(scr.Facts, time.Now().UTC().Format(time.RFC3339))); err != nil {

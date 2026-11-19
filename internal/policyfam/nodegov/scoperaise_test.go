@@ -34,8 +34,9 @@ func TestScopeRaiseDirectiveRows(t *testing.T) {
 		if v := vocab[r.key]; v.Direction != ShareDirectionManagedRaise || v.Help == "" {
 			t.Errorf("served %s = %+v, want direction %q with help", r.key, v, ShareDirectionManagedRaise)
 		}
-		if ShareKeySince(r.key) != CurrentKeyGen {
-			t.Errorf("%s joined at generation %d, want %d", r.key, ShareKeySince(r.key), CurrentKeyGen)
+		// They joined generation 6 (released in v1.39.0).
+		if ShareKeySince(r.key) != 6 {
+			t.Errorf("%s joined at generation %d, want 6", r.key, ShareKeySince(r.key))
 		}
 	}
 	// Every tier row stays lowering_only.

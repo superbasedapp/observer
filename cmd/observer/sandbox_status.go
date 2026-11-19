@@ -388,6 +388,7 @@ func sandboxDoctorSection(ctx context.Context, cfg config.Config, configPath str
 	eff := cliEffectiveSandboxConfig(ctx, cfg, pins)
 	out = append(out, sandboxInstallScriptsDoctorChecks(eff)...)
 	out = append(out, sandboxSignInDoctorChecks(eff)...)
+	out = append(out, hostedKeyDoctorChecks(eff)...)
 	if st.Enabled {
 		out = append(out, diag.Check{Name: "sandbox.live_run_update_policy", Status: diag.StatusOK, Message: liveRunPolicyLine(st.LiveRunUpdatePolicy)})
 	}

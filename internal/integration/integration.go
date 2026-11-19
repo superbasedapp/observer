@@ -208,6 +208,16 @@ type ProxyRoute struct {
 	// on the proxy (T-035, PROVIDER-SWITCH-1). Nil = the route carries every
 	// turn already, or the tool has no overridable built-in providers.
 	ProviderOverrides []ProviderOverride
+	// CarriesProviders, when non-nil, names the provider families (the
+	// model catalogue's ids: "openai", "anthropic", "google", ...) whose
+	// requests this route carries to the proxy, for a route that sets ONE
+	// provider's base URL (OPENAI_BASE_URL, GOOGLE_GEMINI_BASE_URL) while
+	// the tool can also call other providers directly. Credential injection
+	// binds only these, so a box never holds a placeholder for a provider
+	// whose requests bypass the proxy (audit sandbox-terminal-gaps-2026-11-18,
+	// H2). Nil = the registry does not say (a lane's host or the covered
+	// ProviderOverrides may still name them).
+	CarriesProviders []string
 	// ForeignLane, when non-nil, says this persisted route can ALSO carry a
 	// third-party OpenAI-compatible provider the developer configured (a host
 	// other than the route's fixed upstream) through a proxy `/up/<id>/` lane
@@ -622,6 +632,18 @@ var registry = map[string]Capability{
 				Grounding: "code.claude.com/docs/en/authentication, Credential management (read 2026-10-27): on Linux ~/.claude/.credentials.json (mode 0600), on Windows .claude/.credentials.json under %USERPROFILE%, on macOS the encrypted macOS Keychain (a file only when the Keychain rejects the write); CLAUDE_CONFIG_DIR moves the file",
 				DocURL:    "https://code.claude.com/docs/en/authentication",
 			},
+			// Login seed (decision SBXD-4 (c)): the same file as SignIn,
+			// narrowed to the access token. The fields are the ones this
+			// repo already reads from it: cmd/observer/claude.go
+			// readOAuthAccessToken (claudeAiOauth.accessToken, expiresAt in
+			// epoch milliseconds) and internal/planlimits/drv_borrowed.go
+			// parseClaudeCreds (scopes, subscriptionType, rateLimitTier).
+			LoginSeed: &SandboxLoginSeed{
+				File: ".claude/.credentials.json", Artifact: "claude-code/credentials", KeychainOn: []string{"darwin"},
+				Object: "claudeAiOauth", Access: "accessToken", Expiry: "expiresAt", ExpiryMillis: true,
+				Keep:      []string{"scopes", "subscriptionType", "rateLimitTier"},
+				Grounding: "read 2026-11-18 from this repository's own readers of the file (cmd/observer/claude.go readOAuthAccessToken, internal/planlimits/drv_borrowed.go parseClaudeCreds) and the SignIn row's vendor page (code.claude.com/docs/en/authentication, read 2026-10-27: the macOS login is in the Keychain)",
+			},
 			ConfigHome: &SandboxConfigHome{
 				Env: "CLAUDE_CONFIG_DIR", Dir: ".claude", StateFile: ".claude.json", RelocatedStateFile: ".claude.json",
 				OnboardedKey: "hasCompletedOnboarding", SeedKeys: []string{"hasCompletedOnboarding", "theme"},
@@ -864,6 +886,10 @@ var registry = map[string]Capability{
 			ClientAuth: ClientAuthPathToken,
 			Kind:       RouteLauncher, EnvVar: "OPENAI_BASE_URL", Suffix: "/v1",
 			Launcher: "observer opencode", Proof: RouteProofLauncherRoute,
+			// The route is the openai provider entry (OPENAI_BASE_URL, above);
+			// another provider's requests (anthropic, google, ...) go to that
+			// provider directly. The Zen lane carries no provider key.
+			CarriesProviders: []string{"openai"},
 			// CLI-2: a project opencode.json provider.openai.options.baseURL
 			// beats OPENAI_BASE_URL, so since Wave 4 the launcher also puts
 			// the openai route in OPENCODE_CONFIG_CONTENT, which opencode
@@ -980,6 +1006,21 @@ var registry = map[string]Capability{
 			StateRWByOS: map[string][]string{"darwin": {".local/state/opencode", ".cache/opencode"}},
 			// opencode.json carries the MCP servers (internal/mcp/locate).
 			ProtectRO: []string{".config/opencode/opencode.json"},
+			// The keys OpenCode saved itself (decision SBXD-4 (b)): its
+			// auth.json in the data dir, keyed by provider id, an API key
+			// entry {"type":"api","key":...} beside OAuth logins
+			// {"type":"oauth",...}, which are never read.
+			SavedKeys: &SandboxSavedKeys{
+				Files: map[string]string{"": ".local/share/opencode/auth.json"},
+				Keys: []SandboxSavedKey{
+					{Provider: "anthropic", Pointer: "/anthropic/key", TypePointer: "/anthropic/type", TypeValue: "api"},
+					{Provider: "openai", Pointer: "/openai/key", TypePointer: "/openai/type", TypeValue: "api"},
+					{Provider: "google", Pointer: "/google/key", TypePointer: "/google/type", TypeValue: "api"},
+					{Provider: "xai", Pointer: "/xai/key", TypePointer: "/xai/type", TypeValue: "api"},
+					{Provider: "openrouter", Pointer: "/openrouter/key", TypePointer: "/openrouter/type", TypeValue: "api"},
+				},
+				Grounding: "read 2026-11-18: the path from internal/adapter/opencode defaultRoots (~/.local/share/opencode, the XDG data dir OpenCode uses on every OS) and docs/audits/vultr-teams-opencode.md (credentials stored at ~/.local/share/opencode/auth.json); the entry shape from @opencode-ai/sdk 1.19.6 dist/v2/gen/types.gen.d.ts (Auth = OAuth {type:\"oauth\",refresh,access,expires} | ApiAuth {type:\"api\",key} | WellKnownAuth, set per provider id by PUT /auth/{providerID}; that the file is keyed by provider id is read from that route, not from a live file)",
+			},
 		},
 		// GUI launch row (plan §2.2): OpenCode Desktop writes the SAME
 		// opencode.db this row's watcher reads (inventory §2.12,
@@ -2088,6 +2129,8 @@ var registry = map[string]Capability{
 		// saved Google sign-in with a key exported is named by RoutedCaveat.
 		Proxy: &ProxyRoute{
 			Kind: RouteLauncher, EnvVar: "GOOGLE_GEMINI_BASE_URL", Suffix: "", Launcher: "observer gemini",
+			// The route is the Gemini API's base URL: google only.
+			CarriesProviders: []string{"google"},
 			Gate: &RouteGate{
 				CredentialEnv:   []string{"GEMINI_API_KEY"},
 				UnroutedBecause: "Gemini CLI has no GEMINI_API_KEY in this environment, so it uses your Google sign-in (or Vertex AI), which talks to Google directly",
@@ -3658,7 +3701,10 @@ var registry = map[string]Capability{
 		Proxy: &ProxyRoute{
 			ClientAuth: ClientAuthPathToken,
 			Kind:       RouteLauncher, EnvVar: "OPENAI_API_BASE", Suffix: "/v1",
-			Launcher: "observer aider",
+			// OPENAI_API_BASE moves only the openai provider; another
+			// provider's model (an anthropic one) is called directly.
+			CarriesProviders: []string{"openai"},
+			Launcher:         "observer aider",
 			// CLI-7: aider calls load_dotenv(override=True) over these files
 			// (and --env-file), so a base-URL variable in one beats the
 			// launcher's OPENAI_API_BASE; `openai-api-base` in a
@@ -3850,7 +3896,7 @@ var registry = map[string]Capability{
 		// model gpt-4o-mini; 401 upstream on a throwaway key = wire proven).
 		// OPERATOR NOTE: unset your ambient OPENAI_HOST (shell profile) when
 		// using `observer goose --proxy`, or accept that yours wins.
-		Proxy: &ProxyRoute{Kind: RouteLauncher, EnvVar: "OPENAI_HOST", Suffix: "", Launcher: "observer goose --proxy", LaunchFlag: "--proxy", Note: "Opt-in --proxy flag injects OPENAI_HOST at the proxy ROOT (goose appends /v1). Requires GOOSE_PROVIDER=openai (or another OPENAI_HOST-honoring provider); an ambient OPENAI_HOST in the operator env wins over the injection by design.", SharesCredentialFile: true, CredentialFileReason: routeCredGoose, PersistedDefault: &PersistedDefault{
+		Proxy: &ProxyRoute{Kind: RouteLauncher, EnvVar: "OPENAI_HOST", Suffix: "", Launcher: "observer goose --proxy", CarriesProviders: []string{"openai"}, LaunchFlag: "--proxy", Note: "Opt-in --proxy flag injects OPENAI_HOST at the proxy ROOT (goose appends /v1). Requires GOOSE_PROVIDER=openai (or another OPENAI_HOST-honoring provider); an ambient OPENAI_HOST in the operator env wins over the injection by design.", SharesCredentialFile: true, CredentialFileReason: routeCredGoose, PersistedDefault: &PersistedDefault{
 			Note:     "CLI-1a: proxyroute.RegisterDefaultProvider(goose) persists OPENAI_HOST = proxy root in ~/.config/goose/config.yaml when the active provider is openai (active_provider or GOOSE_PROVIDER), so a bare goose routes; YAML member edit, never a key",
 			LiveGate: "LC25",
 		}},

@@ -40,9 +40,20 @@ import type { SandboxSetupSummary, SandboxSetupSummaryResponse } from "@/lib/san
 import { summaryOptionLabel, summarySetUp } from "@/lib/sandboxSetup";
 import { mxcTierLoosens } from "@/lib/sandboxParity";
 import { useApi } from "@/lib/useApi";
-import { useComponentState } from "@/lib/useComponents";
-import type { ComponentsView } from "@/lib/componentState";
-import { ApiError, fetchJSON } from "@/lib/api";
+import { useComponentCatalog, useComponentState } from "@/lib/useComponents";
+import { isRouteInactive, type ComponentsView } from "@/lib/componentState";
+import { isRouteConcealed } from "@/lib/concealedRoutes";
+import { HelpTooltip } from "@shared/primitives/HelpTooltip";
+import {
+  SANDBOX_READ_PATIENCE_MS,
+  sandboxCardShape,
+  sandboxEditorState,
+  sandboxProbeLine,
+  sandboxReadPhase,
+  type SandboxModuleState,
+  type SandboxRead,
+} from "@/lib/sandboxSettingsView";
+import { fetchJSON } from "@/lib/api";
 import { markRestartPending } from "@/lib/restartPending";
 import {
   applyLoaded,
@@ -51,10 +62,13 @@ import {
   emptySave,
   isDirty,
   runSave,
+  saveErrorView,
   type ConfigSaveState,
   type ConfigSaved,
 } from "@/lib/configSave";
 import { Link } from "react-router-dom";
+import { SandboxModuleOffCard } from "@/components/SandboxModuleOffCard";
+import { SandboxReturnsPanel } from "@/components/SandboxReturnsPanel";
 import { COMPONENTS_SETTINGS_PATH, backendNotes, backendState, classLabel, gatewayModeLabel } from "@/lib/sandboxIsolation";
 import { TERMINALS_SANDBOX_BACKENDS_HASH } from "@/lib/nodePageTabs";
 import type { SandboxAvailability, SandboxBackendAvail, SandboxOrgSettings } from "@/lib/types";
@@ -115,6 +129,10 @@ export type TerminalSandboxConfig = {
   allow_worktree_source: boolean;
   workspaces_dir: string;
   workspace_retention_days: number;
+  // SBXD-2: days a sandboxed run's copy is kept once its work came back (0
+  // never removes one by age). Optional so an older daemon (which omits
+  // it) still round-trips; the server keeps a saved value a save omits.
+  returned_copy_retention_days?: number;
   mask_paths: string[];
   extra_ro_binds: string[];
   extra_rw_binds: string[];
@@ -251,6 +269,11 @@ function numberOptions(values: number[], current: number, render: (n: number) =>
 
 function retentionLabel(n: number): string {
   return n === 0 ? "keep forever" : `${n} days`;
+}
+
+// copyRetentionLabel names a returned_copy_retention_days choice (SBXD-2).
+function copyRetentionLabel(n: number): string {
+  return n === 0 ? "never remove automatically" : `${n} days`;
 }
 
 function timeoutLabel(n: number): string {
@@ -678,6 +701,50 @@ function localDashboardURL(): string {
 export const SANDBOX_MASTER_SWITCH_HELP =
   "Master switch. A saved change binds on the next launch, with no daemon restart.";
 
+/** SANDBOX_COMPONENT is the Sandboxes and VMs module's catalog id. */
+const SANDBOX_COMPONENT = "terminals.sandbox";
+
+// useSlow turns true once `pending` has held for SANDBOX_READ_PATIENCE_MS, so
+// a read that never answers is reported (lane L2) instead of spinning.
+function useSlow(pending: boolean): boolean {
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    setSlow(false);
+    if (!pending) return;
+    const t = setTimeout(() => setSlow(true), SANDBOX_READ_PATIENCE_MS);
+    return () => clearTimeout(t);
+  }, [pending]);
+  return slow;
+}
+
+// sandboxRead is one useApi read as lib/sandboxSettingsView sees it. A read
+// useApi skipped (the module is off, or the section is hidden here) has no
+// data and no error, which is NOT "still loading".
+function sandboxRead(
+  path: string,
+  q: { data: unknown; error: Error | null; notInstalled: { component: string; state: string } | null },
+  slow: boolean,
+  complete: boolean,
+): SandboxRead {
+  return {
+    phase: sandboxReadPhase({
+      skipped: isRouteInactive(path) || isRouteConcealed(path),
+      hasData: q.data != null,
+      error: q.error != null,
+      slow,
+    }),
+    complete,
+    notInstalled: q.notInstalled,
+    message: q.error?.message,
+  };
+}
+
+// moduleStateOf reads the module's resolver state from the component view.
+function moduleStateOf(view: ComponentsView | null | undefined): SandboxModuleState {
+  const row = view?.components.find((c) => c.id === SANDBOX_COMPONENT);
+  return row ? row.state : "unknown";
+}
+
 export function SandboxSettingsCard() {
   const settings = useApi<TerminalSandboxConfigResponse>(
     "/api/terminal/sandbox/config",
@@ -708,7 +775,21 @@ export function SandboxSettingsCard() {
   const draft = save.draft;
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // A Save refused because the file changed under the editor (409): the card
+  // offers a reload that replaces the draft with what is on disk (D5).
+  const [conflict, setConflict] = useState(false);
   const [saved, setSaved] = useState(false);
+
+  // reloadSettings re-reads the config; with discard, an unsaved draft is
+  // replaced by what the file holds now (the conflict's reload).
+  function reloadSettings(discard: boolean) {
+    if (discard) {
+      setSave(emptySave<TerminalSandboxConfig>());
+      setErr(null);
+      setConflict(false);
+    }
+    settings.reload();
+  }
 
   useEffect(() => {
     const data = settings.data;
@@ -757,6 +838,7 @@ export function SandboxSettingsCard() {
     busyRef.current = true;
     setBusy(true);
     setErr(null);
+    setConflict(false);
     setSaved(false);
     try {
       const { state, reply } = await runSave(saveRef.current, (body, baseEtag) => putSandboxConfig(body, baseEtag, token ?? ""));
@@ -771,7 +853,9 @@ export function SandboxSettingsCard() {
       // happened" reads from the operator's side.
       probe.reload();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      const v = saveErrorView(e);
+      setErr(v.message);
+      setConflict(v.conflict);
     } finally {
       busyRef.current = false;
       setBusy(false);
@@ -780,6 +864,28 @@ export function SandboxSettingsCard() {
 
   const writable = !!settings.data?.config_writable;
   const live = probe.data;
+  // The three reads as the view model sees them (lib/sandboxSettingsView):
+  // a skipped, slow or failed read is said in words, never an endless
+  // spinner.
+  const settingsSlow = useSlow(settings.data == null && settings.error == null);
+  const probeSlow = useSlow(probe.data == null && probe.error == null);
+  const settingsRead = sandboxRead("/api/terminal/sandbox/config", settings, settingsSlow, !!settings.data?.sandbox);
+  const probeRead = sandboxRead("/api/terminal/sandbox", probe, probeSlow, true);
+  const moduleState = moduleStateOf(componentState.data?.view);
+  // The catalog's restart class per component, for the module-off card's
+  // "needs a restart" outcome (SBXD-9).
+  const catalog = useComponentCatalog();
+  const restartClassByID: Record<string, string | undefined> = Object.fromEntries(
+    (catalog.data?.components ?? []).map((c) => [c.id, c.restart_class]),
+  );
+  const shape = sandboxCardShape({
+    module: moduleState,
+    concealed: isRouteConcealed("/api/terminal/sandbox"),
+    settings: settingsRead,
+    probe: probeRead,
+  });
+  const editorState = sandboxEditorState(settingsRead, localOnly);
+  const probeLine = sandboxProbeLine(probeRead, live);
   // The open row's setup panel (one node, under whichever list draws the
   // rows).
   const setupPanelNode = setupFor && SANDBOX_SETUP_PANEL && (
@@ -791,6 +897,13 @@ export function SandboxSettingsCard() {
           probe.reload();
           setupRows.reload();
         }}
+        onSettled={() => {
+          // A step (or its Undo) may have rewritten config.toml: the editor
+          // re-reads it, so its values and etag follow the file (D5).
+          reloadSettings(false);
+          probe.reload();
+          setupRows.reload();
+        }}
       />
     </Suspense>
   );
@@ -799,12 +912,32 @@ export function SandboxSettingsCard() {
   const pinned = new Set((live?.org?.pins ?? []).map((p) => p.key));
   const editable = (key: string) => writable && (!pinned.has(key) || key in PIN_COMPOSES);
   const composeNote = (key: string) => (pinned.has(key) ? PIN_COMPOSES[key] : undefined);
-  // The module is installed but not active here: its routes answer 404
-  // component_not_installed, and the page shows no sandbox element at all
-  // (sandbox plan v2 section 11.2, "skipped at setup means not there").
-  if (moduleNotInstalled(settings.error) || moduleNotInstalled(probe.error)) return null;
+  // The module is not in this build, or the section is hidden here: no
+  // sandbox element at all. Installed but not turned on (a fresh install of
+  // the developer edition): the card says so and turns it on in place
+  // (SBXD-9), instead of waiting on reads useApi never sends (lane L2).
+  if (shape === "hidden") return null;
+  if (shape === "module_off" || shape === "module_blocked") {
+    return (
+      <SandboxModuleOffCard
+        blocked={shape === "module_blocked"}
+        state={moduleState}
+        restartClass={restartClassByID}
+        onTurnedOn={() => {
+          // The component state lists the sandbox routes as active again,
+          // so useApi sends the card's reads and the editor replaces this
+          // card; the reloads re-read anything already cached.
+          componentState.reload();
+          settings.reload();
+          probe.reload();
+          setupRows.reload();
+        }}
+      />
+    );
+  }
 
   return (
+    <>
     <ChartShell
       title="Sandbox isolation"
       sub="Run supported agents inside an isolation backend (bubblewrap on Linux and WSL2 today) with an isolated home and an explicit workspace. The enable switch binds on the next launch; moving the workspaces directory needs a daemon restart."
@@ -837,15 +970,23 @@ export function SandboxSettingsCard() {
 
         <div
           className={`rounded-2 border px-3 py-2 ${
-            live?.available
+            probeLine.tone === "ok"
               ? "border-ok/40 bg-ok/10 text-ok"
-              : "border-line-2 bg-bg-2 text-fg-3"
+              : probeLine.tone === "warn"
+                ? "border-warn/40 bg-warn/10 text-warn"
+                : "border-line-2 bg-bg-2 text-fg-3"
           }`}
         >
           <span className="font-medium">Running daemon: </span>
-          {live?.available
-            ? `${live.backend ?? "bwrap"} ${live.backend_version ?? ""} available; home is ${live.home_mode ?? "isolated"}; network is ${live.egress ?? "internet"}.`
-            : live?.reason ?? "Sandbox probe has not returned yet."}
+          <span data-testid="sandbox-probe-line">{probeLine.text}</span>
+          {probeLine.technical && (
+            <HelpTooltip technical subject="the sandbox check" content={probeLine.technical} className="ml-1 align-middle" />
+          )}
+          {probeLine.retry && (
+            <button type="button" className="ml-2 text-accent hover:underline" onClick={probe.reload}>
+              Check again
+            </button>
+          )}
           {/* Three different "not available" stories, three different next
               steps. A saved enable switch rebinds the daemon's sandbox seam
               on the next launch, so the old blanket "restart the daemon"
@@ -856,25 +997,34 @@ export function SandboxSettingsCard() {
               launch.
             </span>
           )}
-          {live?.verdict === "runtime_init_failed" && (
-            <span className="ml-1 text-warn">
-              The sandbox is enabled but the daemon could not start it - fix the
-              setting named above and save again.
-            </span>
-          )}
         </div>
 
         {live?.org && <SandboxOrgPanel org={live.org} />}
 
         {!draft ? (
-          // Never an eternal "Loading": a refused local-only route and a
-          // genuinely failed load are different facts, and neither is
-          // "still fetching".
-          localOnly ? null : settings.error ? (
+          // Never an eternal "Loading": a refused local-only route, a failed
+          // load, a reply without the block and a read that is taking too
+          // long are different facts, and none is "still fetching"
+          // (lib/sandboxSettingsView, lane L2).
+          editorState === "local_only" || editorState === "editor" ? null : editorState === "load_error" ? (
             <ErrorState
               className="py-4"
               title="Could not load the sandbox configuration"
               error={settings.error}
+              onRetry={settings.reload}
+            />
+          ) : editorState === "incomplete" ? (
+            <ErrorState
+              className="py-4"
+              title="The daemon answered without the sandbox settings"
+              error="The reply did not include the sandbox settings. Try again; if it keeps happening, restart the daemon."
+              onRetry={settings.reload}
+            />
+          ) : editorState === "slow" ? (
+            <ErrorState
+              className="py-4"
+              title="The sandbox settings have not loaded"
+              error={`The daemon has not answered in ${SANDBOX_READ_PATIENCE_MS / 1000} seconds. Try again; if it keeps happening, restart the daemon.`}
               onRetry={settings.reload}
             />
           ) : (
@@ -1231,6 +1381,24 @@ export function SandboxSettingsCard() {
                     <OrgSetNote show={pinned.has("workspace_retention_days")} />
                   </div>
                   <div className="space-y-1">
+                    <span id="sandbox-copy-retention-label" className="block font-medium text-fg-2">Copies whose work came back</span>
+                    <ComboChip
+                      label="Copies whose work came back"
+                      labelledBy="sandbox-copy-retention-label"
+                      hideTriggerLabel
+                      fullWidth
+                      value={String(draft.returned_copy_retention_days ?? 30)}
+                      disabled={!editable("returned_copy_retention_days")}
+                      onChange={(v) => update("returned_copy_retention_days", Number(v))}
+                      options={numberOptions(SANDBOX_RETENTION_DAYS, draft.returned_copy_retention_days ?? 30, copyRetentionLabel)}
+                      buttonValueRender={() => <span>{copyRetentionLabel(draft.returned_copy_retention_days ?? 30)}</span>}
+                    />
+                    <span className="block text-[11px] text-fg-3">
+                      After this many days a copy is removed, but only when its commits came back and it holds nothing else. A copy with unsaved work is always kept.
+                    </span>
+                    <OrgSetNote show={pinned.has("returned_copy_retention_days")} />
+                  </div>
+                  <div className="space-y-1">
                     <span id="sandbox-timeout-label" className="block font-medium text-fg-2">Preparation timeout</span>
                     <ComboChip
                       label="Preparation timeout"
@@ -1291,8 +1459,17 @@ export function SandboxSettingsCard() {
             </details>
 
             {err && (
-              <div className="rounded-2 border border-danger/40 bg-danger/10 px-3 py-2 text-danger">
-                {err}
+              <div className="flex flex-wrap items-center gap-2 rounded-2 border border-danger/40 bg-danger/10 px-3 py-2 text-danger" role="alert">
+                <span className="min-w-0 flex-1 basis-60">{err}</span>
+                {conflict && (
+                  <button
+                    type="button"
+                    className="rounded-2 border border-border px-2 py-0.5 text-[12px] text-fg-1 hover:bg-bg-2"
+                    onClick={() => reloadSettings(true)}
+                  >
+                    Reload the configuration
+                  </button>
+                )}
               </div>
             )}
             <div className="flex flex-wrap items-center gap-3 pt-1">
@@ -1330,6 +1507,10 @@ export function SandboxSettingsCard() {
         )}
       </div>
     </ChartShell>
+    {/* The work sandboxed runs brought back (lane RETURNS), shown with the
+        module's own card so no core page imports a sandbox component. */}
+    <SandboxReturnsPanel />
+    </>
   );
 }
 
@@ -1377,8 +1558,6 @@ function ociDriverSelected(view: ComponentsView | undefined): boolean {
   return view.components.some((c) => c.id === "terminals.sandbox.oci" && c.state === "active");
 }
 
-// moduleNotInstalled reports whether err is the route guard's 404
-// component_not_installed answer.
-function moduleNotInstalled(err: Error | null): boolean {
-  return err instanceof ApiError && err.status === 404 && err.body.includes("component_not_installed");
-}
+// SandboxModuleOffCard (the module-off pointer with its Turn it on button,
+// ruling SBXD-9) lives in its own file; re-exported for existing importers.
+export { SandboxModuleOffCard } from "@/components/SandboxModuleOffCard";

@@ -315,12 +315,39 @@ func (c *Client) info(r sandboxResp) sandboxremote.BoxInfo {
 }
 
 // networkPolicy maps a tier: deny-all (DNS included) for none and
-// proxy_only, where the relay is the only way out; allow-all for internet.
-func networkPolicy(t vocab.Tier) map[string]string {
-	if t == vocab.TierInternet {
-		return map[string]string{"mode": "allow-all"}
+// proxy_only, where the relay is the only way out; allow-all for internet,
+// or, when the run denies private ranges (decision SBXD-7), the policy object
+// that allows every name ("*") and every IPv4 address and denies the ranges'
+// subnets ("These take precedence over allowed domains and CIDRs", the
+// vendor SDK's NetworkPolicy.subnets.deny). A deny below internet is refused:
+// the box is block-all there already.
+func networkPolicy(t vocab.Tier, deny []string) (any, error) {
+	if t != vocab.TierInternet {
+		if len(deny) > 0 {
+			return nil, fmt.Errorf("vercel: a deny of address ranges is for the internet tier only: %w", sandboxremote.ErrDenyNotRenderable)
+		}
+		return map[string]string{"mode": "deny-all"}, nil
 	}
-	return map[string]string{"mode": "deny-all"}
+	if len(deny) == 0 {
+		return map[string]string{"mode": "allow-all"}, nil
+	}
+	return subnetPolicy{
+		Allow:   []string{"*"},
+		Subnets: subnetRules{Allow: []string{"0.0.0.0/0"}, Deny: append([]string(nil), deny...)},
+	}, nil
+}
+
+// subnetPolicy is the vendor's policy object (the SDK's NetworkPolicy object
+// form, sent as is to POST /v3/sandboxes).
+type subnetPolicy struct {
+	Allow   []string    `json:"allow"`
+	Subnets subnetRules `json:"subnets"`
+}
+
+// subnetRules is NetworkPolicy.subnets.
+type subnetRules struct {
+	Allow []string `json:"allow,omitempty"`
+	Deny  []string `json:"deny,omitempty"`
 }
 
 // Create starts a sandbox (v3, which takes an image) named from the run,
@@ -338,9 +365,13 @@ func (c *Client) Create(ctx context.Context, spec sandboxremote.BoxSpec) (sandbo
 		tags = map[string]string{}
 	}
 	tags[sandboxremote.LabelKey] = spec.RunID
+	policy, err := networkPolicy(spec.Tier, spec.DenyCIDRs)
+	if err != nil {
+		return sandboxremote.BoxInfo{}, err
+	}
 	body := map[string]any{
 		"projectId": c.o.ProjectID, "name": name, "timeout": spec.TimeoutSeconds * 1000,
-		"persistent": false, "networkPolicy": networkPolicy(spec.Tier), "tags": tags,
+		"persistent": false, "networkPolicy": policy, "tags": tags,
 	}
 	if spec.Template != "" {
 		body["image"] = spec.Template
@@ -352,7 +383,7 @@ func (c *Client) Create(ctx context.Context, spec sandboxremote.BoxSpec) (sandbo
 		body["env"] = spec.Env
 	}
 	var out sandboxResp
-	err := c.doJSON(ctx, request{method: http.MethodPost, path: "/v3/sandboxes"}, body, &out)
+	err = c.doJSON(ctx, request{method: http.MethodPost, path: "/v3/sandboxes"}, body, &out)
 	var ae *apiError
 	switch {
 	case errors.As(err, &ae) && ae.status == http.StatusConflict:

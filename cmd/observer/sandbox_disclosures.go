@@ -5,6 +5,7 @@ package main
 import (
 	"github.com/marmutapp/superbased-observer/internal/dashapi"
 	"github.com/marmutapp/superbased-observer/internal/sandboxbackend"
+	"github.com/marmutapp/superbased-observer/internal/sandboxremote"
 	vocab "github.com/marmutapp/superbased-observer/internal/sandboxvocab"
 )
 
@@ -70,6 +71,12 @@ var sandboxDisclosureRows = []sandboxDisclosureRow{
 	{
 		sandboxbackend.DiscloseHostMutation, "",
 		"Changes a setting of this machine before first use.",
+	},
+	{
+		// The hosted rows (lane UX, item H9): the consent screen states the
+		// same sentence (sandboxremote.HostedHookNote, one owner).
+		sandboxbackend.DiscloseNoHookGating, "",
+		sandboxremote.HostedHookNote,
 	},
 }
 

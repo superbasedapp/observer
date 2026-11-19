@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { ExternalLink, Settings2 } from "lucide-react";
 import { Button, Callout } from "@/components/primitives";
 import { GatedLink, MANAGED_LINK_TEXT } from "@/components/GatedLink";
+import { HelpTooltip } from "@shared/primitives/HelpTooltip";
 import { useHrefGate } from "@/lib/governance";
 import {
   errorNote,
@@ -39,12 +40,15 @@ export function NeedsSettingNotice({
   text,
   link,
   org,
+  technical,
   onNavigate,
   className,
   variant = "callout",
   tone = "warn",
 }: {
   text: string;
+  /** The detail behind the sentence, shown only as "Technical details". */
+  technical?: string | null;
   /** The place on this machine, when the person can change it here. */
   link?: SettingsLink | null;
   /** The team-dashboard place, when only the organization's admins can. */
@@ -99,6 +103,9 @@ export function NeedsSettingNotice({
       <span className="whitespace-pre-wrap" data-testid="needs-setting-text">
         {text}
       </span>
+      {technical && (
+        <HelpTooltip technical subject="this refusal" content={technical} className="ml-1 align-middle" />
+      )}
       {orgLine && (
         <span className="mt-1 block" data-testid="needs-setting-org">
           {orgLine}
@@ -176,7 +183,16 @@ export function ApiErrorNotice({
   const n = noteOf(note);
   if (!n) return null;
   if (n.settings || n.org) {
-    return <NeedsSettingNotice text={n.text} link={n.settings} org={n.org} onNavigate={onNavigate} className={className} />;
+    return (
+      <NeedsSettingNotice
+        text={n.text}
+        link={n.settings}
+        org={n.org}
+        technical={n.technical}
+        onNavigate={onNavigate}
+        className={className}
+      />
+    );
   }
   return (
     <div role="alert" className={clsx("whitespace-pre-wrap break-words", plainClassName)}>

@@ -228,6 +228,8 @@ var governancePinnableKeys = []governancePinnableKey{
 	{Key: "terminal.sandbox.default_on", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: true},
 	// lane FU4 (tracker F-002): the seccomp filter, required on, never off.
 	{Key: "terminal.sandbox.seccomp", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: true},
+	// Decision SBXD-2: the returned-copy age sweep, like its sibling.
+	{Key: "terminal.sandbox.returned_copy_retention_days", Kind: "int", Direction: string(postureop.DirRetention), Max: 3650},
 	// The agent-run security assessments (plan section 13.3): restrictive-only
 	// switches and tier, and a lowering-only window ceiling.
 	{Key: "security.assessments.relax_pentest_local", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: false},
@@ -294,6 +296,23 @@ var governancePinnableKeys = []governancePinnableKey{
 	// The opt-in in-box database export (ruling P-141): an org may only
 	// keep it off.
 	{Key: "terminal.sandbox.hosted.db_export", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: false},
+	// The hosted saved diff's start (the diff against the box's baseline).
+	{Key: "terminal.sandbox.hosted.diff_against", Kind: "string", Enum: []any{"baseline", "head"}, Direction: governanceDirFree},
+	// The hosted internet tier's private-range deny (decision SBXD-7): an org
+	// may only keep the ranges denied. The pin also clears every provider
+	// table's own override (governancePinFollowers).
+	{Key: "terminal.sandbox.hosted.allow_private_ranges", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: false},
+	// Guard's hooks in a hosted box (lane HOOKS, SBXD-6): an org may only
+	// force them on.
+	{Key: "terminal.sandbox.hosted.guard_hooks", Kind: "string", Enum: []any{"auto", "on", "off"}, Direction: governanceDirRestrictiveOnly, Safe: "on"},
+	// The clone location (decision SBXD-5): any of the three, an org may
+	// pin it either way (box keeps every clone off this machine, home keeps
+	// every clone off the box's network).
+	{Key: "terminal.sandbox.hosted.clone_where", Kind: "string", Enum: []any{"auto", "box", "home"}, Direction: governanceDirFree},
+	// Uploading a folder that is not a repository (decision SBXD-8): an org
+	// may only keep it off, and may only add ignore patterns.
+	{Key: "terminal.sandbox.hosted.upload_non_git", Kind: "bool", Direction: governanceDirRestrictiveOnly, Safe: false},
+	{Key: "terminal.sandbox.hosted.upload_ignore", Kind: "string_list", Direction: string(postureop.DirAdditiveMask)},
 	// Local re-adoption (lane GATES-SBX, R-034): an org may only shorten
 	// the bound and shrink the checkpoint cap.
 	{Key: "terminal.sandbox.readopt.bound_minutes", Kind: "int", Direction: governanceDirLoweringOnly, Min: 1, Max: 1440},
@@ -420,6 +439,33 @@ var governancePinFollowers = map[string][]struct {
 	"guard.mode": {{key: "guard.prompt.enforce_independent", apply: func(cfg *Config) {
 		cfg.Guard.Prompt.EnforceIndependent = false
 	}}},
+	// An org pin of the hosted private-range deny (SBXD-7) holds on every
+	// vendor: a provider table's own allow_private_ranges would otherwise
+	// open the ranges for that vendor under the pin.
+	"terminal.sandbox.hosted.allow_private_ranges": hostedPrivateRangeFollowers(),
+}
+
+// hostedPrivateRangeFollowers clears each deny-capable provider table's
+// allow_private_ranges override, one follower row per table.
+func hostedPrivateRangeFollowers() []struct {
+	key   string
+	apply func(cfg *Config)
+} {
+	out := make([]struct {
+		key   string
+		apply func(cfg *Config)
+	}, 0, len(HostedPrivateRangeDenyProviders))
+	for _, name := range HostedPrivateRangeDenyProviders {
+		out = append(out, struct {
+			key   string
+			apply func(cfg *Config)
+		}{key: "terminal.sandbox.hosted." + name + ".allow_private_ranges", apply: func(cfg *Config) {
+			if t := cfg.Terminal.Sandbox.Hosted.ProviderTable(name); t != nil {
+				t.AllowPrivateRanges = nil
+			}
+		}})
+	}
+	return out
 }
 
 // applyGovernancePinFollowers runs key's follower rows on cfg and returns the

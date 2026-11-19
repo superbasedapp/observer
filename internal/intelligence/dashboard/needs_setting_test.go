@@ -11,6 +11,7 @@ import (
 
 	"github.com/marmutapp/superbased-observer/internal/dashapi"
 	"github.com/marmutapp/superbased-observer/internal/settingslink"
+	"github.com/marmutapp/superbased-observer/internal/termcore"
 )
 
 // needsBody is the part of a "needs a setting" refusal every client reads.
@@ -226,6 +227,7 @@ func TestSandboxUnavailableLink(t *testing.T) {
 		{"unsupported_platform", false},
 		{"userns_denied", false},
 		{VerdictNotInBuild, false},
+		{"custody_unsatisfiable", true},
 	}
 	for _, c := range cases {
 		rec := httptest.NewRecorder()
@@ -242,5 +244,93 @@ func TestSandboxUnavailableLink(t *testing.T) {
 		if b := decodeNeeds(t, rec); b.Settings != placeHref(t, settingslink.TerminalSandbox) || b.Error != "sandbox unavailable ("+c.verdict+"): r" {
 			t.Fatalf("%s: %+v", c.verdict, b)
 		}
+	}
+}
+
+// TestSandboxCustodyReasonIsTheSentence: the custody verdict's probe reason
+// is a whole plain sentence, said as it is with the place after it, never
+// after "The sandbox cannot start on this machine:".
+func TestSandboxCustodyReasonIsTheSentence(t *testing.T) {
+	rec := httptest.NewRecorder()
+	reason := "The agent's model key is set to stay on this machine. Choose how the agent gets its model key."
+	writeSandboxUnavailable(rec, "sandbox backend daytona unavailable (custody_unsatisfiable): x", "custody_unsatisfiable", reason)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status %d", rec.Code)
+	}
+	b := decodeNeeds(t, rec)
+	if !strings.HasPrefix(b.Message, reason) || strings.Contains(b.Message, "cannot start on this machine:") {
+		t.Fatalf("message %q", b.Message)
+	}
+}
+
+// TestSandboxStepRefusalBody: a typed step refusal answers 409 with the
+// closed code, the plain sentence and the link, and keeps the technical
+// detail in its own field (a surface shows it only as technical details).
+func TestSandboxStepRefusalBody(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeSandboxStepRefusal(rec, &dashapi.SandboxStepRefusal{Code: "custody_unsatisfiable", Message: "Choose how the agent gets its model key.", Technical: "nothing_serves_home_key: key custody home_relay needs a key the proxy adds itself"})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status %d", rec.Code)
+	}
+	var b settingslink.Body
+	if err := json.Unmarshal(rec.Body.Bytes(), &b); err != nil {
+		t.Fatal(err)
+	}
+	if b.Error != "custody_unsatisfiable" || !strings.HasPrefix(b.Message, "Choose how") || strings.Contains(b.Message, "home_relay") {
+		t.Fatalf("body %+v", b)
+	}
+	if !strings.Contains(b.Technical, "home_relay") || b.Settings != placeHref(t, settingslink.TerminalSandbox) {
+		t.Fatalf("body %+v", b)
+	}
+}
+
+// TestSandboxConsentRefusalBody: a hosted launch refused for a changed
+// consent (the live-run report: the upload scope changed) answers 409 with
+// the closed code, the row and the verdict, so the New Terminal dialog can
+// show the consent again; the raw sentence stays only in Technical. The
+// refusal reaches the handler wrapped the way termsvc wraps it, so the
+// consent case must win over the workspace-preparation 500.
+func TestSandboxConsentRefusalBody(t *testing.T) {
+	cases := []struct {
+		name, verdict, msgPrefix string
+	}{
+		{"changed scope", "consent_changed_scope", "What this launch sends"},
+		{"missing", "consent_required", "Agree to what this launch sends"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			refusal := &dashapi.SandboxConsentRefusal{Provider: "daytona", Verdict: c.verdict}
+			wrapped := fmt.Errorf("%w: %w", termcore.ErrWorkspacePrepFailed, refusal)
+			s := newLaunchTestServer(t, &fakeLaunchManager{freshErr: wrapped})
+			rec := postTerminalLaunch(t, s.Handler(), "claude-code", "")
+			if rec.Code != http.StatusConflict {
+				t.Fatalf("status %d, body %s", rec.Code, rec.Body.String())
+			}
+			var b struct {
+				settingslink.Body
+				Provider string `json:"provider"`
+				Verdict  string `json:"verdict"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &b); err != nil {
+				t.Fatal(err)
+			}
+			if b.Error != dashapi.SandboxConsentRefusalCode || b.Provider != "daytona" || b.Verdict != c.verdict {
+				t.Fatalf("body %+v", b)
+			}
+			if !strings.HasPrefix(b.Message, c.msgPrefix) || strings.Contains(b.Message, "consent_") || strings.Contains(b.Message, "termsvc") {
+				t.Fatalf("message %q", b.Message)
+			}
+			if !strings.Contains(b.Technical, c.verdict) || b.Settings != placeHref(t, settingslink.TerminalSandboxHosted) {
+				t.Fatalf("body %+v", b)
+			}
+		})
+	}
+	// The CLI and log wording is unchanged by the type.
+	e := &dashapi.SandboxConsentRefusal{Provider: "e2b", Verdict: "consent_changed_scope"}
+	if !strings.HasPrefix(e.Error(), "terminal_sandbox: consent_required (consent_changed_scope): review what leaves this machine") || !strings.Contains(e.Error(), "observer sandbox hosted consent e2b") {
+		t.Fatalf("Error() = %q", e.Error())
+	}
+	if !errors.As(fmt.Errorf("x: %w", e), new(*dashapi.SandboxConsentRefusal)) {
+		t.Fatal("not unwrappable")
 	}
 }

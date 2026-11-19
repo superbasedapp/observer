@@ -476,6 +476,9 @@ var consentAskVerbs = []selfApprovalVerb{
 	// verb typed by them). It installs nothing, so the guard asks rather
 	// than denies; `sandbox setup status` (passive facts) stays allowed.
 	{path: []string{"sandbox", "setup", "check"}, desc: "runs a sandbox driver's probe on this machine on the person's word"},
+	// The hosted consent (decision SBXD-5): agreeing to what a hosted run
+	// sends to its provider is the person's; the guard asks.
+	{path: []string{"sandbox", "hosted", "consent"}, desc: "records the person's agreement to what a hosted sandbox run sends to its provider"},
 }
 
 // verbRowMatches reports whether a CLI invocation (args, and their
@@ -830,6 +833,12 @@ var guardGrantRoutes = []guardGrantRoute{
 	// and `restore` (lane GATES-SBX, audit F5): each POST under this prefix
 	// ends, checkpoints or restores a run (the GET list is a read).
 	{path: "/api/terminal/sandbox/readopt", prefix: true, desc: "the sandbox run re-adoption routes (end, checkpoint, restore)"},
+	// The Terminals page's "Changes from sandboxed runs" panel (lane
+	// RETURNS): each POST under this prefix opens a run's saved diff as a
+	// branch of the person's repository, removes a saved diff, or removes a
+	// sandboxed run's copy. An agent that sends one is applying, or erasing,
+	// its own work; the GET list and diff preview are reads.
+	{path: "/api/terminal/sandbox/returns", prefix: true, desc: "the routes that open a sandboxed run's changes as a branch or remove them"},
 	// The dashboard forms of `observer sandbox setup run|undo|update|repair`
 	// and `check` (lane sbxinstall-guard, PT-89, ledger SBXSETUP-1): each
 	// POST under this prefix ({backend}/run, {backend}/check) installs,
@@ -841,6 +850,15 @@ var guardGrantRoutes = []guardGrantRoute{
 	// also the Hosted sandboxes panel's Connect form (cli-parity L3, B-G2;
 	// one route, one row).
 	{path: "/api/terminal/sandbox/hosted/connect", desc: "the hosted sandbox provider key route"},
+	// The hosted consent (sandbox terminal gaps, decision SBXD-5's inline
+	// clone consent): its POST records the person's agreement to what a
+	// hosted run sends to the provider (the upload or the clone, the key
+	// custody, the network), so an agent that sends one agrees for them.
+	// The GET (the consent screen) is a read.
+	{path: "/api/terminal/sandbox/hosted/consent", desc: "the hosted sandbox consent route, which records the person's agreement to what leaves this machine"},
+	// Decision SBXD-4: its POST turns on a tool's own saved keys or its
+	// login as a source of the model key a hosted box gets.
+	{path: "/api/terminal/sandbox/hosted/key-sources", desc: "the hosted sandbox key sources route, which lets an agent's own saved keys or login go into a hosted box"},
 	// Ruling R2 (PT-89, ledger TOOLINSTALL-GUARD-1): the guided install,
 	// uninstall and record of AI tools. The double-submit confirm pair can
 	// be minted by a local process, so without a row an agent could start

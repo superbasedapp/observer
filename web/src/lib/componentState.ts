@@ -397,6 +397,92 @@ export function groupOf(c: CatalogComponent): string {
   return COMPONENT_GROUPS.find((g) => g.match(c))?.id ?? "features";
 }
 
+// ---- the selection sentence ---------------------------------------------
+
+/** The selection states Settings > Components says one sentence for. */
+export type SelectionState = "org_governed" | "recorded" | "full_build_default" | "custom_build_default" | "edition_default";
+
+/** baseLabel names a base in plain words: the build's everything, a custom
+ *  build's defaults, or a prebuilt edition's defaults. */
+export function baseLabel(base: string): string {
+  if (base === "all" || base === "") return "everything in this build";
+  if (base === "custom") return "this custom build's defaults";
+  return `the ${base} edition's defaults`;
+}
+
+const activeOf = (v: ComponentsView) => `${v.active_count} of ${v.compiled_count} components are active`;
+
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+type SelectionRule = {
+  state: SelectionState;
+  when: (v: ComponentsView) => boolean;
+  sentence: (v: ComponentsView) => string;
+};
+
+/**
+ * SELECTION_RULES is the ordered table behind the Components page's selection
+ * sentence, walked top-down. With no selection recorded the build's own
+ * defaults decide (an edition build turns most optional components off), so
+ * the sentence names those defaults and the active count, never "every
+ * component is active" on a build where most are off.
+ */
+export const SELECTION_RULES: readonly SelectionRule[] = [
+  {
+    state: "org_governed",
+    when: (v) => !!v.org_managed,
+    sentence: (v) =>
+      `Managed by ${v.org_name || "your organization"}: your organization decides which components run on this machine. A local change cannot remove or narrow them; request a change from your organization. ${activeOf(v)}.`,
+  },
+  {
+    state: "recorded",
+    when: (v) => v.configured,
+    sentence: (v) => {
+      const parts = [`Your selection starts from ${baseLabel(v.base)}`];
+      if (v.add.length > 0) parts.push(`adds ${plural(v.add.length, "component", "components")}`);
+      if (v.remove.length > 0) parts.push(`removes ${plural(v.remove.length, "component", "components")}`);
+      return `${parts.join(", ")}: ${activeOf(v)}.`;
+    },
+  },
+  {
+    state: "full_build_default",
+    when: (v) => v.base === "all" || v.base === "",
+    sentence: (v) => `No selection is recorded yet, so everything in this build is selected: ${activeOf(v)}.`,
+  },
+  {
+    state: "custom_build_default",
+    when: (v) => v.base === "custom",
+    sentence: (v) => `No selection is recorded yet, so this custom build's defaults decide: ${activeOf(v)}. Add a component below to turn it on.`,
+  },
+  {
+    state: "edition_default",
+    when: () => true,
+    sentence: (v) =>
+      `No selection is recorded yet, so the ${v.base} edition's defaults decide: ${activeOf(v)}. Add a component below to turn it on, or choose another base.`,
+  },
+];
+
+function selectionRule(v: ComponentsView): SelectionRule {
+  return SELECTION_RULES.find((r) => r.when(v)) ?? SELECTION_RULES[SELECTION_RULES.length - 1];
+}
+
+/** selectionState names the row of SELECTION_RULES a view meets. */
+export function selectionState(v: ComponentsView): SelectionState {
+  return selectionRule(v).state;
+}
+
+/** selectionSentence is the one sentence the Components page says about
+ *  who decides this machine's components and how many are active. */
+export function selectionSentence(v: ComponentsView): string {
+  return selectionRule(v).sentence(v);
+}
+
+/** componentRowAnchor is a Components page row's element id, which the
+ *  ?component= link scrolls to. */
+export function componentRowAnchor(id: string): string {
+  return `component-${id}`;
+}
+
 /** manifestFor renders the "Download component manifest" body: the
  *  effective set as a custom distro manifest (plan 7.2 Export). */
 export function manifestFor(view: ComponentsView): string {

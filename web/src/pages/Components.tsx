@@ -3,8 +3,10 @@ import { Link, useSearchParams } from "react-router-dom";
 import { ChevronLeft } from "lucide-react";
 import { navIcon } from "@/lib/nav";
 import { Button, Card, EmptyState, Icon, PageHeader, Pill, SegmentedControl } from "@/components/primitives";
-import { fetchJSON, localConfirmHeaders, ApiError } from "@/lib/api";
+import { componentsErrorText, componentsPost } from "@/lib/componentsApi";
 import { componentRequestLink } from "@/lib/requestEntry";
+import { HIGHLIGHT_CLASS } from "@/lib/scrollHighlight";
+import { useScrollHighlight } from "@/lib/useScrollHighlight";
 import { isInAppLink, teardownLinkText } from "@/lib/setupExtras";
 import { useComponentCatalog, useComponentState } from "@/lib/useComponents";
 import {
@@ -14,9 +16,11 @@ import {
   COMPONENT_GROUPS,
   artifactWarns,
   badgeFor,
+  componentRowAnchor,
   distrosWith,
   groupOf,
   manifestFor,
+  selectionSentence,
   stateCopy,
   verdictCopy,
   type ArtifactStatus,
@@ -57,25 +61,10 @@ type Pending =
 
 const BASES = ["all", "minimal", "developer", "managed", "full"] as const;
 
-async function post<T>(path: string, body: unknown): Promise<T> {
-  return fetchJSON<T>(path, undefined, {
-    method: "POST",
-    headers: await localConfirmHeaders(),
-    body: JSON.stringify(body),
-  });
-}
-
-function errText(e: unknown): string {
-  if (e instanceof ApiError) {
-    try {
-      const v = JSON.parse(e.body) as { message?: string };
-      if (v.message) return v.message;
-    } catch {
-      // fall through
-    }
-  }
-  return e instanceof Error ? e.message : String(e);
-}
+// The page's writes are lib/componentsApi's, the same calls a card's Turn it
+// on button sends (ruling SBXD-9).
+const post = componentsPost;
+const errText = componentsErrorText;
 
 export function ComponentsPage() {
   const [params] = useSearchParams();
@@ -220,22 +209,21 @@ export function ComponentsPage() {
             <span className="text-small text-fg-3">Base selection</span>
             <SegmentedControl
               size="sm"
-              value={(view.configured ? view.base : "all") as (typeof BASES)[number]}
+              value={view.base as (typeof BASES)[number]}
               onChange={(b) => void preview({ set_base: b })}
               options={BASES.map((b) => ({ value: b, label: b === "all" ? "Everything in this build" : b }))}
             />
           </div>
-          {view.org_managed && (
-            <p role="status" className="mt-2 text-small text-fg-2">
-              Managed by {view.org_name}: your organization decides which components run on this machine. A local change
-              cannot remove or narrow them; request a change from your organization.
-            </p>
-          )}
-          {!view.configured && (
-            <p className="mt-2 text-small text-fg-3">
-              No selection is recorded yet, so every component in this build is active, exactly as before.
-            </p>
-          )}
+          {/* Who decides this machine's components and how many are active
+              (lib/componentState SELECTION_RULES): with no selection
+              recorded, the build's own defaults decide. */}
+          <p
+            role={view.org_managed ? "status" : undefined}
+            className={`mt-2 text-small ${view.org_managed ? "text-fg-2" : "text-fg-3"}`}
+            data-testid="components-selection"
+          >
+            {selectionSentence(view)}
+          </p>
           {(st.data?.pending.length ?? 0) > 0 && (
             <p role="status" className="mt-2 text-small text-fg-2">
               {view.restart_note}
@@ -498,8 +486,17 @@ function ComponentRow({
 }) {
   const [alsoDelete, setAlsoDelete] = useState(false);
   const core = c.class === "core";
+  // ?component=<id> (settingslink.Component): the row the link names
+  // scrolls into view and carries a short highlight, the same landing every
+  // settings link uses (lib/useScrollHighlight).
+  const anchor = componentRowAnchor(c.id);
+  const highlighted = useScrollHighlight(anchor, open);
   return (
-    <li className="py-3" id={`component-${c.id}`}>
+    <li
+      className={`scroll-mt-6 rounded-2 py-3 transition-shadow ${highlighted ? HIGHLIGHT_CLASS : ""}`}
+      id={anchor}
+      data-highlighted={highlighted ? "true" : undefined}
+    >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">

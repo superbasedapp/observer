@@ -19,15 +19,18 @@ import (
 	"time"
 
 	"github.com/marmutapp/superbased-observer/internal/config"
+	"github.com/marmutapp/superbased-observer/internal/dashapi"
 	"github.com/marmutapp/superbased-observer/internal/extrun"
 	"github.com/marmutapp/superbased-observer/internal/gitview"
 	"github.com/marmutapp/superbased-observer/internal/integration"
 	"github.com/marmutapp/superbased-observer/internal/sandbox"
 	"github.com/marmutapp/superbased-observer/internal/sandboxbackend"
+	"github.com/marmutapp/superbased-observer/internal/sandboxkey"
 	"github.com/marmutapp/superbased-observer/internal/sandboxrelayd"
 	"github.com/marmutapp/superbased-observer/internal/sandboxremote"
 	"github.com/marmutapp/superbased-observer/internal/sandboxselect"
 	vocab "github.com/marmutapp/superbased-observer/internal/sandboxvocab"
+	"github.com/marmutapp/superbased-observer/internal/settingslink"
 	"github.com/marmutapp/superbased-observer/internal/termrun"
 	"github.com/marmutapp/superbased-observer/internal/termsvc"
 )
@@ -77,6 +80,10 @@ type hostedPlanFile struct {
 	Root     string                       `json:"root"`
 	ScopeKey string                       `json:"scope_key"`
 	Files    []sandboxremote.ManifestFile `json:"files"`
+	// UploadListing is how the helper re-lists Root before the upload (a
+	// folder that is not a repository, decision SBXD-8): the same listing
+	// the consent was given for, so the scope keys agree.
+	UploadListing hostedUploadListing `json:"upload_listing,omitzero"`
 	// BoxBinary is the host path of the in-box observer to upload.
 	BoxBinary string `json:"box_binary"`
 	// BoxBinaryInImage: the box image carries the in-box observer at the
@@ -86,14 +93,31 @@ type hostedPlanFile struct {
 	// ToolStateRel are the tool's HOME-relative state dirs (pulled at each
 	// checkpoint and at teardown).
 	ToolStateRel []string `json:"tool_state_rel"`
-	// ToolInstall is the tool's grounded Linux install argv run at first
-	// start (only on the internet tier with no template); empty otherwise.
+	// ToolInstalls are the install ways the tool may use at first start, in
+	// order (only on the internet tier with no template; empty otherwise):
+	// the host helper checks the box for each one's programs before the
+	// workspace is uploaded and runs the first that fits (lane UX, H4).
+	ToolInstalls []sandboxremote.InstallChoice `json:"tool_installs,omitempty"`
+	// ToolInstall is the single install argv a plan written before
+	// ToolInstalls carries; read only when ToolInstalls is empty.
 	ToolInstall []string `json:"tool_install,omitempty"`
 	// ForwardEnv are the provider API-key variable names copied into the
 	// box (custody in_box_api_key only; values are read by the helper).
-	ForwardEnv        []string `json:"forward_env,omitempty"`
-	CheckpointMinutes int      `json:"checkpoint_minutes"`
-	DailyBoxMinutes   int      `json:"daily_box_minutes"`
+	ForwardEnv []string `json:"forward_env,omitempty"`
+	// CustodySetting and CustodyRule record how Custody was reached
+	// (decision SBXD-1): the configured value for the tool ("auto", or an
+	// explicit one) and the resolution row (sandboxkey.CustodyRule*).
+	// Custody itself is always the resolved custody the helper runs with.
+	CustodySetting string `json:"custody_setting,omitempty"`
+	CustodyRule    string `json:"custody_rule,omitempty"`
+	// ToolKeys and LoginSeed are the opt-in in-box key sources of decision
+	// SBXD-4 for this run's tool (only under in_box_api_key custody, and
+	// only where the tool's registry row grounds the file): the helper
+	// reads the tool's own saved keys, or seeds its login's access token.
+	ToolKeys          bool `json:"tool_keys,omitempty"`
+	LoginSeed         bool `json:"login_seed,omitempty"`
+	CheckpointMinutes int  `json:"checkpoint_minutes"`
+	DailyBoxMinutes   int  `json:"daily_box_minutes"`
 	// DBExport is [terminal.sandbox.hosted].db_export (opt-in, ruling
 	// P-141): the teardown exports the box's SQLite stores only when set.
 	// RetentionDays is [terminal.sandbox].workspace_retention_days, the
@@ -108,15 +132,43 @@ type hostedPlanFile struct {
 	Source   string `json:"source,omitempty"`
 	Delivery string `json:"delivery,omitempty"`
 	CloneURL string `json:"clone_url,omitempty"`
+	// CloneBranch is the work branch a core box-side clone makes in the box
+	// after the clone (the launch's workspace branch; "" for none).
+	CloneBranch string `json:"clone_branch,omitempty"`
+	// CloneWhere and CloneWhereReason are where a clone-remote launch
+	// clones (box or home) and why (a workspace.CloneWhereReasonText
+	// code; decision SBXD-5). HomeCloneDir is the clone this machine made
+	// for a home clone (Delivery upload_snapshot): the helper uploads its
+	// tracked files, then removes it.
+	CloneWhere       string `json:"clone_where,omitempty"`
+	CloneWhereReason string `json:"clone_where_reason,omitempty"`
+	HomeCloneDir     string `json:"home_clone_dir,omitempty"`
 	// ResumeBoxRunID names the held box a resume launch takes over (the
 	// org-hosted row's resume, design 3.6); "" for a fresh box.
 	ResumeBoxRunID string `json:"resume_box_run_id,omitempty"`
+
+	// DiffAgainst is [terminal.sandbox.hosted].diff_against: what an upload
+	// run's saved diff is taken against ("baseline", the default and what
+	// "" means, or "head").
+	DiffAgainst string `json:"diff_against,omitempty"`
+	// DenyCIDRs are the ranges the create asks the vendor to refuse (the
+	// private-range deny of the internet tier, decision SBXD-7; the same
+	// answer the consent bound).
+	DenyCIDRs []string `json:"deny_cidrs,omitempty"`
+	// GuardHooks: the box gets guard's hook registration for the tool
+	// ([terminal.sandbox.hosted].guard_hooks resolved at launch, lane HOOKS;
+	// terminal_sandbox_hosted_guardhooks.go).
+	GuardHooks bool `json:"guard_hooks,omitempty"`
 }
 
 // hostedForwardEnvNames are the provider API-key variables an
 // in_box_api_key run copies into the box when the launch environment holds
-// them (a provider table, never a tool name).
-var hostedForwardEnvNames = []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY"}
+// them, derived from the one provider table (sandboxkey.InBoxKeyEnv: plain
+// API keys only, never a key file path, a login or a refresh token; gap
+// H3, which also added XAI_API_KEY). Where the environment has none, the
+// host helper fills a variable from a key the person stored
+// (hostedCredInBoxKeysHook), for the providers the tool can use.
+var hostedForwardEnvNames = sandboxkey.InBoxKeyEnv()
 
 // hostedChoice is what Create decided for Attach.
 type hostedChoice struct {
@@ -189,86 +241,99 @@ func hostedEgressHostsKey(cfg config.TerminalSandboxConfig) string {
 	return ""
 }
 
-// custodyCheck refuses a custody this node cannot satisfy (S7d): home_relay
-// needs a key the proxy injects (a stored key for credential injection or
-// the org gateway route; a routing key pool never adds one, FX3 item 5);
-// in_box_oauth_seed needs the auth seed projection, not built for hosted
-// rows yet; provider_injected is offered by no hosted row.
-func hostedCustodyCheck(homeRelayOK bool, custody vocab.KeyCustody) error {
-	switch custody {
-	case vocab.CustodyHomeRelay:
-		if homeRelayOK {
-			return nil
-		}
-		return fmt.Errorf("terminal_sandbox: %s: key custody home_relay keeps the model credential on this machine, which works only for a key the proxy adds itself (a key stored with `observer sandbox credentials add`, or the org AI Gateway route; a [routing].key_pool never adds one), and neither is configured; choose in_box_api_key in Terminals > Settings > Hosted sandboxes (disclosed before the first upload)", verdictHostedCustody)
-	case vocab.CustodyInBoxAPIKey:
-		return nil
-	case vocab.CustodyInBoxOAuthSeed:
-		return fmt.Errorf("terminal_sandbox: %s: copying a subscription login into a hosted box is not built yet; use in_box_api_key or home_relay", verdictHostedCustody)
-	}
-	return fmt.Errorf("terminal_sandbox: %s: key custody %s is not offered by any hosted row", verdictHostedCustody, custody)
-}
-
-// hostedCustodyCheckNoted is hostedCustodyCheck with the node's reason
-// credential injection cannot serve home_relay appended (audit F10), so the
-// refusal names it rather than leaving a later bare 401.
-func hostedCustodyCheckNoted(homeRelayOK bool, note string, custody vocab.KeyCustody) error {
-	err := hostedCustodyCheck(homeRelayOK, custody)
-	if err != nil && note != "" && custody == vocab.CustodyHomeRelay {
-		return fmt.Errorf("%w; %s", err, note)
-	}
-	return err
-}
-
 // hostedToolDelivery decides how the agent tool reaches the box (SBX-IMG-1,
-// orchestrator default): no agent CLI is uploaded; a template the user
-// named holds it, or, on the internet tier only, it installs from its
-// vendor at first start; otherwise tool_unavailable_in_image (S11).
-//
-// rule is the vendor's template rule (Vendor.TemplateRule), named in the
-// refusal so a vendor whose templates are restricted says how to make one.
-func hostedToolDelivery(tool, template string, tier vocab.Tier, rule string) ([]string, error) {
-	if strings.TrimSpace(template) != "" {
-		return nil, nil
+// orchestrator default; lane UX, item H4): no agent CLI is uploaded; a
+// template the user named holds it, or, on the internet tier only, it
+// installs from its vendor at first start through one of its grounded
+// install ways that the vendor's default image is not known to break
+// (sandboxremote.PlanToolInstall, the one rule the probe's per-row tool
+// notice also walks). The answer is the ordered install choices (none when
+// a template holds the tool); the host helper picks the first one the box
+// can run before the workspace is uploaded. A refusal is a typed one with
+// the plain sentence apart from the technical detail.
+func hostedToolDelivery(tool, template string, tier vocab.Tier, v sandboxremote.Vendor) ([]sandboxremote.InstallChoice, error) {
+	p := hostedToolPlan(tool, template, tier, v)
+	if p.OK {
+		return p.Choices, nil
 	}
-	install := hostedToolInstallCommand(tool)
-	if tier == vocab.TierInternet && len(install) > 0 {
-		return install, nil
-	}
-	if len(install) == 0 {
-		return nil, fmt.Errorf("terminal_sandbox: %s: %s has no grounded Linux install command, and no template is set; name a template that holds it in [terminal.sandbox.hosted.<provider>].template", verdictHostedTool, tool)
-	}
-	if rule != "" {
-		return nil, fmt.Errorf("terminal_sandbox: %s: no template is set, and the %s tier cannot reach %s's vendor to install it at first start; %s", verdictHostedTool, tier, tool, rule)
-	}
-	return nil, fmt.Errorf("terminal_sandbox: %s: no template is set, and the %s tier cannot reach %s's vendor to install it at first start; name a template that holds it in [terminal.sandbox.hosted.<provider>].template, or use the internet tier", verdictHostedTool, tier, tool)
+	return nil, &dashapi.SandboxStepRefusal{Code: verdictHostedTool, Message: p.Message, Technical: p.Code + ": " + p.Technical}
 }
 
-// hostedToolInstallCommand is the tool's grounded Linux install argv from
-// the integration registry (nil when none is grounded): an npm or vendor
-// script channel only, the two that run inside a plain Linux box.
-func hostedToolInstallCommand(tool string) []string {
+// hostedToolPlan is PlanToolInstall for tool on vendor v (an empty tier is
+// the hosted default, internet).
+func hostedToolPlan(tool, template string, tier vocab.Tier, v sandboxremote.Vendor) sandboxremote.ToolInstallPlan {
+	if tier == "" {
+		tier = vocab.TierInternet
+	}
+	return sandboxremote.PlanToolInstall(sandboxremote.ToolInstallInput{
+		ToolName: integration.DisplayName(tool), Vendor: v, Template: template, Tier: tier, Options: hostedInstallOptions(tool),
+	})
+}
+
+// hostedInstallOptions are the tool's grounded Linux install rows from the
+// integration registry, in the registry's order (the pure package decides
+// which of them run in a box).
+func hostedInstallOptions(tool string) []sandboxremote.InstallOption {
 	spec, ok := integration.For(tool)
 	if !ok || spec.Binary == nil {
 		return nil
 	}
+	var out []sandboxremote.InstallOption
 	for _, h := range spec.Binary.Installs {
-		if (h.OS == "" || h.OS == "linux") && (h.Channel == "npm" || h.Channel == "script") && len(h.Argv) > 0 {
-			return append([]string(nil), h.Argv...)
+		if h.OS == "" || h.OS == "linux" {
+			out = append(out, sandboxremote.InstallOption{Channel: h.Channel, Argv: append([]string(nil), h.Argv...), Requires: append([]string(nil), h.Requires...)})
 		}
 	}
-	return nil
+	return out
+}
+
+// hostedToolNotices are the probe row's per-tool notices for hosted row id
+// (lane UX, item H4): every sandbox-launchable tool whose launch on the row
+// would be refused by hostedToolDelivery at the configured tier, with the
+// same sentence. Nil for a row that is not a hosted vendor's, or when none
+// would be.
+func hostedToolNotices(id string, cfg config.TerminalSandboxConfig, tier vocab.Tier) map[string]dashapi.SandboxKeyNotice {
+	v, ok := sandboxremote.VendorFor(id)
+	if !ok {
+		return nil
+	}
+	template := hostedVendorConfig(cfg.Hosted, id).Template
+	var out map[string]dashapi.SandboxKeyNotice
+	for _, c := range integration.Capabilities() {
+		if !integration.TerminalLaunchable(c) || len(c.Sandbox.StateRW) == 0 {
+			continue
+		}
+		p := hostedToolPlan(c.Tool, template, tier, v)
+		if p.OK {
+			continue
+		}
+		if out == nil {
+			out = map[string]dashapi.SandboxKeyNotice{}
+		}
+		out[c.Tool] = dashapi.SandboxKeyNotice{Code: p.Code, Message: p.Message, Technical: verdictHostedTool + ": " + p.Technical, Place: settingslink.TerminalSandboxHosted}
+	}
+	return out
+}
+
+// hostedRepoTop is git's top level of the working tree at root (the hardened
+// read-only git envelope); ok false when root is not in a repository.
+func hostedRepoTop(ctx context.Context, root string) (string, bool) {
+	top, _, err := gitview.RunReadOnlyEnv(ctx, root, 4096, 20*time.Second, extrun.GitHardeningEnv(""), "rev-parse", "--show-toplevel")
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(string(top)), true
 }
 
 // hostedListWorkspace lists the upload candidates: git's tracked plus
 // untracked-not-ignored files under root (the hardened read-only git
 // envelope), each lstat'd, never followed.
 var hostedListWorkspace = func(ctx context.Context, root string) ([]sandboxremote.Candidate, bool, error) {
-	top, _, err := gitview.RunReadOnlyEnv(ctx, root, 4096, 20*time.Second, extrun.GitHardeningEnv(""), "rev-parse", "--show-toplevel")
-	if err != nil {
+	t, ok := hostedRepoTop(ctx, root)
+	if !ok {
 		return nil, false, nil
 	}
-	if t := strings.TrimSpace(string(top)); filepath.Clean(t) != filepath.Clean(root) {
+	if filepath.Clean(t) != filepath.Clean(root) {
 		return nil, false, fmt.Errorf("terminal_sandbox: the workspace %s is inside the repository %s; launch from the repository root to upload it", root, t)
 	}
 	out, over, err := gitview.RunReadOnlyEnv(ctx, root, 64<<20, 60*time.Second, extrun.GitHardeningEnv(""), "ls-files", "-z", "--cached", "--others", "--exclude-standard")
@@ -278,6 +343,13 @@ var hostedListWorkspace = func(ctx context.Context, root string) ([]sandboxremot
 	if over {
 		return nil, true, fmt.Errorf("terminal_sandbox: %w: the workspace file list is over 64 MiB", sandboxremote.ErrScopeTooLarge)
 	}
+	return hostedCandidates(root, out), true, nil
+}
+
+// hostedCandidates turns git's NUL-separated listing of paths under root
+// into upload candidates, each lstat'd, never followed (shared by the
+// repository listing and the non-repository one).
+func hostedCandidates(root string, out []byte) []sandboxremote.Candidate {
 	var cands []sandboxremote.Candidate
 	seen := map[string]bool{}
 	for _, p := range bytes.Split(out, []byte{0}) {
@@ -287,7 +359,7 @@ var hostedListWorkspace = func(ctx context.Context, root string) ([]sandboxremot
 		}
 		seen[rel] = true
 		c := sandboxremote.Candidate{Path: rel, Kind: sandboxremote.KindOther}
-		if fi, err := os.Lstat(filepath.Join(root, filepath.FromSlash(rel))); err == nil {
+		if fi, err := os.Lstat(filepath.Join(root, filepath.FromSlash(rel))); err == nil { //nolint:gosec // G703: rel is a path git listed under root; it is only lstat'd (never followed or read here), and PlanManifest excludes any path outside root
 			switch {
 			case fi.Mode()&fs.ModeSymlink != 0:
 				c.Kind = sandboxremote.KindSymlink
@@ -299,7 +371,7 @@ var hostedListWorkspace = func(ctx context.Context, root string) ([]sandboxremot
 		}
 		cands = append(cands, c)
 	}
-	return cands, true, nil
+	return cands
 }
 
 // hostedManifest plans the upload of root.
@@ -308,31 +380,47 @@ func (d *hostedDriver) manifest(ctx context.Context, root string) (sandboxremote
 	if h, err := filepath.EvalSymlinks(home); err == nil {
 		home = h
 	}
-	cands, repo, err := hostedListWorkspace(ctx, root)
-	if err != nil {
-		return sandboxremote.Manifest{}, err
-	}
-	m, err := sandboxremote.PlanManifest(sandboxremote.ManifestInput{
-		Root: filepath.ToSlash(root), Home: filepath.ToSlash(home), Repository: repo, Candidates: cands,
-	})
-	if err != nil {
-		return m, fmt.Errorf("terminal_sandbox: %w", err)
-	}
-	return m, nil
+	return hostedPlanUpload(ctx, root, filepath.ToSlash(home), hostedUploadListingFor(d.cfg))
 }
 
 // launchFacts are the consent facts of one launch.
 func (d *hostedDriver) launchFacts(tier vocab.Tier, m sandboxremote.Manifest) (sandboxremote.ConsentFacts, bool) {
 	f, ok := d.consentFactsStatic()
 	f.Tier, f.Capture, f.ScopeKey = string(tier), hostedConsentCapture(d.vendor.ID, tier, vocab.KeyCustody(d.cfg.KeyCustody)), m.ScopeKey
+	f.PrivateRanges = hostedPrivateRangesFact(d.vendor, d.cfg, tier)
 	return f, ok
 }
 
 // hostedConsentCapture is the capture level the consent screen states: the
 // level the row, tier and custody compute for a proxy-routed agent (a run
 // whose tool is not routed records its own, lower level in its evidence).
+// Under auto (decision SBXD-1) it states both answers when they differ:
+// the level with the key on this machine and the level with it in the box,
+// so the consent does not change with the tool a launch runs.
 func hostedConsentCapture(id string, tier vocab.Tier, custody vocab.KeyCustody) string {
+	if custody == vocab.CustodyAuto {
+		row := hostedRow(id)
+		if hostedRowRefusesInBox(row) {
+			return hostedConsentCapture(id, tier, vocab.CustodyHomeRelay)
+		}
+		home := hostedConsentCapture(id, tier, vocab.CustodyHomeRelay)
+		box := hostedConsentCapture(id, tier, vocab.CustodyInBoxAPIKey)
+		if home == box {
+			return home
+		}
+		return home + " when the key stays on this machine, " + box + " when it is in the box"
+	}
 	return sandboxselect.CaptureLabel(hostedRunCapture(id, tier, custody, true))
+}
+
+// hostedLaunchCustody resolves the custody one launch of tool runs with
+// (sandboxkey.HomeKey, the one owner: the probe line, the setup step and
+// the dialog read the same table) and returns the verdict too, so the
+// launch refuses with its plain words.
+func (d *hostedDriver) hostedLaunchCustody(tool string) (vocab.KeyCustody, sandboxkey.HomeKeyVerdict, sandboxkey.HomeKeyFacts) {
+	tf := hostedToolKeyFacts(d.homeKeyFacts(), d.cfg, tool)
+	v := sandboxkey.HomeKey(tf)
+	return vocab.KeyCustody(v.Resolution.Custody), v, tf
 }
 
 // Create runs every check the vendor is not needed for and records the
@@ -340,7 +428,10 @@ func hostedConsentCapture(id string, tier vocab.Tier, custody vocab.KeyCustody) 
 // vendor.
 func (d *hostedDriver) Create(ctx context.Context, req termsvc.PrepareRequest) (termsvc.CreateResult, error) {
 	tier := d.tier()
-	custody := vocab.KeyCustody(d.cfg.KeyCustody)
+	// The custody this launch runs with (decision SBXD-1): auto or the
+	// tool's own value resolved for this tool; an explicit node value as
+	// set. Every step below reads the resolved one.
+	custody, keyVerdict, keyFacts := d.hostedLaunchCustody(req.Tool)
 	pc := hostedVendorConfig(d.cfg, d.vendor.ID)
 	region, endpoint, ok := hostedResolve(d.vendor, pc)
 	if !ok {
@@ -349,13 +440,16 @@ func (d *hostedDriver) Create(ctx context.Context, req termsvc.PrepareRequest) (
 	if err := d.floor(launchFloorConfig(d.r.cfg, string(tier)), tier, custody, region); err != nil {
 		return termsvc.CreateResult{}, err
 	}
+	// The model key's custody for this tool (S7d), before the probe so its
+	// refusal is the typed one with plain words, and before any workspace
+	// is prepared or any box made.
+	if !keyVerdict.OK {
+		return termsvc.CreateResult{}, &dashapi.SandboxStepRefusal{Code: verdictHostedCustody, Message: keyVerdict.Message, Technical: keyVerdict.Code + ": " + keyVerdict.Technical}
+	}
 	if p := d.probe(ctx); p.Verdict != sandboxselect.VerdictAvailable {
 		return termsvc.CreateResult{}, fmt.Errorf("terminal_sandbox: %s is not available: %s: %s", d.vendor.ID, p.Verdict, p.Reason)
 	}
-	if err := hostedCustodyCheckNoted(d.homeRelayOK, d.homeRelayNote, custody); err != nil {
-		return termsvc.CreateResult{}, err
-	}
-	install, err := hostedToolDelivery(req.Tool, pc.Template, tier, d.vendor.TemplateRule)
+	install, err := hostedToolDelivery(req.Tool, pc.Template, tier, d.vendor)
 	if err != nil {
 		return termsvc.CreateResult{}, err
 	}
@@ -363,24 +457,32 @@ func (d *hostedDriver) Create(ctx context.Context, req termsvc.PrepareRequest) (
 	if len(spec.Sandbox.StateRW) == 0 {
 		return termsvc.CreateResult{}, fmt.Errorf("terminal_sandbox: tool %q is not sandbox-launchable: %s", req.Tool, spec.Sandbox.Note)
 	}
-	delivery, err := hostedSourceDelivery(d.vendor, req, d.r.cfg)
+	delivery, err := hostedSourceDelivery(ctx, d.vendor, req, tier, d.r.cfg)
 	if err != nil {
 		return termsvc.CreateResult{}, err
 	}
 	var m sandboxremote.Manifest
-	if delivery.uploads() {
+	switch {
+	case delivery.HomeClone:
+		// A clone made here (SBXD-5): the consent is for that URL's
+		// clone, whose files are listed once it exists (below).
+		m = sandboxremote.Manifest{Root: req.ProjectRoot, ScopeKey: hostedCloneScope(delivery)}
+	case delivery.uploads():
 		if m, err = d.manifest(ctx, req.ProjectRoot); err != nil {
 			return termsvc.CreateResult{}, err
 		}
-	} else {
+	default:
 		// A box-side clone uploads nothing from this machine.
-		m = sandboxremote.Manifest{Root: req.ProjectRoot, ScopeKey: sandboxremote.RemoteCloneScopeKey(delivery.CloneURL)}
+		m = sandboxremote.Manifest{Root: req.ProjectRoot, ScopeKey: hostedCloneScope(delivery)}
 	}
 	routed, _ := d.r.launchRouted(req.Tool, req.ProjectRoot, req.ToolArgs)
 	capture := hostedRunCapture(d.vendor.ID, tier, custody, routed)
 	facts, _ := d.launchFacts(tier, m)
 	if v := sandboxremote.CheckConsent(hostedLoadConsent(d.r.observerDir, d.vendor.ID), facts); v != sandboxremote.ConsentOK {
-		return termsvc.CreateResult{}, fmt.Errorf("terminal_sandbox: %s (%s): review what leaves this machine and agree in Terminals > Settings > Hosted sandboxes, or run `observer sandbox hosted consent %s`", verdictHostedConsentRequired, v, d.vendor.ID)
+		// A typed refusal (same words as before): the dashboard answers it
+		// with a 409 naming the row and the verdict, so the New Terminal
+		// dialog shows the consent again instead of this sentence.
+		return termsvc.CreateResult{}, &dashapi.SandboxConsentRefusal{Provider: d.vendor.ID, Verdict: v}
 	}
 	minutes, err := sandboxremote.PlanTimeout(d.maxRunMinutes(), d.cfg.DailyBoxMinutes, hostedLedgerUsed(d.r.observerDir, d.vendor.ID, d.now(), d.cfg.DailyBoxMinutes))
 	if err != nil {
@@ -395,19 +497,34 @@ func (d *hostedDriver) Create(ctx context.Context, req termsvc.PrepareRequest) (
 	if err != nil {
 		return termsvc.CreateResult{}, err
 	}
+	// A clone made here (SBXD-5) runs now, after the consent and the spend
+	// check and before any box is made, with this machine's own git login.
+	var home hostedHomeCloneResult
+	if delivery.HomeClone {
+		if home, err = d.homeClone(ctx, ws.id, delivery); err != nil {
+			return termsvc.CreateResult{}, err
+		}
+		m.Files, m.Count, m.Bytes, m.Excluded = home.Manifest.Files, home.Manifest.Count, home.Manifest.Bytes, home.Manifest.Excluded
+	}
 	var forward []string
-	if custody == vocab.CustodyInBoxAPIKey {
+	inBox := custody == vocab.CustodyInBoxAPIKey
+	if inBox {
 		forward = hostedForwardEnvNames
 	}
 	plan := hostedPlanFile{
 		Version: hostedPlanVersion, RunID: ws.id, Provider: d.vendor.ID, Endpoint: endpoint, EndpointSPKISHA256: pc.EndpointSPKISHA256, Region: region,
 		Template: pc.Template, Tier: string(tier), Custody: string(custody), TimeoutMinutes: minutes,
-		Root: m.Root, ScopeKey: m.ScopeKey, Files: m.Files, BoxBinary: hostedBoxBinaryPath(pc, d.r.observerBin), BoxBinaryInImage: pc.BoxBinaryInImage,
-		ToolStateRel: spec.Sandbox.StateRW, ToolInstall: install, ForwardEnv: forward,
+		Root: m.Root, ScopeKey: m.ScopeKey, Files: m.Files, UploadListing: hostedUploadListingFor(d.cfg), BoxBinary: hostedBoxBinaryPath(pc, d.r.observerBin), BoxBinaryInImage: pc.BoxBinaryInImage,
+		ToolStateRel: spec.Sandbox.StateRW, ToolInstalls: install, ForwardEnv: forward,
+		CustodySetting: sandboxkey.CustodySetting(keyFacts), CustodyRule: keyVerdict.Resolution.Rule,
+		ToolKeys: inBox && keyFacts.ToolSavedKeys, LoginSeed: inBox && keyFacts.LoginSeed,
 		CheckpointMinutes: d.cfg.CheckpointMinutes, DailyBoxMinutes: d.cfg.DailyBoxMinutes, ObserverDir: d.r.observerDir, Tool: req.Tool,
-		DBExport: d.cfg.DBExport, RetentionDays: d.r.cfg.WorkspaceRetentionDays,
-		Source: string(delivery.Source), Delivery: string(delivery.Delivery), CloneURL: delivery.CloneURL,
+		DBExport: d.cfg.DBExport, RetentionDays: d.r.cfg.WorkspaceRetentionDays, DiffAgainst: d.cfg.DiffAgainst,
+		DenyCIDRs: hostedRangeDeny(d.vendor, d.cfg, tier).CIDRs,
+		Source:    string(delivery.Source), Delivery: string(delivery.Delivery), CloneURL: delivery.CloneURL, CloneBranch: delivery.CloneBranch,
 	}
+	plan.GuardHooks = hostedGuardHooksFor(req.Tool, d.cfg, hostedGuardEnforcing).Seed
+	plan.CloneWhere, plan.CloneWhereReason, plan.HomeCloneDir = string(delivery.Where), delivery.WhereReason, home.Dir
 	if d.reg.resumeBox != nil {
 		// A resume launch takes over a held box (the row's resume, design
 		// 3.6): a new run id here, the box's own run id in the mint.

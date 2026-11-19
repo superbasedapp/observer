@@ -127,10 +127,6 @@ var steplessVerdicts = []steplessVerdict{
 		"docker_engine_id_unread", "docker_engine_record_unreadable", "docker_engine_changed",
 	}, Why: "Observer's own canary, the vendor's runtime images and the engine identity pin: answers about the vendor's runtime, not prerequisites the row's Setup lists (owed: a runtime image step if OpenShell gains one)"},
 	{
-		Driver: "sandboxremote", Verdicts: []string{"consent_changed_"},
-		Why: "a prefix: the probe answers consent_changed_<field>, and the verdict map matches whole verdicts only (owed: the hosted-consent step for a changed consent, see the playbook's owed list)",
-	},
-	{
 		Driver: "openshellorg", Verdicts: []string{"org_gateway_not_offered", "custody_not_offered", "home_relay_unavailable", "laptop_relay_forbidden", "laptop_relay_not_opted_in"},
 		Why: "the organization's offer, its relay policy and the person's opt-in: organization or Settings choices, not host prerequisites",
 	},
@@ -267,6 +263,11 @@ func TestEveryDriverVerdictIsMappedOrStepless(t *testing.T) {
 	for _, d := range verdictMap {
 		mapped := map[string]bool{}
 		for _, m := range d.Missing {
+			mapped[m.Verdict] = true
+		}
+		// A prefix row maps its declared prefix constant (the probe
+		// completes it with a field name; TestVerdictMapPrefixRows).
+		for _, m := range d.MissingPrefix {
 			mapped[m.Verdict] = true
 		}
 		var vals []string

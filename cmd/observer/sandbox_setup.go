@@ -256,7 +256,7 @@ func (s *sandboxSetupService) wire(ctx context.Context, _ sandboxSetupInput, p s
 			Prereq: st.Prereq, Kind: string(st.Kind), Label: st.Label, State: string(st.State),
 			Class: string(st.Class), Channel: string(st.Channel), Display: st.Display, DisplayIsCommand: st.DisplayIsCommand,
 			Reason: st.Reason, Disclosure: st.Disclosure, After: st.After, Docs: st.Docs, CanRun: st.CanRun, CanUndo: st.CanUndo,
-			UndoRefused: st.UndoRefused,
+			UndoRefused: st.UndoRefused, UndoAlso: st.UndoAlso, Action: st.Action,
 		}
 		if extra := sandboxSetupStepExtras[st.Kind]; extra != nil {
 			extra(p.Backend, &w)

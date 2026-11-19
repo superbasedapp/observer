@@ -408,6 +408,8 @@ var rules = []rule{
 	{prefix: "terminal.sandbox.live_run_update_policy", exact: true, tier: TierPlain, enum: []string{"", "defer", "ask_immediately"}},
 	{prefix: "terminal.sandbox.seatbelt.driver", exact: true, enum: []string{"", "sandbox-exec", "mxc-exec-mac"}},
 	{prefix: "terminal.sandbox.workspace_retention_days", exact: true, tier: TierPlain},
+	// SBXD-2 (lane COPIES): the returned-copy age sweep, like its sibling.
+	{prefix: "terminal.sandbox.returned_copy_retention_days", exact: true, tier: TierPlain},
 	// egress_allow_hosts (lane LEFT-SBX): every gateway helper reads the
 	// list from the daemon config its run record names when the run starts
 	// (cmd/observer/terminal_sandbox_egresshosts.go), so a save applies to
@@ -436,8 +438,14 @@ var rules = []rule{
 	{prefix: "terminal.sandbox.mxc.stop_grace_seconds", exact: true, tier: TierPlain, prominence: ProminenceAdvanced},
 	{prefix: "terminal.sandbox.mxc.probe_timeout_seconds", exact: true, tier: TierPlain, prominence: ProminenceAdvanced},
 	// The hosted rows (lane SBX-P7): two closed choices.
-	{prefix: "terminal.sandbox.hosted.key_custody", exact: true, enum: []string{"home_relay", "in_box_api_key", "in_box_oauth_seed", "provider_injected"}},
+	{prefix: "terminal.sandbox.hosted.key_custody", exact: true, enum: []string{"auto", "home_relay", "in_box_api_key", "in_box_oauth_seed", "provider_injected"}},
 	{prefix: "terminal.sandbox.hosted.memory_images", exact: true, enum: []string{"avoid", "refuse"}},
+	// The diff against the box's baseline (lane COPIES); "" means baseline.
+	{prefix: "terminal.sandbox.hosted.diff_against", exact: true, enum: []string{"", "baseline", "head"}},
+	// Guard's hooks in a hosted box (lane HOOKS, SBXD-6): "" reads as auto.
+	{prefix: "terminal.sandbox.hosted.guard_hooks", exact: true, enum: []string{"", "auto", "on", "off"}},
+	// The clone location (decision SBXD-5).
+	{prefix: "terminal.sandbox.hosted.clone_where", exact: true, enum: []string{"auto", "box", "home"}},
 	// The OpenShell row (lane O1A): sensitive like the rest of the sandbox
 	// block (the endpoint names the gateway that builds the box); the
 	// gateway mode is a closed choice: "managed" is Observer's private

@@ -225,7 +225,8 @@ func (r *hostedRun) boxClone(ctx context.Context) error {
 
 // prepareAfterClone finishes a remote_clone run's box: the in-box observer,
 // the ownership of its directories, the self-check and the return baseline
-// (the clone's HEAD). Nothing from this machine's tree is uploaded.
+// (the clone's HEAD, kept on the run record and in the clone return record,
+// recordCloneCommit). Nothing from this machine's tree is uploaded.
 func (r *hostedRun) prepareAfterClone(ctx context.Context, owner string) error {
 	if err := r.uploadBoxBinary(ctx); err != nil {
 		return err
@@ -237,7 +238,7 @@ func (r *hostedRun) prepareAfterClone(ctx context.Context, owner string) error {
 	if err := r.checkBoxBinary(ctx); err != nil {
 		return err
 	}
-	return r.execOK(ctx, "record the return baseline", sandboxremote.ExecSpec{Cwd: r.layout.Workspace, Argv: []string{r.layout.Binary, "sandbox-guest", guestBaselineFlagCore}})
+	return r.recordCloneCommit(ctx)
 }
 
 // hostedBoxSetupUserScript makes the run's directories as the box user (a

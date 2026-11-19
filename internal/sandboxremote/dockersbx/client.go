@@ -678,13 +678,24 @@ var denyEverything = []string{"**", "0.0.0.0/0", "::/0"}
 
 // networkPolicies maps a tier: an inline denyAll with explicit deny rules
 // for every name and address for none and proxy_only, where the relay is
-// the only way out; none for internet (the inline policy has no allow-all
-// mode, so the account's default applies).
-func networkPolicies(t vocab.Tier) []networkPolicy {
-	if t == vocab.TierInternet {
-		return nil
+// the only way out; for internet none (the inline policy has no allow-all
+// mode, so the account's default applies), or, when the run denies private
+// ranges (decision SBXD-7), an inline denyAll whose only rules deny the
+// ranges: inline policies "restrict access alongside account policy", a deny
+// rule wins over an allow, and live 2026-11-11 a denyAll carrying no allow
+// left the account's own allows in force. A ranges deny below internet is
+// refused: the box denies everything there already.
+func networkPolicies(t vocab.Tier, deny []string) ([]networkPolicy, error) {
+	if t != vocab.TierInternet {
+		if len(deny) > 0 {
+			return nil, fmt.Errorf("dockersbx: a deny of address ranges is for the internet tier only: %w", sandboxremote.ErrDenyNotRenderable)
+		}
+		return []networkPolicy{{Mode: "denyAll", DenyNetworks: denyEverything}}, nil
 	}
-	return []networkPolicy{{Mode: "denyAll", DenyNetworks: denyEverything}}
+	if len(deny) == 0 {
+		return nil, nil
+	}
+	return []networkPolicy{{Mode: "denyAll", DenyNetworks: append([]string(nil), deny...)}}, nil
 }
 
 // Create admits a box from the template (or DefaultImage) at the small
@@ -706,16 +717,20 @@ func (c *Client) Create(ctx context.Context, spec sandboxremote.BoxSpec) (sandbo
 	if image == "" {
 		image = DefaultImage
 	}
+	policies, err := networkPolicies(spec.Tier, spec.DenyCIDRs)
+	if err != nil {
+		return sandboxremote.BoxInfo{}, err
+	}
 	body := createBody{
 		DisplayName: BoxName(spec.RunID), ImageRef: image,
 		Resources: c.size(), Labels: labels,
-		NetworkPolicies: networkPolicies(spec.Tier),
+		NetworkPolicies: policies,
 	}
 	body.StartupExecution.RawImage.Start.Argv = keepAlive
 	body.Features.Timeouts.Timeout = strconv.Itoa(spec.TimeoutSeconds) + "s"
 	body.Features.Timeouts.OnTimeout = "delete"
 	var out sandboxJSON
-	_, _, err := c.doJSON(ctx, request{
+	_, _, err = c.doJSON(ctx, request{
 		plane: planeManagement, method: http.MethodPost, path: "/v1/sandboxes", idempotent: true,
 		header: http.Header{"Idempotency-Key": {"observer-create-" + BoxName(spec.RunID)}},
 	}, body, &out)

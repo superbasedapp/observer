@@ -49,6 +49,31 @@ func TestBoxEnv(t *testing.T) {
 	}
 }
 
+// TestBoxEnvSet: a lane binding several providers puts each provider's own
+// sentinel in that provider's key variable only, and still drops every
+// other classed variable.
+func TestBoxEnvSet(t *testing.T) {
+	t.Parallel()
+	in := []string{
+		"PATH=/usr/bin", "ANTHROPIC_API_KEY=sk-ant-REAL", "OPENAI_API_KEY=sk-REAL",
+		"ANTHROPIC_AUTH_TOKEN=tok-REAL", "XAI_API_KEY=xai-REAL", "HOME=/h",
+	}
+	out, dropped := BoxEnvSet(map[string]string{"anthropic": "s-ant", "openai": "s-oai"}, in)
+	want := []string{"PATH=/usr/bin", "ANTHROPIC_API_KEY=s-ant", "OPENAI_API_KEY=s-oai", "HOME=/h"}
+	if !slices.Equal(out, want) {
+		t.Fatalf("env %v, want %v", out, want)
+	}
+	if !slices.Equal(dropped, []string{"ANTHROPIC_AUTH_TOKEN", "XAI_API_KEY"}) {
+		t.Fatalf("dropped %v", dropped)
+	}
+	// One provider through BoxEnvSet is BoxEnv.
+	a, da := BoxEnv("anthropic", "s", in)
+	b, db := BoxEnvSet(map[string]string{"anthropic": "s"}, in)
+	if !slices.Equal(a, b) || !slices.Equal(da, db) {
+		t.Fatalf("BoxEnv %v %v, BoxEnvSet %v %v", a, da, b, db)
+	}
+}
+
 // TestCredEnvHoldsKeyEnv: every provider's key variable is in its own
 // credential list, so the table classes it.
 func TestCredEnvHoldsKeyEnv(t *testing.T) {

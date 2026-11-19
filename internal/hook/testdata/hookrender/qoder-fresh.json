@@ -1,0 +1,74 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook qoder PreToolUse --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook qoder SessionEnd --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook qoder SessionStart --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook qoder Stop --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook qoder SubagentStart --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook qoder SubagentStop --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook qoder UserPromptSubmit --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ]
+  }
+}

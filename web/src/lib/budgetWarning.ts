@@ -29,7 +29,16 @@ export type BudgetStatusWindow = {
   enforcement: string;
   level: BudgetLevel;
   crossed: number;
+  /** What the cap does on THIS machine (internal/budgetwarn EffectOf):
+   *  "none" | "blocks" | "blocks_proxied" | "warn_observe" | "warn_guard_off".
+   *  Absent from an older daemon. */
+  effect?: BudgetEffect;
+  /** True when this machine refuses the current reading. */
+  blocked?: boolean;
 };
+
+/** The daemon's closed effect vocabulary (internal/budgetwarn Effect*). */
+export type BudgetEffect = "none" | "blocks" | "blocks_proxied" | "warn_observe" | "warn_guard_off";
 
 /** One announced notice (the highest per window in the current period). */
 export type BudgetNotice = {
@@ -49,6 +58,14 @@ export type BudgetNotice = {
   crossed_at: string;
   level: "warning" | "exceeded";
   message: string;
+  /** What the cap does on THIS machine; absent from an older daemon. */
+  effect?: BudgetEffect;
+  /** True when this machine refuses the current reading (the guard's own
+   *  comparison). Never inferred from `enforcement` alone: an org's hard cap
+   *  on a machine in observe mode blocks nothing (2026-11-18). */
+  blocked?: boolean;
+  /** True when the refusal compares this machine's own spend only. */
+  denies_on_local_spend?: boolean;
   /** The org budget this notice measures, when the node's budget rail names
    *  one (T-522): the banner's "Ask for a budget increase" opens a request
    *  for exactly this budget. */
@@ -93,23 +110,42 @@ export function isExceeded(n: Pick<BudgetNotice, "level"> & { ratio?: number }):
   return typeof r !== "number" || !Number.isFinite(r) || Math.round(r * 100) >= 100;
 }
 
-/** True when the org enforces this notice's cap and it has been exceeded. */
-export function isBlocked(n: Pick<BudgetNotice, "enforcement" | "level"> & { ratio?: number }): boolean {
+type EffectFields = Pick<BudgetNotice, "enforcement" | "level"> & {
+  ratio?: number;
+  effect?: BudgetEffect;
+  blocked?: boolean;
+};
+
+/** canBlockHere reports whether this machine refuses requests for the cap at
+ *  all (enforce mode). An older daemon that sent no effect is read from the
+ *  org mode, as before. */
+function canBlockHere(n: EffectFields): boolean {
+  if (n.effect === undefined) return n.enforcement === "hard";
+  return n.effect === "blocks" || n.effect === "blocks_proxied";
+}
+
+/** True when this machine is refusing requests for this notice's cap: the
+ *  daemon's own `blocked` bit (the guard's comparison) when it sent one. */
+export function isBlocked(n: EffectFields): boolean {
+  if (n.effect !== undefined) return n.blocked === true && isExceeded(n);
   return n.enforcement === "hard" && isExceeded(n);
 }
 
 /**
- * The short label shown before the server's message, naming the state:
- * blocked (a hard cap at 100%), exceeded but not blocked (warning only or
- * report only), or approaching (a warn rung under the cap, with what happens
- * at 100%).
+ * The short label shown before the server's message, naming the state on THIS
+ * machine: blocked (proxied requests only when that is all it can stop),
+ * exceeded but not blocked (warning only, report only, or a hard cap this
+ * machine cannot block), or approaching (with what happens at 100% here).
  */
-export function budgetWarningLabel(
-  n: Pick<BudgetNotice, "enforcement" | "level"> & { ratio?: number },
-): string {
-  if (isBlocked(n)) return "Budget exceeded: requests blocked";
-  if (isExceeded(n)) return n.enforcement === "soft" ? "Budget exceeded (warning only)" : "Budget exceeded (report only)";
-  if (n.enforcement === "hard") return "Approaching budget: blocks at 100%";
+export function budgetWarningLabel(n: EffectFields): string {
+  if (isBlocked(n)) {
+    return n.effect === "blocks_proxied" ? "Budget exceeded: proxied requests blocked" : "Budget exceeded: requests blocked";
+  }
+  if (isExceeded(n)) {
+    if (n.enforcement === "hard") return canBlockHere(n) ? "Budget exceeded (not blocked yet)" : "Budget exceeded (warning only on this machine)";
+    return n.enforcement === "soft" ? "Budget exceeded (warning only)" : "Budget exceeded (report only)";
+  }
+  if (n.enforcement === "hard") return canBlockHere(n) ? "Approaching budget: blocks at 100%" : "Approaching budget (warning only on this machine)";
   return "Approaching budget";
 }
 
@@ -135,7 +171,7 @@ const ANY_USD = /\$\d/;
  * line so token mode never shows a dollar figure.
  */
 export function noticeMessage(
-  n: Pick<BudgetNotice, "message" | "unit" | "ratio" | "window" | "enforcement" | "level" | "subject">,
+  n: Pick<BudgetNotice, "message" | "unit" | "ratio" | "window" | "enforcement" | "level" | "subject" | "effect" | "blocked">,
   mode: NoticeDisplayMode,
 ): string {
   if (mode !== "tokens" || n.unit !== "usd") return n.message;
@@ -145,7 +181,11 @@ export function noticeMessage(
     if (!ANY_USD.test(out)) return out;
   }
   const pct = Math.round((Number(n.ratio) || 0) * 100);
-  const tail = isBlocked(n) ? " Further proxied requests, and the next prompt or tool call in tools with a pre-send hook, are blocked." : "";
+  const tail = !isBlocked(n)
+    ? ""
+    : n.effect === "blocks_proxied"
+      ? " Further proxied requests are blocked."
+      : " Further proxied requests, and the next prompt or tool call in tools with a pre-send hook, are blocked.";
   const label = subjectLabel(n.subject);
   const forSubject = label ? ` for ${label}` : "";
   return `Org ${n.window} budget${forSubject}: ${pct}% used of the budget.${tail}`;

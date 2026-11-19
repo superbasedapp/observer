@@ -38,6 +38,7 @@ var sandboxEnvHostSide = map[string]map[string]string{
 	"terminal_sandbox_mxc.go":                  {"runMXCProbeHelper": "the MXC host helper's own environment on the host (mxcHelperEnv)"},
 	"terminal_sandbox_mxc_windows.go":          {"serveAndRun": "wxc-exec's own environment, its own allow-list (mxcExecEnv); the box's is mxcBoxEnv"},
 	"terminal_sandbox.go":                      {"gitPrepEnv": "the daemon's host-side workspace git step"},
+	"terminal_sandbox_hosted_homeclone.go":     {"hostedAnonLsRemoteExec": "the daemon's host-side anonymous git ls-remote (decision SBXD-5): the hardened git env with no credential helper, askpass or SSH agent, an empty HOME, never the box's"},
 	"terminal_sandbox_cli.go":                  {"runSandboxCLIStart": "the host helper's own environment (the box boundary filters it)"},
 	"terminal_sandbox_applecontainer_linux.go": {"runAppleInit": "the container's init: its environment is appleRunEnv's"},
 	"terminal_sandbox_openshell_linux.go": {

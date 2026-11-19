@@ -1,0 +1,24 @@
+{
+  "hooks": {
+    "BeforeAgent": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook gemini-cli BeforeAgent --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ],
+    "BeforeTool": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/local/bin/observer hook gemini-cli BeforeTool --config '/home/u/.observer/config.toml'"
+          }
+        ]
+      }
+    ]
+  }
+}

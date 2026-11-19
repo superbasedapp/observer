@@ -293,7 +293,7 @@ func TestHostedRowsAreBetaRemoteAndRelayed(t *testing.T) {
 		for _, d := range c.Discloses {
 			disc[d] = true
 		}
-		if !disc[DiscloseDataLeaves] || !disc[DiscloseAccountLogin] || !disc[DisclosePaidTier] {
+		if !disc[DiscloseDataLeaves] || !disc[DiscloseAccountLogin] || !disc[DisclosePaidTier] || !disc[DiscloseNoHookGating] {
 			t.Errorf("%s: disclosures %v", id, c.Discloses)
 		}
 		if c.Term.Resize == ResizeGuest && c.Term.PTYOwner != PTYGuestHelper {

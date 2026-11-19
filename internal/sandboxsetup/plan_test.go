@@ -596,3 +596,60 @@ func TestPinFor(t *testing.T) {
 		t.Error("PinFor found an absent id")
 	}
 }
+
+// TestNodeWideUndo is one case per shape of the NodeWide rule (audit
+// sandbox-terminal-gaps-2026-11-18, H12): the hosted custody step sets one
+// value every hosted row reads, so another set-up row's use does not keep it;
+// Undo is offered and names the other rows it changes. A shared step that is
+// not NodeWide (the consent) is still kept, and a NodeWide step no other row
+// uses carries no UndoAlso.
+func TestNodeWideUndo(t *testing.T) {
+	cfgRec := func(id string) map[string]Record {
+		return map[string]Record{id: {ID: 9, Status: toolinstall.StatusInstalled, Channel: string(ChConfig), StartedAt: time.Unix(1, 0)}}
+	}
+	cases := []struct {
+		name      string
+		prereq    string
+		others    []string
+		wantUndo  bool
+		wantAlso  bool
+		wantKept  bool
+		channelOf Channel
+	}{
+		{"node-wide shared: offered, names the others", "hosted-custody", []string{sandboxbackend.BackendE2B}, true, true, false, ChConfig},
+		{"node-wide alone: offered, nothing else changes", "hosted-custody", nil, true, false, false, ChConfig},
+		{"shared, not node-wide: kept", "hosted-consent", []string{sandboxbackend.BackendE2B}, false, false, true, ChContent},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := base(t, sandboxbackend.BackendDaytona)
+			in.Facts = map[string]Fact{tc.prereq: {Present: true}}
+			in.Records = cfgRec(tc.prereq)
+			rec := in.Records[tc.prereq]
+			rec.Channel = string(tc.channelOf)
+			in.Records[tc.prereq] = rec
+			if tc.others != nil {
+				in.InUseBy = map[string][]string{tc.prereq: tc.others}
+			}
+			s := stepOf(t, Build(in), tc.prereq)
+			if s.State != StateDone {
+				t.Fatalf("%s state = %s, want done", tc.prereq, s.State)
+			}
+			if s.CanUndo != tc.wantUndo {
+				t.Errorf("CanUndo = %v, want %v (reason %q)", s.CanUndo, tc.wantUndo, s.Reason)
+			}
+			if got := s.UndoAlso != ""; got != tc.wantAlso {
+				t.Errorf("UndoAlso = %q, want set %v", s.UndoAlso, tc.wantAlso)
+			}
+			if tc.wantAlso && !strings.Contains(s.UndoAlso, row(t, sandboxbackend.BackendE2B).Label) {
+				t.Errorf("UndoAlso %q does not name %s", s.UndoAlso, row(t, sandboxbackend.BackendE2B).Label)
+			}
+			if got := strings.Contains(s.Reason, "Kept:"); got != tc.wantKept {
+				t.Errorf("kept note = %v, want %v (reason %q)", got, tc.wantKept, s.Reason)
+			}
+			if got := SharedKeptByOthers(in, s); got != tc.wantKept {
+				t.Errorf("SharedKeptByOthers = %v, want %v", got, tc.wantKept)
+			}
+		})
+	}
+}

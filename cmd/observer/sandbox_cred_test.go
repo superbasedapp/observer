@@ -387,13 +387,34 @@ func TestCredConsentNamesInjection(t *testing.T) {
 	base := func(custody string) sandboxremote.ConsentScreen {
 		return sandboxremote.ConsentScreen{Facts: sandboxremote.ConsentFacts{Custody: custody}, Lines: []sandboxremote.ConsentLine{{Label: "Model credential", Value: "the screen's own line"}}}
 	}
-	_, _ = credEnvForTest(t, true)
+	obs, _ := credEnvForTest(t, true)
+	oldEnv := hostedLookupEnv
+	hostedLookupEnv = func(string) (string, bool) { return "", false }
+	t.Cleanup(func() { hostedLookupEnv = oldEnv })
 	scr := base(string(vocab.CustodyHomeRelay))
 	hostedApplyCredConsent(context.Background(), &scr, "E2B", "full")
 	if v := scr.Lines[0].Value; !strings.Contains(v, "sentinel") || !strings.Contains(v, "home_relay") {
 		t.Fatalf("with injection on the line reads %q", v)
 	}
+	// Each stored key a run may bind is named (H2).
+	for _, id := range []string{"anthropic", "openai"} {
+		if err := credMarkProvider(obs, id, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	scr = base(string(vocab.CustodyHomeRelay))
+	hostedApplyCredConsent(context.Background(), &scr, "E2B", "full")
+	if v := scr.Lines[0].Value; !strings.Contains(v, "Anthropic API key and OpenAI API key") {
+		t.Fatalf("the line does not name each bound provider: %q", v)
+	}
+	// An in-box key names where each key comes from (H3): here the stored
+	// keys, since the daemon's environment holds none.
 	scr = base(string(vocab.CustodyInBoxAPIKey))
+	hostedApplyCredConsent(context.Background(), &scr, "E2B", "full")
+	if v := scr.Lines[0].Value; !strings.Contains(v, "readable by the agent") || !strings.Contains(v, "stored on this machine: Anthropic API key and OpenAI API key") {
+		t.Fatalf("the in-box line reads %q", v)
+	}
+	scr = base(string(vocab.CustodyProviderInjected))
 	hostedApplyCredConsent(context.Background(), &scr, "E2B", "full")
 	if scr.Lines[0].Value != "the screen's own line" {
 		t.Fatal("another custody's line was changed")
@@ -431,7 +452,7 @@ func TestCredNotReadyWithoutTheProxy(t *testing.T) {
 	if !strings.Contains(note, "capture proxy") {
 		t.Fatalf("note = %q", note)
 	}
-	err := hostedCustodyCheckNoted(false, note, vocab.CustodyHomeRelay)
+	err := hostedKeyCheck(hostedHomeKeyFacts(full))
 	if err == nil || !strings.Contains(err.Error(), "capture proxy") || !strings.Contains(err.Error(), verdictHostedCustody) {
 		t.Fatalf("refusal = %v", err)
 	}

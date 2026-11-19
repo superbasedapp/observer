@@ -28,7 +28,7 @@ type Target struct {
 // generation, whenever PinnableKeys, ShareKeys or Features grows. target_test.go
 // fails when a key is missing from both the first-generation baseline and the
 // since tables.
-const CurrentKeyGen = 6
+const CurrentKeyGen = 7
 
 // FirstKeyGen is the key vocabulary of the first node.governance build
 // (v1.31.0).
@@ -36,9 +36,10 @@ const FirstKeyGen = 1
 
 // pinSince / shareSince / featureSince name the generation at which each key
 // joined its vocabulary; a key absent from its table has been there since
-// FirstKeyGen. Generations 1-5 are released builds (literal key lists in
+// FirstKeyGen. Generations 1-6 are released builds (literal key lists in
 // target_test.go, taken from the tags; 4, v1.36.0, is the first that
-// advertises its generation; 5 is v1.37.0 and v1.37.1); 6 is unreleased.
+// advertises its generation; 5 is v1.37.0 and v1.37.1; 6 is v1.39.0); 7 is
+// unreleased.
 var (
 	pinSince = map[string]int{
 		"guard.strict":          3, // v1.33.0
@@ -134,6 +135,20 @@ var (
 		"security.assessments.pentest_request_budget": 6,
 		"security.assessments.pentest_pace_rps":       6,
 		"security.assessments.probe_helper":           6,
+		// lane COPIES (decision SBXD-2 and the diff against the box's
+		// baseline), generation 7 (6 shipped).
+		"terminal.sandbox.returned_copy_retention_days": 7,
+		"terminal.sandbox.hosted.diff_against":          7,
+		// decision SBXD-7 (the hosted internet tier's private-range deny).
+		"terminal.sandbox.hosted.allow_private_ranges": 7,
+		// lane HOOKS (SBXD-6: guard's hooks in a hosted box).
+		"terminal.sandbox.hosted.guard_hooks": 7,
+		// lane CLONE2 (decision SBXD-5: the hosted clone location), the
+		// first key of generation 7: generation 6 shipped in v1.39.0.
+		"terminal.sandbox.hosted.clone_where": 7,
+		// decision SBXD-8 (uploading a folder that is not a repository).
+		"terminal.sandbox.hosted.upload_non_git": 7,
+		"terminal.sandbox.hosted.upload_ignore":  7,
 	}
 	shareSince = map[string]int{
 		"full_tool_bodies":            2, // v1.32.0

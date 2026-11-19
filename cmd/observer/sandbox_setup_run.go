@@ -230,6 +230,13 @@ var sandboxConfigKeySetters = map[string]struct {
 		get: func(c *config.Config) string { return c.Terminal.Sandbox.VM.CloudHypervisorPath },
 		set: func(c *config.Config, v string) { c.Terminal.Sandbox.VM.CloudHypervisorPath = v },
 	},
+	// The hosted model key's custody (the hosted-custody step writes
+	// in_box_api_key, its remedy's Value; Undo restores the previous one).
+	// The config writer validates the value against the custody list.
+	"terminal.sandbox.hosted.key_custody": {
+		get: func(c *config.Config) string { return c.Terminal.Sandbox.Hosted.KeyCustody },
+		set: func(c *config.Config, v string) { c.Terminal.Sandbox.Hosted.KeyCustody = v },
+	},
 }
 
 // sandboxPullArgv is the argv of an oci_pull step per engine (the step's
@@ -460,8 +467,8 @@ func gateUndo(si sandboxSetupInput, step sandboxsetup.Step) error {
 	if err := gateLiveRuns(si); err != nil {
 		return err
 	}
-	if others := si.in.InUseBy[step.Prereq]; len(others) > 0 && step.Kind != sandboxsetup.KindComponent && step.Kind != sandboxsetup.KindEnable {
-		return setupErr(http.StatusConflict, dashapi.SandboxSetupCodeStepNotRunnable, "%s is kept: also used by %s", step.Label, strings.Join(others, ", "))
+	if sandboxsetup.SharedKeptByOthers(si.in, step) {
+		return setupErr(http.StatusConflict, dashapi.SandboxSetupCodeStepNotRunnable, "%s is kept: also used by %s", step.Label, strings.Join(si.in.InUseBy[step.Prereq], ", "))
 	}
 	if !step.CanUndo {
 		if step.UndoNote != "" {
@@ -736,11 +743,15 @@ func runConfigKey(ctx context.Context, rc runCtx) (dashapi.SandboxSetupStarted, 
 	if _, ok := sandboxConfigKeySetters[key]; !ok {
 		return refuseNotRunnable(ctx, rc)
 	}
-	prev, err := writeConfigKey(ctx, rc.s.run.writeConfig, key, "true")
+	value := rc.step.Value
+	if value == "" {
+		value = "true"
+	}
+	prev, err := writeConfigKey(ctx, rc.s.run.writeConfig, key, value)
 	if err != nil {
 		return dashapi.SandboxSetupStarted{}, err
 	}
-	if err := rc.recordDone(ctx, string(sandboxsetup.ChConfig), []string{"config_key", key, "true", "previous=" + prev}, "set "+key+" = true", rc.verifyFor()); err != nil {
+	if err := rc.recordDone(ctx, string(sandboxsetup.ChConfig), []string{"config_key", key, value, "previous=" + prev}, "set "+key+" = "+value, rc.verifyFor()); err != nil {
 		return dashapi.SandboxSetupStarted{}, err
 	}
 	return rc.fresh(ctx)

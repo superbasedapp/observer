@@ -167,7 +167,22 @@ var sandboxVerdictFixable = map[string]bool{
 	"disabled_by_config": true,
 	"backend_missing":    true,
 	"backend_too_old":    true,
+	// The hosted model key cannot reach the agent under the chosen key
+	// custody (sandboxcred.HomeKey); the probe's reason is already a plain
+	// sentence that ends with what to choose.
+	"custody_unsatisfiable": true,
 }
+
+// sandboxVerdictWholeReason lists the fixable verdicts whose probe reason
+// is a whole plain sentence of its own, said as it is rather than after
+// "The sandbox cannot start on this machine:".
+var sandboxVerdictWholeReason = map[string]bool{
+	"custody_unsatisfiable": true,
+}
+
+// msgSandboxSetupPlace is the way to the place a fixable sandbox refusal is
+// fixed in.
+const msgSandboxSetupPlace = "Set it up or turn it on in Terminals > Settings > Sandbox isolation."
 
 // writeSandboxUnavailable answers a launch whose sandbox cannot start:
 // code is the route's error text as before; a fixable verdict adds the
@@ -178,10 +193,48 @@ func writeSandboxUnavailable(w http.ResponseWriter, code, verdict, reason string
 		http.Error(w, code, status)
 		return
 	}
+	r := strings.TrimSpace(reason)
+	if sandboxVerdictWholeReason[verdict] && r != "" {
+		writeNeedsSetting(w, status, code, r+" "+msgSandboxSetupPlace, settingslink.TerminalSandbox)
+		return
+	}
 	msg := "The sandbox cannot start on this machine"
-	if r := strings.TrimSpace(reason); r != "" {
+	if r != "" {
 		msg += ": " + strings.TrimSuffix(r, ".")
 	}
-	msg += ". Set it up or turn it on in Terminals > Settings > Sandbox isolation."
+	msg += ". " + msgSandboxSetupPlace
 	writeNeedsSetting(w, status, code, msg, settingslink.TerminalSandbox)
+}
+
+// writeSandboxStepRefusal answers a launch refused before anything started
+// whose fix is a choice in Terminals > Settings > Sandbox isolation
+// (dashapi.SandboxStepRefusal): 409, the closed code as "error", the plain
+// sentence as "message", the link, and the technical detail apart.
+func writeSandboxStepRefusal(w http.ResponseWriter, e *dashapi.SandboxStepRefusal) {
+	b := settingslink.Needs(e.Code, strings.TrimSpace(e.Message)+" "+msgSandboxSetupPlace, settingslink.TerminalSandbox)
+	b.Technical = e.Technical
+	writeJSONStatus(w, http.StatusConflict, b)
+}
+
+// sandboxConsentRefusalBody is the 409 answer to a hosted launch refused for
+// its consent: the needs-setting body (the closed code, the plain sentence,
+// the Hosted sandboxes link, the raw refusal as Technical) plus the row and
+// the consent verdict, which the New Terminal dialog reads to show the
+// consent again with what it would now agree to.
+type sandboxConsentRefusalBody struct {
+	settingslink.Body
+	Provider string `json:"provider"`
+	Verdict  string `json:"verdict"`
+}
+
+// writeSandboxConsentRefusal answers a hosted launch refused for a missing
+// or changed consent (dashapi.SandboxConsentRefusal).
+func writeSandboxConsentRefusal(w http.ResponseWriter, e *dashapi.SandboxConsentRefusal) {
+	msg := "Agree to what this launch sends to the hosted sandbox before it starts."
+	if e.Verdict != dashapi.SandboxConsentRefusalCode {
+		msg = "What this launch sends to the hosted sandbox changed since you agreed. Review it and agree again to start."
+	}
+	b := settingslink.Needs(dashapi.SandboxConsentRefusalCode, msg, settingslink.TerminalSandboxHosted)
+	b.Technical = e.Error()
+	writeJSONStatus(w, http.StatusConflict, sandboxConsentRefusalBody{Body: b, Provider: e.Provider, Verdict: e.Verdict})
 }

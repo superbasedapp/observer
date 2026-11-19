@@ -1052,8 +1052,8 @@ func hostedRow(c Capability, lifetime int) Capability {
 	c.Capture = Capture{Ceiling: vocab.CaptureFull, HookPath: HookRelay, Relay: RelayExecStdio}
 	c.ReadBack = ReadBackProvider
 	c.LifetimeCapSeconds = lifetime
-	c.Discloses = []Disclosure{DiscloseDataLeaves, DiscloseAccountLogin, DisclosePaidTier}
-	c.Setup = []string{"hosted-account", "hosted-key", "hosted-consent"}
+	c.Discloses = []Disclosure{DiscloseDataLeaves, DiscloseAccountLogin, DisclosePaidTier, DiscloseNoHookGating}
+	c.Setup = []string{"hosted-account", "hosted-key", "hosted-custody", "hosted-consent"}
 	return c
 }
 
@@ -1077,7 +1077,7 @@ func orgHostedRow(c Capability) Capability {
 		{Host: HostLinux, Kind: vocab.VerifiedDoc, Source: orgHostedVerifySource, Date: "2026-11-03", RegisterRef: orgHostedRegister},
 		{Host: HostWSL2, Kind: vocab.VerifiedDoc, Source: orgHostedVerifySource, Date: "2026-11-03", RegisterRef: orgHostedRegister},
 	}
-	c.Discloses = []Disclosure{DiscloseDataLeaves, DiscloseAccountLogin, DiscloseOrgCompute, DiscloseOrgSharedGateway}
+	c.Discloses = []Disclosure{DiscloseDataLeaves, DiscloseAccountLogin, DiscloseOrgCompute, DiscloseOrgSharedGateway, DiscloseNoHookGating}
 	c.Setup = setup
 	return c
 }

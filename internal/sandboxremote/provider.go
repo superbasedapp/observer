@@ -53,7 +53,12 @@ type BoxSpec struct {
 	// TimeoutSeconds is the vendor's own box timeout (never zero).
 	TimeoutSeconds int
 	Tier           vocab.Tier
-	Region         string
+	// DenyCIDRs are the ranges the create asks the vendor to refuse on the
+	// internet tier (PrivateRangeDeny's CIDRs; empty sends no deny). A wire
+	// client renders them in its vendor's documented field, or refuses a
+	// create it cannot render them for (never a silent open box).
+	DenyCIDRs []string
+	Region    string
 	// Env is the box's base environment (never a provider credential of the
 	// sandbox vendor; a model credential only under an in-box custody).
 	Env map[string]string

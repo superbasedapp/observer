@@ -316,6 +316,14 @@ var PinnableKeys = []PinnableKey{
 		Key: "terminal.sandbox.seccomp", Kind: "bool", Direction: DirRestrictiveOnly, Safe: true,
 		Label: "Sandbox syscall filter (seccomp) on the bwrap and process_lite backends",
 	},
+	// The age sweep of returned sandbox copies (decision SBXD-2): like
+	// workspace_retention_days it may only be lengthened, 0 (never remove a
+	// copy automatically) the longest; the sweep removes only a copy the
+	// removal table would remove on a click.
+	{
+		Key: "terminal.sandbox.returned_copy_retention_days", Kind: "int", Direction: DirRetention, Max: 3650,
+		Label: "Sandbox copies kept after their work came back (days, 0 keeps them; may only be lengthened)",
+	},
 	// The agent-run security assessments' relaxation capability
 	// (docs/plans/security-assessments-module-plan-2026-11-13.md section 13.3).
 	// The three switches and the tier are restrictive-only: an org may turn the
@@ -542,6 +550,38 @@ var PinnableKeys = []PinnableKey{
 	{
 		Key: "terminal.sandbox.hosted.db_export", Kind: "bool", Direction: DirRestrictiveOnly, Safe: false,
 		Label: "Hosted sandbox database export at teardown (may only be kept off)",
+	},
+	// What a hosted upload run's saved diff is taken against (the smaller
+	// item "diff against the box's baseline"): neither value widens what a
+	// box reaches, so an org may set either.
+	{
+		Key: "terminal.sandbox.hosted.diff_against", Kind: "string", Enum: []any{"baseline", "head"}, Direction: DirFree,
+		Label: "Hosted sandbox saved diff taken against (baseline keeps the agent's own commits in it)",
+	},
+	{
+		Key: "terminal.sandbox.hosted.allow_private_ranges", Kind: "bool", Direction: DirRestrictiveOnly, Safe: false,
+		Label: "Hosted sandbox private network ranges on the internet tier (may only be kept denied)",
+	},
+	// Guard's hooks in a hosted box (lane HOOKS, SBXD-6).
+	{
+		Key: "terminal.sandbox.hosted.guard_hooks", Kind: "string", Enum: []any{"auto", "on", "off"}, Direction: DirRestrictiveOnly, Safe: "on",
+		Label: "Hosted sandbox guard hooks in the box (may only be forced on)",
+	},
+	// The clone location of a hosted row's "Clone a remote URL" source
+	// (decision SBXD-5): free, an org may pin any of the three.
+	{
+		Key: "terminal.sandbox.hosted.clone_where", Kind: "string", Enum: []any{"auto", "box", "home"}, Direction: DirFree,
+		Label: "Hosted sandbox clone location (automatic, in the box, or on the developer's machine)",
+	},
+	// Uploading a folder that is not a git repository (decision SBXD-8): an
+	// org may only keep it off, and may only add ignore patterns.
+	{
+		Key: "terminal.sandbox.hosted.upload_non_git", Kind: "bool", Direction: DirRestrictiveOnly, Safe: false,
+		Label: "Hosted sandbox upload of folders that are not git repositories (may only be kept off)",
+	},
+	{
+		Key: "terminal.sandbox.hosted.upload_ignore", Kind: "string_list", Direction: DirAdditiveMask,
+		Label: "Hosted sandbox extra ignore patterns for a folder that is not a git repository (added to the node's own)",
 	},
 	// Local re-adoption ([terminal.sandbox.readopt], lane GATES-SBX, R-034):
 	// an org may only shorten the bound and shrink the checkpoint cap.
